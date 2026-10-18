@@ -49,6 +49,14 @@ ASP.NET Core minimal API (net10.0) referencing Core. Config: `Ffmpeg:Path`, `Dow
 (relative to the content root; git-ignored `downloads/`), `Downloads:TempFolder` (blank = Core's default
 cache dir), `Downloads:Threads`. Run with `dotnet run --project TwitchDownloaderWeb`.
 
+- `POST /api/vods/download` — body `{ vodId, title?, quality?, startTime?, endTime? }` (times as `"hh:mm:ss"`,
+  offsets from VOD start). Exact trim, synchronous, writes `<sanitized title>.mp4` (non-colliding) and returns
+  `{ fileName, path, sizeBytes }`. Blank title → VOD's Twitch title. Unknown quality → 400 listing the
+  available ones (Core would otherwise silently fall back to best). Code: `Endpoints/VodDownloadEndpoints.cs`.
+- `Services/LoggerTaskProgress` adapts Core's `ITaskProgress` to `ILogger`.
+- Gotcha: titles are sanitized with Core's `FilenameService`, which swaps `: ? | / \` etc. for full-width
+  look-alikes (`：？｜`), so file names contain non-ASCII characters.
+
 ## Build
 
 ```
