@@ -35,8 +35,19 @@ We are building a **team web app (Twitch only)** on top of its `TwitchDownloader
 ### FFmpeg
 Core never locates ffmpeg itself — callers pass `FfmpegPath` in the options and Core runs it as a `Process`.
 The CLI uses `--ffmpeg-path`, else `ffmpeg(.exe)` in the working dir or on PATH; the WPF app passes `"ffmpeg"`
-and auto-downloads `ffmpeg.exe` next to the exe via Xabe.FFmpeg.Downloader. The web app takes the path from
-configuration (`Ffmpeg:Path`, default `ffmpeg` on PATH).
+and auto-downloads `ffmpeg.exe` next to the exe via Xabe.FFmpeg.Downloader.
+
+The web app takes the path from configuration (`Ffmpeg:Path` in `TwitchDownloaderWeb/appsettings.json`).
+On the dev machine it is pinned to the **Gyan FFmpeg 8.0.1** WinGet install
+(`%LOCALAPPDATA%\Microsoft\WinGet\Packages\Gyan.FFmpeg_...\ffmpeg-8.0.1-full_build\bin\ffmpeg.exe`), **not**
+the yt-dlp FFmpeg build, which comes first on PATH. Don't rely on PATH lookup; override `Ffmpeg:Path` per
+environment (e.g. env var `Ffmpeg__Path`).
+
+## Web app (`TwitchDownloaderWeb`)
+
+ASP.NET Core minimal API (net10.0) referencing Core. Config: `Ffmpeg:Path`, `Downloads:OutputFolder`
+(relative to the content root; git-ignored `downloads/`), `Downloads:TempFolder` (blank = Core's default
+cache dir), `Downloads:Threads`. Run with `dotnet run --project TwitchDownloaderWeb`.
 
 ## Build
 
