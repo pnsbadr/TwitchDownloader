@@ -114,8 +114,8 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   row; open/closed is saved in `localStorage` key `clipLibrary.calendarOpen`. Counts aren't fetched while closed.
   A day filter survives closing the calendar and is then shown as a chip ("Oct 12 ✕") next to the search box.
   The selected day itself is not persisted across reloads.
-- **Last 24h** button (left of Calendar): rolling `from = now − 24h` filter on the calendar's date field
-  (stream date / date added), recomputed on every load. It and a calendar day filter are mutually exclusive.
+- **Last 24h** button (left of Calendar): rolling `from = now − 24h` filter on the date chosen in the
+  **sort dropdown** next to the search box (Date added / Stream date), not the calendar's switch; recomputed on every load. It and a calendar day filter are mutually exclusive.
   Not persisted. There is no "jump to today" button in the calendar (removed on request).
 
 ### Gotchas

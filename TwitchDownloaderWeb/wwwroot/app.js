@@ -539,15 +539,19 @@ function selectDay(day) {
 
 // ---------- last 24 hours ----------
 //
-// Uses the same date field as the calendar's Stream date / Date added switch. It and a calendar day are
-// mutually exclusive: turning one on clears the other.
+// Follows the Date added / Stream date dropdown next to the search box (not the calendar's own switch).
+// It and a calendar day are mutually exclusive: turning one on clears the other.
 
 const RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 let recentOnly = false;
 
+function recentField() {
+  return $("sort").value;
+}
+
 function fieldVerb() {
-  return calendarField === "streamDate" ? "streamed" : "added";
+  return recentField() === "streamDate" ? "streamed" : "added";
 }
 
 function renderRecentToggle() {
@@ -635,7 +639,7 @@ async function loadEntries() {
   params.set("order", $("order").value);
   if (recentOnly) {
     // Rolling window, recomputed on every load (including polls)
-    params.set("dateField", calendarField);
+    params.set("dateField", recentField());
     params.set("from", new Date(Date.now() - RECENT_WINDOW_MS).toISOString());
   } else if (selectedDay) {
     const range = dayRange(selectedDay, shownTimeZone());
