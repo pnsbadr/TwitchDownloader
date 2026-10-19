@@ -75,9 +75,7 @@
           <div class="cal-nav">
             <button type="button" class="link cal-arrow" id="cal-prev" aria-label="Previous month">&lsaquo;</button>
             <h3 id="cal-title" aria-live="polite"></h3>
-            <button type="button" class="link cal-arrow" id="cal-next" aria-label="Next month">&rsaquo;</button>
-            <button type="button" class="secondary small" id="cal-today">Today</button>
-          </div>
+            <button type="button" class="link cal-arrow" id="cal-next" aria-label="Next month">&rsaquo;</button>          </div>
           <div class="tz" role="group" aria-label="Calendar is based on">
             <span class="tz-label">Calendar by:</span>
             <button type="button" class="seg" data-cal-field="streamDate" aria-pressed="true">Stream date</button>
@@ -101,6 +99,7 @@
           <option value="desc">Newest first</option>
           <option value="asc">Oldest first</option>
         </select>
+        <button type="button" id="recent-toggle" class="secondary" aria-pressed="false">Last 24h</button>
         <button type="button" id="cal-toggle" class="secondary" aria-expanded="false" aria-controls="calendar">Calendar</button>
       </div>
 

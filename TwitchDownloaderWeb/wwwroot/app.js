@@ -510,13 +510,6 @@ function renderCalendar(counts, timeZone) {
   const leadingBlanks = (new Date(Date.UTC(year, month - 1, 1)).getUTCDay() - weekStart + 7) % 7;
   const verb = calendarField === "streamDate" ? "streamed" : "added";
 
-  // Today is named on the Today button rather than outlined in the grid, where it looked like a day with clips
-  const today = zonedParts(Date.now(), timeZone);
-  const todayButton = $("cal-today");
-  todayButton.textContent = `Today (${today.day})`;
-  todayButton.setAttribute("aria-label", `Go to today, ${formatCalendarDay(today)}`);
-  todayButton.title = `Today is ${formatCalendarDay(today)} (${timeZoneLabel()})`;
-
   const cells = Array.from({ length: leadingBlanks }, () => el("div", { class: "cal-blank" }));
   for (let day = 1; day <= daysInMonth; day++) {
     const count = counts.get(dayKey(year, month, day)) ?? 0;
@@ -540,8 +533,36 @@ function renderCalendar(counts, timeZone) {
 function selectDay(day) {
   const same = selectedDay && selectedDay.year === day.year && selectedDay.month === day.month && selectedDay.day === day.day;
   selectedDay = same ? null : day;
+  if (selectedDay) recentOnly = false;
   refresh();
 }
+
+// ---------- last 24 hours ----------
+//
+// Uses the same date field as the calendar's Stream date / Date added switch. It and a calendar day are
+// mutually exclusive: turning one on clears the other.
+
+const RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+let recentOnly = false;
+
+function fieldVerb() {
+  return calendarField === "streamDate" ? "streamed" : "added";
+}
+
+function renderRecentToggle() {
+  const button = $("recent-toggle");
+  button.setAttribute("aria-pressed", String(recentOnly));
+  button.title = recentOnly
+    ? `Showing clips ${fieldVerb()} in the last 24 hours. Click to show all.`
+    : `Show clips ${fieldVerb()} in the last 24 hours`;
+}
+
+$("recent-toggle").addEventListener("click", () => {
+  recentOnly = !recentOnly;
+  if (recentOnly) selectedDay = null;
+  refresh();
+});
 
 // With the calendar open the filter is described in a bar under the filters; with it closed, a compact chip
 // next to the search box keeps it visible that the list is filtered.
@@ -577,10 +598,6 @@ function moveMonth(delta) {
 
 $("cal-prev").addEventListener("click", () => moveMonth(-1));
 $("cal-next").addEventListener("click", () => moveMonth(1));
-$("cal-today").addEventListener("click", () => {
-  calendarMonth = null;
-  loadCalendar();
-});
 $("day-filter-clear").addEventListener("click", clearDayFilter);
 $("day-chip").addEventListener("click", () => {
   clearDayFilter();
@@ -616,13 +633,18 @@ async function loadEntries() {
   const params = baseListParams();
   params.set("sort", $("sort").value);
   params.set("order", $("order").value);
-  if (selectedDay) {
+  if (recentOnly) {
+    // Rolling window, recomputed on every load (including polls)
+    params.set("dateField", calendarField);
+    params.set("from", new Date(Date.now() - RECENT_WINDOW_MS).toISOString());
+  } else if (selectedDay) {
     const range = dayRange(selectedDay, shownTimeZone());
     params.set("dateField", calendarField);
     params.set("from", range.from);
     params.set("to", range.to);
   }
   renderDayFilter();
+  renderRecentToggle();
 
   try {
     const entries = await api("GET", `/api/entries?${params}`);
@@ -630,7 +652,9 @@ async function loadEntries() {
 
     $("entries").replaceChildren(...entries.map(renderEntry));
     $("empty").hidden = entries.length > 0;
-    $("empty").textContent = selectedDay ? "No clips on that day." : params.has("search") ? "No entries match that search." : "No entries yet.";
+    $("empty").textContent = recentOnly ? `No clips ${fieldVerb()} in the last 24 hours.`
+      : selectedDay ? "No clips on that day."
+      : params.has("search") ? "No entries match that search." : "No entries yet.";
     setMessage($("library-message"), "");
     schedulePoll(entries.some(isBusy));
   } catch (error) {

@@ -199,7 +199,8 @@ button:disabled { opacity: 0.55; cursor: default; }
 
 .controls input { flex: 1 1 200px; }
 
-#cal-toggle[aria-expanded="true"] {
+#cal-toggle[aria-expanded="true"],
+#recent-toggle[aria-pressed="true"] {
   background: var(--accent);
   color: var(--accent-text);
 }
