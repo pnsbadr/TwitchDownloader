@@ -1,0 +1,266 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using TwitchDownloaderCore.Models;
+using TwitchDownloaderWeb.Data;
+using TwitchDownloaderWeb.Services;
+
+namespace TwitchDownloaderWeb.Endpoints
+{
+    /// <param name="VodId">A VOD ID or twitch.tv/videos URL.</param>
+    /// <param name="Title">Blank uses the VOD's Twitch title.</param>
+    /// <param name="Quality">e.g. "1080p60". Blank uses the best available quality.</param>
+    /// <param name="TrimMode">"Exact" (default) or "Safe".</param>
+    /// <param name="StartTime">"h:mm:ss" offset from the start of the VOD. Blank is the start.</param>
+    /// <param name="EndTime">"h:mm:ss" offset from the start of the VOD, not a duration. Blank is the end.</param>
+    public sealed record AddEntryRequest(string? VodId, string? Title, string? Quality, string? TrimMode, string? StartTime, string? EndTime);
+
+    public sealed record RenameEntryRequest(string? Title);
+
+    public sealed record EntryDto(
+        int Id,
+        string Title,
+        long VodId,
+        string? ChannelName,
+        string? Quality,
+        string TrimMode,
+        string StartTime,
+        string? EndTime,
+        double ClipLengthSeconds,
+        int VodLengthSeconds,
+        DateTime StreamDateUtc,
+        DateTime AddedAtUtc,
+        DateTime UpdatedAtUtc,
+        string? ThumbnailUrl,
+        string Status,
+        string? Error,
+        bool IsReferenceOnly,
+        long? FileSizeBytes,
+        string GenerationStatus,
+        long? GeneratedFileSizeBytes,
+        DateTime? GeneratedExpiresAtUtc,
+        bool CanDownload,
+        string? AddedByUserId)
+    {
+        public static EntryDto From(LibraryEntry entry) => new(
+            entry.Id,
+            entry.Title,
+            entry.VodId,
+            entry.ChannelName,
+            entry.Quality,
+            entry.TrimMode.ToString(),
+            TrimTime.Format(entry.StartTime),
+            TrimTime.Format(entry.EndTime),
+            entry.ClipLengthSeconds,
+            entry.VodLengthSeconds,
+            entry.StreamDateUtc,
+            entry.AddedAtUtc,
+            entry.UpdatedAtUtc,
+            entry.ThumbnailUrl,
+            entry.Status.ToString(),
+            entry.Error,
+            entry.Status == EntryStatus.ReferenceOnly || (entry.Status == EntryStatus.VodUnavailable && entry.FilePath is null),
+            entry.FileSizeBytes,
+            entry.GenerationStatus.ToString(),
+            entry.GeneratedFileSizeBytes,
+            entry.GeneratedExpiresAtUtc,
+            entry.Status == EntryStatus.Ready || (entry.Status == EntryStatus.ReferenceOnly && entry.GenerationStatus == Data.GenerationStatus.Ready),
+            entry.AddedByUserId);
+    }
+
+    public sealed record VodInfoDto(long VodId, string Title, string? ChannelName, int LengthSeconds, string Length, DateTime StreamDateUtc,
+        string? ThumbnailUrl, string[] Qualities, bool Restricted, int MaxStoredClipSeconds);
+
+    public static class EntryEndpoints
+    {
+        private const int MaxTitleLength = 500;
+
+        public static IEndpointRouteBuilder MapEntryEndpoints(this IEndpointRouteBuilder app)
+        {
+            app.MapGet("/api/vods/info", GetVodInfo);
+
+            var entries = app.MapGroup("/api/entries");
+            entries.MapPost("/", AddEntry);
+            entries.MapGet("/", ListEntries);
+            entries.MapGet("/{id:int}", GetEntry);
+            entries.MapPatch("/{id:int}", RenameEntry);
+
+            return app;
+        }
+
+        private static async Task<IResult> GetVodInfo(string? vod, VodInfoService vodInfo, IOptions<DownloadSettings> settings)
+        {
+            if (VodInfoService.ParseVodId(vod) is not { } vodId)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["vod"] = ["Unable to parse VOD ID/URL."] });
+
+            var details = await vodInfo.GetVodAsync(vodId);
+            if (details is null)
+                return VodNotFound(vodId);
+
+            var qualities = await vodInfo.GetQualitiesAsync(vodId);
+
+            return Results.Ok(new VodInfoDto(vodId, details.Title, details.ChannelName, details.LengthSeconds,
+                TrimTime.Format(TimeSpan.FromSeconds(details.LengthSeconds)), details.StreamDateUtc, details.ThumbnailUrl,
+                qualities is null ? [] : VodInfoService.GetVideoQualityNames(qualities), qualities is null,
+                settings.Value.MaxStoredClipSeconds));
+        }
+
+        private static async Task<IResult> AddEntry(AddEntryRequest request, LibraryDbContext db, VodInfoService vodInfo, DownloadQueue queue,
+            IOptions<DownloadSettings> settings, CancellationToken cancellationToken)
+        {
+            if (VodInfoService.ParseVodId(request.VodId) is not { } vodId)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["vodId"] = ["Unable to parse VOD ID/URL."] });
+
+            if (!TrimTime.TryParse(request.StartTime, out var parsedStart))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["startTime"] = ["Use h:mm:ss, m:ss or seconds."] });
+
+            if (!TrimTime.TryParse(request.EndTime, out var endTime))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["endTime"] = ["Use h:mm:ss, m:ss or seconds."] });
+
+            var trimMode = VideoTrimMode.Exact;
+            // Enum.TryParse also accepts numbers like "5", so require one of the names
+            if (!string.IsNullOrWhiteSpace(request.TrimMode)
+                && !(Enum.TryParse(request.TrimMode, true, out trimMode) && Enum.GetNames<VideoTrimMode>().Contains(request.TrimMode.Trim(), StringComparer.OrdinalIgnoreCase)))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["trimMode"] = ["Trim mode must be Exact or Safe."] });
+
+            var requestedQuality = string.IsNullOrWhiteSpace(request.Quality) ? null : request.Quality.Trim();
+            if (VodInfoService.IsAudioQuality(requestedQuality))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["quality"] = ["Audio-only quality cannot produce an mp4."] });
+
+            var title = request.Title?.Trim();
+            if (title is { Length: > MaxTitleLength })
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["title"] = [$"Title cannot be longer than {MaxTitleLength} characters."] });
+
+            var vod = await vodInfo.GetVodAsync(vodId);
+            if (vod is null)
+                return VodNotFound(vodId);
+
+            var startTime = parsedStart ?? TimeSpan.Zero;
+            if (VodInfoService.ValidateTrim(startTime, endTime, vod.LengthSeconds) is { } trimErrors)
+                return Results.ValidationProblem(trimErrors);
+
+            var qualities = await vodInfo.GetQualitiesAsync(vodId);
+            if (qualities is null)
+                return RestrictedVod();
+
+            // Store the resolved name ("720p" -> "720p60") so the entry shows what will actually be downloaded
+            string? quality = null;
+            if (requestedQuality is not null)
+            {
+                quality = qualities.GetQuality(requestedQuality)?.Name;
+                if (quality is null)
+                {
+                    return Results.ValidationProblem(new Dictionary<string, string[]>
+                    {
+                        ["quality"] = [$"Quality \"{requestedQuality}\" is not available. Available: {string.Join(", ", VodInfoService.GetVideoQualityNames(qualities))}."]
+                    });
+                }
+            }
+
+            // The stored-vs-reference rule is decided here from the trim times, never by the client
+            var clipLength = (endTime ?? TimeSpan.FromSeconds(vod.LengthSeconds)) - startTime;
+            var isStored = clipLength.TotalSeconds <= settings.Value.MaxStoredClipSeconds;
+            var now = DateTime.UtcNow;
+
+            var entry = new LibraryEntry
+            {
+                Title = string.IsNullOrEmpty(title) ? vod.Title : title,
+                VodId = vodId,
+                ChannelName = vod.ChannelName,
+                Quality = quality,
+                TrimMode = trimMode,
+                StartTime = startTime,
+                EndTime = endTime,
+                ClipLengthSeconds = clipLength.TotalSeconds,
+                VodLengthSeconds = vod.LengthSeconds,
+                StreamDateUtc = vod.StreamDateUtc,
+                AddedAtUtc = now,
+                UpdatedAtUtc = now,
+                ThumbnailUrl = vod.ThumbnailUrl,
+                Status = isStored ? EntryStatus.Queued : EntryStatus.ReferenceOnly,
+            };
+
+            // Two saves because the audit event needs the new entry's ID; the transaction keeps them together
+            await using (var transaction = await db.Database.BeginTransactionAsync(cancellationToken))
+            {
+                db.Entries.Add(entry);
+                await db.SaveChangesAsync(cancellationToken);
+
+                db.Audit(AuditActions.EntryAdded, entry.Id,
+                    $"VOD {vodId}, {TrimTime.Format(startTime)}-{TrimTime.Format(endTime) ?? "end"}, {clipLength.TotalSeconds:0.###}s, {(isStored ? "stored" : "reference-only")}");
+                await db.SaveChangesAsync(cancellationToken);
+
+                await transaction.CommitAsync(cancellationToken);
+            }
+
+            if (isStored)
+                queue.Enqueue(entry.Id, DownloadJobKind.Store);
+
+            return Results.Created($"/api/entries/{entry.Id}", EntryDto.From(entry));
+        }
+
+        private static async Task<IResult> ListEntries(LibraryDbContext db, string? search, string? sort, string? order, int? limit, CancellationToken cancellationToken)
+        {
+            var query = db.Entries.AsNoTracking();
+
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                // Escape LIKE wildcards so the search is a plain substring match. SQLite's LIKE ignores case for ASCII only.
+                var pattern = "%" + search.Trim().Replace(@"\", @"\\").Replace("%", @"\%").Replace("_", @"\_") + "%";
+                query = query.Where(x => EF.Functions.Like(x.Title, pattern, @"\"));
+            }
+
+            var ascending = string.Equals(order, "asc", StringComparison.OrdinalIgnoreCase);
+            query = sort?.ToLowerInvariant() switch
+            {
+                "streamdate" => ascending ? query.OrderBy(x => x.StreamDateUtc).ThenBy(x => x.Id) : query.OrderByDescending(x => x.StreamDateUtc).ThenByDescending(x => x.Id),
+                "dateadded" or null or "" => ascending ? query.OrderBy(x => x.AddedAtUtc).ThenBy(x => x.Id) : query.OrderByDescending(x => x.AddedAtUtc).ThenByDescending(x => x.Id),
+                _ => null
+            };
+
+            if (query is null)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["sort"] = ["Sort must be streamDate or dateAdded."] });
+
+            var entries = await query.Take(Math.Clamp(limit ?? 200, 1, 1000)).ToListAsync(cancellationToken);
+            return Results.Ok(entries.Select(EntryDto.From));
+        }
+
+        private static async Task<IResult> GetEntry(int id, LibraryDbContext db, CancellationToken cancellationToken)
+        {
+            var entry = await db.Entries.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+            return entry is null ? EntryNotFound(id) : Results.Ok(EntryDto.From(entry));
+        }
+
+        private static async Task<IResult> RenameEntry(int id, RenameEntryRequest request, LibraryDbContext db, CancellationToken cancellationToken)
+        {
+            var title = request.Title?.Trim();
+            if (string.IsNullOrEmpty(title))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["title"] = ["Title cannot be blank."] });
+
+            if (title.Length > MaxTitleLength)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["title"] = [$"Title cannot be longer than {MaxTitleLength} characters."] });
+
+            var entry = await db.Entries.FindAsync([id], cancellationToken);
+            if (entry is null)
+                return EntryNotFound(id);
+
+            if (entry.Title != title)
+            {
+                db.Audit(AuditActions.EntryRenamed, entry.Id, $"\"{entry.Title}\" -> \"{title}\"");
+                entry.Title = title;
+                entry.UpdatedAtUtc = DateTime.UtcNow;
+                await db.SaveChangesAsync(cancellationToken);
+            }
+
+            return Results.Ok(EntryDto.From(entry));
+        }
+
+        private static IResult EntryNotFound(int id) =>
+            Results.Problem(detail: $"Entry {id} was not found.", statusCode: StatusCodes.Status404NotFound);
+
+        private static IResult VodNotFound(long vodId) =>
+            Results.Problem(detail: $"VOD {vodId} was not found. It may be deleted, expired or private.", statusCode: StatusCodes.Status404NotFound);
+
+        private static IResult RestrictedVod() =>
+            Results.Problem(detail: "This VOD is restricted (e.g. subscriber-only), which is not supported yet.", statusCode: StatusCodes.Status403Forbidden);
+    }
+}
