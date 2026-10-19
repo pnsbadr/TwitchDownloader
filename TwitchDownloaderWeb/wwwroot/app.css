@@ -63,6 +63,8 @@ main {
   margin: 0 auto;
   padding: 16px;
   display: grid;
+  /* minmax(0, ...) so a wide child can't stretch the column past the viewport */
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
 }
 
@@ -184,21 +186,48 @@ button:disabled { opacity: 0.55; cursor: default; }
   color: var(--accent-text);
 }
 
-.tz { display: flex; align-items: center; gap: 6px; }
+.tz { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .tz-label { font-size: 13px; color: var(--muted); }
 
-.library-head {
+.controls {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
   margin-bottom: 8px;
 }
 
-.library-head h2 { margin: 0; }
-.controls { align-items: center; }
-.controls input { width: 200px; }
+.controls input { flex: 1 1 200px; }
+
+#cal-toggle[aria-expanded="true"] {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  background: var(--badge-bg);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.chip-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 11px;
+  line-height: 1;
+}
 
 .calendar {
   border: 1px solid var(--border);
@@ -359,5 +388,5 @@ button.small { padding: 3px 10px; font-size: 13px; }
 
 @media (max-width: 640px) {
   .entry .thumb { width: 96px; height: 54px; }
-  .controls input { width: 100%; }
+  .controls input { flex-basis: 100%; }
 }

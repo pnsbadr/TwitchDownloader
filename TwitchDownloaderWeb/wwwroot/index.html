@@ -67,21 +67,10 @@
     </section>
 
     <section class="panel" aria-labelledby="library-heading">
-      <div class="library-head">
-        <h2 id="library-heading">Library</h2>
-        <div class="row controls">
-          <input id="search" type="search" placeholder="Search titles" aria-label="Search titles">
-          <select id="sort" aria-label="Sort by">
-            <option value="dateAdded">Date added</option>
-            <option value="streamDate">Stream date</option>
-          </select>
-          <select id="order" aria-label="Order">
-            <option value="desc">Newest first</option>
-            <option value="asc">Oldest first</option>
-          </select>
-        </div>
-      </div>
-      <div class="calendar" aria-labelledby="cal-title">
+      <h2 id="library-heading">Library</h2>
+
+      <!-- Hidden until the Calendar button opens it; sits above the search and filters -->
+      <div id="calendar" class="calendar" aria-labelledby="cal-title" hidden>
         <div class="cal-head">
           <div class="cal-nav">
             <button type="button" class="link cal-arrow" id="cal-prev" aria-label="Previous month">&lsaquo;</button>
@@ -98,6 +87,21 @@
         <p id="cal-zone" class="muted cal-zone"></p>
         <div id="cal-grid" class="cal-grid"></div>
         <p id="cal-note" class="muted"></p>
+      </div>
+
+      <div class="controls">
+        <input id="search" type="search" placeholder="Search titles" aria-label="Search titles">
+        <!-- Shown while a day filter is active and the calendar is closed -->
+        <button type="button" id="day-chip" class="chip" hidden></button>
+        <select id="sort" aria-label="Sort by">
+          <option value="dateAdded">Date added</option>
+          <option value="streamDate">Stream date</option>
+        </select>
+        <select id="order" aria-label="Order">
+          <option value="desc">Newest first</option>
+          <option value="asc">Oldest first</option>
+        </select>
+        <button type="button" id="cal-toggle" class="secondary" aria-expanded="false" aria-controls="calendar">Calendar</button>
       </div>
 
       <div id="day-filter" class="day-filter" hidden>

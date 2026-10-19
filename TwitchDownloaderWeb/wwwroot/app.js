@@ -340,7 +340,10 @@ function renderEntry(entry) {
 const CAL_FIELD_STORAGE_KEY = "clipLibrary.calendarField";
 const CALENDAR_LIMIT = 1000;
 
+const CAL_OPEN_STORAGE_KEY = "clipLibrary.calendarOpen";
+
 let calendarField = loadCalendarField();
+let calendarOpen = loadCalendarOpen();
 let calendarMonth = null; // { year, month } with month 1-12, in the shown time zone
 let selectedDay = null; // { year, month, day } or null
 
@@ -355,6 +358,23 @@ function loadCalendarField() {
 function saveCalendarField(field) {
   try {
     localStorage.setItem(CAL_FIELD_STORAGE_KEY, field);
+  } catch {
+    // See saveTimeZoneMode
+  }
+}
+
+// Closed by default
+function loadCalendarOpen() {
+  try {
+    return localStorage.getItem(CAL_OPEN_STORAGE_KEY) === "open";
+  } catch {
+    return false;
+  }
+}
+
+function saveCalendarOpen(open) {
+  try {
+    localStorage.setItem(CAL_OPEN_STORAGE_KEY, open ? "open" : "closed");
   } catch {
     // See saveTimeZoneMode
   }
@@ -518,13 +538,30 @@ function selectDay(day) {
   refresh();
 }
 
+// With the calendar open the filter is described in a bar under the filters; with it closed, a compact chip
+// next to the search box keeps it visible that the list is filtered.
 function renderDayFilter() {
-  const bar = $("day-filter");
-  bar.hidden = !selectedDay;
-  if (selectedDay) {
-    $("day-filter-text").textContent =
-      `Showing clips ${calendarField === "streamDate" ? "streamed" : "added"} on ${formatCalendarDay(selectedDay)} (${timeZoneLabel()})`;
-  }
+  $("day-filter").hidden = !(selectedDay && calendarOpen);
+  $("day-chip").hidden = !(selectedDay && !calendarOpen);
+  if (!selectedDay) return;
+
+  const description = `${calendarField === "streamDate" ? "streamed" : "added"} on ${formatCalendarDay(selectedDay)} (${timeZoneLabel()})`;
+  $("day-filter-text").textContent = `Showing clips ${description}`;
+
+  const thisYear = zonedParts(Date.now(), shownTimeZone()).year;
+  const short = new Intl.DateTimeFormat(undefined, {
+    month: "short", day: "numeric", year: selectedDay.year === thisYear ? undefined : "numeric", timeZone: "UTC",
+  }).format(Date.UTC(selectedDay.year, selectedDay.month - 1, selectedDay.day));
+
+  const chip = $("day-chip");
+  chip.replaceChildren(el("span", {}, short), el("span", { class: "chip-x", "aria-hidden": "true" }, "✕"));
+  chip.setAttribute("aria-label", `Clear day filter: clips ${description}`);
+  chip.title = `Showing clips ${description}. Click to clear.`;
+}
+
+function clearDayFilter() {
+  selectedDay = null;
+  refresh();
 }
 
 function moveMonth(delta) {
@@ -539,9 +576,23 @@ $("cal-today").addEventListener("click", () => {
   calendarMonth = null;
   loadCalendar();
 });
-$("day-filter-clear").addEventListener("click", () => {
-  selectedDay = null;
-  refresh();
+$("day-filter-clear").addEventListener("click", clearDayFilter);
+$("day-chip").addEventListener("click", () => {
+  clearDayFilter();
+  $("search").focus(); // the chip disappears, so don't leave focus on nothing
+});
+
+function renderCalendarOpen() {
+  $("calendar").hidden = !calendarOpen;
+  $("cal-toggle").setAttribute("aria-expanded", String(calendarOpen));
+  renderDayFilter();
+}
+
+$("cal-toggle").addEventListener("click", () => {
+  calendarOpen = !calendarOpen;
+  saveCalendarOpen(calendarOpen);
+  renderCalendarOpen();
+  if (calendarOpen) loadCalendar();
 });
 for (const button of document.querySelectorAll(".seg[data-cal-field]")) {
   button.addEventListener("click", () => {
@@ -583,9 +634,9 @@ async function loadEntries() {
   }
 }
 
-// Reloads the list and the calendar counts together (after adds, deletes, searches, or a time zone/field change)
+// Reloads the list and, if it is open, the calendar counts (after adds, deletes, searches, or a time zone/field change)
 function refresh() {
-  return Promise.all([loadEntries(), loadCalendar()]);
+  return Promise.all([loadEntries(), calendarOpen ? loadCalendar() : null]);
 }
 
 function schedulePoll(needed) {
@@ -645,4 +696,5 @@ $("sort").addEventListener("change", loadEntries);
 $("order").addEventListener("change", loadEntries);
 
 renderTimeZoneToggle();
+renderCalendarOpen();
 refresh();

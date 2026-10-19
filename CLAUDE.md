@@ -110,6 +110,10 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   that zone's midnights to UTC (`zonedMidnightUtc`, via `Intl` parts) and sends them as `from`/`to`, so the
   calendar counts and the day-filtered list use the same server-side filter. Counts come from the month's
   entries (limit 1000) grouped client-side. Clicking a day filters the list; Clear or clicking it again removes it.
+- The calendar is hidden by default behind a **Calendar** button in the search/filter row and opens above that
+  row; open/closed is saved in `localStorage` key `clipLibrary.calendarOpen`. Counts aren't fetched while closed.
+  A day filter survives closing the calendar and is then shown as a chip ("Oct 12 ✕") next to the search box.
+  The selected day itself is not persisted across reloads.
 
 ### Gotchas
 - Core silently falls back to the best quality when the requested one doesn't exist — always validate first.
