@@ -508,19 +508,24 @@ function renderCalendar(counts, timeZone) {
 
   const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
   const leadingBlanks = (new Date(Date.UTC(year, month - 1, 1)).getUTCDay() - weekStart + 7) % 7;
-  const today = zonedParts(Date.now(), timeZone);
   const verb = calendarField === "streamDate" ? "streamed" : "added";
+
+  // Today is named on the Today button rather than outlined in the grid, where it looked like a day with clips
+  const today = zonedParts(Date.now(), timeZone);
+  const todayButton = $("cal-today");
+  todayButton.textContent = `Today (${today.day})`;
+  todayButton.setAttribute("aria-label", `Go to today, ${formatCalendarDay(today)}`);
+  todayButton.title = `Today is ${formatCalendarDay(today)} (${timeZoneLabel()})`;
 
   const cells = Array.from({ length: leadingBlanks }, () => el("div", { class: "cal-blank" }));
   for (let day = 1; day <= daysInMonth; day++) {
     const count = counts.get(dayKey(year, month, day)) ?? 0;
-    const isToday = today.year === year && today.month === month && today.day === day;
     const isSelected = selectedDay?.year === year && selectedDay?.month === month && selectedDay?.day === day;
     const label = `${formatCalendarDay({ year, month, day })}: ${count} clip${count === 1 ? "" : "s"} ${verb}`;
 
     cells.push(el("button", {
       type: "button",
-      class: "cal-day" + (count ? " has-clips" : "") + (isToday ? " today" : "") + (isSelected ? " selected" : ""),
+      class: "cal-day" + (count ? " has-clips" : "") + (isSelected ? " selected" : ""),
       "aria-label": label,
       "aria-pressed": String(isSelected),
       title: label,
