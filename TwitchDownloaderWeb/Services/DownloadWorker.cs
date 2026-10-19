@@ -53,6 +53,9 @@ namespace TwitchDownloaderWeb.Services
 
             foreach (var entry in entries)
             {
+                if (entry.Status == EntryStatus.Downloading || entry.GenerationStatus == GenerationStatus.Generating)
+                    db.Audit(AuditActions.DownloadInterrupted, entry.Id, "App stopped during the download; re-queued");
+
                 if (entry.Status is EntryStatus.Queued or EntryStatus.Downloading)
                 {
                     entry.Status = EntryStatus.Queued;
@@ -120,7 +123,8 @@ namespace TwitchDownloaderWeb.Services
             entry.Error = null;
             entry.UpdatedAtUtc = DateTime.UtcNow;
             db.Audit(AuditActions.DownloadStarted, entry.Id, isGenerate ? "On-demand file for reference-only entry" : "Stored clip");
-            await db.SaveChangesAsync(stoppingToken);
+            if (!await SaveIgnoringDeletedAsync(db, stoppingToken))
+                return;
 
             var relativePath = isGenerate ? LibraryStorage.GeneratedRelativePath(entry.Id) : LibraryStorage.StoredRelativePath(entry.Id);
             var fullPath = _storage.Resolve(relativePath);

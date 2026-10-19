@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using TwitchDownloaderCore.Models;
+using TwitchDownloaderCore.Services;
 using TwitchDownloaderWeb.Data;
 using TwitchDownloaderWeb.Services;
 
@@ -63,8 +64,14 @@ namespace TwitchDownloaderWeb.Endpoints
             entry.GenerationStatus.ToString(),
             entry.GeneratedFileSizeBytes,
             entry.GeneratedExpiresAtUtc,
-            entry.Status == EntryStatus.Ready || (entry.Status == EntryStatus.ReferenceOnly && entry.GenerationStatus == Data.GenerationStatus.Ready),
+            entry.Status == EntryStatus.Ready || HasUnexpiredGeneratedFile(entry),
             entry.AddedByUserId);
+
+        /// <summary>The cleanup service deletes expired files periodically, so check the expiry itself rather than the status.</summary>
+        public static bool HasUnexpiredGeneratedFile(LibraryEntry entry) =>
+            entry.Status == EntryStatus.ReferenceOnly
+            && entry.GenerationStatus == Data.GenerationStatus.Ready
+            && entry.GeneratedExpiresAtUtc > DateTime.UtcNow;
     }
 
     public sealed record VodInfoDto(long VodId, string Title, string? ChannelName, int LengthSeconds, string Length, DateTime StreamDateUtc,
@@ -83,6 +90,9 @@ namespace TwitchDownloaderWeb.Endpoints
             entries.MapGet("/", ListEntries);
             entries.MapGet("/{id:int}", GetEntry);
             entries.MapPatch("/{id:int}", RenameEntry);
+            entries.MapDelete("/{id:int}", DeleteEntry);
+            entries.MapPost("/{id:int}/generate", GenerateEntry);
+            entries.MapGet("/{id:int}/file", DownloadEntryFile);
 
             return app;
         }
@@ -252,6 +262,154 @@ namespace TwitchDownloaderWeb.Endpoints
             }
 
             return Results.Ok(EntryDto.From(entry));
+        }
+
+        private static async Task<IResult> DeleteEntry(int id, LibraryDbContext db, DownloadQueue queue, LibraryStorage storage, CancellationToken cancellationToken)
+        {
+            var entry = await db.Entries.FindAsync([id], cancellationToken);
+            if (entry is null)
+                return EntryNotFound(id);
+
+            queue.Cancel(id);
+
+            db.Entries.Remove(entry);
+            db.Audit(AuditActions.EntryDeleted, id, $"\"{entry.Title}\" (VOD {entry.VodId}, {entry.Status})");
+            await db.SaveChangesAsync(cancellationToken);
+
+            // Files that can't be deleted right now (e.g. open in another request) are removed by the cleanup sweep
+            storage.TryDelete(entry.FilePath);
+            storage.TryDelete(entry.GeneratedFilePath);
+            storage.TryDelete(LibraryStorage.StoredRelativePath(id));
+            storage.TryDelete(LibraryStorage.GeneratedRelativePath(id));
+
+            return Results.NoContent();
+        }
+
+        /// <summary>
+        /// Reference-only entries: queues an on-demand file (202) or returns the entry if one is ready (200).
+        /// Failed stored entries: re-queues the download. Use GET /file once the entry's canDownload is true.
+        /// </summary>
+        private static async Task<IResult> GenerateEntry(int id, LibraryDbContext db, DownloadQueue queue, LibraryStorage storage, CancellationToken cancellationToken)
+        {
+            var entry = await db.Entries.FindAsync([id], cancellationToken);
+            if (entry is null)
+                return EntryNotFound(id);
+
+            switch (entry.Status)
+            {
+                case EntryStatus.VodUnavailable:
+                    return Results.Problem(detail: "The VOD is no longer available on Twitch.", statusCode: StatusCodes.Status410Gone);
+
+                case EntryStatus.Ready:
+                    return Results.Ok(EntryDto.From(entry));
+
+                case EntryStatus.Queued or EntryStatus.Downloading:
+                    return Results.Accepted($"/api/entries/{id}", EntryDto.From(entry));
+
+                case EntryStatus.Failed:
+                    entry.Status = EntryStatus.Queued;
+                    entry.Error = null;
+                    entry.UpdatedAtUtc = DateTime.UtcNow;
+                    db.Audit(AuditActions.GenerationRequested, id, "Retry of failed stored download");
+                    await db.SaveChangesAsync(cancellationToken);
+                    queue.Enqueue(id, DownloadJobKind.Store);
+                    return Results.Accepted($"/api/entries/{id}", EntryDto.From(entry));
+            }
+
+            // Reference-only
+            switch (entry.GenerationStatus)
+            {
+                case GenerationStatus.Queued or GenerationStatus.Generating:
+                    return Results.Accepted($"/api/entries/{id}", EntryDto.From(entry));
+
+                case GenerationStatus.Ready when EntryDto.HasUnexpiredGeneratedFile(entry) && File.Exists(storage.Resolve(entry.GeneratedFilePath!)):
+                    return Results.Ok(EntryDto.From(entry));
+            }
+
+            // None, Failed, or a Ready file that expired or went missing
+            storage.TryDelete(entry.GeneratedFilePath);
+            entry.GenerationStatus = GenerationStatus.Queued;
+            entry.GeneratedFilePath = null;
+            entry.GeneratedFileSizeBytes = null;
+            entry.GeneratedExpiresAtUtc = null;
+            entry.Error = null;
+            entry.UpdatedAtUtc = DateTime.UtcNow;
+            db.Audit(AuditActions.GenerationRequested, id);
+            await db.SaveChangesAsync(cancellationToken);
+            queue.Enqueue(id, DownloadJobKind.Generate);
+
+            return Results.Accepted($"/api/entries/{id}", EntryDto.From(entry));
+        }
+
+        private static async Task<IResult> DownloadEntryFile(int id, HttpRequest request, LibraryDbContext db, LibraryStorage storage, ILoggerFactory loggerFactory,
+            CancellationToken cancellationToken)
+        {
+            var entry = await db.Entries.FindAsync([id], cancellationToken);
+            if (entry is null)
+                return EntryNotFound(id);
+
+            string? relativePath;
+            string kind;
+            if (entry.Status == EntryStatus.Ready)
+            {
+                relativePath = entry.FilePath;
+                kind = "stored";
+            }
+            else if (EntryDto.HasUnexpiredGeneratedFile(entry))
+            {
+                relativePath = entry.GeneratedFilePath;
+                kind = "on-demand";
+            }
+            else
+            {
+                var hint = entry.Status == EntryStatus.ReferenceOnly ? $" Request it with POST /api/entries/{id}/generate first." : "";
+                return Results.Problem(detail: $"The file for entry {id} is not ready (status {entry.Status}, generation {entry.GenerationStatus}).{hint}",
+                    statusCode: StatusCodes.Status409Conflict);
+            }
+
+            var fullPath = storage.Resolve(relativePath!);
+            if (!File.Exists(fullPath))
+            {
+                loggerFactory.CreateLogger("TwitchDownloaderWeb.Entries").LogError("File for entry {EntryId} is missing: {Path}", id, fullPath);
+
+                // Put the entry in a state the user can recover from with /generate
+                if (kind == "stored")
+                {
+                    entry.Status = EntryStatus.Failed;
+                    entry.FilePath = null;
+                    entry.FileSizeBytes = null;
+                }
+                else
+                {
+                    entry.GenerationStatus = GenerationStatus.None;
+                    entry.GeneratedFilePath = null;
+                    entry.GeneratedFileSizeBytes = null;
+                    entry.GeneratedExpiresAtUtc = null;
+                }
+
+                entry.Error = "The file was missing from storage.";
+                entry.UpdatedAtUtc = DateTime.UtcNow;
+                db.Audit(AuditActions.DownloadFailed, id, $"{kind} file missing from storage");
+                await db.SaveChangesAsync(cancellationToken);
+                return Results.Problem(detail: entry.Error, statusCode: StatusCodes.Status410Gone);
+            }
+
+            // Browsers and players may fetch a file in several ranges; only record the request that starts at the beginning
+            var range = request.Headers.Range.ToString();
+            if (string.IsNullOrEmpty(range) || range.StartsWith("bytes=0-", StringComparison.Ordinal))
+            {
+                db.Audit(AuditActions.FileServed, id, kind);
+                await db.SaveChangesAsync(cancellationToken);
+            }
+
+            return Results.File(fullPath, "video/mp4", GetDownloadFileName(entry), enableRangeProcessing: true);
+        }
+
+        private static string GetDownloadFileName(LibraryEntry entry)
+        {
+            // Windows silently drops trailing dots and spaces, which could leave "" or ".." as the name
+            var name = FilenameService.ReplaceInvalidFilenameChars(entry.Title)?.Trim().TrimEnd('.');
+            return (string.IsNullOrEmpty(name) ? entry.VodId.ToString() : name) + ".mp4";
         }
 
         private static IResult EntryNotFound(int id) =>

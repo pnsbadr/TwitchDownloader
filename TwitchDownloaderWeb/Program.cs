@@ -18,6 +18,7 @@ builder.Services.AddSingleton<VodDownloadRunner>();
 builder.Services.AddSingleton<LibraryStorage>();
 builder.Services.AddSingleton<DownloadQueue>();
 builder.Services.AddHostedService<DownloadWorker>();
+builder.Services.AddHostedService<LibraryCleanupService>();
 
 var app = builder.Build();
 

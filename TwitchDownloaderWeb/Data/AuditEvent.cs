@@ -8,6 +8,7 @@ namespace TwitchDownloaderWeb.Data
         public const string DownloadStarted = "download.started";
         public const string DownloadCompleted = "download.completed";
         public const string DownloadFailed = "download.failed";
+        public const string DownloadInterrupted = "download.interrupted";
         public const string GenerationRequested = "generation.requested";
         public const string GeneratedFileExpired = "generation.expired";
         public const string FileServed = "file.served";

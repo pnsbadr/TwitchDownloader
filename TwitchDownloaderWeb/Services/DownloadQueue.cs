@@ -46,6 +46,8 @@ namespace TwitchDownloaderWeb.Services
             }
         }
 
+        public bool IsRunning(int entryId) => _running.ContainsKey(entryId);
+
         internal CancellationTokenSource BeginJob(int entryId, CancellationToken stoppingToken)
         {
             var cts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
