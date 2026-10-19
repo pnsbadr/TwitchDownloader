@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using TwitchDownloaderCore.Models;
@@ -208,9 +210,44 @@ namespace TwitchDownloaderWeb.Endpoints
             return Results.Created($"/api/entries/{entry.Id}", EntryDto.From(entry));
         }
 
-        private static async Task<IResult> ListEntries(LibraryDbContext db, string? search, string? sort, string? order, int? limit, CancellationToken cancellationToken)
+        /// <param name="from">Inclusive lower bound, an ISO 8601 instant (e.g. "2026-10-09T07:00:00Z"). Applies to <paramref name="dateField"/>.</param>
+        /// <param name="to">Exclusive upper bound, an ISO 8601 instant.</param>
+        /// <param name="dateField">"dateAdded" (default) or "streamDate".</param>
+        /// <remarks>
+        /// Day boundaries are the client's job: it knows which time zone it is showing and converts that zone's midnights
+        /// to UTC instants, so the server only ever compares UTC values.
+        /// </remarks>
+        private static async Task<IResult> ListEntries(LibraryDbContext db, string? search, string? sort, string? order, int? limit,
+            string? from, string? to, string? dateField, CancellationToken cancellationToken)
         {
+            if (!TryParseInstant(from, out var fromUtc))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["from"] = ["Use an ISO 8601 date-time with an offset, e.g. 2026-10-09T07:00:00Z."] });
+
+            if (!TryParseInstant(to, out var toUtc))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["to"] = ["Use an ISO 8601 date-time with an offset, e.g. 2026-10-10T07:00:00Z."] });
+
+            if (fromUtc >= toUtc)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["to"] = ["\"to\" must be after \"from\"."] });
+
+            var useStreamDate = false;
+            switch (dateField?.ToLowerInvariant())
+            {
+                case null or "" or "dateadded":
+                    break;
+                case "streamdate":
+                    useStreamDate = true;
+                    break;
+                default:
+                    return Results.ValidationProblem(new Dictionary<string, string[]> { ["dateField"] = ["Date field must be streamDate or dateAdded."] });
+            }
+
             var query = db.Entries.AsNoTracking();
+
+            if (fromUtc is { } lower)
+                query = useStreamDate ? query.Where(x => x.StreamDateUtc >= lower) : query.Where(x => x.AddedAtUtc >= lower);
+
+            if (toUtc is { } upper)
+                query = useStreamDate ? query.Where(x => x.StreamDateUtc < upper) : query.Where(x => x.AddedAtUtc < upper);
 
             if (!string.IsNullOrWhiteSpace(search))
             {
@@ -232,6 +269,22 @@ namespace TwitchDownloaderWeb.Endpoints
 
             var entries = await query.Take(Math.Clamp(limit ?? 200, 1, 1000)).ToListAsync(cancellationToken);
             return Results.Ok(entries.Select(EntryDto.From));
+        }
+
+        /// <summary>Parses an instant that states its offset; a bare local time would be ambiguous. Blank parses to null.</summary>
+        private static bool TryParseInstant(string? text, out DateTime? utc)
+        {
+            utc = null;
+            if (string.IsNullOrWhiteSpace(text))
+                return true;
+
+            var value = text.Trim();
+            var hasOffset = value.EndsWith('Z') || value.EndsWith('z') || Regex.IsMatch(value, @"[+-]\d{2}:?\d{2}$");
+            if (!hasOffset || !DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
+                return false;
+
+            utc = parsed.UtcDateTime;
+            return true;
         }
 
         private static async Task<IResult> GetEntry(int id, LibraryDbContext db, CancellationToken cancellationToken)

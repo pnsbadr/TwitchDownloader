@@ -90,7 +90,7 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
 |---|---|
 | `GET /api/vods/info?vod=` | Title, length, stream date, thumbnail, qualities, `restricted`, `maxStoredClipSeconds` |
 | `POST /api/entries` | `{ vodId, title?, quality?, trimMode?, startTime?, endTime? }` → 201. Validates VOD, times, quality (unknown → 400 listing available) |
-| `GET /api/entries?search=&sort=dateAdded\|streamDate&order=desc\|asc&limit=` | Search is a LIKE substring match (case-insensitive for ASCII only) |
+| `GET /api/entries?search=&sort=dateAdded\|streamDate&order=desc\|asc&limit=&from=&to=&dateField=dateAdded\|streamDate` | Search is a LIKE substring match (case-insensitive for ASCII only). `from` (inclusive) / `to` (exclusive) are ISO 8601 instants **with an offset** (bare dates/times → 400) and filter on `dateField` (default dateAdded) |
 | `GET /api/entries/{id}` | |
 | `PATCH /api/entries/{id}` | `{ title }` — audited as `entry.renamed` |
 | `DELETE /api/entries/{id}` | Removes entry + stored/generated files — audited. Phase 3: restrict who can delete |
@@ -105,6 +105,11 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   (per browser until per-user settings exist in phase 3). Formatting only — the API always returns UTC (`...Z`).
 - `Intl.DateTimeFormat` throws if `dateStyle`/`timeStyle` are combined with `timeZoneName`; format parts explicitly.
 - The list polls every 3 s while any entry is queued/downloading/generating.
+- Calendar (plain JS, no library): month view of clip counts per day, by stream date or date added (saved in
+  `localStorage` key `clipLibrary.calendarField`). **Days are computed in the shown time zone**: the page converts
+  that zone's midnights to UTC (`zonedMidnightUtc`, via `Intl` parts) and sends them as `from`/`to`, so the
+  calendar counts and the day-filtered list use the same server-side filter. Counts come from the month's
+  entries (limit 1000) grouped client-side. Clicking a day filters the list; Clear or clicking it again removes it.
 
 ### Gotchas
 - Core silently falls back to the best quality when the requested one doesn't exist — always validate first.

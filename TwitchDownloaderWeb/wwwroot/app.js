@@ -124,7 +124,7 @@ for (const button of document.querySelectorAll(".seg[data-tz]")) {
     saveTimeZoneMode(timeZoneMode);
     renderTimeZoneToggle();
     renderVodInfo();
-    loadEntries();
+    refresh();
   });
 }
 
@@ -233,7 +233,7 @@ $("add-form").addEventListener("submit", async (event) => {
     $("start").value = "";
     $("end").value = "";
     updateRulePreview();
-    await loadEntries();
+    await refresh();
   } catch (error) {
     setMessage($("add-message"), error.message, "error");
   } finally {
@@ -331,13 +331,242 @@ function renderEntry(entry) {
       renamingId === entry.id ? null : el("div", { class: "entry-actions" }, ...entryActions(entry))));
 }
 
+// ---------- calendar ----------
+//
+// Calendar days are dates in the time zone being shown (local or Pacific). To ask the server for "Oct 9" we
+// convert that zone's midnights to UTC instants and send them as from/to, so a clip lands on the day it
+// happened in whichever zone is shown.
+
+const CAL_FIELD_STORAGE_KEY = "clipLibrary.calendarField";
+const CALENDAR_LIMIT = 1000;
+
+let calendarField = loadCalendarField();
+let calendarMonth = null; // { year, month } with month 1-12, in the shown time zone
+let selectedDay = null; // { year, month, day } or null
+
+function loadCalendarField() {
+  try {
+    return localStorage.getItem(CAL_FIELD_STORAGE_KEY) === "dateAdded" ? "dateAdded" : "streamDate";
+  } catch {
+    return "streamDate";
+  }
+}
+
+function saveCalendarField(field) {
+  try {
+    localStorage.setItem(CAL_FIELD_STORAGE_KEY, field);
+  } catch {
+    // See saveTimeZoneMode
+  }
+}
+
+function shownTimeZone() {
+  return timeZoneMode === "pacific" ? PACIFIC : Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
+const partsFormatters = new Map();
+
+// Wall-clock parts of an instant in a time zone
+function zonedParts(ms, timeZone) {
+  let formatter = partsFormatters.get(timeZone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric",
+    });
+    partsFormatters.set(timeZone, formatter);
+  }
+  const parts = Object.fromEntries(formatter.formatToParts(new Date(ms)).map((p) => [p.type, p.value]));
+  return { year: +parts.year, month: +parts.month, day: +parts.day, hour: +parts.hour % 24, minute: +parts.minute, second: +parts.second };
+}
+
+// UTC instant (ms) of midnight at the start of year-month-day in a time zone. Day/month overflow rolls over,
+// so (2026, 10, 32) is Nov 1. Two passes settle the offset even when it differs between the guess and the answer.
+function zonedMidnightUtc(year, month, day, timeZone) {
+  const wall = Date.UTC(year, month - 1, day);
+  let utc = wall;
+  for (let i = 0; i < 3; i++) {
+    const p = zonedParts(utc, timeZone);
+    const offset = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - utc;
+    utc = wall - offset;
+  }
+  return utc;
+}
+
+function dayKey(year, month, day) {
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function dayKeyOf(utcString, timeZone) {
+  const p = zonedParts(new Date(utcString).getTime(), timeZone);
+  return dayKey(p.year, p.month, p.day);
+}
+
+function dayRange(day, timeZone) {
+  return {
+    from: new Date(zonedMidnightUtc(day.year, day.month, day.day, timeZone)).toISOString(),
+    to: new Date(zonedMidnightUtc(day.year, day.month, day.day + 1, timeZone)).toISOString(),
+  };
+}
+
+function firstDayOfWeek() {
+  try {
+    const locale = new Intl.Locale(navigator.language);
+    const info = locale.getWeekInfo?.() ?? locale.weekInfo;
+    if (info?.firstDay) return info.firstDay % 7; // 1 = Monday ... 7 = Sunday -> JS 0 = Sunday
+  } catch {
+    // Older browsers: fall through
+  }
+  return 0;
+}
+
+function timeZoneLabel() {
+  return timeZoneMode === "pacific" ? "Pacific time" : "local time";
+}
+
+function formatCalendarDay(day) {
+  return new Intl.DateTimeFormat(undefined, { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" })
+    .format(Date.UTC(day.year, day.month - 1, day.day));
+}
+
+function baseListParams() {
+  const params = new URLSearchParams();
+  const search = $("search").value.trim();
+  if (search) params.set("search", search);
+  return params;
+}
+
+let calendarSequence = 0;
+
+async function loadCalendar() {
+  const sequence = ++calendarSequence;
+  const timeZone = shownTimeZone();
+  if (!calendarMonth) {
+    const today = zonedParts(Date.now(), timeZone);
+    calendarMonth = { year: today.year, month: today.month };
+  }
+
+  const { year, month } = calendarMonth;
+  const params = baseListParams();
+  params.set("dateField", calendarField);
+  params.set("sort", calendarField);
+  params.set("from", new Date(zonedMidnightUtc(year, month, 1, timeZone)).toISOString());
+  params.set("to", new Date(zonedMidnightUtc(year, month + 1, 1, timeZone)).toISOString());
+  params.set("limit", String(CALENDAR_LIMIT));
+
+  try {
+    const entries = await api("GET", `/api/entries?${params}`);
+    if (sequence !== calendarSequence) return;
+
+    const counts = new Map();
+    const field = calendarField === "streamDate" ? "streamDateUtc" : "addedAtUtc";
+    for (const entry of entries) {
+      const key = dayKeyOf(entry[field], timeZone);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    renderCalendar(counts, timeZone);
+    $("cal-note").textContent = entries.length >= CALENDAR_LIMIT ? `Counts cover the first ${CALENDAR_LIMIT} clips this month.` : "";
+  } catch (error) {
+    $("cal-note").textContent = error.message;
+  }
+}
+
+function renderCalendar(counts, timeZone) {
+  const { year, month } = calendarMonth;
+  const monthName = new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric", timeZone: "UTC" }).format(Date.UTC(year, month - 1, 1));
+  $("cal-title").textContent = monthName;
+  $("cal-zone").textContent = `${calendarField === "streamDate" ? "Stream dates" : "Dates added"}, ${timeZoneLabel()}`;
+
+  for (const button of document.querySelectorAll(".seg[data-cal-field]")) {
+    button.setAttribute("aria-pressed", String(button.dataset.calField === calendarField));
+  }
+
+  const weekStart = firstDayOfWeek();
+  const weekdayFormat = new Intl.DateTimeFormat(undefined, { weekday: "short", timeZone: "UTC" });
+  // Jan 4 2026 is a Sunday
+  const headers = Array.from({ length: 7 }, (_, i) => el("div", { class: "cal-weekday", "aria-hidden": "true" },
+    weekdayFormat.format(Date.UTC(2026, 0, 4 + ((weekStart + i) % 7)))));
+
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const leadingBlanks = (new Date(Date.UTC(year, month - 1, 1)).getUTCDay() - weekStart + 7) % 7;
+  const today = zonedParts(Date.now(), timeZone);
+  const verb = calendarField === "streamDate" ? "streamed" : "added";
+
+  const cells = Array.from({ length: leadingBlanks }, () => el("div", { class: "cal-blank" }));
+  for (let day = 1; day <= daysInMonth; day++) {
+    const count = counts.get(dayKey(year, month, day)) ?? 0;
+    const isToday = today.year === year && today.month === month && today.day === day;
+    const isSelected = selectedDay?.year === year && selectedDay?.month === month && selectedDay?.day === day;
+    const label = `${formatCalendarDay({ year, month, day })}: ${count} clip${count === 1 ? "" : "s"} ${verb}`;
+
+    cells.push(el("button", {
+      type: "button",
+      class: "cal-day" + (count ? " has-clips" : "") + (isToday ? " today" : "") + (isSelected ? " selected" : ""),
+      "aria-label": label,
+      "aria-pressed": String(isSelected),
+      title: label,
+      disabled: count === 0 && !isSelected ? "" : undefined,
+      onclick: () => selectDay({ year, month, day }),
+    }, el("span", { class: "cal-date" }, day), count ? el("span", { class: "cal-count" }, count) : null));
+  }
+
+  $("cal-grid").replaceChildren(...headers, ...cells);
+}
+
+function selectDay(day) {
+  const same = selectedDay && selectedDay.year === day.year && selectedDay.month === day.month && selectedDay.day === day.day;
+  selectedDay = same ? null : day;
+  refresh();
+}
+
+function renderDayFilter() {
+  const bar = $("day-filter");
+  bar.hidden = !selectedDay;
+  if (selectedDay) {
+    $("day-filter-text").textContent =
+      `Showing clips ${calendarField === "streamDate" ? "streamed" : "added"} on ${formatCalendarDay(selectedDay)} (${timeZoneLabel()})`;
+  }
+}
+
+function moveMonth(delta) {
+  const index = calendarMonth.year * 12 + (calendarMonth.month - 1) + delta;
+  calendarMonth = { year: Math.floor(index / 12), month: (index % 12) + 1 };
+  loadCalendar();
+}
+
+$("cal-prev").addEventListener("click", () => moveMonth(-1));
+$("cal-next").addEventListener("click", () => moveMonth(1));
+$("cal-today").addEventListener("click", () => {
+  calendarMonth = null;
+  loadCalendar();
+});
+$("day-filter-clear").addEventListener("click", () => {
+  selectedDay = null;
+  refresh();
+});
+for (const button of document.querySelectorAll(".seg[data-cal-field]")) {
+  button.addEventListener("click", () => {
+    calendarField = button.dataset.calField;
+    saveCalendarField(calendarField);
+    refresh();
+  });
+}
+
+// ---------- list ----------
+
 let loadSequence = 0;
 
 async function loadEntries() {
   const sequence = ++loadSequence;
-  const params = new URLSearchParams({ sort: $("sort").value, order: $("order").value });
-  const search = $("search").value.trim();
-  if (search) params.set("search", search);
+  const params = baseListParams();
+  params.set("sort", $("sort").value);
+  params.set("order", $("order").value);
+  if (selectedDay) {
+    const range = dayRange(selectedDay, shownTimeZone());
+    params.set("dateField", calendarField);
+    params.set("from", range.from);
+    params.set("to", range.to);
+  }
+  renderDayFilter();
 
   try {
     const entries = await api("GET", `/api/entries?${params}`);
@@ -345,13 +574,18 @@ async function loadEntries() {
 
     $("entries").replaceChildren(...entries.map(renderEntry));
     $("empty").hidden = entries.length > 0;
-    $("empty").textContent = search ? "No entries match that search." : "No entries yet.";
+    $("empty").textContent = selectedDay ? "No clips on that day." : params.has("search") ? "No entries match that search." : "No entries yet.";
     setMessage($("library-message"), "");
     schedulePoll(entries.some(isBusy));
   } catch (error) {
     setMessage($("library-message"), error.message, "error");
     schedulePoll(true);
   }
+}
+
+// Reloads the list and the calendar counts together (after adds, deletes, searches, or a time zone/field change)
+function refresh() {
+  return Promise.all([loadEntries(), loadCalendar()]);
 }
 
 function schedulePoll(needed) {
@@ -399,16 +633,16 @@ async function deleteEntry(entry) {
   } catch (error) {
     setMessage($("library-message"), error.message, "error");
   }
-  await loadEntries();
+  await refresh();
 }
 
 let searchTimer = null;
 $("search").addEventListener("input", () => {
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(loadEntries, 250);
+  searchTimer = setTimeout(refresh, 250);
 });
 $("sort").addEventListener("change", loadEntries);
 $("order").addEventListener("change", loadEntries);
 
 renderTimeZoneToggle();
-loadEntries();
+refresh();

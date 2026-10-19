@@ -200,6 +200,105 @@ button:disabled { opacity: 0.55; cursor: default; }
 .controls { align-items: center; }
 .controls input { width: 200px; }
 
+.calendar {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+
+.cal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cal-nav { display: flex; align-items: center; gap: 4px; }
+
+.cal-nav h3 {
+  font-size: 15px;
+  margin: 0;
+  min-width: 9.5em;
+  text-align: center;
+}
+
+.cal-arrow { font-size: 20px; line-height: 1; padding: 2px 10px; }
+
+button.small { padding: 3px 10px; font-size: 13px; }
+
+.cal-zone { margin: 4px 0 8px; }
+
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.cal-weekday {
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+  padding-bottom: 2px;
+}
+
+.cal-day {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 48px;
+  padding: 4px 0;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.cal-day:disabled { opacity: 1; color: var(--muted); border-color: transparent; }
+.cal-day.has-clips { background: var(--bg); }
+.cal-day.today { border-color: var(--accent); }
+.cal-day.today .cal-date { font-weight: 700; }
+
+.cal-day.selected {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.cal-date { font-size: 13px; }
+
+.cal-count {
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.cal-day.selected .cal-count { background: var(--accent-text); color: var(--accent); }
+
+.day-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  border-radius: 6px;
+  background: var(--badge-bg);
+  font-size: 13px;
+}
+
+@media (max-width: 640px) {
+  .cal-day { min-height: 40px; }
+  .cal-nav h3 { min-width: 0; }
+}
+
 .entries {
   list-style: none;
   margin: 0;
