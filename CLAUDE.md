@@ -45,17 +45,74 @@ environment (e.g. env var `Ffmpeg__Path`).
 
 ## Web app (`TwitchDownloaderWeb`)
 
-ASP.NET Core minimal API (net10.0) referencing Core. Config: `Ffmpeg:Path`, `Downloads:OutputFolder`
-(relative to the content root; git-ignored `downloads/`), `Downloads:TempFolder` (blank = Core's default
-cache dir), `Downloads:Threads`. Run with `dotnet run --project TwitchDownloaderWeb`.
+ASP.NET Core minimal API (net10.0) referencing Core, plus a static page in `wwwroot/` (plain HTML/CSS/JS,
+no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://localhost:5254.
 
-- `POST /api/vods/download` — body `{ vodId, title?, quality?, startTime?, endTime? }` (times as `"hh:mm:ss"`,
-  offsets from VOD start). Exact trim, synchronous, writes `<sanitized title>.mp4` (non-colliding) and returns
-  `{ fileName, path, sizeBytes }`. Blank title → VOD's Twitch title. Unknown quality → 400 listing the
-  available ones (Core would otherwise silently fall back to best). Code: `Endpoints/VodDownloadEndpoints.cs`.
-- `Services/LoggerTaskProgress` adapts Core's `ITaskProgress` to `ILogger`.
-- Gotcha: titles are sanitized with Core's `FilenameService`, which swaps `: ? | / \` etc. for full-width
-  look-alikes (`：？｜`), so file names contain non-ASCII characters.
+### Configuration (`appsettings.json`)
+- `Database:Path` — SQLite file, default `App_Data/clipco.db` (git-ignored).
+- `Ffmpeg:Path` — see FFmpeg above.
+- `Downloads:OutputFolder` (default `downloads`, git-ignored), `Downloads:TempFolder` (blank = Core's default
+  cache dir), `Downloads:Threads` (per job), `Downloads:MaxConcurrentJobs` (default 1).
+- `Downloads:MaxStoredClipSeconds` (default 180) — clips **at or under** this are downloaded and stored;
+  longer ones are reference-only. Enforced on the server from the trim times; the page only previews it.
+- `Downloads:GeneratedFileHours` (default 72) — on-demand files for reference-only entries are deleted after this.
+
+### Data (EF Core 10 + SQLite, `Data/`)
+- `LibraryEntries`: title, VOD ID, channel, quality (resolved name, null = best), trim mode, start/end
+  (end null = end of VOD), clip/VOD length, `StreamDateUtc` (Twitch `createdAt`), `AddedAtUtc`, thumbnail,
+  `Status` (Queued/Downloading/Ready/Failed/ReferenceOnly/VodUnavailable), stored file path/size, generation
+  fields for on-demand files (`GenerationStatus`, path, size, `GeneratedExpiresAtUtc`), `AddedByUserId`
+  (string, no FK yet — link to users in phase 3).
+- `AuditEvents`: timestamp, action (`AuditActions`), entry ID (no FK so rows outlive deleted entries),
+  user ID (null until phase 3), details. Write via `db.Audit(...)` so it commits with the change; **never
+  put tokens in details**.
+- A converter marks every `DateTime` as UTC when read back (SQLite has no date type) — keep all times UTC.
+- Migrations: `cd TwitchDownloaderWeb && dotnet tool restore && dotnet ef migrations add <Name> -o Data/Migrations`.
+  They are applied automatically at startup.
+
+### Jobs and files (`Services/`)
+- `DownloadQueue` (in-memory channel) + `DownloadWorker` (BackgroundService). The DB status is the source of
+  truth: on startup, entries left Queued/Downloading (or generation Queued/Generating) are re-queued and an
+  `download.interrupted` audit event is written.
+- Files are named by entry ID: stored → `downloads/library/{id}.mp4`, on-demand → `downloads/generated/{id}.mp4`.
+  DB paths are relative to `OutputFolder`. The title is only used as the download file name.
+- `LibraryCleanupService` (every 10 min + at startup): deletes expired generated files and sweeps orphaned
+  `{id}.mp4` files in those two folders (skips running jobs and files < 10 min old). It never touches other files
+  in `downloads/` (e.g. output of the phase 1 dev endpoint).
+- Deleting an entry cancels its running job. On Windows a file still open by ffmpeg can't be deleted by the
+  request; the cancelled job and then the sweep remove it.
+- `VodInfoService` (Twitch lookups + shared validation), `VodDownloadRunner` (builds `VideoDownloadOptions`),
+  `LoggerTaskProgress` (Core `ITaskProgress` → `ILogger`), `TrimTime` (parses `h:mm:ss`/`m:ss`/seconds with
+  unbounded hours; TimeSpan's own format caps hours at 23).
+
+### API
+| Endpoint | Notes |
+|---|---|
+| `GET /api/vods/info?vod=` | Title, length, stream date, thumbnail, qualities, `restricted`, `maxStoredClipSeconds` |
+| `POST /api/entries` | `{ vodId, title?, quality?, trimMode?, startTime?, endTime? }` → 201. Validates VOD, times, quality (unknown → 400 listing available) |
+| `GET /api/entries?search=&sort=dateAdded\|streamDate&order=desc\|asc&limit=` | Search is a LIKE substring match (case-insensitive for ASCII only) |
+| `GET /api/entries/{id}` | |
+| `PATCH /api/entries/{id}` | `{ title }` — audited as `entry.renamed` |
+| `DELETE /api/entries/{id}` | Removes entry + stored/generated files — audited. Phase 3: restrict who can delete |
+| `POST /api/entries/{id}/generate` | Reference-only: queue on-demand file (202) or 200 if ready. Failed stored entry: retry. VodUnavailable → 410 |
+| `GET /api/entries/{id}/file` | Streams the file (range requests supported); 409 if not ready; 410 if missing on disk (entry then becomes retryable) |
+| `POST /api/vods/download` | Phase 1 dev endpoint: synchronous, writes `<title>.mp4` straight into `downloads/`, not part of the library |
+
+`canDownload` in entry responses checks the generated file's expiry itself, since cleanup runs periodically.
+
+### Web page
+- Time zone toggle (Local / Pacific `America/Los_Angeles`) saved in `localStorage` key `clipLibrary.timeZone`
+  (per browser until per-user settings exist in phase 3). Formatting only — the API always returns UTC (`...Z`).
+- `Intl.DateTimeFormat` throws if `dateStyle`/`timeStyle` are combined with `timeZoneName`; format parts explicitly.
+- The list polls every 3 s while any entry is queued/downloading/generating.
+
+### Gotchas
+- Core silently falls back to the best quality when the requested one doesn't exist — always validate first.
+- Titles are sanitized with Core's `FilenameService`, which swaps `: ? | / \` etc. for full-width look-alikes
+  (`：？｜`), so file names contain non-ASCII characters (Git Bash globbing chokes on some; use PowerShell).
+- Twitch deletes VODs after a while (typically 7–60 days). Reference-only entries then become `VodUnavailable`
+  when generation is attempted; stored entries keep their file.
+- Restricted (subscriber-only) VODs are rejected until OAuth support exists.
 
 ## Build
 
@@ -79,8 +136,10 @@ dotnet build TwitchDownloaderWPF.sln
 
 ## Phases
 
-1. **(current)** CLAUDE.md; new ASP.NET Core web project `TwitchDownloaderWeb` referencing Core; one endpoint
-   that takes VOD ID, title, quality, start/end trim and produces a trimmed mp4 (Exact trim) named after the title.
-   No accounts, DB or UI yet.
-2. Later: database + library entries, accounts/teams/invites, UI, length-limit storage policy, audit log,
-   time zone display setting.
+1. **Done.** CLAUDE.md; `TwitchDownloaderWeb` project referencing Core; `POST /api/vods/download` producing a
+   trimmed mp4 (Exact trim) named after the title.
+2. **Done.** SQLite library + audit log; stored vs reference-only rule with a background job queue; entry API
+   (add/list/get/rename/delete/generate/file); on-demand files expiring after 72 h; web page with search, sort,
+   status, download, rename/delete and the Local/Pacific toggle (saved in the browser).
+3. **Next:** login/signup, teams with invites, shared team library; link `AddedByUserId` / `AuditEvents.UserId`;
+   restrict delete; per-user time zone setting (replacing localStorage); audit signups/logins. Never log tokens.
