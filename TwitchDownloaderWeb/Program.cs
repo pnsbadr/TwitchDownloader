@@ -28,6 +28,8 @@ using (var scope = app.Services.CreateScope())
 }
 
 app.UseExceptionHandler();
+app.UseDefaultFiles();
+app.UseStaticFiles();
 
 app.MapVodDownloadEndpoints();
 app.MapEntryEndpoints();

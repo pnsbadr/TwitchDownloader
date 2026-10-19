@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clip Library</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Clip Library</h1>
+    <div class="tz" role="group" aria-label="Show times in">
+      <span class="tz-label">Times:</span>
+      <button type="button" class="seg" data-tz="local" aria-pressed="true">Local</button>
+      <button type="button" class="seg" data-tz="pacific" aria-pressed="false">Pacific</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel" aria-labelledby="add-heading">
+      <h2 id="add-heading">Add a VOD</h2>
+      <form id="add-form" novalidate>
+        <div class="row">
+          <label class="grow">VOD URL or ID
+            <input id="vod" name="vod" required placeholder="https://www.twitch.tv/videos/123456789" autocomplete="off">
+          </label>
+          <button type="button" id="get-info" class="secondary">Get Info</button>
+        </div>
+
+        <div id="vod-info" class="vod-info" hidden>
+          <img id="vod-thumb" alt="" width="160" height="90">
+          <div>
+            <div id="vod-title" class="vod-title"></div>
+            <div id="vod-meta" class="muted"></div>
+          </div>
+        </div>
+
+        <div class="grid">
+          <label class="span-2">Title
+            <input id="title" name="title" maxlength="500" placeholder="Leave blank to use the Twitch title">
+          </label>
+          <label>Quality
+            <select id="quality" name="quality">
+              <option value="">Best available</option>
+            </select>
+          </label>
+          <label>Trim mode
+            <select id="trim-mode" name="trimMode">
+              <option value="Exact">Exact</option>
+              <option value="Safe">Safe</option>
+            </select>
+          </label>
+          <label>Start
+            <input id="start" name="startTime" placeholder="0:00:00" autocomplete="off">
+          </label>
+          <label>End
+            <input id="end" name="endTime" placeholder="End of VOD" autocomplete="off">
+          </label>
+        </div>
+
+        <p id="rule-preview" class="muted" aria-live="polite"></p>
+        <div class="row">
+          <button type="submit" id="add-button">Add to library</button>
+          <span id="add-message" class="message" role="status"></span>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel" aria-labelledby="library-heading">
+      <div class="library-head">
+        <h2 id="library-heading">Library</h2>
+        <div class="row controls">
+          <input id="search" type="search" placeholder="Search titles" aria-label="Search titles">
+          <select id="sort" aria-label="Sort by">
+            <option value="dateAdded">Date added</option>
+            <option value="streamDate">Stream date</option>
+          </select>
+          <select id="order" aria-label="Order">
+            <option value="desc">Newest first</option>
+            <option value="asc">Oldest first</option>
+          </select>
+        </div>
+      </div>
+      <p id="library-message" class="message" role="status"></p>
+      <ul id="entries" class="entries"></ul>
+      <p id="empty" class="muted" hidden>No entries yet.</p>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
