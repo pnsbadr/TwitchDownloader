@@ -135,7 +135,8 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   when generation is attempted; stored entries keep their file.
 - Restricted (subscriber-only) VODs are rejected until OAuth support exists.
 - Core's `GetGqlVideos` / `GetUserIds` paste the login, type and cursor straight into the GQL query string; the web app
-  validates all three first (`ChannelService`). The WPF Mass Downloader pages with the *first* edge's cursor; we use
+  validates all three first (`ChannelService`). Video cursors aren't plain base64, so the cursor check only rejects quotes,
+  backslashes and control characters. The WPF Mass Downloader pages with the *first* edge's cursor; we use
   the last (to verify against real data). GQL video lists have no live/recording flag.
 
 ## Build

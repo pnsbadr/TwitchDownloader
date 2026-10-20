@@ -37,8 +37,9 @@ namespace TwitchDownloaderWeb.Services
         [GeneratedRegex(@"^(?:https?://)?(?:www\.|m\.)?twitch\.tv/([^/?#]+)", RegexOptions.IgnoreCase)]
         private static partial Regex ChannelUrlRegex { get; }
 
-        // GQL cursors are opaque base64-ish strings; this is only to keep them from breaking Core's query string
-        [GeneratedRegex("^[A-Za-z0-9+/=_-]{1,512}$")]
+        // GQL cursors are opaque (Twitch's video cursors aren't plain base64), so only reject what could break out of
+        // the quoted string Core pastes them into: quotes, backslashes and control characters
+        [GeneratedRegex(@"^[^""\\\x00-\x1f]{1,1024}$")]
         private static partial Regex CursorRegex { get; }
 
         /// <summary>Accepts a login or a twitch.tv/&lt;login&gt; URL.</summary>
