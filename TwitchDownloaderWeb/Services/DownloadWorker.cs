@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using TwitchDownloaderWeb.Data;
+using TwitchDownloaderWeb.Services.AudioRescue;
 
 namespace TwitchDownloaderWeb.Services
 {
@@ -14,17 +15,19 @@ namespace TwitchDownloaderWeb.Services
         private readonly DownloadQueue _queue;
         private readonly VodInfoService _vodInfo;
         private readonly VodDownloadRunner _runner;
+        private readonly AudioRestoreService _restore;
         private readonly LibraryStorage _storage;
         private readonly IOptions<DownloadSettings> _settings;
         private readonly ILogger<DownloadWorker> _logger;
 
         public DownloadWorker(IServiceScopeFactory scopeFactory, DownloadQueue queue, VodInfoService vodInfo, VodDownloadRunner runner,
-            LibraryStorage storage, IOptions<DownloadSettings> settings, ILogger<DownloadWorker> logger)
+            AudioRestoreService restore, LibraryStorage storage, IOptions<DownloadSettings> settings, ILogger<DownloadWorker> logger)
         {
             _scopeFactory = scopeFactory;
             _queue = queue;
             _vodInfo = vodInfo;
             _runner = runner;
+            _restore = restore;
             _storage = storage;
             _settings = settings;
             _logger = logger;
@@ -32,11 +35,32 @@ namespace TwitchDownloaderWeb.Services
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            DeleteLeftoverWorkFolders();
             await RequeueInterruptedJobsAsync(stoppingToken);
 
             var consumers = Enumerable.Range(0, Math.Max(1, _settings.Value.MaxConcurrentJobs))
                 .Select(_ => ConsumeAsync(stoppingToken));
             await Task.WhenAll(consumers);
+        }
+
+        /// <summary>Scratch folders (e.g. audio restores) left by a job that was running when the app stopped. No job is running yet.</summary>
+        private void DeleteLeftoverWorkFolders()
+        {
+            var folder = Path.Combine(_storage.RootFolder, LibraryStorage.WorkFolderName);
+            if (!Directory.Exists(folder))
+                return;
+
+            foreach (var dir in new DirectoryInfo(folder).EnumerateDirectories())
+            {
+                try
+                {
+                    dir.Delete(true);
+                }
+                catch (IOException ex)
+                {
+                    _logger.LogWarning("Couldn't delete leftover work folder {Path}: {Message}", dir.FullName, ex.Message);
+                }
+            }
         }
 
         /// <summary>Jobs are only held in memory, so re-queue anything the database says was queued or running at shutdown.</summary>
@@ -147,9 +171,28 @@ namespace TwitchDownloaderWeb.Services
 
                 Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
 
-                // We own this path, so overwrite any leftover from an earlier attempt
-                await _runner.DownloadAsync(entry.VodId, entry.Quality, entry.TrimMode, entry.StartTime, entry.EndTime,
-                    fullPath, info => info, _logger, jobCts.Token);
+                // Swap rescued clean audio into muted parts if we have any; otherwise (or if that fails) a normal download.
+                // We own this path, so overwrite any leftover from an earlier attempt.
+                double? restoredSeconds = null;
+                try
+                {
+                    restoredSeconds = await _restore.TryDownloadRestoredAsync(db, entry, fullPath, _logger, jobCts.Token);
+                    if (restoredSeconds is { } seconds)
+                        db.Audit(AuditActions.AudioRestored, entry.Id, $"{seconds:0.#}s of muted audio replaced");
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex, "Restoring audio for entry {EntryId} failed; downloading without it.", entry.Id);
+                    db.Audit(AuditActions.AudioRestoreFailed, entry.Id, ex.Message);
+                }
+
+                if (restoredSeconds is null)
+                {
+                    await _runner.DownloadAsync(entry.VodId, entry.Quality, entry.TrimMode, entry.StartTime, entry.EndTime,
+                        fullPath, info => info, _logger, jobCts.Token);
+                }
+
+                entry.AudioRestoredSeconds = restoredSeconds;
 
                 var size = new FileInfo(fullPath).Length;
                 if (isGenerate)

@@ -14,7 +14,7 @@ namespace TwitchDownloaderWeb.Endpoints
     }
 
     public sealed record ChannelVodDto(long VodId, string Title, int LengthSeconds, string Length, DateTime CreatedAtUtc, string? ThumbnailUrl,
-        int ViewCount, string? Game, bool UnmuteWindowOpen);
+        int ViewCount, string? Game, bool UnmuteWindowOpen, string? RescueStatus);
 
     public sealed record ChannelVodPageDto(string Login, string Type, IEnumerable<ChannelVodDto> Items, string? NextCursor, int TotalCount);
 
@@ -99,7 +99,8 @@ namespace TwitchDownloaderWeb.Endpoints
         /// <param name="login">Any channel, saved or not.</param>
         /// <param name="type">"archive" (past broadcasts, default), "highlight", "upload" or "all".</param>
         /// <param name="cursor">nextCursor from the previous page.</param>
-        private static async Task<IResult> ListChannelVods(string login, string? type, string? cursor, int? limit, ChannelService channelService)
+        private static async Task<IResult> ListChannelVods(string login, string? type, string? cursor, int? limit, ChannelService channelService,
+            LibraryDbContext db, CancellationToken cancellationToken)
         {
             if (ChannelService.NormalizeLogin(login) is not { } normalizedLogin)
                 return InvalidLogin("login");
@@ -123,8 +124,12 @@ namespace TwitchDownloaderWeb.Endpoints
             if (page is null)
                 return ChannelNotFound(normalizedLogin);
 
+            var vodIds = page.Items.Select(x => x.VodId).ToArray();
+            var rescues = await db.AudioRescues.AsNoTracking().Where(x => vodIds.Contains(x.VodId))
+                .ToDictionaryAsync(x => x.VodId, x => x.Status.ToString(), cancellationToken);
+
             var items = page.Items.Select(x => new ChannelVodDto(x.VodId, x.Title, x.LengthSeconds, TrimTime.Format(TimeSpan.FromSeconds(x.LengthSeconds)),
-                x.CreatedAtUtc, x.ThumbnailUrl, x.ViewCount, x.Game, x.UnmuteWindowOpen));
+                x.CreatedAtUtc, x.ThumbnailUrl, x.ViewCount, x.Game, x.UnmuteWindowOpen, rescues.GetValueOrDefault(x.VodId)));
 
             return Results.Ok(new ChannelVodPageDto(normalizedLogin, vodType.ToString().ToLowerInvariant(), items, page.NextCursor, page.TotalCount));
         }

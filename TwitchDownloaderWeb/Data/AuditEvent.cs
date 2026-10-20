@@ -14,6 +14,12 @@ namespace TwitchDownloaderWeb.Data
         public const string FileServed = "file.served";
         public const string ChannelAdded = "channel.added";
         public const string ChannelRemoved = "channel.removed";
+        public const string AudioRescueStarted = "audio.rescue_started";
+        public const string AudioRescueSaved = "audio.rescue_saved";
+        public const string AudioRescueFailed = "audio.rescue_failed";
+        public const string AudioRescuePruned = "audio.rescue_pruned";
+        public const string AudioRestored = "audio.restored";
+        public const string AudioRestoreFailed = "audio.restore_failed";
     }
 
     /// <summary>

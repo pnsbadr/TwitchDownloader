@@ -42,6 +42,7 @@ namespace TwitchDownloaderWeb.Endpoints
         long? GeneratedFileSizeBytes,
         DateTime? GeneratedExpiresAtUtc,
         bool CanDownload,
+        double? AudioRestoredSeconds,
         string? AddedByUserId)
     {
         public static EntryDto From(LibraryEntry entry) => new(
@@ -67,6 +68,7 @@ namespace TwitchDownloaderWeb.Endpoints
             entry.GeneratedFileSizeBytes,
             entry.GeneratedExpiresAtUtc,
             entry.Status == EntryStatus.Ready || HasUnexpiredGeneratedFile(entry),
+            entry.AudioRestoredSeconds,
             entry.AddedByUserId);
 
         /// <summary>The cleanup service deletes expired files periodically, so check the expiry itself rather than the status.</summary>

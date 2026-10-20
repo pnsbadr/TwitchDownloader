@@ -65,6 +65,9 @@ namespace TwitchDownloaderWeb.Data
         public long? GeneratedFileSizeBytes { get; set; }
         public DateTime? GeneratedExpiresAtUtc { get; set; }
 
+        /// <summary>Seconds of muted audio replaced with rescued clean audio in the last file made for this entry. Null if none.</summary>
+        public double? AudioRestoredSeconds { get; set; }
+
         /// <summary>Linked to users in phase 3.</summary>
         public string? AddedByUserId { get; set; }
     }
