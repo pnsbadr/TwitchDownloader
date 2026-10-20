@@ -5,6 +5,11 @@ using TwitchDownloaderWeb.Data;
 
 namespace TwitchDownloaderWeb.Services.AudioRescue
 {
+    /// <param name="RestoredSeconds">Muted time inside the trim that got clean audio.</param>
+    /// <param name="StillMutedSeconds">Muted time inside the trim with no clean audio saved.</param>
+    /// <param name="Downloaded">False if nothing could be restored and the caller should download normally.</param>
+    public sealed record AudioRestoreResult(double RestoredSeconds, double StillMutedSeconds, bool Downloaded);
+
     /// <summary>
     /// Makes a library file with rescued clean audio in place of Twitch's muted parts:
     /// 1. Core downloads the range in Safe mode, so the file starts exactly on a known segment.
@@ -31,14 +36,19 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
             _configuration = configuration;
         }
 
-        /// <returns>Seconds of audio restored, or null if no rescued audio covers the entry's muted parts (download it normally).</returns>
-        public async Task<double?> TryDownloadRestoredAsync(LibraryDbContext db, LibraryEntry entry, string outputPath, ILogger logger, CancellationToken cancellationToken)
+        /// <returns>
+        /// Null if the VOD has no audio rescue (download it normally; we don't know which parts are muted). Otherwise how much
+        /// muted audio was restored and how much stays muted; when <see cref="AudioRestoreResult.Downloaded"/> is false the
+        /// caller downloads normally.
+        /// </returns>
+        public async Task<AudioRestoreResult?> TryDownloadRestoredAsync(LibraryDbContext db, LibraryEntry entry, string outputPath, ILogger logger, CancellationToken cancellationToken)
         {
+            if (!await db.AudioRescues.AsNoTracking().AnyAsync(x => x.VodId == entry.VodId, cancellationToken))
+                return null;
+
             var clean = await db.RescuedAudioSegments.AsNoTracking()
                 .Where(x => x.VodId == entry.VodId && x.FilePath != null && x.FirstAudioPts != null)
                 .ToDictionaryAsync(x => x.Key, cancellationToken);
-            if (clean.Count == 0)
-                return null;
 
             var http = _httpClientFactory.CreateClient(nameof(AudioRestoreService));
             var rendition = await _playlists.GetRenditionAsync(http, entry.VodId, entry.Quality, cancellationToken);
@@ -47,14 +57,16 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
 
             var segments = rendition.Segments;
             var range = VodPlaylist.GetTrimRange(segments, entry.StartTime, entry.EndTime);
+            var (rangeStart, rangeLength) = range.GetOffsetAndLength(segments.Count);
+            var mutedSeconds = MutedSeconds(segments.Skip(rangeStart).Take(rangeLength).Where(x => x.IsMuted), entry);
             var runs = RestorePlanner.FindRuns(segments, range, key => clean.ContainsKey(key) && File.Exists(_storage.Resolve(clean[key].FilePath!)));
             if (runs.Count == 0)
-                return null;
+                return new AudioRestoreResult(0, mutedSeconds, false);
 
             if (segments.Any(x => !x.Path.Contains(".ts", StringComparison.OrdinalIgnoreCase)))
             {
                 logger.LogWarning("Entry {EntryId}: VOD {VodId} isn't MPEG-TS; downloading without restoring audio.", entry.Id, entry.VodId);
-                return null;
+                return new AudioRestoreResult(0, mutedSeconds, false);
             }
 
             var ffmpegPath = _configuration["Ffmpeg:Path"] is { Length: > 0 } configured ? configured : "ffmpeg";
@@ -88,7 +100,8 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
                     File.Move(restoredFile, outputPath, true);
                 }
 
-                return RestoredSeconds(runs, entry);
+                var restored = MutedSeconds(runs.SelectMany(x => x), entry);
+                return new AudioRestoreResult(restored, Math.Max(0, mutedSeconds - restored), true);
             }
             finally
             {
@@ -103,12 +116,12 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
             }
         }
 
-        /// <summary>Muted time inside the entry's trim that got clean audio.</summary>
-        private static double RestoredSeconds(IEnumerable<IReadOnlyList<VodSegment>> runs, LibraryEntry entry)
+        /// <summary>How much of these segments falls inside the entry's trim.</summary>
+        private static double MutedSeconds(IEnumerable<VodSegment> segments, LibraryEntry entry)
         {
             var start = (decimal)entry.StartTime.TotalSeconds;
             var end = entry.EndTime is { } e ? (decimal)e.TotalSeconds : decimal.MaxValue;
-            return (double)runs.SelectMany(x => x).Sum(s => Math.Max(0, Math.Min(end, s.Offset + s.Duration) - Math.Max(start, s.Offset)));
+            return (double)segments.Sum(s => Math.Max(0, Math.Min(end, s.Offset + s.Duration) - Math.Max(start, s.Offset)));
         }
 
         /// <summary>The first bytes of a segment in the download's quality, enough to read its starting timestamps.</summary>

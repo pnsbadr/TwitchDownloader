@@ -61,6 +61,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<string>("AddedByUserId")
                         .HasColumnType("TEXT");
 
+                    b.Property<double?>("AudioMutedSeconds")
+                        .HasColumnType("REAL");
+
                     b.Property<double?>("AudioRestoredSeconds")
                         .HasColumnType("REAL");
 

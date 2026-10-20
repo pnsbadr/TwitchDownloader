@@ -14,7 +14,7 @@ namespace TwitchDownloaderWeb.Endpoints
     }
 
     public sealed record ChannelVodDto(long VodId, string Title, int LengthSeconds, string Length, DateTime CreatedAtUtc, string? ThumbnailUrl,
-        int ViewCount, string? Game, bool UnmuteWindowOpen, string? RescueStatus);
+        int ViewCount, string? Game, bool UnmuteWindowOpen, string? RescueStatus, int? RescueMutedCount, int? RescueUnrecoverableCount);
 
     public sealed record ChannelVodPageDto(string Login, string Type, IEnumerable<ChannelVodDto> Items, string? NextCursor, int TotalCount);
 
@@ -126,10 +126,14 @@ namespace TwitchDownloaderWeb.Endpoints
 
             var vodIds = page.Items.Select(x => x.VodId).ToArray();
             var rescues = await db.AudioRescues.AsNoTracking().Where(x => vodIds.Contains(x.VodId))
-                .ToDictionaryAsync(x => x.VodId, x => x.Status.ToString(), cancellationToken);
+                .ToDictionaryAsync(x => x.VodId, cancellationToken);
 
-            var items = page.Items.Select(x => new ChannelVodDto(x.VodId, x.Title, x.LengthSeconds, TrimTime.Format(TimeSpan.FromSeconds(x.LengthSeconds)),
-                x.CreatedAtUtc, x.ThumbnailUrl, x.ViewCount, x.Game, x.UnmuteWindowOpen, rescues.GetValueOrDefault(x.VodId)));
+            var items = page.Items.Select(x =>
+            {
+                var rescue = rescues.GetValueOrDefault(x.VodId);
+                return new ChannelVodDto(x.VodId, x.Title, x.LengthSeconds, TrimTime.Format(TimeSpan.FromSeconds(x.LengthSeconds)),
+                    x.CreatedAtUtc, x.ThumbnailUrl, x.ViewCount, x.Game, x.UnmuteWindowOpen, rescue?.Status.ToString(), rescue?.MutedCount, rescue?.UnrecoverableCount);
+            });
 
             return Results.Ok(new ChannelVodPageDto(normalizedLogin, vodType.ToString().ToLowerInvariant(), items, page.NextCursor, page.TotalCount));
         }

@@ -173,12 +173,14 @@ namespace TwitchDownloaderWeb.Services
 
                 // Swap rescued clean audio into muted parts if we have any; otherwise (or if that fails) a normal download.
                 // We own this path, so overwrite any leftover from an earlier attempt.
-                double? restoredSeconds = null;
+                AudioRestoreResult? restore = null;
                 try
                 {
-                    restoredSeconds = await _restore.TryDownloadRestoredAsync(db, entry, fullPath, _logger, jobCts.Token);
-                    if (restoredSeconds is { } seconds)
-                        db.Audit(AuditActions.AudioRestored, entry.Id, $"{seconds:0.#}s of muted audio replaced");
+                    restore = await _restore.TryDownloadRestoredAsync(db, entry, fullPath, _logger, jobCts.Token);
+                    if (restore is { Downloaded: true })
+                        db.Audit(AuditActions.AudioRestored, entry.Id, $"{restore.RestoredSeconds:0.#}s of muted audio replaced");
+                    if (restore is { StillMutedSeconds: > 0 })
+                        db.Audit(AuditActions.AudioNotRestored, entry.Id, $"{restore.StillMutedSeconds:0.#}s of muted audio had no saved clean copy");
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -186,13 +188,14 @@ namespace TwitchDownloaderWeb.Services
                     db.Audit(AuditActions.AudioRestoreFailed, entry.Id, ex.Message);
                 }
 
-                if (restoredSeconds is null)
+                if (restore is not { Downloaded: true })
                 {
                     await _runner.DownloadAsync(entry.VodId, entry.Quality, entry.TrimMode, entry.StartTime, entry.EndTime,
                         fullPath, info => info, _logger, jobCts.Token);
                 }
 
-                entry.AudioRestoredSeconds = restoredSeconds;
+                entry.AudioRestoredSeconds = restore is { Downloaded: true, RestoredSeconds: > 0 } ? restore.RestoredSeconds : null;
+                entry.AudioMutedSeconds = restore is { StillMutedSeconds: > 0 } ? restore.StillMutedSeconds : null;
 
                 var size = new FileInfo(fullPath).Length;
                 if (isGenerate)

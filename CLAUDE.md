@@ -66,7 +66,8 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
 - `Channels` (`SavedChannel`): saved team channels for the VOD browser: login (unique, lower-case), display name,
   Twitch user ID, `WatchMutedAudio` (for the planned muted-audio rescue), `AddedAtUtc`, `AddedByUserId`.
 - `AudioRescues` (`VodAudioRescue`, key = VOD ID) + `RescuedAudioSegments` (unique VodId+Key): see Muted audio rescue.
-  `LibraryEntries.AudioRestoredSeconds` = muted seconds replaced in the entry's last file.
+  `LibraryEntries.AudioRestoredSeconds` = muted seconds replaced in the entry's last file; `AudioMutedSeconds` = muted seconds
+  in it with no clean copy saved (only known when the VOD has a rescue; audited `audio.not_restored`).
 - `AuditEvents`: timestamp, action (`AuditActions`), entry ID (no FK so rows outlive deleted entries),
   user ID (null until phase 3), details. Write via `db.Audit(...)` so it commits with the change; **never
   put tokens in details**.
@@ -98,6 +99,9 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   `downloads/rescue/{vodId}/{key}.ts`, re-checks every `LiveRecheckMinutes` while the playlist has no `#EXT-X-ENDLIST`,
   then `PruneAfterHours` (48) after the stream ends keeps only segments that are muted in the playlist by then.
   The cleanup service never touches `rescue/`. Statuses: Grabbing / WaitingToPrune / Pruned / Failed.
+- **Real-Twitch finding (2026-10-20):** a rescue started ~10 h after a stream ended got 403 for *every* muted segment's
+  clean copy (237/237), and Core's own unmute failed too. Don't rely on the "24 h unmute window"; the rescue only helps
+  if it runs while the stream is live, before Twitch mutes. The 24 h window/badge is still Core's assumption.
 - `AudioRestoreService`, called by `DownloadWorker` when an entry's trim overlaps muted segments with saved audio:
   Core downloads in **Safe** mode, then `AudioSplicer` mixes the clean audio in (video `-c:v copy`, audio re-encoded AAC
   192k, muted ranges gated to silence), then Exact entries are trimmed with `-ss/-t -c copy` like Core. Any failure falls
@@ -156,7 +160,8 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   filled itself), then runs Get Info. Last channel and type are saved in `localStorage` keys `clipLibrary.browseChannel`
   / `clipLibrary.browseType`. Cards use `formatDate`, so they follow the time zone toggle. Cards show the rescue
   status and a **Save audio now** button (unmute window open, no rescue yet) or **Retry saving audio** (failed).
-  Library entries with restored audio show an "Audio restored" badge.
+  Library entries with restored audio show an "Audio restored" badge, and "Still muted" when muted parts had no clean copy;
+  VOD cards show "Muted parts not saved" when a rescue got 403s for muted segments.
 
 ### Gotchas
 - Core silently falls back to the best quality when the requested one doesn't exist — always validate first.

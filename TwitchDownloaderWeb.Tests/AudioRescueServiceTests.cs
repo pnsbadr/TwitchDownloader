@@ -1,6 +1,7 @@
 using System.Net;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -103,6 +104,36 @@ namespace TwitchDownloaderWeb.Tests
             Assert.True(segments.Single(x => x.Key == "3").Unrecoverable);
             Assert.False(File.Exists(_storage.Resolve(LibraryStorage.RescuedSegmentRelativePath(VodId, "0"))));
             Assert.True(File.Exists(_storage.Resolve(LibraryStorage.RescuedSegmentRelativePath(VodId, "2"))));
+        }
+
+        [Fact]
+        public async Task ReportsMutedPartsWithNoCleanCopy()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            using (var scope = _services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+                AudioRescueService.AddRescue(db, VodId, "arky", "Muted before we started", DateTime.UtcNow.AddHours(-12), "test");
+                await db.SaveChangesAsync(ct);
+            }
+
+            // Twitch had already muted segment 1 and won't serve its clean copy
+            _cdn.Serve("0.ts", 1000);
+            _cdn.Forbid("1.ts");
+            _playlists.Set(live: false, ("0.ts", 10), ("1-muted.ts", 10));
+            await _service.ProcessDueAsync(ct);
+
+            var restore = new AudioRestoreService(null!, _storage, new FakeHttpClientFactory(_cdn), _playlists, new ConfigurationBuilder().Build());
+            using var scope2 = _services.CreateScope();
+            var db2 = scope2.ServiceProvider.GetRequiredService<LibraryDbContext>();
+
+            var entry = new LibraryEntry { Title = "Clip", VodId = VodId, StartTime = TimeSpan.FromSeconds(5), EndTime = TimeSpan.FromSeconds(15) };
+            var result = await restore.TryDownloadRestoredAsync(db2, entry, Path.Combine(_dir, "out.mp4"), NullLogger.Instance, ct);
+            Assert.Equal(new AudioRestoreResult(0, 5, false), result);
+
+            // No rescue for this VOD: we don't know what's muted
+            var other = new LibraryEntry { Title = "Other", VodId = VodId + 1, StartTime = TimeSpan.Zero };
+            Assert.Null(await restore.TryDownloadRestoredAsync(db2, other, Path.Combine(_dir, "out2.mp4"), NullLogger.Instance, ct));
         }
 
         [Fact]

@@ -363,6 +363,14 @@ function rescueBadge(status) {
   return badge ? el("span", { class: badge[0], title: badge[2] }, badge[1]) : null;
 }
 
+// Muted parts Twitch wouldn't give a clean copy of (usually muted before the rescue started), so they stay muted
+function lostAudioBadge(vod) {
+  const lost = vod.rescueUnrecoverableCount;
+  if (!lost) return null;
+  const text = lost === vod.rescueMutedCount ? "Muted parts not saved" : `${lost} of ${vod.rescueMutedCount} muted parts not saved`;
+  return el("span", { class: "badge error", title: "Twitch had already muted these parts when saving started, so they stay muted in downloads" }, text);
+}
+
 async function startRescue(vod, button) {
   button.disabled = true;
   try {
@@ -398,7 +406,8 @@ function vodCard(vod) {
         vod.unmuteWindowOpen
           ? el("span", { class: "badge ref", title: "Ended less than 24 hours ago: Twitch may still have unmuted audio for muted parts" }, "Unmute window open")
           : null,
-        rescueBadge(vod.rescueStatus))),
+        rescueBadge(vod.rescueStatus),
+        lostAudioBadge(vod))),
     rescueButton ? el("div", { class: "vod-item-actions" }, rescueButton) : null);
 }
 
@@ -597,6 +606,9 @@ function renderEntry(entry) {
       el("div", { class: "entry-status" }, statusBadge(entry),
         entry.audioRestoredSeconds > 0
           ? el("span", { class: "badge ok", title: "Muted parts were replaced with saved clean audio" }, `Audio restored · ${formatDuration(entry.audioRestoredSeconds)}`)
+          : null,
+        entry.audioMutedSeconds > 0
+          ? el("span", { class: "badge error", title: "No clean audio was saved for these muted parts (Twitch had already muted them)" }, `Still muted · ${formatDuration(entry.audioMutedSeconds)}`)
           : null,
         expiry),
       entry.error ? el("div", { class: "entry-error" }, entry.error) : null,
