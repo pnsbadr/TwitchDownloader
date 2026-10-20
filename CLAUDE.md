@@ -65,6 +65,8 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   (string, no FK yet — link to users in phase 3).
 - `Channels` (`SavedChannel`): saved team channels for the VOD browser: login (unique, lower-case), display name,
   Twitch user ID, `WatchMutedAudio` (for the planned muted-audio rescue), `AddedAtUtc`, `AddedByUserId`.
+- `AudioRescues` (`VodAudioRescue`, key = VOD ID) + `RescuedAudioSegments` (unique VodId+Key): see Muted audio rescue.
+  `LibraryEntries.AudioRestoredSeconds` = muted seconds replaced in the entry's last file.
 - `AuditEvents`: timestamp, action (`AuditActions`), entry ID (no FK so rows outlive deleted entries),
   user ID (null until phase 3), details. Write via `db.Audit(...)` so it commits with the change; **never
   put tokens in details**.
@@ -87,6 +89,32 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   `LoggerTaskProgress` (Core `ITaskProgress` → `ILogger`), `TrimTime` (parses `h:mm:ss`/`m:ss`/seconds with
   unbounded hours; TimeSpan's own format caps hours at 23).
 
+### Muted audio rescue (`Services/AudioRescue/`)
+Twitch mutes segments (`123-muted.ts`) and keeps the clean copy (`123.ts`) for a limited time (Core assumes 24 h and
+only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We save clean audio and splice it back:
+- `AudioRescueService` (BackgroundService, `AudioRescue:*` settings): every `PollMinutes` it checks saved channels with
+  `WatchMutedAudio` for VODs in the unmute window; `POST /api/vods/{id}/rescue` starts one by hand. It downloads **every**
+  segment of the audio-only rendition as raw `.ts` (clean URL for muted ones; 403/404 = unrecoverable) into
+  `downloads/rescue/{vodId}/{key}.ts`, re-checks every `LiveRecheckMinutes` while the playlist has no `#EXT-X-ENDLIST`,
+  then `PruneAfterHours` (48) after the stream ends keeps only segments that are muted in the playlist by then.
+  The cleanup service never touches `rescue/`. Statuses: Grabbing / WaitingToPrune / Pruned / Failed.
+- `AudioRestoreService`, called by `DownloadWorker` when an entry's trim overlaps muted segments with saved audio:
+  Core downloads in **Safe** mode, then `AudioSplicer` mixes the clean audio in (video `-c:v copy`, audio re-encoded AAC
+  192k, muted ranges gated to silence), then Exact entries are trimmed with `-ss/-t -c copy` like Core. Any failure falls
+  back to a normal download (audited `audio.restore_failed`). Scratch files go in `downloads/work/` (cleared at startup).
+- **Placement must use the segments' PTS, not just #EXTINF sums** (those were ~16 ms off in testing): Core concatenates
+  with `duration` directives, so a segment's audio sits at (playlist offset - first segment's offset) +
+  (audio PTS - segment start PTS). `RestorePlanner` does this, reading the first 256 KB of the download-quality
+  segments (`TsTimestamps`, a small PES parser) and the PTS stored with each rescued segment.
+- `VodPlaylist` parses segments with Core's `M3U8.Parse` and mirrors Core's trim rule (`GetTrimRange`).
+  `IVodPlaylistSource` exists so tests can fake Twitch.
+- HttpClient logging is set to Warning in `appsettings.json` so playlist/segment URLs (which can carry signed tokens)
+  never reach the logs.
+- Tests: `TwitchDownloaderWeb.Tests` (`dotnet test --project TwitchDownloaderWeb.Tests`). `AudioSpliceSyncTests` builds a
+  fake VOD with ffmpeg (beeps at known times, two muted segments) and checks restored beeps against an unmuted download
+  (<= 25 ms; measured <= 2 ms). Needs ffmpeg on PATH or `FFMPEG_PATH`, else it is skipped. `AudioRescueServiceTests`
+  runs grab, live re-check and prune against a fake Twitch.
+
 ### API
 | Endpoint | Notes |
 |---|---|
@@ -100,6 +128,7 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
 | `GET /api/entries/{id}/file` | Streams the file (range requests supported); 409 if not ready; 410 if missing on disk (entry then becomes retryable) |
 | `GET /api/channels` / `POST /api/channels` `{ login }` / `DELETE /api/channels/{id}` | Saved channels. POST checks the login exists on Twitch (404) and isn't saved (409); add/remove audited |
 | `GET /api/channels/{login}/vods?type=archive\|highlight\|upload\|all&cursor=&limit=` | Any channel's VODs, newest first, via Core's `GetGqlVideos`. `nextCursor` = last edge's cursor; `unmuteWindowOpen` = ended < 24 h ago. 502 if Twitch is unreachable |
+| `GET /api/vods/{id}/rescue` / `POST /api/vods/{id}/rescue` | Audio rescue status (404 if none) / start one now (202; a Failed one is retried; others returned as is) |
 | `POST /api/vods/download` | Phase 1 dev endpoint: synchronous, writes `<title>.mp4` straight into `downloads/`, not part of the library |
 
 `canDownload` in entry responses checks the generated file's expiry itself, since cleanup runs periodically.
@@ -125,7 +154,9 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
 - **VOD browser** (top of the Add panel): saved-channels dropdown + free-text channel (login or twitch.tv link), type
   toggle, Show VODs / Load more. Clicking a card fills the VOD field and the title (only replacing a title the page
   filled itself), then runs Get Info. Last channel and type are saved in `localStorage` keys `clipLibrary.browseChannel`
-  / `clipLibrary.browseType`. Cards use `formatDate`, so they follow the time zone toggle.
+  / `clipLibrary.browseType`. Cards use `formatDate`, so they follow the time zone toggle. Cards show the rescue
+  status and a **Save audio now** button (unmute window open, no rescue yet) or **Retry saving audio** (failed).
+  Library entries with restored audio show an "Audio restored" badge.
 
 ### Gotchas
 - Core silently falls back to the best quality when the requested one doesn't exist — always validate first.

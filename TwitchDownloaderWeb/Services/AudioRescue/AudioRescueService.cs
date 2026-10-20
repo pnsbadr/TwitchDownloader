@@ -23,18 +23,20 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
         private readonly ChannelService _channels;
         private readonly LibraryStorage _storage;
         private readonly IHttpClientFactory _httpClientFactory;
+        private readonly IVodPlaylistSource _playlists;
         private readonly IOptions<AudioRescueSettings> _settings;
         private readonly ILogger<AudioRescueService> _logger;
         private readonly Channel<bool> _wake = Channel.CreateBounded<bool>(new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropWrite });
         private DateTime _nextDiscoveryUtc = DateTime.MinValue;
 
         public AudioRescueService(IServiceScopeFactory scopeFactory, ChannelService channels, LibraryStorage storage, IHttpClientFactory httpClientFactory,
-            IOptions<AudioRescueSettings> settings, ILogger<AudioRescueService> logger)
+            IVodPlaylistSource playlists, IOptions<AudioRescueSettings> settings, ILogger<AudioRescueService> logger)
         {
             _scopeFactory = scopeFactory;
             _channels = channels;
             _storage = storage;
             _httpClientFactory = httpClientFactory;
+            _playlists = playlists;
             _settings = settings;
             _logger = logger;
         }
@@ -136,7 +138,8 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
             return rescue;
         }
 
-        private async Task ProcessDueAsync(CancellationToken cancellationToken)
+        /// <summary>Runs every rescue step that is due, one VOD at a time. Called by the background loop (and by tests).</summary>
+        public async Task ProcessDueAsync(CancellationToken cancellationToken)
         {
             while (true)
             {
@@ -178,7 +181,7 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
         private async Task GrabAsync(LibraryDbContext db, VodAudioRescue rescue, CancellationToken cancellationToken)
         {
             var http = _httpClientFactory.CreateClient(nameof(AudioRescueService));
-            var rendition = await VodPlaylist.GetAudioRenditionAsync(http, rescue.VodId, cancellationToken);
+            var rendition = await _playlists.GetAudioRenditionAsync(http, rescue.VodId, cancellationToken);
             if (rendition is null)
             {
                 Fail(db, rescue, "The VOD is no longer available on Twitch, or is restricted (e.g. subscriber-only).");
@@ -306,7 +309,7 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
         private async Task PruneAsync(LibraryDbContext db, VodAudioRescue rescue, CancellationToken cancellationToken)
         {
             var http = _httpClientFactory.CreateClient(nameof(AudioRescueService));
-            var rendition = await VodPlaylist.GetAudioRenditionAsync(http, rescue.VodId, cancellationToken);
+            var rendition = await _playlists.GetAudioRenditionAsync(http, rescue.VodId, cancellationToken);
             var mutedKeys = rendition?.Segments.Where(x => x.IsMuted).Select(x => x.Key).ToHashSet();
 
             var rows = await db.RescuedAudioSegments.Where(x => x.VodId == rescue.VodId).ToListAsync(cancellationToken);

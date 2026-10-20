@@ -18,13 +18,16 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
         private readonly VodDownloadRunner _runner;
         private readonly LibraryStorage _storage;
         private readonly IHttpClientFactory _httpClientFactory;
+        private readonly IVodPlaylistSource _playlists;
         private readonly IConfiguration _configuration;
 
-        public AudioRestoreService(VodDownloadRunner runner, LibraryStorage storage, IHttpClientFactory httpClientFactory, IConfiguration configuration)
+        public AudioRestoreService(VodDownloadRunner runner, LibraryStorage storage, IHttpClientFactory httpClientFactory, IVodPlaylistSource playlists,
+            IConfiguration configuration)
         {
             _runner = runner;
             _storage = storage;
             _httpClientFactory = httpClientFactory;
+            _playlists = playlists;
             _configuration = configuration;
         }
 
@@ -38,7 +41,7 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
                 return null;
 
             var http = _httpClientFactory.CreateClient(nameof(AudioRestoreService));
-            var rendition = await VodPlaylist.GetRenditionAsync(http, entry.VodId, entry.Quality, cancellationToken);
+            var rendition = await _playlists.GetRenditionAsync(http, entry.VodId, entry.Quality, cancellationToken);
             if (rendition is null)
                 return null;
 

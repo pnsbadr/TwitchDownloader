@@ -19,6 +19,7 @@ builder.Services.AddSingleton<VodInfoService>();
 builder.Services.AddSingleton<ChannelService>();
 builder.Services.AddHttpClient(nameof(AudioRescueService), client => client.Timeout = TimeSpan.FromSeconds(60));
 builder.Services.AddHttpClient(nameof(AudioRestoreService), client => client.Timeout = TimeSpan.FromSeconds(60));
+builder.Services.AddSingleton<IVodPlaylistSource, TwitchVodPlaylistSource>();
 builder.Services.AddSingleton<AudioRestoreService>();
 builder.Services.AddSingleton<AudioRescueService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AudioRescueService>());
