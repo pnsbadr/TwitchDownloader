@@ -9,6 +9,7 @@ namespace TwitchDownloaderWeb.Data
 
         public DbSet<LibraryEntry> Entries => Set<LibraryEntry>();
         public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
+        public DbSet<SavedChannel> Channels => Set<SavedChannel>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -29,6 +30,15 @@ namespace TwitchDownloaderWeb.Data
                 entity.Property(x => x.Action).HasMaxLength(64);
                 entity.HasIndex(x => x.TimestampUtc);
                 entity.HasIndex(x => x.EntryId);
+            });
+
+            modelBuilder.Entity<SavedChannel>(entity =>
+            {
+                entity.ToTable("Channels");
+                entity.Property(x => x.Login).HasMaxLength(25);
+                entity.Property(x => x.DisplayName).HasMaxLength(100);
+                entity.Property(x => x.TwitchUserId).HasMaxLength(32);
+                entity.HasIndex(x => x.Login).IsUnique();
             });
         }
 
