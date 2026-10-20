@@ -14,6 +14,7 @@ Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
 builder.Services.AddDbContext<LibraryDbContext>(options => options.UseSqlite($"Data Source={databasePath}"));
 
 builder.Services.AddSingleton<VodInfoService>();
+builder.Services.AddSingleton<ChannelService>();
 builder.Services.AddSingleton<VodDownloadRunner>();
 builder.Services.AddSingleton<LibraryStorage>();
 builder.Services.AddSingleton<DownloadQueue>();
@@ -33,5 +34,6 @@ app.UseStaticFiles();
 
 app.MapVodDownloadEndpoints();
 app.MapEntryEndpoints();
+app.MapChannelEndpoints();
 
 app.Run();

@@ -12,6 +12,8 @@ namespace TwitchDownloaderWeb.Data
         public const string GenerationRequested = "generation.requested";
         public const string GeneratedFileExpired = "generation.expired";
         public const string FileServed = "file.served";
+        public const string ChannelAdded = "channel.added";
+        public const string ChannelRemoved = "channel.removed";
     }
 
     /// <summary>
