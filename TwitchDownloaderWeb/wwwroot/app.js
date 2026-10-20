@@ -124,6 +124,7 @@ for (const button of document.querySelectorAll(".seg[data-tz]")) {
     saveTimeZoneMode(timeZoneMode);
     renderTimeZoneToggle();
     renderVodInfo();
+    renderBrowseList();
     refresh();
   });
 }
@@ -209,7 +210,13 @@ function updateRulePreview() {
 }
 
 $("get-info").addEventListener("click", getInfo);
-$("vod").addEventListener("change", resetVodInfo);
+$("vod").addEventListener("change", () => {
+  if (prefilledTitle !== null && $("title").value === prefilledTitle) $("title").value = "";
+  prefilledTitle = null;
+  browse.selectedId = null;
+  renderBrowseList();
+  resetVodInfo();
+});
 $("start").addEventListener("input", updateRulePreview);
 $("end").addEventListener("input", updateRulePreview);
 
@@ -230,6 +237,7 @@ $("add-form").addEventListener("submit", async (event) => {
     setMessage($("add-message"),
       `Added "${entry.title}" ${entry.isReferenceOnly ? "as a reference (generated on demand)" : "and queued for download"}.`, "ok");
     $("title").value = "";
+    prefilledTitle = null;
     $("start").value = "";
     $("end").value = "";
     updateRulePreview();
@@ -240,6 +248,232 @@ $("add-form").addEventListener("submit", async (event) => {
     button.disabled = false;
   }
 });
+
+// ---------- channel VOD browser ----------
+//
+// Lists a channel's VODs (newest first, as Twitch returns them) so a VOD can be picked instead of pasted.
+// Picking one fills the VOD field and title, then runs the normal Get Info flow.
+
+const BROWSE_CHANNEL_STORAGE_KEY = "clipLibrary.browseChannel";
+const BROWSE_TYPE_STORAGE_KEY = "clipLibrary.browseType";
+const VOD_TYPES = ["archive", "highlight", "upload", "all"];
+
+let savedChannels = [];
+let browse = { login: null, type: loadBrowseType(), items: [], nextCursor: null, loading: false, selectedId: null };
+let prefilledTitle = null;
+let browseRequest = 0;
+
+function loadBrowseType() {
+  try {
+    const type = localStorage.getItem(BROWSE_TYPE_STORAGE_KEY);
+    return VOD_TYPES.includes(type) ? type : "archive";
+  } catch {
+    return "archive";
+  }
+}
+
+function saveBrowsePrefs() {
+  try {
+    localStorage.setItem(BROWSE_TYPE_STORAGE_KEY, browse.type);
+    localStorage.setItem(BROWSE_CHANNEL_STORAGE_KEY, $("browse-channel").value.trim());
+  } catch {
+    // Storage unavailable; the choice just isn't remembered
+  }
+}
+
+function loadBrowseChannel() {
+  try {
+    return localStorage.getItem(BROWSE_CHANNEL_STORAGE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+// Mirrors the server's ChannelService.NormalizeLogin closely enough to match saved channels; the server still validates.
+function normalizeLogin(text) {
+  let value = text.trim();
+  const match = /^(?:https?:\/\/)?(?:www\.|m\.)?twitch\.tv\/([^/?#]+)/i.exec(value);
+  if (match) value = match[1];
+  return value.replace(/^@/, "").toLowerCase();
+}
+
+function currentSavedChannel() {
+  const login = normalizeLogin($("browse-channel").value);
+  return savedChannels.find((c) => c.login === login) ?? null;
+}
+
+function renderSavedChannels() {
+  const select = $("browse-saved");
+  const current = currentSavedChannel();
+  select.replaceChildren(el("option", { value: "" }, savedChannels.length ? "Choose…" : "None saved yet"),
+    ...savedChannels.map((c) => el("option", { value: c.login }, c.displayName)));
+  select.value = current?.login ?? "";
+
+  const save = $("browse-save");
+  save.textContent = current ? "Remove saved" : "Save channel";
+  save.classList.toggle("danger", Boolean(current));
+  save.disabled = !current && !normalizeLogin($("browse-channel").value);
+}
+
+async function loadSavedChannels() {
+  try {
+    savedChannels = await api("GET", "/api/channels");
+  } catch (error) {
+    setMessage($("browse-message"), `Couldn't load saved channels: ${error.message}`, "error");
+  }
+  renderSavedChannels();
+}
+
+async function toggleSavedChannel() {
+  const current = currentSavedChannel();
+  const button = $("browse-save");
+  button.disabled = true;
+  try {
+    if (current) {
+      if (!confirm(`Remove ${current.displayName} from the saved channels?`)) return;
+      await api("DELETE", `/api/channels/${current.id}`);
+      setMessage($("browse-message"), `Removed ${current.displayName}.`, "ok");
+    } else {
+      const channel = await api("POST", "/api/channels", { login: $("browse-channel").value.trim() });
+      setMessage($("browse-message"), `Saved ${channel.displayName}.`, "ok");
+    }
+    await loadSavedChannels();
+  } catch (error) {
+    setMessage($("browse-message"), error.message, "error");
+  } finally {
+    renderSavedChannels();
+  }
+}
+
+function renderVodTypeToggle() {
+  for (const button of document.querySelectorAll(".seg[data-vod-type]")) {
+    button.setAttribute("aria-pressed", String(button.dataset.vodType === browse.type));
+  }
+}
+
+function vodCard(vod) {
+  const thumb = vod.thumbnailUrl
+    ? el("img", { src: vod.thumbnailUrl, alt: "", width: "320", height: "180", loading: "lazy" })
+    : el("div", { class: "thumb-missing" }, "No thumbnail yet");
+
+  const meta = [formatDate(vod.createdAtUtc), vod.length, vod.game].filter(Boolean).join(" · ");
+
+  return el("li", {},
+    el("button", { type: "button", class: "vod-card", "aria-pressed": String(browse.selectedId === vod.vodId), onclick: () => pickVod(vod) },
+      thumb,
+      el("span", { class: "vod-card-title" }, vod.title),
+      el("span", { class: "entry-meta" }, meta),
+      vod.unmuteWindowOpen
+        ? el("span", { class: "badge ref", title: "Ended less than 24 hours ago: Twitch may still have unmuted audio for muted parts" }, "Unmute window open")
+        : null));
+}
+
+function renderBrowseList() {
+  const list = $("browse-list");
+  list.hidden = browse.items.length === 0;
+  list.replaceChildren(...browse.items.map(vodCard));
+  $("browse-more").hidden = !browse.nextCursor;
+  $("browse-more").disabled = browse.loading;
+  $("browse-hide").hidden = browse.items.length === 0;
+}
+
+const VOD_TYPE_NAMES = { archive: "past broadcasts", highlight: "highlights", upload: "uploads", all: "videos" };
+
+async function loadChannelVods(append) {
+  const login = append ? browse.login : normalizeLogin($("browse-channel").value);
+  if (!login) {
+    setMessage($("browse-message"), "Choose a saved channel or type a channel name first.", "error");
+    return;
+  }
+
+  if (!append) {
+    browse = { ...browse, login, items: [], nextCursor: null };
+    renderBrowseList();
+  }
+
+  // Switching channel or type while a page loads must not mix the old response into the new list
+  const request = ++browseRequest;
+  browse.loading = true;
+  $("browse-show").disabled = true;
+  renderBrowseList();
+  setMessage($("browse-message"), append ? "Loading more…" : "Loading VODs…");
+  try {
+    const params = new URLSearchParams({ type: browse.type });
+    if (append && browse.nextCursor) params.set("cursor", browse.nextCursor);
+    const page = await api("GET", `/api/channels/${encodeURIComponent(login)}/vods?${params}`);
+    if (request !== browseRequest) return;
+
+    // Guard against repeats in case Twitch's cursor overlaps the previous page
+    const seen = new Set(browse.items.map((x) => x.vodId));
+    browse.items = browse.items.concat(page.items.filter((x) => !seen.has(x.vodId)));
+    browse.nextCursor = page.nextCursor;
+    saveBrowsePrefs();
+
+    const typeName = VOD_TYPE_NAMES[browse.type];
+    setMessage($("browse-message"), browse.items.length
+      ? `${login}: showing ${browse.items.length} of ${page.totalCount} ${typeName}. Pick one to fill in the form.`
+      : `${login} has no ${typeName}.`);
+  } catch (error) {
+    if (request === browseRequest) setMessage($("browse-message"), error.message, "error");
+  } finally {
+    if (request !== browseRequest) return;
+    browse.loading = false;
+    $("browse-show").disabled = false;
+    renderBrowseList();
+  }
+}
+
+function pickVod(vod) {
+  browse.selectedId = vod.vodId;
+  renderBrowseList();
+
+  $("vod").value = String(vod.vodId);
+  // Pre-fill the title (still editable). Only replace a title we filled in ourselves, never one the user typed.
+  if (!$("title").value.trim() || $("title").value === prefilledTitle) {
+    $("title").value = vod.title;
+    prefilledTitle = vod.title;
+  }
+  resetVodInfo();
+  getInfo();
+  $("vod-info").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+$("browse-saved").addEventListener("change", () => {
+  const login = $("browse-saved").value;
+  if (!login) return;
+  $("browse-channel").value = login;
+  renderSavedChannels();
+  loadChannelVods(false);
+});
+$("browse-channel").addEventListener("input", renderSavedChannels);
+$("browse-channel").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    // The browser lives inside the add form's panel; don't let Enter submit anything
+    event.preventDefault();
+    loadChannelVods(false);
+  }
+});
+$("browse-save").addEventListener("click", toggleSavedChannel);
+$("browse-show").addEventListener("click", () => loadChannelVods(false));
+$("browse-more").addEventListener("click", () => loadChannelVods(true));
+$("browse-hide").addEventListener("click", () => {
+  browseRequest++;
+  browse = { ...browse, login: null, items: [], nextCursor: null, loading: false };
+  $("browse-show").disabled = false;
+  setMessage($("browse-message"), "");
+  renderBrowseList();
+});
+
+for (const button of document.querySelectorAll(".seg[data-vod-type]")) {
+  button.addEventListener("click", () => {
+    if (browse.type === button.dataset.vodType) return;
+    browse.type = button.dataset.vodType;
+    renderVodTypeToggle();
+    saveBrowsePrefs();
+    // Reload with the new type if a list is showing
+    if (browse.items.length || browse.login) loadChannelVods(false);
+  });
+}
 
 // ---------- library ----------
 
@@ -729,5 +963,8 @@ $("sort").addEventListener("change", loadEntries);
 $("order").addEventListener("change", loadEntries);
 
 renderTimeZoneToggle();
+renderVodTypeToggle();
+$("browse-channel").value = loadBrowseChannel();
+loadSavedChannels();
 renderCalendarOpen();
 refresh();

@@ -63,6 +63,8 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   `Status` (Queued/Downloading/Ready/Failed/ReferenceOnly/VodUnavailable), stored file path/size, generation
   fields for on-demand files (`GenerationStatus`, path, size, `GeneratedExpiresAtUtc`), `AddedByUserId`
   (string, no FK yet — link to users in phase 3).
+- `Channels` (`SavedChannel`): saved team channels for the VOD browser: login (unique, lower-case), display name,
+  Twitch user ID, `WatchMutedAudio` (for the planned muted-audio rescue), `AddedAtUtc`, `AddedByUserId`.
 - `AuditEvents`: timestamp, action (`AuditActions`), entry ID (no FK so rows outlive deleted entries),
   user ID (null until phase 3), details. Write via `db.Audit(...)` so it commits with the change; **never
   put tokens in details**.
@@ -96,6 +98,8 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
 | `DELETE /api/entries/{id}` | Removes entry + stored/generated files — audited. Phase 3: restrict who can delete |
 | `POST /api/entries/{id}/generate` | Reference-only: queue on-demand file (202) or 200 if ready. Failed stored entry: retry. VodUnavailable → 410 |
 | `GET /api/entries/{id}/file` | Streams the file (range requests supported); 409 if not ready; 410 if missing on disk (entry then becomes retryable) |
+| `GET /api/channels` / `POST /api/channels` `{ login }` / `DELETE /api/channels/{id}` | Saved channels. POST checks the login exists on Twitch (404) and isn't saved (409); add/remove audited |
+| `GET /api/channels/{login}/vods?type=archive\|highlight\|upload\|all&cursor=&limit=` | Any channel's VODs, newest first, via Core's `GetGqlVideos`. `nextCursor` = last edge's cursor; `unmuteWindowOpen` = ended < 24 h ago |
 | `POST /api/vods/download` | Phase 1 dev endpoint: synchronous, writes `<title>.mp4` straight into `downloads/`, not part of the library |
 
 `canDownload` in entry responses checks the generated file's expiry itself, since cleanup runs periodically.
@@ -118,6 +122,11 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   **sort dropdown** next to the search box (Date added / Stream date), not the calendar's switch; recomputed on every load. It and a calendar day filter are mutually exclusive.
   Not persisted. There is no "jump to today" button in the calendar (removed on request).
 
+- **VOD browser** (top of the Add panel): saved-channels dropdown + free-text channel (login or twitch.tv link), type
+  toggle, Show VODs / Load more. Clicking a card fills the VOD field and the title (only replacing a title the page
+  filled itself), then runs Get Info. Last channel and type are saved in `localStorage` keys `clipLibrary.browseChannel`
+  / `clipLibrary.browseType`. Cards use `formatDate`, so they follow the time zone toggle.
+
 ### Gotchas
 - Core silently falls back to the best quality when the requested one doesn't exist — always validate first.
 - Titles are sanitized with Core's `FilenameService`, which swaps `: ? | / \` etc. for full-width look-alikes
@@ -125,6 +134,9 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
 - Twitch deletes VODs after a while (typically 7–60 days). Reference-only entries then become `VodUnavailable`
   when generation is attempted; stored entries keep their file.
 - Restricted (subscriber-only) VODs are rejected until OAuth support exists.
+- Core's `GetGqlVideos` / `GetUserIds` paste the login, type and cursor straight into the GQL query string; the web app
+  validates all three first (`ChannelService`). The WPF Mass Downloader pages with the *first* edge's cursor; we use
+  the last (to verify against real data). GQL video lists have no live/recording flag.
 
 ## Build
 

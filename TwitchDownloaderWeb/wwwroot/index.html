@@ -19,6 +19,38 @@
   <main>
     <section class="panel" aria-labelledby="add-heading">
       <h2 id="add-heading">Add a VOD</h2>
+
+      <!-- Pick a VOD from a channel instead of pasting a link; fills the form below -->
+      <div id="browse" class="browse" aria-label="Browse a channel's VODs" role="region">
+        <div class="row">
+          <label>Saved channels
+            <select id="browse-saved">
+              <option value="">Choose…</option>
+            </select>
+          </label>
+          <label class="grow">Channel
+            <input id="browse-channel" placeholder="Channel name or twitch.tv link" autocomplete="off" spellcheck="false">
+          </label>
+          <button type="button" id="browse-save" class="secondary">Save channel</button>
+        </div>
+        <div class="row">
+          <div class="tz" role="group" aria-label="VOD type">
+            <span class="tz-label">Type:</span>
+            <button type="button" class="seg" data-vod-type="archive" aria-pressed="true">Past broadcasts</button>
+            <button type="button" class="seg" data-vod-type="highlight" aria-pressed="false">Highlights</button>
+            <button type="button" class="seg" data-vod-type="upload" aria-pressed="false">Uploads</button>
+            <button type="button" class="seg" data-vod-type="all" aria-pressed="false">All</button>
+          </div>
+          <button type="button" id="browse-show">Show VODs</button>
+          <button type="button" id="browse-hide" class="link" hidden>Hide list</button>
+        </div>
+        <p id="browse-message" class="message" role="status"></p>
+        <ul id="browse-list" class="vod-list" hidden></ul>
+        <div class="row">
+          <button type="button" id="browse-more" class="secondary" hidden>Load more</button>
+        </div>
+      </div>
+
       <form id="add-form" novalidate>
         <div class="row">
           <label class="grow">VOD URL or ID
