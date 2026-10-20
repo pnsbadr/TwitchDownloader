@@ -47,7 +47,16 @@ namespace TwitchDownloaderWeb.Endpoints
             if (await db.Channels.AsNoTracking().FirstOrDefaultAsync(x => x.Login == login, cancellationToken) is { } existing)
                 return Results.Problem(detail: $"{existing.DisplayName} is already saved.", statusCode: StatusCodes.Status409Conflict);
 
-            var details = await channelService.GetChannelAsync(login);
+            ChannelDetails? details;
+            try
+            {
+                details = await channelService.GetChannelAsync(login);
+            }
+            catch (HttpRequestException)
+            {
+                return TwitchUnreachable();
+            }
+
             if (details is null)
                 return ChannelNotFound(login);
 
@@ -101,7 +110,16 @@ namespace TwitchDownloaderWeb.Endpoints
             if (!ChannelService.IsValidCursor(cursor))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["cursor"] = ["Invalid cursor."] });
 
-            var page = await channelService.GetVodsAsync(normalizedLogin, vodType, cursor, limit ?? DefaultPageSize);
+            ChannelVodPage? page;
+            try
+            {
+                page = await channelService.GetVodsAsync(normalizedLogin, vodType, cursor, limit ?? DefaultPageSize);
+            }
+            catch (HttpRequestException)
+            {
+                return TwitchUnreachable();
+            }
+
             if (page is null)
                 return ChannelNotFound(normalizedLogin);
 
@@ -113,6 +131,9 @@ namespace TwitchDownloaderWeb.Endpoints
 
         private static IResult InvalidLogin(string field) =>
             Results.ValidationProblem(new Dictionary<string, string[]> { [field] = ["Enter a Twitch channel name (letters, numbers and underscores) or a twitch.tv link."] });
+
+        private static IResult TwitchUnreachable() =>
+            Results.Problem(detail: "Couldn't reach Twitch. Try again in a moment.", statusCode: StatusCodes.Status502BadGateway);
 
         private static IResult ChannelNotFound(string login) =>
             Results.Problem(detail: $"Twitch channel \"{login}\" was not found.", statusCode: StatusCodes.Status404NotFound);
