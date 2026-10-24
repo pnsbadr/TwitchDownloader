@@ -549,6 +549,7 @@ function entryActions(entry) {
 
   if (entry.canDownload) {
     actions.push(el("a", { class: "button", href: `/api/entries/${entry.id}/file`, download: "" }, "Download"));
+    actions.push(el("button", { type: "button", class: "secondary", onclick: () => openVertical(entry) }, "Make vertical"));
   } else if (entry.status === "ReferenceOnly" && !isBusy(entry)) {
     actions.push(el("button", { type: "button", onclick: () => generate(entry) },
       entry.generationStatus === "Failed" ? "Retry generate" : "Generate file"));
@@ -1011,6 +1012,373 @@ $("search").addEventListener("input", () => {
 });
 $("sort").addEventListener("change", loadEntries);
 $("order").addEventListener("change", loadEntries);
+
+// ---------- vertical (9:16) editor ----------
+//
+// Like Twitch's portrait clip editor: one box, or two boxes (top + bottom) cropped from the landscape video and
+// stacked. Boxes are stored as fractions (0..1) of the video's width/height; each box keeps the shape of the
+// portrait slot it fills, so nothing is stretched. The server renders the same layout with ffmpeg.
+
+const VX_OUT_W = 1080;
+const VX_OUT_H = 1920;
+const VX_MIN_RATIO = 0.2;
+const VX_MAX_RATIO = 0.8;
+const VX_MIN_BOX = 0.05;
+
+const vx = {
+  entry: null,
+  mode: "split",
+  ratio: 0.4,
+  boxes: { single: null, top: null, bottom: null },
+  videoAspect: 16 / 9,
+  ready: false,
+  frame: 0,
+  pollTimer: null,
+};
+
+// Width / height of the portrait slot a box fills
+function vxSlotAspect(name) {
+  if (name === "single") return VX_OUT_W / VX_OUT_H;
+  const share = name === "top" ? vx.ratio : 1 - vx.ratio;
+  return VX_OUT_W / (VX_OUT_H * share);
+}
+
+// A box with width w (fraction of the video's width) has this height (fraction of its height) to match its slot
+function vxHeightFor(name, w) {
+  return (w * vx.videoAspect) / vxSlotAspect(name);
+}
+
+// Reshape a box for its slot: keep its center and width where possible, shrink to fit inside the video
+function vxFit(name, box) {
+  const k = vx.videoAspect / vxSlotAspect(name);
+  let w = Math.min(box.w, 1, 1 / k);
+  w = Math.max(w, VX_MIN_BOX);
+  const h = w * k;
+  const cx = box.x + box.w / 2;
+  const cy = box.y + box.h / 2;
+  return {
+    x: Math.min(Math.max(cx - w / 2, 0), 1 - w),
+    y: Math.min(Math.max(cy - h / 2, 0), 1 - h),
+    w,
+    h,
+  };
+}
+
+function vxDefaultBoxes() {
+  // Single: full-height center crop. Split: small box in the top-right corner (facecam) over a full-height center crop
+  const full = (name) => vxFit(name, { x: 0, y: 0, w: 1, h: 1 });
+  const single = full("single");
+  const bottom = full("bottom");
+  const topW = 0.25;
+  const topH = vxHeightFor("top", topW);
+  return {
+    single: { ...single, x: (1 - single.w) / 2 },
+    top: vxFit("top", { x: 1 - topW, y: 0, w: topW, h: topH }),
+    bottom: { ...bottom, x: (1 - bottom.w) / 2 },
+  };
+}
+
+function vxFromServer(box) {
+  return box ? { x: box.x, y: box.y, w: box.width, h: box.height } : null;
+}
+
+function vxToServer(box) {
+  return { x: box.x, y: box.y, width: box.w, height: box.h };
+}
+
+function vxApplySaved(layout) {
+  const defaults = vxDefaultBoxes();
+  vx.boxes = { ...defaults };
+  vx.mode = "split";
+  if (!layout) return;
+  if (layout.mode === "single") {
+    vx.mode = "single";
+    if (layout.top) vx.boxes.single = vxFit("single", vxFromServer(layout.top));
+  } else if (layout.mode === "split") {
+    vx.ratio = Math.min(Math.max(layout.splitRatio ?? 0.4, VX_MIN_RATIO), VX_MAX_RATIO);
+    const fresh = vxDefaultBoxes();
+    vx.boxes.top = layout.top ? vxFit("top", vxFromServer(layout.top)) : fresh.top;
+    vx.boxes.bottom = layout.bottom ? vxFit("bottom", vxFromServer(layout.bottom)) : fresh.bottom;
+  }
+}
+
+function vxVisibleBoxes() {
+  return vx.mode === "single" ? ["single"] : ["top", "bottom"];
+}
+
+// The "top" element doubles as the single box
+function vxBoxElement(name) {
+  return name === "bottom" ? $("vx-box-bottom") : $("vx-box-top");
+}
+
+function vxRenderBoxes() {
+  const stage = $("vx-stage");
+  stage.style.aspectRatio = String(vx.videoAspect);
+  $("vx-box-bottom").hidden = vx.mode === "single";
+  $("vx-box-top").querySelector(".vx-tag").textContent = vx.mode === "single" ? "Crop" : "Top";
+  for (const name of vxVisibleBoxes()) {
+    const box = vx.boxes[name];
+    const node = vxBoxElement(name);
+    node.dataset.box = name;
+    node.style.left = `${box.x * 100}%`;
+    node.style.top = `${box.y * 100}%`;
+    node.style.width = `${box.w * 100}%`;
+    node.style.height = `${box.h * 100}%`;
+  }
+
+  const split = $("vx-split");
+  split.hidden = vx.mode === "single";
+  split.style.top = `${vx.ratio * 100}%`;
+  split.setAttribute("aria-valuenow", String(Math.round(vx.ratio * 100)));
+
+  for (const button of document.querySelectorAll("[data-vx-mode]")) {
+    button.setAttribute("aria-pressed", String(button.dataset.vxMode === vx.mode));
+  }
+}
+
+function vxDrawPreview() {
+  const canvas = $("vx-preview");
+  const ctx = canvas.getContext("2d");
+  const video = $("vx-video");
+  const cw = canvas.width;
+  const ch = canvas.height;
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, cw, ch);
+  if (vx.ready && video.readyState >= 2) {
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    const draw = (box, dy, dh) => ctx.drawImage(video, box.x * vw, box.y * vh, box.w * vw, box.h * vh, 0, dy, cw, dh);
+    if (vx.mode === "single") {
+      draw(vx.boxes.single, 0, ch);
+    } else {
+      const topH = Math.round(ch * vx.ratio);
+      draw(vx.boxes.top, 0, topH);
+      draw(vx.boxes.bottom, topH, ch - topH);
+    }
+  }
+  if ($("vx").open) vx.frame = requestAnimationFrame(vxDrawPreview);
+}
+
+// Pointer position as fractions of an element's box
+function vxPointer(event, element) {
+  const rect = element.getBoundingClientRect();
+  return { x: (event.clientX - rect.left) / rect.width, y: (event.clientY - rect.top) / rect.height };
+}
+
+function vxStartDrag(event) {
+  const node = event.currentTarget;
+  const name = node.dataset.box;
+  const box = { ...vx.boxes[name] };
+  const stage = $("vx-stage");
+  const start = vxPointer(event, stage);
+  const corner = event.target.dataset.corner; // "nw" | "ne" | "sw" | "se" | undefined (move)
+  event.preventDefault();
+  node.setPointerCapture(event.pointerId);
+
+  // Resizing keeps the opposite corner in place
+  const anchor = corner && {
+    x: corner.includes("w") ? box.x + box.w : box.x,
+    y: corner.includes("n") ? box.y + box.h : box.y,
+  };
+
+  const onMove = (moveEvent) => {
+    const p = vxPointer(moveEvent, stage);
+    if (!corner) {
+      vx.boxes[name] = {
+        ...box,
+        x: Math.min(Math.max(box.x + p.x - start.x, 0), 1 - box.w),
+        y: Math.min(Math.max(box.y + p.y - start.y, 0), 1 - box.h),
+      };
+    } else {
+      const k = vx.videoAspect / vxSlotAspect(name);
+      const left = corner.includes("w");
+      const up = corner.includes("n");
+      const maxW = Math.min(left ? anchor.x : 1 - anchor.x, (up ? anchor.y : 1 - anchor.y) / k);
+      let w = Math.max(Math.abs(p.x - anchor.x), Math.abs(p.y - anchor.y) / k);
+      w = Math.min(Math.max(w, VX_MIN_BOX), maxW);
+      const h = w * k;
+      vx.boxes[name] = { x: left ? anchor.x - w : anchor.x, y: up ? anchor.y - h : anchor.y, w, h };
+    }
+    vxRenderBoxes();
+  };
+  const onUp = () => {
+    node.removeEventListener("pointermove", onMove);
+    node.removeEventListener("pointerup", onUp);
+    node.removeEventListener("pointercancel", onUp);
+  };
+  node.addEventListener("pointermove", onMove);
+  node.addEventListener("pointerup", onUp);
+  node.addEventListener("pointercancel", onUp);
+}
+
+function vxSetRatio(ratio) {
+  vx.ratio = Math.min(Math.max(ratio, VX_MIN_RATIO), VX_MAX_RATIO);
+  vx.boxes.top = vxFit("top", vx.boxes.top);
+  vx.boxes.bottom = vxFit("bottom", vx.boxes.bottom);
+  vxRenderBoxes();
+}
+
+function vxStartSplitDrag(event) {
+  const handle = event.currentTarget;
+  event.preventDefault();
+  handle.setPointerCapture(event.pointerId);
+  const onMove = (moveEvent) => vxSetRatio(vxPointer(moveEvent, $("vx-preview-wrap")).y);
+  const onUp = () => {
+    handle.removeEventListener("pointermove", onMove);
+    handle.removeEventListener("pointerup", onUp);
+    handle.removeEventListener("pointercancel", onUp);
+  };
+  handle.addEventListener("pointermove", onMove);
+  handle.addEventListener("pointerup", onUp);
+  handle.addEventListener("pointercancel", onUp);
+}
+
+function vxFormatTime(seconds) {
+  if (!Number.isFinite(seconds)) return "0:00";
+  const s = Math.floor(seconds);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function vxUpdatePlayer() {
+  const video = $("vx-video");
+  $("vx-play").textContent = video.paused ? "▶" : "❚❚";
+  $("vx-play").setAttribute("aria-label", video.paused ? "Play" : "Pause");
+  if (video.duration) $("vx-seek").value = String(Math.round((video.currentTime / video.duration) * 1000));
+  $("vx-time").textContent = `${vxFormatTime(video.currentTime)} / ${vxFormatTime(video.duration)}`;
+}
+
+function vxRenderState(state) {
+  const busy = state.status === "Rendering";
+  $("vx-render").disabled = busy;
+  $("vx-progress").hidden = !busy;
+  $("vx-progress").value = state.progress || 0;
+
+  const download = $("vx-download");
+  download.hidden = state.status !== "Ready";
+  if (state.status === "Ready") {
+    // Cache-bust so a re-render isn't served from the browser cache
+    download.href = `/api/entries/${vx.entry.id}/shortform/file?v=${Date.now()}`;
+    download.textContent = `Download vertical · ${formatSize(state.fileSizeBytes)}`;
+  }
+
+  if (busy) setMessage($("vx-message"), `Rendering… ${Math.round((state.progress || 0) * 100)}%`);
+  else if (state.status === "Failed") setMessage($("vx-message"), state.error || "Rendering failed.", "error");
+  else if (state.status === "Ready") setMessage($("vx-message"), "Vertical video ready.", "ok");
+  else setMessage($("vx-message"), "");
+
+  clearTimeout(vx.pollTimer);
+  if (busy && $("vx").open) vx.pollTimer = setTimeout(vxPoll, 1500);
+}
+
+async function vxPoll() {
+  if (!vx.entry) return;
+  try {
+    vxRenderState(await api("GET", `/api/entries/${vx.entry.id}/shortform`));
+  } catch (error) {
+    setMessage($("vx-message"), error.message, "error");
+  }
+}
+
+async function vxRender() {
+  const layout = vx.mode === "single"
+    ? { mode: "single", top: vxToServer(vx.boxes.single) }
+    : { mode: "split", top: vxToServer(vx.boxes.top), bottom: vxToServer(vx.boxes.bottom), splitRatio: vx.ratio };
+  $("vx-render").disabled = true;
+  try {
+    vxRenderState(await api("POST", `/api/entries/${vx.entry.id}/shortform`, layout));
+  } catch (error) {
+    $("vx-render").disabled = false;
+    setMessage($("vx-message"), error.message, "error");
+  }
+}
+
+async function openVertical(entry) {
+  vx.entry = entry;
+  vx.ready = false;
+  $("vx-entry").textContent = entry.title;
+  $("vx-download").hidden = true;
+  $("vx-progress").hidden = true;
+  setMessage($("vx-message"), "Loading video…");
+
+  const video = $("vx-video");
+  video.src = `/api/entries/${entry.id}/file?preview=true`;
+  $("vx").showModal();
+
+  let saved = null;
+  try {
+    saved = await api("GET", `/api/entries/${entry.id}/shortform`);
+  } catch (error) {
+    setMessage($("vx-message"), error.message, "error");
+  }
+
+  const start = () => {
+    vx.videoAspect = video.videoWidth / video.videoHeight || 16 / 9;
+    vxApplySaved(saved?.layout);
+    vx.ready = true;
+    vxRenderBoxes();
+    vxUpdatePlayer();
+    if (saved) vxRenderState(saved);
+    else setMessage($("vx-message"), "");
+  };
+  if (video.readyState >= 1) start();
+  else video.addEventListener("loadedmetadata", start, { once: true });
+
+  if (!vx.ready) {
+    vxApplySaved(null);
+    vxRenderBoxes();
+  }
+  cancelAnimationFrame(vx.frame);
+  vx.frame = requestAnimationFrame(vxDrawPreview);
+}
+
+function closeVertical() {
+  const video = $("vx-video");
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
+  clearTimeout(vx.pollTimer);
+  cancelAnimationFrame(vx.frame);
+  vx.entry = null;
+}
+
+for (const node of document.querySelectorAll(".vx-box")) {
+  for (const corner of ["nw", "ne", "sw", "se"]) {
+    node.append(el("span", { class: `vx-handle vx-${corner}`, "data-corner": corner, "aria-hidden": "true" }));
+  }
+  node.addEventListener("pointerdown", vxStartDrag);
+}
+for (const button of document.querySelectorAll("[data-vx-mode]")) {
+  button.addEventListener("click", () => {
+    vx.mode = button.dataset.vxMode;
+    vxRenderBoxes();
+  });
+}
+$("vx-split").addEventListener("pointerdown", vxStartSplitDrag);
+$("vx-split").addEventListener("keydown", (event) => {
+  const step = { ArrowUp: -0.02, ArrowDown: 0.02 }[event.key];
+  if (step) {
+    event.preventDefault();
+    vxSetRatio(vx.ratio + step);
+  }
+});
+$("vx-play").addEventListener("click", () => {
+  const video = $("vx-video");
+  if (video.paused) video.play().catch(() => {});
+  else video.pause();
+});
+$("vx-seek").addEventListener("input", () => {
+  const video = $("vx-video");
+  if (video.duration) video.currentTime = (Number($("vx-seek").value) / 1000) * video.duration;
+});
+for (const type of ["play", "pause", "timeupdate", "durationchange"]) {
+  $("vx-video").addEventListener(type, vxUpdatePlayer);
+}
+$("vx-video").addEventListener("error", () => {
+  if (vx.entry) setMessage($("vx-message"), "Couldn't load the video.", "error");
+});
+$("vx-render").addEventListener("click", vxRender);
+$("vx-close").addEventListener("click", () => $("vx").close());
+$("vx").addEventListener("close", closeVertical);
 
 renderTimeZoneToggle();
 renderVodTypeToggle();

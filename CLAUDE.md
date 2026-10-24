@@ -129,10 +129,12 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `PATCH /api/entries/{id}` | `{ title }` — audited as `entry.renamed` |
 | `DELETE /api/entries/{id}` | Removes entry + stored/generated files — audited. Phase 3: restrict who can delete |
 | `POST /api/entries/{id}/generate` | Reference-only: queue on-demand file (202) or 200 if ready. Failed stored entry: retry. VodUnavailable → 410 |
-| `GET /api/entries/{id}/file` | Streams the file (range requests supported); 409 if not ready; 410 if missing on disk (entry then becomes retryable) |
+| `GET /api/entries/{id}/file` | Streams the file (range requests supported); 409 if not ready; 410 if missing on disk (entry then becomes retryable). `?preview=true` (the vertical editor's player) isn't audited as a download |
 | `GET /api/channels` / `POST /api/channels` `{ login }` / `DELETE /api/channels/{id}` | Saved channels. POST checks the login exists on Twitch (404) and isn't saved (409); add/remove audited |
 | `GET /api/channels/{login}/vods?type=archive\|highlight\|upload\|all&cursor=&limit=` | Any channel's VODs, newest first, via Core's `GetGqlVideos`. `nextCursor` = last edge's cursor; `unmuteWindowOpen` = ended < 24 h ago. 502 if Twitch is unreachable |
 | `GET /api/vods/{id}/rescue` / `POST /api/vods/{id}/rescue` | Audio rescue status (404 if none) / start one now (202; a Failed one is retried; others returned as is) |
+| `GET /api/entries/{id}/shortform` / `POST /api/entries/{id}/shortform` | Vertical (9:16) version: state `{ status: None\|Rendering\|Ready\|Failed, progress, layout }` / start a render (202) with `{ mode: single\|split, top: {x,y,width,height}, bottom?, splitRatio? }` (fractions of the source video). 409 if the entry has no file |
+| `GET /api/entries/{id}/shortform/file` | The vertical mp4, named `<title> (vertical).mp4` |
 | `POST /api/vods/download` | Phase 1 dev endpoint: synchronous, writes `<title>.mp4` straight into `downloads/`, not part of the library |
 
 `canDownload` in entry responses checks the generated file's expiry itself, since cleanup runs periodically.
@@ -162,6 +164,17 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   status and a **Save audio now** button (unmute window open, no rescue yet) or **Retry saving audio** (failed).
   Library entries with restored audio show an "Audio restored" badge, and "Still muted" when muted parts had no clean copy;
   VOD cards show "Muted parts not saved" when a rescue got 403s for muted segments.
+
+### Vertical (9:16) export (`Services/Shortform/`)
+- Like Twitch's portrait clip editor: **Make vertical** on an entry with a file opens a dialog with the landscape video,
+  one box ("One box") or two boxes ("Two boxes": pink top over cyan bottom) you drag/resize, and a live canvas preview of
+  the portrait frame; the pill in the preview sets the top/bottom split (20–80 %). Each box keeps the shape of the slot it
+  fills, so nothing is stretched.
+- `ShortformService` renders with ffmpeg: crop by fractions of `iw`/`ih` (no ffprobe), scale to 1080 wide, `vstack`,
+  libx264 veryfast CRF 20, audio copied, to `downloads/shortform/{id}.mp4`; the layout is saved as `{id}.json` so the editor
+  reopens where it was left. Numbers are written with the invariant culture (a decimal comma would break the filter).
+  One render at a time; job state is in memory (after a restart, Ready if the file exists). Deleting the entry deletes both.
+  Audited `shortform.rendered` / `shortform.failed`. No chat overlay yet.
 
 ### Gotchas
 - Core silently falls back to the best quality when the requested one doesn't exist — always validate first.

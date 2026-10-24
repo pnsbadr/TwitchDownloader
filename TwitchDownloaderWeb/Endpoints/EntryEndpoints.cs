@@ -6,6 +6,7 @@ using TwitchDownloaderCore.Models;
 using TwitchDownloaderCore.Services;
 using TwitchDownloaderWeb.Data;
 using TwitchDownloaderWeb.Services;
+using TwitchDownloaderWeb.Services.Shortform;
 
 namespace TwitchDownloaderWeb.Endpoints
 {
@@ -321,7 +322,8 @@ namespace TwitchDownloaderWeb.Endpoints
             return Results.Ok(EntryDto.From(entry));
         }
 
-        private static async Task<IResult> DeleteEntry(int id, LibraryDbContext db, DownloadQueue queue, LibraryStorage storage, CancellationToken cancellationToken)
+        private static async Task<IResult> DeleteEntry(int id, LibraryDbContext db, DownloadQueue queue, LibraryStorage storage, ShortformService shortform,
+            CancellationToken cancellationToken)
         {
             var entry = await db.Entries.FindAsync([id], cancellationToken);
             if (entry is null)
@@ -338,6 +340,7 @@ namespace TwitchDownloaderWeb.Endpoints
             storage.TryDelete(entry.GeneratedFilePath);
             storage.TryDelete(LibraryStorage.StoredRelativePath(id));
             storage.TryDelete(LibraryStorage.GeneratedRelativePath(id));
+            shortform.Delete(id);
 
             return Results.NoContent();
         }
@@ -398,8 +401,9 @@ namespace TwitchDownloaderWeb.Endpoints
             return Results.Accepted($"/api/entries/{id}", EntryDto.From(entry));
         }
 
-        private static async Task<IResult> DownloadEntryFile(int id, HttpRequest request, LibraryDbContext db, LibraryStorage storage, ILoggerFactory loggerFactory,
-            CancellationToken cancellationToken)
+        /// <param name="preview">True when the page plays the file (e.g. the vertical editor); not audited as a download.</param>
+        private static async Task<IResult> DownloadEntryFile(int id, bool? preview, HttpRequest request, LibraryDbContext db, LibraryStorage storage,
+            ILoggerFactory loggerFactory, CancellationToken cancellationToken)
         {
             var entry = await db.Entries.FindAsync([id], cancellationToken);
             if (entry is null)
@@ -453,7 +457,7 @@ namespace TwitchDownloaderWeb.Endpoints
 
             // Browsers and players may fetch a file in several ranges; only record the request that starts at the beginning
             var range = request.Headers.Range.ToString();
-            if (string.IsNullOrEmpty(range) || range.StartsWith("bytes=0-", StringComparison.Ordinal))
+            if (preview != true && (string.IsNullOrEmpty(range) || range.StartsWith("bytes=0-", StringComparison.Ordinal)))
             {
                 db.Audit(AuditActions.FileServed, id, kind);
                 await db.SaveChangesAsync(cancellationToken);
@@ -462,7 +466,7 @@ namespace TwitchDownloaderWeb.Endpoints
             return Results.File(fullPath, "video/mp4", GetDownloadFileName(entry), enableRangeProcessing: true);
         }
 
-        private static string GetDownloadFileName(LibraryEntry entry)
+        internal static string GetDownloadFileName(LibraryEntry entry)
         {
             // Windows silently drops trailing dots and spaces, which could leave "" or ".." as the name
             var name = FilenameService.ReplaceInvalidFilenameChars(entry.Title)?.Trim().TrimEnd('.');

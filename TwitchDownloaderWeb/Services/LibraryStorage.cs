@@ -13,6 +13,7 @@ namespace TwitchDownloaderWeb.Services
         public const string GeneratedFolderName = "generated";
         public const string RescueFolderName = "rescue";
         public const string WorkFolderName = "work";
+        public const string ShortformFolderName = "shortform";
 
         private readonly ILogger<LibraryStorage> _logger;
 
@@ -31,6 +32,9 @@ namespace TwitchDownloaderWeb.Services
         public static string StoredRelativePath(int entryId) => Path.Combine(StoredFolderName, $"{entryId}.mp4");
 
         public static string GeneratedRelativePath(int entryId) => Path.Combine(GeneratedFolderName, $"{entryId}.mp4");
+
+        /// <summary>An entry's portrait (9:16) render ("mp4") or its saved crop layout ("json").</summary>
+        public static string ShortformRelativePath(int entryId, string extension) => Path.Combine(ShortformFolderName, $"{entryId}.{extension}");
 
         /// <summary>Rescued clean audio for a VOD segment. Kept until pruned, independent of library entries.</summary>
         public static string RescuedSegmentRelativePath(long vodId, string segmentKey) => Path.Combine(RescueFolderName, vodId.ToString(), $"{segmentKey}.ts");

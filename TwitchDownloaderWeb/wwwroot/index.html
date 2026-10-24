@@ -146,6 +146,54 @@
     </section>
   </main>
 
+  <!-- Vertical (9:16) editor: drag/resize boxes on the landscape video, like Twitch's portrait clip editor -->
+  <dialog id="vx" class="vx" aria-labelledby="vx-heading">
+    <div class="vx-head">
+      <h2 id="vx-heading">Make vertical</h2>
+      <button type="button" class="link" id="vx-close" aria-label="Close">✕</button>
+    </div>
+    <p id="vx-entry" class="muted vx-entry"></p>
+    <div class="vx-body">
+      <div class="vx-col vx-land">
+        <div class="vx-label">Landscape</div>
+        <div id="vx-stage" class="vx-stage">
+          <video id="vx-video" playsinline preload="auto"></video>
+          <div id="vx-box-top" class="vx-box vx-top" data-box="top"><span class="vx-tag">Top</span></div>
+          <div id="vx-box-bottom" class="vx-box vx-bottom" data-box="bottom"><span class="vx-tag">Bottom</span></div>
+        </div>
+        <div class="vx-player">
+          <button type="button" id="vx-play" class="secondary small" aria-label="Play">▶</button>
+          <input id="vx-seek" type="range" min="0" max="1000" value="0" aria-label="Seek">
+          <span id="vx-time" class="muted vx-time">0:00</span>
+        </div>
+        <p class="muted vx-hint">Drag a box to move it, drag a corner to resize it. In two-box mode, drag the bar in the portrait preview to change how much space each box gets.</p>
+      </div>
+      <div class="vx-col vx-port">
+        <div class="vx-label">Portrait</div>
+        <div id="vx-preview-wrap" class="vx-preview-wrap">
+          <canvas id="vx-preview" width="270" height="480"></canvas>
+          <div id="vx-split" class="vx-split" role="slider" tabindex="0" aria-label="Split between top and bottom" aria-valuemin="20" aria-valuemax="80"><span></span></div>
+        </div>
+        <div class="vx-modes" role="group" aria-label="Layout">
+          <button type="button" class="seg vx-mode" data-vx-mode="single" aria-pressed="false" title="One box">
+            <svg viewBox="0 0 20 28" width="16" height="22" aria-hidden="true"><rect x="2" y="2" width="16" height="24" rx="3" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+            One box
+          </button>
+          <button type="button" class="seg vx-mode" data-vx-mode="split" aria-pressed="true" title="Two boxes stacked">
+            <svg viewBox="0 0 20 28" width="16" height="22" aria-hidden="true"><rect x="2" y="2" width="16" height="24" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><line x1="2" y1="11" x2="18" y2="11" stroke="currentColor" stroke-width="2"/></svg>
+            Two boxes
+          </button>
+        </div>
+      </div>
+    </div>
+    <div class="vx-foot">
+      <button type="button" id="vx-render">Render vertical</button>
+      <a id="vx-download" class="button secondary" hidden download>Download vertical</a>
+      <progress id="vx-progress" max="1" value="0" hidden></progress>
+      <span id="vx-message" class="message" role="status"></span>
+    </div>
+  </dialog>
+
   <script src="app.js"></script>
 </body>
 </html>

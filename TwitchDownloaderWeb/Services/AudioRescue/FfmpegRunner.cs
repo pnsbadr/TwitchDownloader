@@ -5,7 +5,9 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
     /// <summary>Runs ffmpeg with an argument list. Paths go in as separate arguments, so no quoting is needed.</summary>
     public static class FfmpegRunner
     {
-        public static async Task RunAsync(string ffmpegPath, IReadOnlyList<string> args, string workingDirectory, ILogger logger, CancellationToken cancellationToken)
+        /// <param name="onOutputLine">Receives each stdout line, e.g. for "-progress pipe:1" output.</param>
+        public static async Task RunAsync(string ffmpegPath, IReadOnlyList<string> args, string workingDirectory, ILogger logger, CancellationToken cancellationToken,
+            Action<string>? onOutputLine = null)
         {
             using var process = new Process
             {
@@ -37,7 +39,18 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
             logger.LogDebug("Running ffmpeg {Args}", string.Join(' ', args));
             process.Start();
             process.BeginErrorReadLine();
-            _ = process.StandardOutput.ReadToEndAsync(cancellationToken);
+            if (onOutputLine is null)
+            {
+                _ = process.StandardOutput.ReadToEndAsync(cancellationToken);
+            }
+            else
+            {
+                process.OutputDataReceived += (_, e) =>
+                {
+                    if (e.Data is not null) onOutputLine(e.Data);
+                };
+                process.BeginOutputReadLine();
+            }
 
             try
             {
