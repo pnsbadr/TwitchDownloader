@@ -10,6 +10,8 @@ namespace TwitchDownloaderWeb.Data
         public DbSet<LibraryEntry> Entries => Set<LibraryEntry>();
         public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
         public DbSet<SavedChannel> Channels => Set<SavedChannel>();
+        public DbSet<VodAudioRescue> AudioRescues => Set<VodAudioRescue>();
+        public DbSet<RescuedAudioSegment> RescuedAudioSegments => Set<RescuedAudioSegment>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -39,6 +41,27 @@ namespace TwitchDownloaderWeb.Data
                 entity.Property(x => x.DisplayName).HasMaxLength(100);
                 entity.Property(x => x.TwitchUserId).HasMaxLength(32);
                 entity.HasIndex(x => x.Login).IsUnique();
+            });
+
+            modelBuilder.Entity<VodAudioRescue>(entity =>
+            {
+                entity.ToTable("AudioRescues");
+                entity.HasKey(x => x.VodId);
+                entity.Property(x => x.VodId).ValueGeneratedNever();
+                entity.Property(x => x.Status).HasConversion<string>().HasMaxLength(32);
+                entity.Property(x => x.ChannelLogin).HasMaxLength(25);
+                entity.Property(x => x.Title).HasMaxLength(500);
+                entity.Property(x => x.SourceQuality).HasMaxLength(64);
+                entity.HasIndex(x => new { x.Status, x.NextCheckAtUtc });
+            });
+
+            modelBuilder.Entity<RescuedAudioSegment>(entity =>
+            {
+                entity.Property(x => x.Key).HasMaxLength(64);
+                // SQLite stores decimals as TEXT; these are small segment times, so a double column is fine and sortable
+                entity.Property(x => x.OffsetSeconds).HasConversion<double>();
+                entity.Property(x => x.DurationSeconds).HasConversion<double>();
+                entity.HasIndex(x => new { x.VodId, x.Key }).IsUnique();
             });
         }
 

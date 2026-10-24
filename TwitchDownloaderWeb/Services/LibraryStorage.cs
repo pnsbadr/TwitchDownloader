@@ -11,6 +11,8 @@ namespace TwitchDownloaderWeb.Services
     {
         public const string StoredFolderName = "library";
         public const string GeneratedFolderName = "generated";
+        public const string RescueFolderName = "rescue";
+        public const string WorkFolderName = "work";
 
         private readonly ILogger<LibraryStorage> _logger;
 
@@ -29,6 +31,19 @@ namespace TwitchDownloaderWeb.Services
         public static string StoredRelativePath(int entryId) => Path.Combine(StoredFolderName, $"{entryId}.mp4");
 
         public static string GeneratedRelativePath(int entryId) => Path.Combine(GeneratedFolderName, $"{entryId}.mp4");
+
+        /// <summary>Rescued clean audio for a VOD segment. Kept until pruned, independent of library entries.</summary>
+        public static string RescuedSegmentRelativePath(long vodId, string segmentKey) => Path.Combine(RescueFolderName, vodId.ToString(), $"{segmentKey}.ts");
+
+        public string RescueVodFolder(long vodId) => Path.Combine(RootFolder, RescueFolderName, vodId.ToString());
+
+        /// <summary>A fresh scratch folder for one job (e.g. an audio restore). The caller deletes it.</summary>
+        public string CreateWorkFolder(string name)
+        {
+            var path = Path.Combine(RootFolder, WorkFolderName, $"{name}-{DateTime.UtcNow.Ticks}");
+            Directory.CreateDirectory(path);
+            return path;
+        }
 
         public string Resolve(string relativePath) => Path.GetFullPath(relativePath, RootFolder);
 

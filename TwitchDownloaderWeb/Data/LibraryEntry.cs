@@ -65,6 +65,15 @@ namespace TwitchDownloaderWeb.Data
         public long? GeneratedFileSizeBytes { get; set; }
         public DateTime? GeneratedExpiresAtUtc { get; set; }
 
+        /// <summary>Seconds of muted audio replaced with rescued clean audio in the last file made for this entry. Null if none.</summary>
+        public double? AudioRestoredSeconds { get; set; }
+
+        /// <summary>
+        /// Seconds of the last file made for this entry that are still muted because no clean audio was saved for them
+        /// (e.g. Twitch had already muted them when the rescue started). Null if none, or if the VOD has no audio rescue.
+        /// </summary>
+        public double? AudioMutedSeconds { get; set; }
+
         /// <summary>Linked to users in phase 3.</summary>
         public string? AddedByUserId { get; set; }
     }

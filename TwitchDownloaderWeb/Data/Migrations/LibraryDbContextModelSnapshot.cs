@@ -61,6 +61,12 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<string>("AddedByUserId")
                         .HasColumnType("TEXT");
 
+                    b.Property<double?>("AudioMutedSeconds")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("AudioRestoredSeconds")
+                        .HasColumnType("REAL");
+
                     b.Property<string>("ChannelName")
                         .HasColumnType("TEXT");
 
@@ -140,6 +146,52 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.ToTable("LibraryEntries", (string)null);
                 });
 
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.RescuedAudioSegment", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double>("DurationSeconds")
+                        .HasColumnType("REAL");
+
+                    b.Property<string>("FilePath")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long?>("FirstAudioPts")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<double>("OffsetSeconds")
+                        .HasColumnType("REAL");
+
+                    b.Property<DateTime>("SavedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("Unrecoverable")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("VodId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("WasMuted")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("VodId", "Key")
+                        .IsUnique();
+
+                    b.ToTable("RescuedAudioSegments");
+                });
+
             modelBuilder.Entity("TwitchDownloaderWeb.Data.SavedChannel", b =>
                 {
                     b.Property<int>("Id")
@@ -175,6 +227,74 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("Channels", (string)null);
+                });
+
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.VodAudioRescue", b =>
+                {
+                    b.Property<long>("VodId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ChannelLogin")
+                        .HasMaxLength(25)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Error")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("GrabCompletedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("MutedCount")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("NextCheckAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("PruneAfterUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("RequestedByUserId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("SavedCount")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("SegmentCount")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("SourceQuality")
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("StoredBytes")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("StreamStartUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Title")
+                        .HasMaxLength(500)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("UnrecoverableCount")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("VodId");
+
+                    b.HasIndex("Status", "NextCheckAtUtc");
+
+                    b.ToTable("AudioRescues", (string)null);
                 });
 #pragma warning restore 612, 618
         }

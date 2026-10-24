@@ -1,0 +1,149 @@
+using System.Net.Http.Headers;
+using Microsoft.EntityFrameworkCore;
+using TwitchDownloaderCore.Models;
+using TwitchDownloaderWeb.Data;
+
+namespace TwitchDownloaderWeb.Services.AudioRescue
+{
+    /// <param name="RestoredSeconds">Muted time inside the trim that got clean audio.</param>
+    /// <param name="StillMutedSeconds">Muted time inside the trim with no clean audio saved.</param>
+    /// <param name="Downloaded">False if nothing could be restored and the caller should download normally.</param>
+    public sealed record AudioRestoreResult(double RestoredSeconds, double StillMutedSeconds, bool Downloaded);
+
+    /// <summary>
+    /// Makes a library file with rescued clean audio in place of Twitch's muted parts:
+    /// 1. Core downloads the range in Safe mode, so the file starts exactly on a known segment.
+    /// 2. The clean audio is placed by the segments' own timestamps and mixed in; the video is copied untouched.
+    /// 3. For an Exact entry, the fixed file is trimmed the same way Core trims, so the new audio stays in sync.
+    /// </summary>
+    public sealed class AudioRestoreService
+    {
+        private const int HeadBytes = 256 * 1024;
+
+        private readonly VodDownloadRunner _runner;
+        private readonly LibraryStorage _storage;
+        private readonly IHttpClientFactory _httpClientFactory;
+        private readonly IVodPlaylistSource _playlists;
+        private readonly IConfiguration _configuration;
+
+        public AudioRestoreService(VodDownloadRunner runner, LibraryStorage storage, IHttpClientFactory httpClientFactory, IVodPlaylistSource playlists,
+            IConfiguration configuration)
+        {
+            _runner = runner;
+            _storage = storage;
+            _httpClientFactory = httpClientFactory;
+            _playlists = playlists;
+            _configuration = configuration;
+        }
+
+        /// <returns>
+        /// Null if the VOD has no audio rescue (download it normally; we don't know which parts are muted). Otherwise how much
+        /// muted audio was restored and how much stays muted; when <see cref="AudioRestoreResult.Downloaded"/> is false the
+        /// caller downloads normally.
+        /// </returns>
+        public async Task<AudioRestoreResult?> TryDownloadRestoredAsync(LibraryDbContext db, LibraryEntry entry, string outputPath, ILogger logger, CancellationToken cancellationToken)
+        {
+            if (!await db.AudioRescues.AsNoTracking().AnyAsync(x => x.VodId == entry.VodId, cancellationToken))
+                return null;
+
+            var clean = await db.RescuedAudioSegments.AsNoTracking()
+                .Where(x => x.VodId == entry.VodId && x.FilePath != null && x.FirstAudioPts != null)
+                .ToDictionaryAsync(x => x.Key, cancellationToken);
+
+            var http = _httpClientFactory.CreateClient(nameof(AudioRestoreService));
+            var rendition = await _playlists.GetRenditionAsync(http, entry.VodId, entry.Quality, cancellationToken);
+            if (rendition is null)
+                return null;
+
+            var segments = rendition.Segments;
+            var range = VodPlaylist.GetTrimRange(segments, entry.StartTime, entry.EndTime);
+            var (rangeStart, rangeLength) = range.GetOffsetAndLength(segments.Count);
+            var mutedSeconds = MutedSeconds(segments.Skip(rangeStart).Take(rangeLength).Where(x => x.IsMuted), entry);
+            var runs = RestorePlanner.FindRuns(segments, range, key => clean.ContainsKey(key) && File.Exists(_storage.Resolve(clean[key].FilePath!)));
+            if (runs.Count == 0)
+                return new AudioRestoreResult(0, mutedSeconds, false);
+
+            if (segments.Any(x => !x.Path.Contains(".ts", StringComparison.OrdinalIgnoreCase)))
+            {
+                logger.LogWarning("Entry {EntryId}: VOD {VodId} isn't MPEG-TS; downloading without restoring audio.", entry.Id, entry.VodId);
+                return new AudioRestoreResult(0, mutedSeconds, false);
+            }
+
+            var ffmpegPath = _configuration["Ffmpeg:Path"] is { Length: > 0 } configured ? configured : "ffmpeg";
+            var work = _storage.CreateWorkFolder($"restore-{entry.Id}");
+            try
+            {
+                var safeFile = Path.Combine(work, "safe.mp4");
+                await _runner.DownloadAsync(entry.VodId, entry.Quality, VideoTrimMode.Safe, entry.StartTime, entry.EndTime,
+                    safeFile, info => info, logger, cancellationToken);
+
+                var startSegment = segments[range.GetOffsetAndLength(segments.Count).Offset];
+                var firstHead = await ReadHeadAsync(http, rendition, startSegment, cancellationToken);
+                var runHeads = new List<TsTimestamps>(runs.Count);
+                foreach (var run in runs)
+                    runHeads.Add(run[0] == startSegment ? firstHead : await ReadHeadAsync(http, rendition, run[0], cancellationToken));
+
+                var (audioStart, placed) = RestorePlanner.Place(segments, range, runs,
+                    key => new CleanAudioFile(_storage.Resolve(clean[key].FilePath!), clean[key].FirstAudioPts!.Value), firstHead, runHeads);
+
+                var restoredFile = Path.Combine(work, "restored.mp4");
+                await AudioSplicer.SpliceAsync(ffmpegPath, safeFile, audioStart, placed, restoredFile, work, logger, cancellationToken);
+
+                if (entry.TrimMode == VideoTrimMode.Exact)
+                {
+                    var end = entry.EndTime ?? TimeSpan.FromSeconds((double)segments.Sum(x => x.Duration));
+                    var start = entry.StartTime - TimeSpan.FromSeconds((double)startSegment.Offset);
+                    await AudioSplicer.TrimAsync(ffmpegPath, restoredFile, start.TotalSeconds, (end - entry.StartTime).TotalSeconds, outputPath, work, logger, cancellationToken);
+                }
+                else
+                {
+                    File.Move(restoredFile, outputPath, true);
+                }
+
+                var restored = MutedSeconds(runs.SelectMany(x => x), entry);
+                return new AudioRestoreResult(restored, Math.Max(0, mutedSeconds - restored), true);
+            }
+            finally
+            {
+                try
+                {
+                    Directory.Delete(work, true);
+                }
+                catch (IOException ex)
+                {
+                    logger.LogWarning("Couldn't delete restore work folder {Path}: {Message}", work, ex.Message);
+                }
+            }
+        }
+
+        /// <summary>How much of these segments falls inside the entry's trim.</summary>
+        private static double MutedSeconds(IEnumerable<VodSegment> segments, LibraryEntry entry)
+        {
+            var start = (decimal)entry.StartTime.TotalSeconds;
+            var end = entry.EndTime is { } e ? (decimal)e.TotalSeconds : decimal.MaxValue;
+            return (double)segments.Sum(s => Math.Max(0, Math.Min(end, s.Offset + s.Duration) - Math.Max(start, s.Offset)));
+        }
+
+        /// <summary>The first bytes of a segment in the download's quality, enough to read its starting timestamps.</summary>
+        private static async Task<TsTimestamps> ReadHeadAsync(HttpClient http, VodRendition rendition, VodSegment segment, CancellationToken cancellationToken)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, rendition.SegmentUri(segment.Path));
+            request.Headers.Range = new RangeHeaderValue(0, HeadBytes - 1);
+            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            response.EnsureSuccessStatusCode();
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            var buffer = new byte[HeadBytes];
+            var read = 0;
+            int n;
+            while (read < buffer.Length && (n = await stream.ReadAsync(buffer.AsMemory(read), cancellationToken)) > 0)
+                read += n;
+
+            var timestamps = TsTimestamps.Read(buffer.AsSpan(0, read));
+            if (timestamps.StartPts is null)
+                throw new InvalidOperationException($"No timestamps found at the start of segment {segment.Key}.");
+
+            return timestamps;
+        }
+    }
+}

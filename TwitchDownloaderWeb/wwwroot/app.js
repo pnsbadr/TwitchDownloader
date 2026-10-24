@@ -351,6 +351,38 @@ function renderVodTypeToggle() {
   }
 }
 
+const RESCUE_BADGES = {
+  Grabbing: ["badge busy", "Saving audio…", "Saving this VOD's audio while Twitch still has clean copies of muted parts"],
+  WaitingToPrune: ["badge ok", "Audio saved", "Full audio saved; only the muted parts are kept after a couple of days"],
+  Pruned: ["badge ok", "Muted audio saved", "Clean audio for the muted parts is saved and swapped in on download"],
+  Failed: ["badge error", "Audio rescue failed", "Saving the audio failed; you can try again"],
+};
+
+function rescueBadge(status) {
+  const badge = RESCUE_BADGES[status];
+  return badge ? el("span", { class: badge[0], title: badge[2] }, badge[1]) : null;
+}
+
+// Muted parts Twitch wouldn't give a clean copy of (usually muted before the rescue started), so they stay muted
+function lostAudioBadge(vod) {
+  const lost = vod.rescueUnrecoverableCount;
+  if (!lost) return null;
+  const text = lost === vod.rescueMutedCount ? "Muted parts not saved" : `${lost} of ${vod.rescueMutedCount} muted parts not saved`;
+  return el("span", { class: "badge error", title: "Twitch had already muted these parts when saving started, so they stay muted in downloads" }, text);
+}
+
+async function startRescue(vod, button) {
+  button.disabled = true;
+  try {
+    const rescue = await api("POST", `/api/vods/${vod.vodId}/rescue`);
+    vod.rescueStatus = rescue.status;
+    setMessage($("browse-message"), `Saving the audio of "${vod.title}". This runs in the background.`, "ok");
+  } catch (error) {
+    setMessage($("browse-message"), error.message, "error");
+  }
+  renderBrowseList();
+}
+
 function vodCard(vod) {
   const thumb = vod.thumbnailUrl
     ? el("img", { src: vod.thumbnailUrl, alt: "", width: "320", height: "180", loading: "lazy" })
@@ -358,14 +390,25 @@ function vodCard(vod) {
 
   const meta = [formatDate(vod.createdAtUtc), vod.length, vod.game].filter(Boolean).join(" · ");
 
-  return el("li", {},
+  // Offer a manual rescue for VODs that are still in the unmute window (or whose rescue failed)
+  const canRescue = (vod.unmuteWindowOpen && !vod.rescueStatus) || vod.rescueStatus === "Failed";
+  const rescueButton = canRescue
+    ? el("button", { type: "button", class: "small secondary", onclick: (event) => startRescue(vod, event.currentTarget) },
+      vod.rescueStatus === "Failed" ? "Retry saving audio" : "Save audio now")
+    : null;
+
+  return el("li", { class: "vod-item" },
     el("button", { type: "button", class: "vod-card", "aria-pressed": String(browse.selectedId === vod.vodId), onclick: () => pickVod(vod) },
       thumb,
       el("span", { class: "vod-card-title" }, vod.title),
       el("span", { class: "entry-meta" }, meta),
-      vod.unmuteWindowOpen
-        ? el("span", { class: "badge ref", title: "Ended less than 24 hours ago: Twitch may still have unmuted audio for muted parts" }, "Unmute window open")
-        : null));
+      el("span", { class: "vod-card-badges" },
+        vod.unmuteWindowOpen
+          ? el("span", { class: "badge ref", title: "Ended less than 24 hours ago: Twitch may still have unmuted audio for muted parts" }, "Unmute window open")
+          : null,
+        rescueBadge(vod.rescueStatus),
+        lostAudioBadge(vod))),
+    rescueButton ? el("div", { class: "vod-item-actions" }, rescueButton) : null);
 }
 
 function renderBrowseList() {
@@ -560,7 +603,14 @@ function renderEntry(entry) {
       titleNode(entry),
       el("div", { class: "entry-meta" }, dates),
       el("div", { class: "entry-meta" }, details),
-      el("div", { class: "entry-status" }, statusBadge(entry), expiry),
+      el("div", { class: "entry-status" }, statusBadge(entry),
+        entry.audioRestoredSeconds > 0
+          ? el("span", { class: "badge ok", title: "Muted parts were replaced with saved clean audio" }, `Audio restored · ${formatDuration(entry.audioRestoredSeconds)}`)
+          : null,
+        entry.audioMutedSeconds > 0
+          ? el("span", { class: "badge error", title: "No clean audio was saved for these muted parts (Twitch had already muted them)" }, `Still muted · ${formatDuration(entry.audioMutedSeconds)}`)
+          : null,
+        expiry),
       entry.error ? el("div", { class: "entry-error" }, entry.error) : null,
       renamingId === entry.id ? null : el("div", { class: "entry-actions" }, ...entryActions(entry))));
 }
