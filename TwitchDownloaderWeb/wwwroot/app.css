@@ -544,6 +544,10 @@ a.button.secondary { background: transparent; color: var(--accent); }
 .vx-player { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .vx-player input[type="range"] { flex: 1; min-width: 0; padding: 0; }
 .vx-time { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.vx-mute { padding: 2px 4px; font-size: 16px; line-height: 1; }
+.vx-player input.vx-volume { flex: 0 0 80px; width: 80px; }
+
+a.button.disabled { opacity: 0.55; cursor: default; pointer-events: none; }
 .vx-hint { font-size: 13px; margin: 6px 0 0; }
 
 .vx-preview-wrap {

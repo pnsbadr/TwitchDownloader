@@ -1253,13 +1253,7 @@ function vxRenderState(state) {
   $("vx-progress").hidden = !busy;
   $("vx-progress").value = state.progress || 0;
 
-  const download = $("vx-download");
-  download.hidden = state.status !== "Ready";
-  if (state.status === "Ready") {
-    // Cache-bust so a re-render isn't served from the browser cache
-    download.href = `/api/entries/${vx.entry.id}/shortform/file?v=${Date.now()}`;
-    download.textContent = `Download vertical · ${formatSize(state.fileSizeBytes)}`;
-  }
+  vxSetDownload(state.status === "Ready" ? state.fileSizeBytes : null);
 
   if (busy) setMessage($("vx-message"), `Rendering… ${Math.round((state.progress || 0) * 100)}%`);
   else if (state.status === "Failed") setMessage($("vx-message"), state.error || "Rendering failed.", "error");
@@ -1268,6 +1262,53 @@ function vxRenderState(state) {
 
   clearTimeout(vx.pollTimer);
   if (busy && $("vx").open) vx.pollTimer = setTimeout(vxPoll, 1500);
+}
+
+// Clickable only once a render has finished; without an href the link does nothing
+function vxSetDownload(fileSizeBytes) {
+  const download = $("vx-download");
+  const ready = fileSizeBytes != null;
+  download.classList.toggle("disabled", !ready);
+  download.setAttribute("aria-disabled", String(!ready));
+  if (ready) {
+    // Cache-bust so a re-render isn't served from the browser cache
+    download.href = `/api/entries/${vx.entry.id}/shortform/file?v=${Date.now()}`;
+    download.textContent = `Download vertical · ${formatSize(fileSizeBytes)}`;
+  } else {
+    download.removeAttribute("href");
+    download.textContent = "Download vertical";
+  }
+}
+
+// ---- preview volume (the player only; renders keep the clip's audio as it is) ----
+
+const VX_VOLUME_STORAGE_KEY = "clipLibrary.previewVolume";
+
+function vxLoadVolume() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(VX_VOLUME_STORAGE_KEY));
+    if (saved && Number.isFinite(saved.volume)) return { volume: Math.min(Math.max(saved.volume, 0), 1), muted: !!saved.muted };
+  } catch {
+    // Unavailable or unreadable storage: use the default
+  }
+  return { volume: 0.3, muted: false };
+}
+
+function vxSaveVolume() {
+  const video = $("vx-video");
+  try {
+    localStorage.setItem(VX_VOLUME_STORAGE_KEY, JSON.stringify({ volume: video.volume, muted: video.muted }));
+  } catch {
+    // The setting still applies for this visit
+  }
+}
+
+function vxRenderVolume() {
+  const video = $("vx-video");
+  const silent = video.muted || video.volume === 0;
+  $("vx-volume").value = String(Math.round((video.muted ? 0 : video.volume) * 100));
+  $("vx-mute").textContent = silent ? "🔇" : video.volume < 0.5 ? "🔉" : "🔊";
+  $("vx-mute").setAttribute("aria-label", silent ? "Unmute preview" : "Mute preview");
 }
 
 async function vxPoll() {
@@ -1296,7 +1337,7 @@ async function openVertical(entry) {
   vx.entry = entry;
   vx.ready = false;
   $("vx-entry").textContent = entry.title;
-  $("vx-download").hidden = true;
+  vxSetDownload(null);
   $("vx-progress").hidden = true;
   setMessage($("vx-message"), "Loading video…");
 
@@ -1376,6 +1417,26 @@ for (const type of ["play", "pause", "timeupdate", "durationchange"]) {
 $("vx-video").addEventListener("error", () => {
   if (vx.entry) setMessage($("vx-message"), "Couldn't load the video.", "error");
 });
+$("vx-volume").addEventListener("input", () => {
+  const video = $("vx-video");
+  video.volume = Number($("vx-volume").value) / 100;
+  video.muted = video.volume === 0;
+  vxRenderVolume();
+  vxSaveVolume();
+});
+$("vx-mute").addEventListener("click", () => {
+  const video = $("vx-video");
+  video.muted = !video.muted;
+  if (!video.muted && video.volume === 0) video.volume = 0.3;
+  vxRenderVolume();
+  vxSaveVolume();
+});
+{
+  const saved = vxLoadVolume();
+  $("vx-video").volume = saved.volume;
+  $("vx-video").muted = saved.muted;
+  vxRenderVolume();
+}
 $("vx-render").addEventListener("click", vxRender);
 $("vx-close").addEventListener("click", () => $("vx").close());
 $("vx").addEventListener("close", closeVertical);

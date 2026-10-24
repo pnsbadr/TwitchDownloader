@@ -169,7 +169,10 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 - Like Twitch's portrait clip editor: **Make vertical** on an entry with a file opens a dialog with the landscape video,
   one box ("One box") or two boxes ("Two boxes": pink top over cyan bottom) you drag/resize, and a live canvas preview of
   the portrait frame; the pill in the preview sets the top/bottom split (20–80 %). Each box keeps the shape of the slot it
-  fills, so nothing is stretched.
+  fills, so nothing is stretched. The player has a preview-only volume slider/mute (default 30 %, saved in `localStorage` key
+  `clipLibrary.previewVolume`); renders always keep the clip's audio as is. **Download vertical** stays visible but disabled
+  until a render is Ready (and while a new one runs).
+- Rendering is server-side (ffmpeg on the machine running the app); the browser only plays the video and draws the preview.
 - `ShortformService` renders with ffmpeg: crop by fractions of `iw`/`ih` (no ffprobe), scale to 1080 wide, `vstack`,
   libx264 veryfast CRF 20, audio copied, to `downloads/shortform/{id}.mp4`; the layout is saved as `{id}.json` so the editor
   reopens where it was left. Numbers are written with the invariant culture (a decimal comma would break the filter).

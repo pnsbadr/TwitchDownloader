@@ -165,6 +165,9 @@
           <button type="button" id="vx-play" class="secondary small" aria-label="Play">▶</button>
           <input id="vx-seek" type="range" min="0" max="1000" value="0" aria-label="Seek">
           <span id="vx-time" class="muted vx-time">0:00</span>
+          <!-- Preview volume only; the rendered file keeps the clip's original audio -->
+          <button type="button" id="vx-mute" class="link vx-mute" aria-label="Mute preview">🔊</button>
+          <input id="vx-volume" class="vx-volume" type="range" min="0" max="100" value="30" aria-label="Preview volume">
         </div>
         <p class="muted vx-hint">Drag a box to move it, drag a corner to resize it. In two-box mode, drag the bar in the portrait preview to change how much space each box gets.</p>
       </div>
@@ -188,7 +191,7 @@
     </div>
     <div class="vx-foot">
       <button type="button" id="vx-render">Render vertical</button>
-      <a id="vx-download" class="button secondary" hidden download>Download vertical</a>
+      <a id="vx-download" class="button secondary disabled" aria-disabled="true" download>Download vertical</a>
       <progress id="vx-progress" max="1" value="0" hidden></progress>
       <span id="vx-message" class="message" role="status"></span>
     </div>
