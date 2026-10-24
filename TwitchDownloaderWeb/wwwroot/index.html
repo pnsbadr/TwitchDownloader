@@ -175,8 +175,11 @@
         <div class="vx-label">Portrait</div>
         <div id="vx-preview-wrap" class="vx-preview-wrap">
           <canvas id="vx-preview" width="270" height="480"></canvas>
+          <!-- Plays a finished render in place of the live preview -->
+          <video id="vx-render-video" class="vx-render-video" playsinline controls hidden></video>
           <div id="vx-split" class="vx-split" role="slider" tabindex="0" aria-label="Split between top and bottom" aria-valuemin="20" aria-valuemax="80"><span></span></div>
         </div>
+        <button type="button" id="vx-back" class="secondary small vx-back" hidden>Back to editor</button>
         <div class="vx-modes" role="group" aria-label="Layout">
           <button type="button" class="seg vx-mode" data-vx-mode="single" aria-pressed="false" title="One box">
             <svg viewBox="0 0 20 28" width="16" height="22" aria-hidden="true"><rect x="2" y="2" width="16" height="24" rx="3" fill="none" stroke="currentColor" stroke-width="2"/></svg>
@@ -191,9 +194,13 @@
     </div>
     <div class="vx-foot">
       <button type="button" id="vx-render">Render vertical</button>
-      <a id="vx-download" class="button secondary disabled" aria-disabled="true" download>Download vertical</a>
       <progress id="vx-progress" max="1" value="0" hidden></progress>
       <span id="vx-message" class="message" role="status"></span>
+    </div>
+    <div class="vx-history">
+      <div class="vx-label">Renders <span class="muted vx-history-note">shared with the team · newest 5 kept for 72 h</span></div>
+      <ul id="vx-renders" class="vx-renders"></ul>
+      <p id="vx-renders-empty" class="muted" hidden>No renders yet. Set up the boxes and click Render vertical.</p>
     </div>
   </dialog>
 

@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using TwitchDownloaderWeb.Data;
+using TwitchDownloaderWeb.Services.Shortform;
 
 namespace TwitchDownloaderWeb.Services
 {
@@ -17,10 +18,13 @@ namespace TwitchDownloaderWeb.Services
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly DownloadQueue _queue;
         private readonly LibraryStorage _storage;
+        private readonly ShortformService _shortform;
         private readonly ILogger<LibraryCleanupService> _logger;
 
-        public LibraryCleanupService(IServiceScopeFactory scopeFactory, DownloadQueue queue, LibraryStorage storage, ILogger<LibraryCleanupService> logger)
+        public LibraryCleanupService(IServiceScopeFactory scopeFactory, DownloadQueue queue, LibraryStorage storage, ShortformService shortform,
+            ILogger<LibraryCleanupService> logger)
         {
+            _shortform = shortform;
             _scopeFactory = scopeFactory;
             _queue = queue;
             _storage = storage;
@@ -62,6 +66,9 @@ namespace TwitchDownloaderWeb.Services
 
             await DeleteExpiredGeneratedFilesAsync(db, cancellationToken);
             await DeleteOrphanedFilesAsync(db, cancellationToken);
+
+            var entryIds = (await db.Entries.Select(x => x.Id).ToListAsync(cancellationToken)).ToHashSet();
+            _shortform.Cleanup(entryIds);
         }
 
         private async Task DeleteExpiredGeneratedFilesAsync(LibraryDbContext db, CancellationToken cancellationToken)

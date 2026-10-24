@@ -1127,13 +1127,14 @@ function vxRenderBoxes() {
   }
 
   const split = $("vx-split");
-  split.hidden = vx.mode === "single";
+  split.hidden = vx.mode === "single" || !$("vx-render-video").hidden;
   split.style.top = `${vx.ratio * 100}%`;
   split.setAttribute("aria-valuenow", String(Math.round(vx.ratio * 100)));
 
   for (const button of document.querySelectorAll("[data-vx-mode]")) {
     button.setAttribute("aria-pressed", String(button.dataset.vxMode === vx.mode));
   }
+  vxUpdateMatches();
 }
 
 function vxDrawPreview() {
@@ -1166,6 +1167,7 @@ function vxPointer(event, element) {
 }
 
 function vxStartDrag(event) {
+  vxClosePlayback();
   const node = event.currentTarget;
   const name = node.dataset.box;
   const box = { ...vx.boxes[name] };
@@ -1249,35 +1251,109 @@ function vxUpdatePlayer() {
 
 function vxRenderState(state) {
   const busy = state.status === "Rendering";
+  const finished = vx.wasRendering && !busy && state.status !== "Failed";
+  vx.wasRendering = busy;
+
   $("vx-render").disabled = busy;
   $("vx-progress").hidden = !busy;
   $("vx-progress").value = state.progress || 0;
 
-  vxSetDownload(state.status === "Ready" ? state.fileSizeBytes : null);
-
   if (busy) setMessage($("vx-message"), `Rendering… ${Math.round((state.progress || 0) * 100)}%`);
   else if (state.status === "Failed") setMessage($("vx-message"), state.error || "Rendering failed.", "error");
-  else if (state.status === "Ready") setMessage($("vx-message"), "Vertical video ready.", "ok");
+  else if (finished) setMessage($("vx-message"), "Vertical video ready. It's at the top of the list below.", "ok");
   else setMessage($("vx-message"), "");
+
+  vxRenderRenders(state.renders || [], finished ? state.renders?.[0]?.id : null);
 
   clearTimeout(vx.pollTimer);
   if (busy && $("vx").open) vx.pollTimer = setTimeout(vxPoll, 1500);
 }
 
-// Clickable only once a render has finished; without an href the link does nothing
-function vxSetDownload(fileSizeBytes) {
-  const download = $("vx-download");
-  const ready = fileSizeBytes != null;
-  download.classList.toggle("disabled", !ready);
-  download.setAttribute("aria-disabled", String(!ready));
-  if (ready) {
-    // Cache-bust so a re-render isn't served from the browser cache
-    download.href = `/api/entries/${vx.entry.id}/shortform/file?v=${Date.now()}`;
-    download.textContent = `Download vertical · ${formatSize(fileSizeBytes)}`;
-  } else {
-    download.removeAttribute("href");
-    download.textContent = "Download vertical";
+function vxCurrentLayout() {
+  return vx.mode === "single"
+    ? { mode: "single", top: vxToServer(vx.boxes.single) }
+    : { mode: "split", top: vxToServer(vx.boxes.top), bottom: vxToServer(vx.boxes.bottom), splitRatio: vx.ratio };
+}
+
+function vxSameLayout(a, b) {
+  if (!a || !b || a.mode !== b.mode) return false;
+  const close = (x, y) => Math.abs((x ?? 0) - (y ?? 0)) < 0.0005;
+  const sameBox = (p, q) => (!p && !q) || (p && q && close(p.x, q.x) && close(p.y, q.y) && close(p.width, q.width) && close(p.height, q.height));
+  return sameBox(a.top, b.top) && (a.mode === "single" || (sameBox(a.bottom, b.bottom) && close(a.splitRatio, b.splitRatio)));
+}
+
+// Marks the render (if any) made from exactly the boxes on screen, so it's clear whether a new render is needed
+function vxUpdateMatches() {
+  if (!vx.ready) return;
+  const current = vxCurrentLayout();
+  for (const item of $("vx-renders").children) {
+    item.querySelector(".vx-match").hidden = !vxSameLayout(item.vxLayout, current);
   }
+}
+
+function vxRenderRenders(renders, newId) {
+  $("vx-renders-empty").hidden = renders.length > 0;
+  $("vx-renders").replaceChildren(...renders.map((render) => {
+    const play = () => vxPlayRender(render);
+    const item = el("li", { class: render.id === newId ? "vx-render-item new" : "vx-render-item" },
+      el("button", { type: "button", class: "vx-thumb", title: "Preview", "aria-label": "Preview this render", onclick: play },
+        render.thumbnailUrl ? el("img", { src: render.thumbnailUrl, alt: "", width: "45", height: "80", loading: "lazy" }) : el("span", {}, "▶")),
+      el("div", { class: "vx-render-body" },
+        el("div", {}, formatDate(render.createdAtUtc),
+          el("span", { class: "badge ok vx-match", hidden: "" }, "Matches the boxes")),
+        el("div", { class: "muted" }, `${render.layout.mode === "split" ? "Two boxes" : "One box"} · ${formatSize(render.sizeBytes)} · kept until ${formatDate(render.expiresAtUtc)}`),
+        el("div", { class: "entry-actions" },
+          el("a", { class: "button small", href: render.fileUrl, download: "" }, "Download"),
+          el("button", { type: "button", class: "secondary small", onclick: play }, "Preview"),
+          el("button", { type: "button", class: "link", onclick: () => vxUseLayout(render) }, "Use these boxes"),
+          el("button", { type: "button", class: "link danger", onclick: () => vxDeleteRender(render) }, "Delete"))));
+    item.vxLayout = render.layout;
+    return item;
+  }));
+  vxUpdateMatches();
+}
+
+function vxUseLayout(render) {
+  vxClosePlayback();
+  vxApplySaved(render.layout);
+  vxRenderBoxes();
+}
+
+async function vxDeleteRender(render) {
+  if (!confirm(`Delete the vertical render from ${formatDate(render.createdAtUtc)}? This can't be undone.`)) return;
+  try {
+    await api("DELETE", `/api/entries/${vx.entry.id}/shortform/${render.id}`);
+  } catch (error) {
+    setMessage($("vx-message"), error.message, "error");
+  }
+  if ($("vx-render-video").dataset.renderId === render.id) vxClosePlayback();
+  await vxPoll();
+}
+
+// Shows a finished render in the portrait panel (inline=true streams it instead of downloading)
+function vxPlayRender(render) {
+  const player = $("vx-render-video");
+  $("vx-video").pause();
+  player.dataset.renderId = render.id;
+  player.src = `${render.fileUrl}?inline=true`;
+  player.volume = $("vx-video").volume;
+  player.muted = $("vx-video").muted;
+  player.hidden = false;
+  $("vx-back").hidden = false;
+  $("vx-split").hidden = true;
+  player.play().catch(() => {});
+}
+
+function vxClosePlayback() {
+  const player = $("vx-render-video");
+  if (player.hidden) return;
+  player.pause();
+  player.removeAttribute("src");
+  player.load();
+  delete player.dataset.renderId;
+  player.hidden = true;
+  $("vx-back").hidden = true;
+  vxRenderBoxes();
 }
 
 // ---- preview volume (the player only; renders keep the clip's audio as it is) ----
@@ -1321,9 +1397,8 @@ async function vxPoll() {
 }
 
 async function vxRender() {
-  const layout = vx.mode === "single"
-    ? { mode: "single", top: vxToServer(vx.boxes.single) }
-    : { mode: "split", top: vxToServer(vx.boxes.top), bottom: vxToServer(vx.boxes.bottom), splitRatio: vx.ratio };
+  const layout = vxCurrentLayout();
+  vxClosePlayback();
   $("vx-render").disabled = true;
   try {
     vxRenderState(await api("POST", `/api/entries/${vx.entry.id}/shortform`, layout));
@@ -1337,7 +1412,8 @@ async function openVertical(entry) {
   vx.entry = entry;
   vx.ready = false;
   $("vx-entry").textContent = entry.title;
-  vxSetDownload(null);
+  vx.wasRendering = false;
+  vxRenderRenders([], null);
   $("vx-progress").hidden = true;
   setMessage($("vx-message"), "Loading video…");
 
@@ -1373,6 +1449,7 @@ async function openVertical(entry) {
 }
 
 function closeVertical() {
+  vxClosePlayback();
   const video = $("vx-video");
   video.pause();
   video.removeAttribute("src");
@@ -1438,6 +1515,7 @@ $("vx-mute").addEventListener("click", () => {
   vxRenderVolume();
 }
 $("vx-render").addEventListener("click", vxRender);
+$("vx-back").addEventListener("click", vxClosePlayback);
 $("vx-close").addEventListener("click", () => $("vx").close());
 $("vx").addEventListener("close", closeVertical);
 
