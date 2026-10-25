@@ -123,7 +123,7 @@ namespace TwitchDownloaderWeb.Tests
             _playlists.Set(live: false, ("0.ts", 10), ("1-muted.ts", 10));
             await _service.ProcessDueAsync(ct);
 
-            var restore = new AudioRestoreService(null!, _storage, new FakeHttpClientFactory(_cdn), _playlists, new ConfigurationBuilder().Build());
+            var restore = new AudioRestoreService(null!, _storage, new FakeHttpClientFactory(_cdn), _playlists, new ConfigurationBuilder().Build(), null!);
             using var scope2 = _services.CreateScope();
             var db2 = scope2.ServiceProvider.GetRequiredService<LibraryDbContext>();
 

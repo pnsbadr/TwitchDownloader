@@ -79,19 +79,5 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
 
             return sb.ToString();
         }
-
-        /// <summary>The Exact trim, done the way Core does it (-ss/-t with stream copy), on the file whose audio is already fixed.</summary>
-        public static Task TrimAsync(string ffmpegPath, string inputFile, double startSeconds, double lengthSeconds, string outputFile, string workDirectory,
-            ILogger logger, CancellationToken cancellationToken)
-        {
-            var invariant = CultureInfo.InvariantCulture;
-            var args = new List<string> { "-hide_banner", "-nostdin", "-y" };
-            if (startSeconds > 0)
-                args.AddRange(["-ss", startSeconds.ToString("0.######", invariant)]);
-            args.AddRange(["-t", lengthSeconds.ToString("0.######", invariant), "-avoid_negative_ts", "make_zero", "-i", inputFile,
-                "-map", "0", "-c", "copy", outputFile]);
-
-            return FfmpegRunner.RunAsync(ffmpegPath, args, workDirectory, logger, cancellationToken);
-        }
     }
 }

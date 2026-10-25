@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using TwitchDownloaderCore.Models;
 using TwitchDownloaderWeb.Data;
 using TwitchDownloaderWeb.Services.AudioRescue;
 
@@ -16,18 +17,20 @@ namespace TwitchDownloaderWeb.Services
         private readonly VodInfoService _vodInfo;
         private readonly VodDownloadRunner _runner;
         private readonly AudioRestoreService _restore;
+        private readonly ExactTrimService _exactTrim;
         private readonly LibraryStorage _storage;
         private readonly IOptions<DownloadSettings> _settings;
         private readonly ILogger<DownloadWorker> _logger;
 
         public DownloadWorker(IServiceScopeFactory scopeFactory, DownloadQueue queue, VodInfoService vodInfo, VodDownloadRunner runner,
-            AudioRestoreService restore, LibraryStorage storage, IOptions<DownloadSettings> settings, ILogger<DownloadWorker> logger)
+            AudioRestoreService restore, ExactTrimService exactTrim, LibraryStorage storage, IOptions<DownloadSettings> settings, ILogger<DownloadWorker> logger)
         {
             _scopeFactory = scopeFactory;
             _queue = queue;
             _vodInfo = vodInfo;
             _runner = runner;
             _restore = restore;
+            _exactTrim = exactTrim;
             _storage = storage;
             _settings = settings;
             _logger = logger;
@@ -190,8 +193,11 @@ namespace TwitchDownloaderWeb.Services
 
                 if (restore is not { Downloaded: true })
                 {
-                    await _runner.DownloadAsync(entry.VodId, entry.Quality, entry.TrimMode, entry.StartTime, entry.EndTime,
-                        fullPath, info => info, _logger, jobCts.Token);
+                    if (entry.TrimMode == VideoTrimMode.Exact)
+                        await _exactTrim.DownloadAsync(entry, fullPath, _logger, jobCts.Token);
+                    else
+                        await _runner.DownloadAsync(entry.VodId, entry.Quality, entry.TrimMode, entry.StartTime, entry.EndTime,
+                            fullPath, info => info, _logger, jobCts.Token);
                 }
 
                 entry.AudioRestoredSeconds = restore is { Downloaded: true, RestoredSeconds: > 0 } ? restore.RestoredSeconds : null;
