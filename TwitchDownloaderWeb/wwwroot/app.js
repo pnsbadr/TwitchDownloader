@@ -176,6 +176,13 @@ function embedTime(seconds) {
   return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m${s % 60}s`;
 }
 
+// The embed's getCurrentTime() is a cached value that the player only refreshes every so often (about once a
+// second), so on its own it lags playback by up to a second, by a different amount each time, and still shows the
+// old offset for a moment after a seek. position() tracks a base offset (the last refreshed value, or a seek target)
+// plus the time played since, and the tick runs often enough to pause clip previews within a few frames of their end.
+const PLAYER_TICK_MS = 40;
+const MAX_EXTRAPOLATION_SECONDS = 1.5; // don't run ahead while buffering; the next refresh corrects it
+
 class VodPlayer {
   constructor(containerId, timeId) {
     this.containerId = containerId;
@@ -185,6 +192,9 @@ class VodPlayer {
     this.ready = false;
     this.stopAt = null; // pause once playback reaches this offset (clip previews)
     this.timer = null;
+    this.lastReported = null; // last value seen from getCurrentTime(); a different value means a fresh refresh
+    this.base = 0; // offset at baseAt
+    this.baseAt = null; // performance.now() the base was taken while playing, null while not advancing
   }
 
   async open(vodId, startSeconds = 0, stopAt = null) {
@@ -198,6 +208,7 @@ class VodPlayer {
     this.close();
     this.vodId = vodId;
     this.stopAt = stopAt;
+    this.base = startSeconds;
     this.player = new Twitch.Player(this.containerId, {
       width: "100%",
       height: "100%",
@@ -210,10 +221,25 @@ class VodPlayer {
     player.addEventListener(Twitch.Player.READY, () => {
       if (player !== this.player) return;
       this.ready = true;
+      this.lastReported = player.getCurrentTime();
       // The "time" option is whole seconds; land on the exact offset
       if (startSeconds % 1) player.seek(startSeconds);
     });
-    this.timer = setInterval(() => this.tick(), 250);
+    player.addEventListener(Twitch.Player.PLAYING, () => {
+      if (player !== this.player) return;
+      this.baseAt = performance.now();
+    });
+    player.addEventListener(Twitch.Player.PAUSE, () => {
+      if (player !== this.player) return;
+      this.freeze();
+    });
+    player.addEventListener(Twitch.Player.SEEK, (event) => {
+      if (player !== this.player) return;
+      // Seeks from the player's own controls; hold still until it plays from the new spot
+      if (typeof event?.position === "number") this.base = event.position;
+      this.baseAt = null;
+    });
+    this.timer = setInterval(() => this.tick(), PLAYER_TICK_MS);
   }
 
   close() {
@@ -223,29 +249,50 @@ class VodPlayer {
     this.vodId = null;
     this.ready = false;
     this.stopAt = null;
+    this.lastReported = null;
+    this.baseAt = null;
     $(this.containerId).replaceChildren();
     $(this.timeId).textContent = "–";
   }
 
-  // Current offset into the VOD in seconds, or null before the player is ready
-  now() {
-    return this.ready ? this.player.getCurrentTime() : null;
+  // Estimated current offset into the VOD in seconds, or null before the player is ready
+  position() {
+    if (!this.ready) return null;
+    const reported = this.player.getCurrentTime();
+    if (reported !== this.lastReported) {
+      // A fresh refresh: trust it, and keep counting from here if playing
+      this.lastReported = reported;
+      this.base = reported;
+      if (this.baseAt != null) this.baseAt = performance.now();
+    }
+    if (this.baseAt == null || this.player.isPaused()) return this.base;
+    return this.base + Math.min((performance.now() - this.baseAt) / 1000, MAX_EXTRAPOLATION_SECONDS);
+  }
+
+  freeze() {
+    this.base = this.position() ?? this.base;
+    this.baseAt = null;
   }
 
   playRange(startSeconds, stopAt = null) {
     if (!this.ready) return;
     this.stopAt = stopAt;
+    // The cached time still shows the old spot until the next refresh; don't mistake that for the new position
+    this.lastReported = this.player.getCurrentTime();
+    this.base = startSeconds;
+    this.baseAt = null;
     this.player.seek(startSeconds);
     this.player.play();
   }
 
   tick() {
-    const now = this.now();
-    if (now == null) return;
-    $(this.timeId).textContent = formatTrimValue(now);
-    if (this.stopAt != null && now >= this.stopAt) {
+    const position = this.position();
+    if (position == null) return;
+    $(this.timeId).textContent = formatTrimValue(position);
+    if (this.stopAt != null && position >= this.stopAt) {
       this.stopAt = null;
       this.player.pause();
+      this.freeze();
     }
   }
 }
@@ -272,7 +319,7 @@ function closeWatch() {
 }
 
 function setTrimFromPlayer(fieldId) {
-  const now = watchPlayer.now();
+  const now = watchPlayer.position();
   if (now == null) return;
   $(fieldId).value = formatTrimValue(now);
   updateRulePreview();
