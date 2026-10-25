@@ -50,13 +50,17 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
             {
                 try
                 {
-                    if (_settings.Value.Enabled && DateTime.UtcNow >= _nextDiscoveryUtc)
+                    // Turned off: unfinished rescues stay as they are and resume when it is turned back on
+                    if (_settings.Value.Enabled)
                     {
-                        _nextDiscoveryUtc = DateTime.UtcNow.AddMinutes(Math.Max(1, _settings.Value.PollMinutes));
-                        await DiscoverAsync(stoppingToken);
-                    }
+                        if (DateTime.UtcNow >= _nextDiscoveryUtc)
+                        {
+                            _nextDiscoveryUtc = DateTime.UtcNow.AddMinutes(Math.Max(1, _settings.Value.PollMinutes));
+                            await DiscoverAsync(stoppingToken);
+                        }
 
-                    await ProcessDueAsync(stoppingToken);
+                        await ProcessDueAsync(stoppingToken);
+                    }
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {

@@ -99,6 +99,9 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
 ### Muted audio rescue (`Services/AudioRescue/`)
 Twitch mutes segments (`123-muted.ts`) and keeps the clean copy (`123.ts`) for a limited time (Core assumes 24 h and
 only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We save clean audio and splice it back:
+- **Off by default** (`AudioRescue:Enabled` = false since 2026-10-25: it filled the dev disk, ~4.8 GB in 5 days for 2 channels). Off means no
+  new rescues (watch or `POST`, which returns 409), unfinished ones pause (no grab, no prune) and the page hides the Save audio buttons;
+  saved audio is kept and still used for restores. Turn on with `AudioRescue__Enabled=true` or in appsettings.
 - `AudioRescueService` (BackgroundService, `AudioRescue:*` settings): every `PollMinutes` it checks saved channels with
   `WatchMutedAudio` for VODs in the unmute window; `POST /api/vods/{id}/rescue` starts one by hand. It downloads **every**
   segment of the audio-only rendition as raw `.ts` (clean URL for muted ones; 403/404 = unrecoverable) into
@@ -139,7 +142,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/entries/{id}/file` | Streams the file (range requests supported); 409 if not ready; 410 if missing on disk (entry then becomes retryable) |
 | `GET /api/channels` / `POST /api/channels` `{ login }` / `DELETE /api/channels/{id}` | Saved channels. POST checks the login exists on Twitch (404) and isn't saved (409); add/remove audited |
 | `GET /api/channels/{login}/vods?type=archive\|highlight\|upload\|all&cursor=&limit=` | Any channel's VODs, newest first, via Core's `GetGqlVideos`. `nextCursor` = last edge's cursor; `unmuteWindowOpen` = ended < 24 h ago. 502 if Twitch is unreachable |
-| `GET /api/vods/{id}/rescue` / `POST /api/vods/{id}/rescue` | Audio rescue status (404 if none) / start one now (202; a Failed one is retried; others returned as is) |
+| `GET /api/vods/{id}/rescue` / `POST /api/vods/{id}/rescue` | Audio rescue status (404 if none) / start one now (202; a Failed one is retried; others returned as is; 409 while `AudioRescue:Enabled` is off) |
 | `POST /api/vods/download` | Phase 1 dev endpoint: synchronous, writes `<title>.mp4` straight into `downloads/`, not part of the library |
 
 `canDownload` in entry responses checks the generated file's expiry itself, since cleanup runs periodically.

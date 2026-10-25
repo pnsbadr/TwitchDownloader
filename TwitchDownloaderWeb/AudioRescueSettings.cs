@@ -5,8 +5,11 @@ namespace TwitchDownloaderWeb
     {
         public const string SectionName = "AudioRescue";
 
-        /// <summary>Watch saved channels (with WatchMutedAudio) for new VODs and save their audio automatically.</summary>
-        public bool Enabled { get; set; } = true;
+        /// <summary>
+        /// Master switch for saving VOD audio. Off: no new rescues (automatic or from the page), and unfinished ones pause
+        /// (no grabbing, no pruning) until it is turned back on. Already saved audio is kept and still used to restore downloads.
+        /// </summary>
+        public bool Enabled { get; set; }
 
         /// <summary>How often saved channels are checked for new VODs.</summary>
         public double PollMinutes { get; set; } = 5;
