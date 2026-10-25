@@ -129,6 +129,198 @@ for (const button of document.querySelectorAll(".seg[data-tz]")) {
   });
 }
 
+// ---------- Twitch player ----------
+//
+// VODs play straight from Twitch through the official embed (player.twitch.tv); nothing goes through the server.
+// Twitch only plays the embed on the "parent" host it is told about, so the page passes its own host name
+// (localhost works; a bare IP address may not).
+
+const TWITCH_EMBED_SRC = "https://player.twitch.tv/js/embed/v1.js";
+let embedScript = null;
+
+function loadTwitchEmbed() {
+  if (window.Twitch?.Player) return Promise.resolve();
+  embedScript ??= new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = TWITCH_EMBED_SRC;
+    script.async = true;
+    script.onload = resolve;
+    script.onerror = () => {
+      embedScript = null;
+      script.remove();
+      reject(new Error("Couldn't load the Twitch player. Check the internet connection."));
+    };
+    document.head.append(script);
+  });
+  return embedScript;
+}
+
+// "123456789" or a twitch.tv/videos/123456789 link → the VOD ID, else null. The server does the real validation.
+function vodIdFromText(text) {
+  const value = text.trim();
+  if (/^\d+$/.test(value)) return value;
+  return value.match(/twitch\.tv\/videos\/(\d+)/i)?.[1] ?? null;
+}
+
+// Trim-field format with tenths when they matter, e.g. "1:02:03.4"
+function formatTrimValue(seconds) {
+  const tenths = Math.round(seconds * 10);
+  const whole = Math.floor(tenths / 10);
+  const text = formatDuration(whole);
+  return tenths % 10 ? `${text}.${tenths % 10}` : text;
+}
+
+// The embed's "time" option: "1h2m3s"
+function embedTime(seconds) {
+  const s = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m${s % 60}s`;
+}
+
+class VodPlayer {
+  constructor(containerId, timeId) {
+    this.containerId = containerId;
+    this.timeId = timeId;
+    this.player = null;
+    this.vodId = null;
+    this.ready = false;
+    this.stopAt = null; // pause once playback reaches this offset (clip previews)
+    this.timer = null;
+  }
+
+  async open(vodId, startSeconds = 0, stopAt = null) {
+    vodId = String(vodId);
+    if (this.player && this.vodId === vodId) {
+      this.playRange(startSeconds, stopAt);
+      return;
+    }
+
+    await loadTwitchEmbed();
+    this.close();
+    this.vodId = vodId;
+    this.stopAt = stopAt;
+    this.player = new Twitch.Player(this.containerId, {
+      width: "100%",
+      height: "100%",
+      video: `v${vodId}`,
+      time: embedTime(startSeconds),
+      parent: [location.hostname],
+      autoplay: true,
+    });
+    const player = this.player;
+    player.addEventListener(Twitch.Player.READY, () => {
+      if (player !== this.player) return;
+      this.ready = true;
+      // The "time" option is whole seconds; land on the exact offset
+      if (startSeconds % 1) player.seek(startSeconds);
+    });
+    this.timer = setInterval(() => this.tick(), 250);
+  }
+
+  close() {
+    clearInterval(this.timer);
+    this.timer = null;
+    this.player = null;
+    this.vodId = null;
+    this.ready = false;
+    this.stopAt = null;
+    $(this.containerId).replaceChildren();
+    $(this.timeId).textContent = "–";
+  }
+
+  // Current offset into the VOD in seconds, or null before the player is ready
+  now() {
+    return this.ready ? this.player.getCurrentTime() : null;
+  }
+
+  playRange(startSeconds, stopAt = null) {
+    if (!this.ready) return;
+    this.stopAt = stopAt;
+    this.player.seek(startSeconds);
+    this.player.play();
+  }
+
+  tick() {
+    const now = this.now();
+    if (now == null) return;
+    $(this.timeId).textContent = formatTrimValue(now);
+    if (this.stopAt != null && now >= this.stopAt) {
+      this.stopAt = null;
+      this.player.pause();
+    }
+  }
+}
+
+const watchPlayer = new VodPlayer("watch-player", "watch-time");
+const clipPlayer = new VodPlayer("clip-player", "clip-time");
+
+async function openWatch(vodId) {
+  $("watch").hidden = false;
+  $("watch-button").textContent = "Hide player";
+  try {
+    await watchPlayer.open(vodId, parseTrim($("start").value) || 0);
+    $("watch").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (error) {
+    closeWatch();
+    setMessage($("add-message"), error.message, "error");
+  }
+}
+
+function closeWatch() {
+  watchPlayer.close();
+  $("watch").hidden = true;
+  $("watch-button").textContent = "Watch";
+}
+
+function setTrimFromPlayer(fieldId) {
+  const now = watchPlayer.now();
+  if (now == null) return;
+  $(fieldId).value = formatTrimValue(now);
+  updateRulePreview();
+}
+
+$("watch-button").addEventListener("click", () => {
+  if (!$("watch").hidden) {
+    closeWatch();
+    return;
+  }
+  const vodId = vodIdFromText($("vod").value);
+  if (!vodId) {
+    setMessage($("add-message"), "Enter a VOD URL or ID first.", "error");
+    return;
+  }
+  setMessage($("add-message"), "");
+  openWatch(vodId);
+});
+$("watch-close").addEventListener("click", closeWatch);
+$("watch-set-start").addEventListener("click", () => setTrimFromPlayer("start"));
+$("watch-set-end").addEventListener("click", () => setTrimFromPlayer("end"));
+$("watch-preview").addEventListener("click", () => {
+  const start = parseTrim($("start").value) ?? 0;
+  const end = parseTrim($("end").value);
+  if (Number.isNaN(start) || Number.isNaN(end)) {
+    setMessage($("add-message"), "Times use h:mm:ss, m:ss or seconds.", "error");
+    return;
+  }
+  watchPlayer.playRange(start, end);
+});
+
+function watchEntry(entry) {
+  const start = parseTrim(entry.startTime) || 0;
+  const end = entry.endTime ? parseTrim(entry.endTime) : null;
+  $("clip-dialog-title").textContent = entry.title;
+  $("clip-range").textContent = `Clip ${entry.startTime}–${entry.endTime ?? "end of VOD"}`;
+  $("clip-replay").onclick = () => clipPlayer.playRange(start, end);
+  $("clip-dialog").showModal();
+  clipPlayer.open(entry.vodId, start, end).catch((error) => {
+    $("clip-dialog").close();
+    setMessage($("library-message"), error.message, "error");
+  });
+}
+
+$("clip-close").addEventListener("click", () => $("clip-dialog").close());
+// Escape closes the dialog too; either way stop playback
+$("clip-dialog").addEventListener("close", () => clipPlayer.close());
+
 // ---------- add form ----------
 
 function resetVodInfo() {
@@ -216,6 +408,7 @@ $("vod").addEventListener("change", () => {
   browse.selectedId = null;
   renderBrowseList();
   resetVodInfo();
+  if (watchPlayer.vodId && watchPlayer.vodId !== vodIdFromText($("vod").value)) closeWatch();
 });
 $("start").addEventListener("input", updateRulePreview);
 $("end").addEventListener("input", updateRulePreview);
@@ -408,7 +601,9 @@ function vodCard(vod) {
           : null,
         rescueBadge(vod.rescueStatus),
         lostAudioBadge(vod))),
-    rescueButton ? el("div", { class: "vod-item-actions" }, rescueButton) : null);
+    el("div", { class: "vod-item-actions" },
+      el("button", { type: "button", class: "small secondary", onclick: () => watchVod(vod) }, "Watch"),
+      rescueButton));
 }
 
 function renderBrowseList() {
@@ -478,7 +673,13 @@ function pickVod(vod) {
   }
   resetVodInfo();
   getInfo();
+  if (!$("watch").hidden && watchPlayer.vodId !== String(vod.vodId)) openWatch(vod.vodId);
   $("vod-info").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function watchVod(vod) {
+  pickVod(vod);
+  if ($("watch").hidden) openWatch(vod.vodId);
 }
 
 $("browse-saved").addEventListener("change", () => {
@@ -556,6 +757,10 @@ function entryActions(entry) {
     actions.push(el("button", { type: "button", onclick: () => generate(entry) }, "Retry download"));
   }
 
+  // Twitch deleted the VOD, so there is nothing left to stream
+  if (entry.status !== "VodUnavailable") {
+    actions.push(el("button", { type: "button", class: "secondary", onclick: () => watchEntry(entry) }, "Watch"));
+  }
   actions.push(el("button", { type: "button", class: "link", onclick: () => startRename(entry) }, "Rename"));
   actions.push(el("button", { type: "button", class: "link danger", onclick: () => deleteEntry(entry) }, "Delete"));
   return actions;

@@ -57,6 +57,7 @@
             <input id="vod" name="vod" required placeholder="https://www.twitch.tv/videos/123456789" autocomplete="off">
           </label>
           <button type="button" id="get-info" class="secondary">Get Info</button>
+          <button type="button" id="watch-button" class="secondary">Watch</button>
         </div>
 
         <div id="vod-info" class="vod-info" hidden>
@@ -65,6 +66,19 @@
             <div id="vod-title" class="vod-title"></div>
             <div id="vod-meta" class="muted"></div>
           </div>
+        </div>
+
+        <!-- Plays the VOD from Twitch (official embed) so start/end can be picked while watching -->
+        <div id="watch" class="watch" hidden>
+          <div class="player-frame"><div id="watch-player"></div></div>
+          <div class="row watch-controls">
+            <span class="watch-time">At <strong id="watch-time">–</strong></span>
+            <button type="button" id="watch-set-start" class="secondary">Set start here</button>
+            <button type="button" id="watch-set-end" class="secondary">Set end here</button>
+            <button type="button" id="watch-preview" class="secondary">Play clip</button>
+            <button type="button" id="watch-close" class="link">Close player</button>
+          </div>
+          <p class="muted">Streams straight from Twitch; nothing is downloaded. Parts Twitch muted are muted here too.</p>
         </div>
 
         <div class="grid">
@@ -145,6 +159,21 @@
       <p id="empty" class="muted" hidden>No entries yet.</p>
     </section>
   </main>
+
+  <!-- Watching a library clip: starts at the clip's start and pauses at its end -->
+  <dialog id="clip-dialog" class="clip-dialog" aria-labelledby="clip-dialog-title">
+    <div class="dialog-head">
+      <h3 id="clip-dialog-title"></h3>
+      <button type="button" id="clip-close" class="link">Close</button>
+    </div>
+    <div class="player-frame"><div id="clip-player"></div></div>
+    <div class="row watch-controls">
+      <span class="watch-time">At <strong id="clip-time">–</strong></span>
+      <span id="clip-range" class="muted"></span>
+      <button type="button" id="clip-replay" class="secondary">Replay clip</button>
+    </div>
+    <p class="muted">Pauses at the clip's end; press play in the player to keep watching the VOD.</p>
+  </dialog>
 
   <script src="app.js"></script>
 </body>

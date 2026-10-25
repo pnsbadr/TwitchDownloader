@@ -162,6 +162,12 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   status and a **Save audio now** button (unmute window open, no rescue yet) or **Retry saving audio** (failed).
   Library entries with restored audio show an "Audio restored" badge, and "Still muted" when muted parts had no clean copy;
   VOD cards show "Muted parts not saved" when a rescue got 403s for muted segments.
+- **Watching VODs** (no server part): the official Twitch embed (`player.twitch.tv/js/embed/v1.js`, loaded lazily) streams
+  the VOD straight from Twitch. `parent` is `location.hostname`, so open the page as `localhost` (Twitch may reject a bare IP).
+  **Watch** next to Get Info / on VOD cards opens an inline player with **Set start here / Set end here** (fills the trim
+  fields from `getCurrentTime()`, tenths of a second) and **Play clip** (seeks to start, pauses at end). **Watch** on a library
+  entry opens a `<dialog>` starting at the clip start and pausing at its end (not shown for VodUnavailable). Closing a player
+  removes the iframe so playback stops. Sub-only VODs play only if the browser is logged in to Twitch with access.
 
 ### Gotchas
 - Core silently falls back to the best quality when the requested one doesn't exist — always validate first.
