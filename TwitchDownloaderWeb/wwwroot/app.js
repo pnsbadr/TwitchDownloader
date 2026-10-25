@@ -299,6 +299,7 @@ class VodPlayer {
     const position = this.position();
     if (position == null) return;
     $(this.timeId).textContent = formatTrimValue(position);
+    this.onTick?.(position);
     if (this.stopAt != null && position >= this.stopAt) {
       this.stopAt = null;
       this.player.pause();
@@ -361,22 +362,238 @@ $("watch-preview").addEventListener("click", () => {
   watchPlayer.playRange(start, end);
 });
 
-function watchEntry(entry) {
-  const start = parseTrim(entry.startTime) || 0;
-  const end = entry.endTime ? parseTrim(entry.endTime) : null;
+// ---------- clip review (library entries) ----------
+//
+// Plays an entry's clip from Twitch with a trim bar around it. The bar shows the clip plus some VOD on each side so
+// the cut can be widened as well as narrowed; handles drag, ±1s/±0.1s buttons nudge, and Save re-cuts the entry on
+// the server (PUT /trim), which downloads it again.
+
+const NUDGE_MIN_LENGTH = 0.1; // keep end after start
+
+let review = null; // { entry, start, end, vodLength, from, to }
+
+function entryRange(entry) {
+  return {
+    start: parseTrim(entry.startTime) || 0,
+    end: entry.endTime ? parseTrim(entry.endTime) : entry.vodLengthSeconds,
+  };
+}
+
+function roundHundredths(seconds) {
+  return Math.round(seconds * 100) / 100;
+}
+
+function reviewDirty() {
+  if (!review) return false;
+  const saved = entryRange(review.entry);
+  return review.start !== saved.start || review.end !== saved.end;
+}
+
+// The bar spans the clip plus a margin on each side; widen it when a handle leaves it
+function fitReviewWindow(force) {
+  const { start, end, vodLength } = review;
+  if (!force && start >= review.from && end <= review.to) return;
+  const pad = Math.min(60, Math.max(5, (end - start) * 0.25));
+  review.from = Math.max(0, start - pad);
+  review.to = Math.min(vodLength, end + pad);
+}
+
+function barPercent(seconds) {
+  return ((seconds - review.from) / (review.to - review.from)) * 100;
+}
+
+function renderReview() {
+  if (!review) return;
+  const startPct = barPercent(review.start);
+  const endPct = barPercent(review.end);
+  $("trim-range").style.left = `${startPct}%`;
+  $("trim-range").style.width = `${endPct - startPct}%`;
+  $("trim-handle-start").style.left = `${startPct}%`;
+  $("trim-handle-end").style.left = `${endPct}%`;
+  $("trim-scale-from").textContent = formatTrimValue(review.from);
+  $("trim-scale-to").textContent = formatTrimValue(review.to);
+
+  for (const [edge, id] of [["start", "trim-start"], ["end", "trim-end"]]) {
+    const input = $(id);
+    if (document.activeElement !== input) input.value = formatTrimValue(review[edge]);
+    input.classList.remove("invalid");
+  }
+
+  const dirty = reviewDirty();
+  $("trim-length").textContent = `Length ${formatTrimValue(review.end - review.start)}`;
+  $("trim-save").disabled = !dirty || review.saving;
+  $("trim-revert").disabled = !dirty || review.saving;
+}
+
+function setReviewEdge(edge, seconds) {
+  if (!review || seconds == null || Number.isNaN(seconds)) return;
+  let value = roundHundredths(seconds);
+  if (edge === "start") value = Math.min(Math.max(0, value), roundHundredths(review.end - NUDGE_MIN_LENGTH));
+  else value = Math.max(Math.min(review.vodLength, value), roundHundredths(review.start + NUDGE_MIN_LENGTH));
+  review[edge] = value;
+  // Keep the preview's stop in step with the end being edited
+  if (edge === "end" && clipPlayer.stopAt != null) clipPlayer.stopAt = value;
+  fitReviewWindow(false);
+  setMessage($("trim-message"), "");
+  renderReview();
+}
+
+function barSeconds(clientX) {
+  const rect = $("trim-bar").getBoundingClientRect();
+  const fraction = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+  return review.from + fraction * (review.to - review.from);
+}
+
+function updatePlayhead(position) {
+  const playhead = $("trim-playhead");
+  if (!review || position < review.from || position > review.to) {
+    playhead.hidden = true;
+    return;
+  }
+  playhead.hidden = false;
+  playhead.style.left = `${barPercent(position)}%`;
+}
+
+clipPlayer.onTick = updatePlayhead;
+
+function openReview(entry) {
+  const { start, end } = entryRange(entry);
+  review = { entry, start, end, vodLength: entry.vodLengthSeconds, from: 0, to: 0, saving: false };
+  fitReviewWindow(true);
   $("clip-dialog-title").textContent = entry.title;
-  $("clip-range").textContent = `Clip ${entry.startTime}–${entry.endTime ?? "end of VOD"}`;
-  $("clip-replay").onclick = () => clipPlayer.playRange(start, end);
-  $("clip-dialog").showModal();
+  $("trim-playhead").hidden = true;
+  setMessage($("trim-message"), "");
+  renderReview();
+  if (!$("clip-dialog").open) $("clip-dialog").showModal();
   clipPlayer.open(entry.vodId, start, end).catch((error) => {
+    review = null;
     $("clip-dialog").close();
     setMessage($("library-message"), error.message, "error");
   });
 }
 
-$("clip-close").addEventListener("click", () => $("clip-dialog").close());
-// Escape closes the dialog too; either way stop playback
-$("clip-dialog").addEventListener("close", () => clipPlayer.close());
+async function saveReview() {
+  if (!review || !reviewDirty()) return;
+  const { entry } = review;
+  // An entry that ran to the end of the VOD keeps "end of VOD" unless the end was moved
+  const endTime = entry.endTime == null && review.end === review.vodLength ? null : formatTrimValue(review.end);
+  review.saving = true;
+  renderReview();
+  setMessage($("trim-message"), "Saving…");
+  try {
+    const updated = await api("PUT", `/api/entries/${entry.id}/trim`, { startTime: formatTrimValue(review.start), endTime });
+    if (!review || review.entry.id !== updated.id) return;
+    review.entry = updated;
+    setMessage($("trim-message"), updated.isReferenceOnly
+      ? "Saved. It's over the stored-clip limit, so it's kept as a reference; generate the file when you need it."
+      : "Saved. The clip is being downloaded again with the new cut.", "ok");
+    refresh();
+  } catch (error) {
+    setMessage($("trim-message"), error.message, "error");
+  } finally {
+    if (review) {
+      review.saving = false;
+      renderReview();
+    }
+  }
+}
+
+function closeReview() {
+  if (reviewDirty() && !confirm("Discard the changes to this clip's start and end?")) return false;
+  $("clip-dialog").close();
+  return true;
+}
+
+for (const button of document.querySelectorAll(".nudge")) {
+  button.addEventListener("click", () => {
+    if (!review) return;
+    setReviewEdge(button.dataset.edge, review[button.dataset.edge] + parseFloat(button.dataset.delta));
+  });
+}
+
+for (const button of document.querySelectorAll("[data-set-edge]")) {
+  button.addEventListener("click", () => setReviewEdge(button.dataset.setEdge, clipPlayer.position()));
+}
+
+for (const [edge, id] of [["start", "trim-start"], ["end", "trim-end"]]) {
+  const input = $(id);
+  const apply = () => {
+    const value = parseTrim(input.value);
+    if (value == null || Number.isNaN(value)) {
+      input.classList.add("invalid");
+      return;
+    }
+    setReviewEdge(edge, value);
+    input.value = formatTrimValue(review[edge]);
+  };
+  input.addEventListener("change", apply);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      apply();
+    }
+  });
+}
+
+// Dragging a handle moves that edge; clicking elsewhere on the bar seeks the player there
+for (const [edge, id] of [["start", "trim-handle-start"], ["end", "trim-handle-end"]]) {
+  const handle = $(id);
+  handle.addEventListener("pointerdown", (event) => {
+    if (!review) return;
+    event.preventDefault();
+    event.stopPropagation();
+    handle.setPointerCapture(event.pointerId);
+    handle.classList.add("dragging");
+  });
+  handle.addEventListener("pointermove", (event) => {
+    if (handle.hasPointerCapture(event.pointerId)) setReviewEdge(edge, barSeconds(event.clientX));
+  });
+  const stop = (event) => {
+    if (!handle.hasPointerCapture(event.pointerId)) return;
+    handle.releasePointerCapture(event.pointerId);
+    handle.classList.remove("dragging");
+    // Let the editor hear the new edge
+    if (edge === "start") clipPlayer.playRange(review.start, review.end);
+    else clipPlayer.playRange(Math.max(review.start, review.end - 3), review.end);
+  };
+  handle.addEventListener("pointerup", stop);
+  handle.addEventListener("pointercancel", stop);
+  // Arrow keys nudge by 0.1s (1s with Shift) when a handle has focus
+  handle.addEventListener("keydown", (event) => {
+    if (!review || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) return;
+    event.preventDefault();
+    const step = (event.shiftKey ? 1 : 0.1) * (event.key === "ArrowLeft" ? -1 : 1);
+    setReviewEdge(edge, review[edge] + step);
+  });
+}
+
+$("trim-bar").addEventListener("pointerdown", (event) => {
+  if (!review || event.target.classList.contains("trim-handle")) return;
+  const seconds = barSeconds(event.clientX);
+  clipPlayer.playRange(seconds, seconds < review.end ? review.end : null);
+});
+
+$("clip-replay").addEventListener("click", () => review && clipPlayer.playRange(review.start, review.end));
+$("clip-play-end").addEventListener("click", () => review && clipPlayer.playRange(Math.max(review.start, review.end - 3), review.end));
+$("trim-save").addEventListener("click", saveReview);
+$("trim-revert").addEventListener("click", () => {
+  if (!review) return;
+  Object.assign(review, entryRange(review.entry));
+  fitReviewWindow(true);
+  setMessage($("trim-message"), "");
+  renderReview();
+});
+
+$("clip-close").addEventListener("click", closeReview);
+// Escape fires "cancel" first; ask before throwing away unsaved changes
+$("clip-dialog").addEventListener("cancel", (event) => {
+  if (reviewDirty() && !confirm("Discard the changes to this clip's start and end?")) event.preventDefault();
+});
+// Either way stop playback
+$("clip-dialog").addEventListener("close", () => {
+  review = null;
+  clipPlayer.close();
+});
 
 // ---------- add form ----------
 
@@ -486,6 +703,9 @@ $("add-form").addEventListener("submit", async (event) => {
     });
     setMessage($("add-message"),
       `Added "${entry.title}" ${entry.isReferenceOnly ? "as a reference (generated on demand)" : "and queued for download"}.`, "ok");
+    // Check the cut right away; the review dialog plays it and can adjust it
+    closeWatch();
+    openReview(entry);
     $("title").value = "";
     prefilledTitle = null;
     $("start").value = "";
@@ -816,7 +1036,7 @@ function entryActions(entry) {
 
   // Twitch deleted the VOD, so there is nothing left to stream
   if (entry.status !== "VodUnavailable") {
-    actions.push(el("button", { type: "button", class: "secondary", onclick: () => watchEntry(entry) }, "Watch"));
+    actions.push(el("button", { type: "button", class: "secondary", onclick: () => openReview(entry) }, "Review"));
   }
   actions.push(el("button", { type: "button", class: "link", onclick: () => startRename(entry) }, "Rename"));
   actions.push(el("button", { type: "button", class: "link danger", onclick: () => deleteEntry(entry) }, "Delete"));

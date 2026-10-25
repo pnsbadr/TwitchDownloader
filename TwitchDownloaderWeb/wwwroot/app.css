@@ -502,3 +502,94 @@ button.small { padding: 3px 10px; font-size: 13px; }
 }
 
 .dialog-head h3 { margin: 0; font-size: 16px; overflow-wrap: anywhere; }
+
+/* Clip review: trim bar and nudges */
+.trim-bar-wrap { margin-top: 12px; }
+
+.trim-bar {
+  position: relative;
+  height: 44px;
+  border-radius: 8px;
+  background: var(--badge-bg);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  touch-action: none;
+  margin: 0 8px;
+}
+
+.trim-range {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  border-top: 3px solid var(--accent);
+  border-bottom: 3px solid var(--accent);
+  pointer-events: none;
+}
+
+.trim-handle {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 16px;
+  margin-left: -8px;
+  padding: 0;
+  border-radius: 6px;
+  border: 0;
+  background: var(--accent);
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.trim-handle::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  top: 12px;
+  bottom: 12px;
+  border-left: 2px dotted var(--accent-text);
+}
+
+.trim-handle.dragging, .trim-handle:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
+
+.trim-playhead {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 4px;
+  margin-left: -2px;
+  border-radius: 2px;
+  background: var(--text);
+  pointer-events: none;
+}
+
+.trim-scale {
+  display: flex;
+  justify-content: space-between;
+  margin: 4px 8px 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.trim-edit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  margin-top: 12px;
+}
+
+.trim-side { display: flex; flex-direction: column; gap: 4px; }
+.trim-label { font-size: 13px; color: var(--muted); }
+.nudges { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+
+.nudge {
+  padding: 4px 8px;
+  font-size: 13px;
+  background: transparent;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.trim-value { width: 8.5em; text-align: center; font-variant-numeric: tabular-nums; }
+.trim-value.invalid { border-color: var(--danger); }
+button.link.small { padding: 0; font-size: 13px; align-self: flex-start; }

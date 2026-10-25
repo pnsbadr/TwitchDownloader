@@ -19,6 +19,10 @@ namespace TwitchDownloaderWeb.Endpoints
 
     public sealed record RenameEntryRequest(string? Title);
 
+    /// <param name="StartTime">"h:mm:ss" offset from the start of the VOD. Blank is the start.</param>
+    /// <param name="EndTime">"h:mm:ss" offset from the start of the VOD, not a duration. Blank is the end.</param>
+    public sealed record RetrimEntryRequest(string? StartTime, string? EndTime);
+
     public sealed record EntryDto(
         int Id,
         string Title,
@@ -96,6 +100,7 @@ namespace TwitchDownloaderWeb.Endpoints
             entries.MapGet("/", ListEntries);
             entries.MapGet("/{id:int}", GetEntry);
             entries.MapPatch("/{id:int}", RenameEntry);
+            entries.MapPut("/{id:int}/trim", RetrimEntry);
             entries.MapDelete("/{id:int}", DeleteEntry);
             entries.MapPost("/{id:int}/generate", GenerateEntry);
             entries.MapGet("/{id:int}/file", DownloadEntryFile);
@@ -317,6 +322,83 @@ namespace TwitchDownloaderWeb.Endpoints
                 entry.UpdatedAtUtc = DateTime.UtcNow;
                 await db.SaveChangesAsync(cancellationToken);
             }
+
+            return Results.Ok(EntryDto.From(entry));
+        }
+
+        /// <summary>How long a re-trim waits for the entry's running download to stop after cancelling it.</summary>
+        private static readonly TimeSpan RetrimCancelWait = TimeSpan.FromSeconds(20);
+
+        /// <summary>
+        /// Changes an entry's start/end. Any running download is cancelled and its file deleted; the stored-vs-reference rule is
+        /// applied again to the new length, so a stored clip is downloaded again (or becomes reference-only if it got too long).
+        /// </summary>
+        private static async Task<IResult> RetrimEntry(int id, RetrimEntryRequest request, LibraryDbContext db, DownloadQueue queue,
+            LibraryStorage storage, IOptions<DownloadSettings> settings, CancellationToken cancellationToken)
+        {
+            if (!TrimTime.TryParse(request.StartTime, out var parsedStart))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["startTime"] = ["Use h:mm:ss, m:ss or seconds."] });
+
+            if (!TrimTime.TryParse(request.EndTime, out var endTime))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["endTime"] = ["Use h:mm:ss, m:ss or seconds."] });
+
+            var entry = await db.Entries.FindAsync([id], cancellationToken);
+            if (entry is null)
+                return EntryNotFound(id);
+
+            if (entry.Status == EntryStatus.VodUnavailable)
+                return Results.Problem(detail: "The VOD is no longer available on Twitch, so the clip can't be cut again.", statusCode: StatusCodes.Status410Gone);
+
+            var startTime = parsedStart ?? TimeSpan.Zero;
+            if (VodInfoService.ValidateTrim(startTime, endTime, entry.VodLengthSeconds) is { } trimErrors)
+                return Results.ValidationProblem(trimErrors);
+
+            if (startTime == entry.StartTime && endTime == entry.EndTime)
+                return Results.Ok(EntryDto.From(entry));
+
+            // A running job would keep writing the old cut to the same file. Stop it and wait until it has cleaned up.
+            if (queue.IsRunning(id))
+            {
+                queue.Cancel(id);
+                var waited = System.Diagnostics.Stopwatch.StartNew();
+                while (queue.IsRunning(id))
+                {
+                    if (waited.Elapsed > RetrimCancelWait)
+                        return Results.Problem(detail: "The current download didn't stop in time. Try again in a moment.", statusCode: StatusCodes.Status409Conflict);
+                    await Task.Delay(100, cancellationToken);
+                }
+
+                // The job may have saved a status while stopping
+                await db.Entry(entry).ReloadAsync(cancellationToken);
+            }
+
+            var oldRange = $"{TrimTime.Format(entry.StartTime)}-{TrimTime.Format(entry.EndTime) ?? "end"}";
+            var clipLength = (endTime ?? TimeSpan.FromSeconds(entry.VodLengthSeconds)) - startTime;
+            var isStored = clipLength.TotalSeconds <= settings.Value.MaxStoredClipSeconds;
+
+            storage.TryDelete(entry.FilePath);
+            storage.TryDelete(entry.GeneratedFilePath);
+
+            entry.StartTime = startTime;
+            entry.EndTime = endTime;
+            entry.ClipLengthSeconds = clipLength.TotalSeconds;
+            entry.Status = isStored ? EntryStatus.Queued : EntryStatus.ReferenceOnly;
+            entry.Error = null;
+            entry.FilePath = null;
+            entry.FileSizeBytes = null;
+            entry.GenerationStatus = GenerationStatus.None;
+            entry.GeneratedFilePath = null;
+            entry.GeneratedFileSizeBytes = null;
+            entry.GeneratedExpiresAtUtc = null;
+            entry.AudioRestoredSeconds = null;
+            entry.AudioMutedSeconds = null;
+            entry.UpdatedAtUtc = DateTime.UtcNow;
+            db.Audit(AuditActions.EntryRetrimmed, id,
+                $"{oldRange} -> {TrimTime.Format(startTime)}-{TrimTime.Format(endTime) ?? "end"}, {clipLength.TotalSeconds:0.###}s, {(isStored ? "stored" : "reference-only")}");
+            await db.SaveChangesAsync(cancellationToken);
+
+            if (isStored)
+                queue.Enqueue(id, DownloadJobKind.Store);
 
             return Results.Ok(EntryDto.From(entry));
         }
