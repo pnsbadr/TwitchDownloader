@@ -243,28 +243,36 @@ namespace TwitchDownloaderWeb.Services.Shortform
                 Directory.CreateDirectory(EntryFolder(entryId));
 
                 var ffmpegPath = _configuration["Ffmpeg:Path"] is { Length: > 0 } configured ? configured : "ffmpeg";
-                string[] args =
-                [
-                    "-hide_banner", "-y", "-nostats", "-progress", "pipe:1",
+                var duration = layout.GetDuration(clipLengthSeconds);
+                var args = new List<string> { "-hide_banner", "-y", "-nostats", "-progress", "pipe:1" };
+                var trimmed = layout.IsTrimmed;
+                if (trimmed)
+                {
+                    // Input seeking is frame-accurate here because the video is re-encoded; the audio is re-encoded too
+                    // so it starts exactly at the cut instead of at the nearest copied packet
+                    args.AddRange(new[] { "-ss", Seconds(layout.GetStart()), "-t", Seconds(duration) });
+                }
+
+                args.AddRange(new[]
+                {
                     "-i", sourcePath,
                     "-filter_complex", layout.BuildFilterGraph(),
                     "-map", "[v]", "-map", "0:a?",
                     "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-                    "-c:a", "copy",
-                    "-movflags", "+faststart",
-                    temp
-                ];
+                });
+                args.AddRange(trimmed ? new[] { "-c:a", "aac", "-b:a", "192k" } : new[] { "-c:a", "copy" });
+                args.AddRange(new[] { "-movflags", "+faststart", temp });
 
                 await FfmpegRunner.RunAsync(ffmpegPath, args, EntryFolder(entryId), _logger, token, line =>
                 {
                     // "out_time_us=12345678" (also printed as out_time_ms, which is microseconds too)
-                    if (clipLengthSeconds > 0 && line.StartsWith("out_time_us=", StringComparison.Ordinal)
+                    if (duration > 0 && line.StartsWith("out_time_us=", StringComparison.Ordinal)
                         && long.TryParse(line.AsSpan("out_time_us=".Length), NumberStyles.Integer, CultureInfo.InvariantCulture, out var us))
-                        job.Progress = Math.Clamp(us / 1_000_000.0 / clipLengthSeconds, 0, 0.99);
+                        job.Progress = Math.Clamp(us / 1_000_000.0 / duration, 0, 0.99);
                 });
 
                 File.Move(temp, output, overwrite: true);
-                await TryMakeThumbnailAsync(ffmpegPath, output, thumbnail, clipLengthSeconds, token);
+                await TryMakeThumbnailAsync(ffmpegPath, output, thumbnail, duration, token);
 
                 // Written last: a render only shows up once its metadata exists
                 var info = new RenderInfo(DateTime.UtcNow, layout);
@@ -296,6 +304,8 @@ namespace TwitchDownloaderWeb.Services.Shortform
                 job.Cancellation.Dispose();
             }
         }
+
+        private static string Seconds(double value) => value.ToString("0.###", CultureInfo.InvariantCulture);
 
         /// <summary>A small portrait still from the middle of the render for the page's list. Optional: failures are only logged.</summary>
         private async Task TryMakeThumbnailAsync(string ffmpegPath, string video, string thumbnail, double clipLengthSeconds, CancellationToken token)

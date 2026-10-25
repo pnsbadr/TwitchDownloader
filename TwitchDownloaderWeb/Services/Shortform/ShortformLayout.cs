@@ -11,9 +11,11 @@ namespace TwitchDownloaderWeb.Services.Shortform
     /// "single": one box fills the frame. "split": the top box fills the top <see cref="SplitRatio"/> of the frame and
     /// the bottom box the rest (e.g. facecam over gameplay). Each box is scaled to its slot, so the page keeps the box's
     /// shape matching the slot; a mismatch only stretches the picture slightly.
+    /// <see cref="TrimStart"/> / <see cref="TrimEnd"/> are seconds from the start of the entry's file (null = its start / end).
     /// </summary>
-    public sealed record ShortformLayout(string? Mode, CropBox? Top, CropBox? Bottom, double? SplitRatio)
+    public sealed record ShortformLayout(string? Mode, CropBox? Top, CropBox? Bottom, double? SplitRatio, double? TrimStart = null, double? TrimEnd = null)
     {
+        public const double MinTrimSeconds = 1;
         public const int OutputWidth = 1080;
         public const int OutputHeight = 1920;
         public const double MinSplitRatio = 0.2;
@@ -24,9 +26,19 @@ namespace TwitchDownloaderWeb.Services.Shortform
         [JsonIgnore]
         public bool IsSplit => string.Equals(Mode, "split", StringComparison.OrdinalIgnoreCase);
 
-        /// <summary>Returns an error message, or null if the layout can be rendered.</summary>
-        public string? Validate()
+        /// <summary>Returns an error message, or null if the layout can be rendered from a file this long.</summary>
+        public string? Validate(double clipLengthSeconds)
         {
+            if (TrimStart is { } start && (!double.IsFinite(start) || start < 0))
+                return "trimStart must be 0 or more seconds.";
+
+            if (TrimEnd is { } end && !double.IsFinite(end))
+                return "trimEnd must be a number of seconds.";
+
+            var length = GetDuration(clipLengthSeconds);
+            if (length < MinTrimSeconds)
+                return $"The trimmed part must be at least {MinTrimSeconds:0} second long.";
+
             if (!IsSplit && !string.Equals(Mode, "single", StringComparison.OrdinalIgnoreCase))
                 return "Mode must be \"single\" or \"split\".";
 
@@ -59,6 +71,19 @@ namespace TwitchDownloaderWeb.Services.Shortform
 
             return null;
         }
+
+        /// <summary>Start of the rendered part, in seconds from the start of the file.</summary>
+        public double GetStart() => TrimStart is > 0 ? TrimStart.Value : 0;
+
+        /// <summary>
+        /// Length of the rendered part. A trim end isn't capped at <paramref name="clipLengthSeconds"/>: Safe-mode files run a
+        /// little longer than the entry's length, and ffmpeg simply stops at the end of the file.
+        /// </summary>
+        public double GetDuration(double clipLengthSeconds) => (TrimEnd ?? clipLengthSeconds) - GetStart();
+
+        /// <summary>True if the render covers less than the whole file.</summary>
+        [JsonIgnore]
+        public bool IsTrimmed => GetStart() > 0 || TrimEnd is not null;
 
         /// <summary>Output height of the top slot in split mode (even, as H.264 with 4:2:0 needs).</summary>
         [JsonIgnore]

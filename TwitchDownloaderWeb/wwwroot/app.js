@@ -1025,8 +1025,11 @@ const VX_MIN_RATIO = 0.2;
 const VX_MAX_RATIO = 0.8;
 const VX_MIN_BOX = 0.05;
 
+const VX_MIN_TRIM = 1; // seconds, matches the server's minimum
+
 const vx = {
   entry: null,
+  trim: { start: 0, end: 0 }, // seconds in the entry's file; end = duration when untrimmed
   mode: "split",
   ratio: 0.4,
   boxes: { single: null, top: null, bottom: null },
@@ -1090,6 +1093,7 @@ function vxApplySaved(layout) {
   const defaults = vxDefaultBoxes();
   vx.boxes = { ...defaults };
   vx.mode = "split";
+  vxSetTrim(layout?.trimStart ?? 0, layout?.trimEnd ?? Infinity);
   if (!layout) return;
   if (layout.mode === "single") {
     vx.mode = "single";
@@ -1157,6 +1161,7 @@ function vxDrawPreview() {
       draw(vx.boxes.bottom, topH, ch - topH);
     }
   }
+  vxKeepInTrim();
   if ($("vx").open) vx.frame = requestAnimationFrame(vxDrawPreview);
 }
 
@@ -1241,12 +1246,93 @@ function vxFormatTime(seconds) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
+// ---- trim ----
+
+function vxDuration() {
+  const duration = $("vx-video").duration;
+  return Number.isFinite(duration) && duration > 0 ? duration : 0;
+}
+
+function vxSetTrim(start, end) {
+  const duration = vxDuration();
+  if (!duration) {
+    vx.trim = { start: 0, end: 0 };
+    return;
+  }
+  let s = Math.min(Math.max(start || 0, 0), Math.max(duration - VX_MIN_TRIM, 0));
+  let e = Math.min(Math.max(Number.isFinite(end) ? end : duration, s + VX_MIN_TRIM), duration);
+  if (e - s < VX_MIN_TRIM) s = Math.max(e - VX_MIN_TRIM, 0);
+  vx.trim = { start: s, end: e };
+  vxRenderTrim();
+}
+
+function vxIsTrimmed() {
+  const duration = vxDuration();
+  return duration > 0 && (vx.trim.start > 0.05 || vx.trim.end < duration - 0.05);
+}
+
+function vxFormatTenths(seconds) {
+  const tenths = Math.round(seconds * 10);
+  const m = Math.floor(tenths / 600);
+  const sec = (tenths % 600) / 10;
+  return `${m}:${sec.toFixed(1).padStart(4, "0")}`;
+}
+
+function vxRenderTrim() {
+  const duration = vxDuration();
+  const pct = (t) => (duration ? (t / duration) * 100 : 0);
+  $("vx-trim-range").style.left = `${pct(vx.trim.start)}%`;
+  $("vx-trim-range").style.width = `${pct(vx.trim.end - vx.trim.start)}%`;
+  $("vx-trim-start").style.left = `${pct(vx.trim.start)}%`;
+  $("vx-trim-end").style.left = `${pct(vx.trim.end)}%`;
+  $("vx-trim-head").style.left = `${pct($("vx-video").currentTime || 0)}%`;
+  $("vx-trim-start").setAttribute("aria-valuetext", vxFormatTenths(vx.trim.start));
+  $("vx-trim-end").setAttribute("aria-valuetext", vxFormatTenths(vx.trim.end));
+  $("vx-trim-text").textContent = duration
+    ? `${vxFormatTenths(vx.trim.start)} – ${vxFormatTenths(vx.trim.end)} · ${vxFormatTenths(vx.trim.end - vx.trim.start)} long`
+    : "";
+  $("vx-trim-reset").hidden = !vxIsTrimmed();
+  vxUpdateMatches();
+}
+
+function vxStartTrimDrag(event) {
+  const handle = event.currentTarget;
+  const edge = handle.dataset.edge;
+  event.preventDefault();
+  handle.setPointerCapture(event.pointerId);
+  const video = $("vx-video");
+  video.pause();
+  const onMove = (moveEvent) => {
+    const t = Math.min(Math.max(vxPointer(moveEvent, $("vx-trim")).x, 0), 1) * vxDuration();
+    if (edge === "start") vxSetTrim(Math.min(t, vx.trim.end - VX_MIN_TRIM), vx.trim.end);
+    else vxSetTrim(vx.trim.start, Math.max(t, vx.trim.start + VX_MIN_TRIM));
+    // Show the frame at the edge being dragged
+    video.currentTime = edge === "start" ? vx.trim.start : Math.max(vx.trim.end - 0.05, 0);
+  };
+  const onUp = () => {
+    handle.removeEventListener("pointermove", onMove);
+    handle.removeEventListener("pointerup", onUp);
+    handle.removeEventListener("pointercancel", onUp);
+  };
+  handle.addEventListener("pointermove", onMove);
+  handle.addEventListener("pointerup", onUp);
+  handle.addEventListener("pointercancel", onUp);
+}
+
+// Keeps playback inside the trimmed part, looping back to its start
+function vxKeepInTrim() {
+  const video = $("vx-video");
+  if (!vx.ready || !vxDuration() || video.paused) return;
+  if (video.currentTime >= vx.trim.end || video.currentTime < vx.trim.start - 0.25) video.currentTime = vx.trim.start;
+}
+
 function vxUpdatePlayer() {
   const video = $("vx-video");
   $("vx-play").textContent = video.paused ? "▶" : "❚❚";
   $("vx-play").setAttribute("aria-label", video.paused ? "Play" : "Pause");
   if (video.duration) $("vx-seek").value = String(Math.round((video.currentTime / video.duration) * 1000));
   $("vx-time").textContent = `${vxFormatTime(video.currentTime)} / ${vxFormatTime(video.duration)}`;
+  $("vx-trim-head").style.left = `${vxDuration() ? (video.currentTime / vxDuration()) * 100 : 0}%`;
 }
 
 function vxRenderState(state) {
@@ -1270,15 +1356,22 @@ function vxRenderState(state) {
 }
 
 function vxCurrentLayout() {
-  return vx.mode === "single"
+  const layout = vx.mode === "single"
     ? { mode: "single", top: vxToServer(vx.boxes.single) }
     : { mode: "split", top: vxToServer(vx.boxes.top), bottom: vxToServer(vx.boxes.bottom), splitRatio: vx.ratio };
+  // Null means "from the start" / "to the end", so an untrimmed render covers the whole file
+  const duration = vxDuration();
+  layout.trimStart = vx.trim.start > 0.05 ? Math.round(vx.trim.start * 1000) / 1000 : null;
+  layout.trimEnd = duration && vx.trim.end < duration - 0.05 ? Math.round(vx.trim.end * 1000) / 1000 : null;
+  return layout;
 }
 
 function vxSameLayout(a, b) {
   if (!a || !b || a.mode !== b.mode) return false;
   const close = (x, y) => Math.abs((x ?? 0) - (y ?? 0)) < 0.0005;
   const sameBox = (p, q) => (!p && !q) || (p && q && close(p.x, q.x) && close(p.y, q.y) && close(p.width, q.width) && close(p.height, q.height));
+  const sameTime = (x, y) => (x == null && y == null) || (x != null && y != null && Math.abs(x - y) < 0.05);
+  if (!sameTime(a.trimStart, b.trimStart) || !sameTime(a.trimEnd, b.trimEnd)) return false;
   return sameBox(a.top, b.top) && (a.mode === "single" || (sameBox(a.bottom, b.bottom) && close(a.splitRatio, b.splitRatio)));
 }
 
@@ -1300,17 +1393,24 @@ function vxRenderRenders(renders, newId) {
         render.thumbnailUrl ? el("img", { src: render.thumbnailUrl, alt: "", width: "45", height: "80", loading: "lazy" }) : el("span", {}, "▶")),
       el("div", { class: "vx-render-body" },
         el("div", {}, formatDate(render.createdAtUtc),
-          el("span", { class: "badge ok vx-match", hidden: "" }, "Matches the boxes")),
-        el("div", { class: "muted" }, `${render.layout.mode === "split" ? "Two boxes" : "One box"} · ${formatSize(render.sizeBytes)} · kept until ${formatDate(render.expiresAtUtc)}`),
+          el("span", { class: "badge ok vx-match", hidden: "" }, "Matches the editor")),
+        el("div", { class: "muted" }, `${render.layout.mode === "split" ? "Two boxes" : "One box"} · ${vxRenderLength(render.layout)} · ${formatSize(render.sizeBytes)} · kept until ${formatDate(render.expiresAtUtc)}`),
         el("div", { class: "entry-actions" },
           el("a", { class: "button small", href: render.fileUrl, download: "" }, "Download"),
           el("button", { type: "button", class: "secondary small", onclick: play }, "Preview"),
-          el("button", { type: "button", class: "link", onclick: () => vxUseLayout(render) }, "Use these boxes"),
+          el("button", { type: "button", class: "link", onclick: () => vxUseLayout(render) }, "Use these settings"),
           el("button", { type: "button", class: "link danger", onclick: () => vxDeleteRender(render) }, "Delete"))));
     item.vxLayout = render.layout;
     return item;
   }));
   vxUpdateMatches();
+}
+
+function vxRenderLength(layout) {
+  if (layout.trimStart == null && layout.trimEnd == null) return "full clip";
+  const start = layout.trimStart ?? 0;
+  const end = layout.trimEnd ?? (vxDuration() || start);
+  return `${vxFormatTenths(start)} – ${vxFormatTenths(end)}`;
 }
 
 function vxUseLayout(render) {
@@ -1481,7 +1581,10 @@ $("vx-split").addEventListener("keydown", (event) => {
 });
 $("vx-play").addEventListener("click", () => {
   const video = $("vx-video");
-  if (video.paused) video.play().catch(() => {});
+  if (video.paused) {
+    if (video.currentTime < vx.trim.start || video.currentTime >= vx.trim.end - 0.05) video.currentTime = vx.trim.start;
+    video.play().catch(() => {});
+  }
   else video.pause();
 });
 $("vx-seek").addEventListener("input", () => {
@@ -1516,6 +1619,27 @@ $("vx-mute").addEventListener("click", () => {
 }
 $("vx-render").addEventListener("click", vxRender);
 $("vx-back").addEventListener("click", vxClosePlayback);
+for (const handle of [$("vx-trim-start"), $("vx-trim-end")]) {
+  handle.addEventListener("pointerdown", vxStartTrimDrag);
+  handle.addEventListener("keydown", (event) => {
+    const step = { ArrowLeft: -0.1, ArrowRight: 0.1 }[event.key];
+    if (!step) return;
+    event.preventDefault();
+    const delta = event.shiftKey ? step * 10 : step;
+    if (handle.dataset.edge === "start") vxSetTrim(Math.min(vx.trim.start + delta, vx.trim.end - VX_MIN_TRIM), vx.trim.end);
+    else vxSetTrim(vx.trim.start, Math.max(vx.trim.end + delta, vx.trim.start + VX_MIN_TRIM));
+  });
+}
+$("vx-set-start").addEventListener("click", () => {
+  const t = $("vx-video").currentTime;
+  // Moving the start past the end pushes the end out to keep at least the minimum length
+  vxSetTrim(t, Math.max(vx.trim.end, t + VX_MIN_TRIM));
+});
+$("vx-set-end").addEventListener("click", () => {
+  const t = $("vx-video").currentTime;
+  vxSetTrim(Math.min(vx.trim.start, t - VX_MIN_TRIM), t);
+});
+$("vx-trim-reset").addEventListener("click", () => vxSetTrim(0, Infinity));
 $("vx-close").addEventListener("click", () => $("vx").close());
 $("vx").addEventListener("close", closeVertical);
 

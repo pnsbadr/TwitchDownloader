@@ -646,3 +646,50 @@ a.button.disabled { opacity: 0.55; cursor: default; pointer-events: none; }
 .vx-render-body { min-width: 0; display: grid; gap: 2px; }
 .vx-render-body .badge { margin-left: 8px; }
 .vx-render-body .entry-actions { margin-top: 4px; }
+
+.vx-trim-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.vx-trim-label { font-weight: 600; font-size: 13px; }
+
+.vx-trim {
+  position: relative;
+  flex: 1;
+  height: 28px;
+  border-radius: 4px;
+  background: var(--badge-bg);
+  touch-action: none;
+}
+
+.vx-trim-range {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top: 2px solid var(--accent);
+  border-bottom: 2px solid var(--accent);
+}
+
+.vx-trim-head {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--text);
+  pointer-events: none;
+}
+
+.vx-trim-handle {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 12px;
+  margin-left: -6px;
+  border-radius: 3px;
+  background: var(--accent);
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.vx-trim-handle:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+
+.vx-trim-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }

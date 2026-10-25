@@ -49,7 +49,7 @@ namespace TwitchDownloaderWeb.Endpoints
             if (entry is null)
                 return EntryNotFound(id);
 
-            if (layout.Validate() is { } error)
+            if (layout.Validate(entry.ClipLengthSeconds) is { } error)
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["layout"] = [error] });
 
             var relativePath = entry.Status == EntryStatus.Ready ? entry.FilePath

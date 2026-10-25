@@ -169,7 +169,23 @@
           <button type="button" id="vx-mute" class="link vx-mute" aria-label="Mute preview">🔊</button>
           <input id="vx-volume" class="vx-volume" type="range" min="0" max="100" value="30" aria-label="Preview volume">
         </div>
-        <p class="muted vx-hint">Drag a box to move it, drag a corner to resize it. In two-box mode, drag the bar in the portrait preview to change how much space each box gets.</p>
+        <!-- Trim: only the part between the two handles is rendered -->
+        <div class="vx-trim-row">
+          <span class="vx-trim-label">Trim</span>
+          <div id="vx-trim" class="vx-trim">
+            <div id="vx-trim-range" class="vx-trim-range"></div>
+            <div id="vx-trim-head" class="vx-trim-head"></div>
+            <span id="vx-trim-start" class="vx-trim-handle" data-edge="start" role="slider" tabindex="0" aria-label="Trim start"></span>
+            <span id="vx-trim-end" class="vx-trim-handle" data-edge="end" role="slider" tabindex="0" aria-label="Trim end"></span>
+          </div>
+        </div>
+        <div class="vx-trim-controls">
+          <button type="button" id="vx-set-start" class="secondary small">Start here</button>
+          <button type="button" id="vx-set-end" class="secondary small">End here</button>
+          <span id="vx-trim-text" class="muted vx-time"></span>
+          <button type="button" id="vx-trim-reset" class="link">Reset</button>
+        </div>
+        <p class="muted vx-hint">Drag a box to move it, drag a corner to resize it. In two-box mode, drag the bar in the portrait preview to change how much space each box gets. Drag the trim handles (or use Start here / End here at the playhead) to render only part of the clip; the preview loops over that part.</p>
       </div>
       <div class="vx-col vx-port">
         <div class="vx-label">Portrait</div>
