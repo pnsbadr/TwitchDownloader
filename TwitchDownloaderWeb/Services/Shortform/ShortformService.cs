@@ -258,6 +258,8 @@ namespace TwitchDownloaderWeb.Services.Shortform
                     "-i", sourcePath,
                     "-filter_complex", layout.BuildFilterGraph(),
                     "-map", "[v]", "-map", "0:a?",
+                    // Drop the source's chapter track, which would otherwise keep the full clip's length after a trim
+                    "-map_chapters", "-1", "-dn",
                     "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
                 });
                 args.AddRange(trimmed ? new[] { "-c:a", "aac", "-b:a", "192k" } : new[] { "-c:a", "copy" });
