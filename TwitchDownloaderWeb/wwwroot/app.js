@@ -162,12 +162,13 @@ function vodIdFromText(text) {
   return value.match(/twitch\.tv\/videos\/(\d+)/i)?.[1] ?? null;
 }
 
-// Trim-field format with tenths when they matter, e.g. "1:02:03.4"
+// Trim-field format with hundredths when they matter, e.g. "1:02:03.45"
 function formatTrimValue(seconds) {
-  const tenths = Math.round(seconds * 10);
-  const whole = Math.floor(tenths / 10);
-  const text = formatDuration(whole);
-  return tenths % 10 ? `${text}.${tenths % 10}` : text;
+  const hundredths = Math.round(seconds * 100);
+  const text = formatDuration(Math.floor(hundredths / 100));
+  const fraction = hundredths % 100;
+  if (!fraction) return text;
+  return `${text}.${String(fraction).padStart(2, "0").replace(/0$/, "")}`;
 }
 
 // The embed's "time" option: "1h2m3s"
@@ -192,6 +193,7 @@ class VodPlayer {
     this.ready = false;
     this.stopAt = null; // pause once playback reaches this offset (clip previews)
     this.timer = null;
+    this.onMessage = null;
     this.lastReported = null; // last value seen from getCurrentTime(); a different value means a fresh refresh
     this.base = 0; // offset at baseAt
     this.baseAt = null; // performance.now() the base was taken while playing, null while not advancing
@@ -239,11 +241,19 @@ class VodPlayer {
       if (typeof event?.position === "number") this.base = event.position;
       this.baseAt = null;
     });
+    // The embed refreshes its cached time when a message from the player iframe arrives. Its own listener runs
+    // first (it was added earlier), so reading the time here catches each refresh the moment it lands instead of
+    // up to a tick later.
+    this.onMessage = (event) => {
+      if (event.origin === "https://player.twitch.tv" && player === this.player) this.position();
+    };
+    window.addEventListener("message", this.onMessage);
     this.timer = setInterval(() => this.tick(), PLAYER_TICK_MS);
   }
 
   close() {
     clearInterval(this.timer);
+    window.removeEventListener("message", this.onMessage);
     this.timer = null;
     this.player = null;
     this.vodId = null;
