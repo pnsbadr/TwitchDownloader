@@ -10,6 +10,10 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
     /// <param name="Downloaded">False if nothing could be restored and the caller should download normally.</param>
     public sealed record AudioRestoreResult(double RestoredSeconds, double StillMutedSeconds, bool Downloaded);
 
+    /// <param name="MutedSeconds">Muted time inside the range, per the VOD's playlist.</param>
+    /// <param name="RestorableSeconds">The part of it that has saved clean audio.</param>
+    public sealed record AudioCoverage(double MutedSeconds, double RestorableSeconds);
+
     /// <summary>
     /// Makes a library file with rescued clean audio in place of Twitch's muted parts:
     /// 1. Core downloads the range in Safe mode, so the file starts exactly on a known segment.
@@ -38,6 +42,34 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
             _exactTrim = exactTrim;
         }
 
+        /// <summary>How much of a VOD range is muted and how much of that could be restored, without downloading anything.</summary>
+        /// <returns>Null if the VOD has no audio rescue or its playlist can't be read (we don't know which parts are muted).</returns>
+        public async Task<AudioCoverage?> GetCoverageAsync(LibraryDbContext db, long vodId, TimeSpan startTime, TimeSpan? endTime, CancellationToken cancellationToken)
+        {
+            if (!await db.AudioRescues.AsNoTracking().AnyAsync(x => x.VodId == vodId, cancellationToken))
+                return null;
+
+            var clean = await CleanSegmentsAsync(db, vodId, cancellationToken);
+            var rendition = await _playlists.GetRenditionAsync(_httpClientFactory.CreateClient(nameof(AudioRestoreService)), vodId, null, cancellationToken);
+            if (rendition is null)
+                return null;
+
+            var segments = rendition.Segments;
+            var range = VodPlaylist.GetTrimRange(segments, startTime, endTime);
+            var (rangeStart, rangeLength) = range.GetOffsetAndLength(segments.Count);
+            var muted = MutedSeconds(segments.Skip(rangeStart).Take(rangeLength).Where(x => x.IsMuted), startTime, endTime);
+            var runs = RestorePlanner.FindRuns(segments, range, key => HasCleanFile(clean, key));
+            return new AudioCoverage(muted, MutedSeconds(runs.SelectMany(x => x), startTime, endTime));
+        }
+
+        private static Task<Dictionary<string, RescuedAudioSegment>> CleanSegmentsAsync(LibraryDbContext db, long vodId, CancellationToken cancellationToken) =>
+            db.RescuedAudioSegments.AsNoTracking()
+                .Where(x => x.VodId == vodId && x.FilePath != null && x.FirstAudioPts != null)
+                .ToDictionaryAsync(x => x.Key, cancellationToken);
+
+        private bool HasCleanFile(Dictionary<string, RescuedAudioSegment> clean, string key) =>
+            clean.TryGetValue(key, out var segment) && File.Exists(_storage.Resolve(segment.FilePath!));
+
         /// <returns>
         /// Null if the VOD has no audio rescue (download it normally; we don't know which parts are muted). Otherwise how much
         /// muted audio was restored and how much stays muted; when <see cref="AudioRestoreResult.Downloaded"/> is false the
@@ -48,9 +80,7 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
             if (!await db.AudioRescues.AsNoTracking().AnyAsync(x => x.VodId == entry.VodId, cancellationToken))
                 return null;
 
-            var clean = await db.RescuedAudioSegments.AsNoTracking()
-                .Where(x => x.VodId == entry.VodId && x.FilePath != null && x.FirstAudioPts != null)
-                .ToDictionaryAsync(x => x.Key, cancellationToken);
+            var clean = await CleanSegmentsAsync(db, entry.VodId, cancellationToken);
 
             var http = _httpClientFactory.CreateClient(nameof(AudioRestoreService));
             var rendition = await _playlists.GetRenditionAsync(http, entry.VodId, entry.Quality, cancellationToken);
@@ -60,8 +90,8 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
             var segments = rendition.Segments;
             var range = VodPlaylist.GetTrimRange(segments, entry.StartTime, entry.EndTime);
             var (rangeStart, rangeLength) = range.GetOffsetAndLength(segments.Count);
-            var mutedSeconds = MutedSeconds(segments.Skip(rangeStart).Take(rangeLength).Where(x => x.IsMuted), entry);
-            var runs = RestorePlanner.FindRuns(segments, range, key => clean.ContainsKey(key) && File.Exists(_storage.Resolve(clean[key].FilePath!)));
+            var mutedSeconds = MutedSeconds(segments.Skip(rangeStart).Take(rangeLength).Where(x => x.IsMuted), entry.StartTime, entry.EndTime);
+            var runs = RestorePlanner.FindRuns(segments, range, key => HasCleanFile(clean, key));
             if (runs.Count == 0)
                 return new AudioRestoreResult(0, mutedSeconds, false);
 
@@ -101,7 +131,7 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
                     File.Move(restoredFile, outputPath, true);
                 }
 
-                var restored = MutedSeconds(runs.SelectMany(x => x), entry);
+                var restored = MutedSeconds(runs.SelectMany(x => x), entry.StartTime, entry.EndTime);
                 return new AudioRestoreResult(restored, Math.Max(0, mutedSeconds - restored), true);
             }
             finally
@@ -117,11 +147,11 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
             }
         }
 
-        /// <summary>How much of these segments falls inside the entry's trim.</summary>
-        private static double MutedSeconds(IEnumerable<VodSegment> segments, LibraryEntry entry)
+        /// <summary>How much of these segments falls inside the trim.</summary>
+        private static double MutedSeconds(IEnumerable<VodSegment> segments, TimeSpan startTime, TimeSpan? endTime)
         {
-            var start = (decimal)entry.StartTime.TotalSeconds;
-            var end = entry.EndTime is { } e ? (decimal)e.TotalSeconds : decimal.MaxValue;
+            var start = (decimal)startTime.TotalSeconds;
+            var end = endTime is { } e ? (decimal)e.TotalSeconds : decimal.MaxValue;
             return (double)segments.Sum(s => Math.Max(0, Math.Min(end, s.Offset + s.Duration) - Math.Max(start, s.Offset)));
         }
 

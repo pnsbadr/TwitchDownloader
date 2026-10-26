@@ -12,18 +12,21 @@ namespace TwitchDownloaderWeb.Services
     /// </summary>
     public sealed class DownloadWorker : BackgroundService
     {
+        public const string ClipGoneMessage = "The clip and its VOD are no longer available on Twitch.";
+
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly DownloadQueue _queue;
         private readonly VodInfoService _vodInfo;
         private readonly VodDownloadRunner _runner;
         private readonly AudioRestoreService _restore;
         private readonly ExactTrimService _exactTrim;
+        private readonly ClipFileService _clipFiles;
         private readonly LibraryStorage _storage;
         private readonly IOptions<DownloadSettings> _settings;
         private readonly ILogger<DownloadWorker> _logger;
 
         public DownloadWorker(IServiceScopeFactory scopeFactory, DownloadQueue queue, VodInfoService vodInfo, VodDownloadRunner runner,
-            AudioRestoreService restore, ExactTrimService exactTrim, LibraryStorage storage, IOptions<DownloadSettings> settings, ILogger<DownloadWorker> logger)
+            AudioRestoreService restore, ExactTrimService exactTrim, ClipFileService clipFiles, LibraryStorage storage, IOptions<DownloadSettings> settings, ILogger<DownloadWorker> logger)
         {
             _scopeFactory = scopeFactory;
             _queue = queue;
@@ -31,6 +34,7 @@ namespace TwitchDownloaderWeb.Services
             _runner = runner;
             _restore = restore;
             _exactTrim = exactTrim;
+            _clipFiles = clipFiles;
             _storage = storage;
             _settings = settings;
             _logger = logger;
@@ -161,44 +165,38 @@ namespace TwitchDownloaderWeb.Services
             {
                 _logger.LogInformation("Starting {Kind} job for entry {EntryId} (VOD {VodId}).", job.Kind, entry.Id, entry.VodId);
 
-                if (await _vodInfo.GetVodAsync(entry.VodId) is null)
-                {
-                    entry.Status = EntryStatus.VodUnavailable;
-                    entry.GenerationStatus = GenerationStatus.None;
-                    entry.Error = "The VOD is no longer available on Twitch.";
-                    entry.UpdatedAtUtc = DateTime.UtcNow;
-                    db.Audit(AuditActions.DownloadFailed, entry.Id, entry.Error);
-                    await SaveIgnoringDeletedAsync(db, stoppingToken);
-                    return;
-                }
-
                 Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
 
-                // Swap rescued clean audio into muted parts if we have any; otherwise (or if that fails) a normal download.
-                // We own this path, so overwrite any leftover from an earlier attempt.
-                AudioRestoreResult? restore = null;
-                try
+                AudioRestoreResult? restore;
+                if (entry.Kind == EntryKind.Clip)
                 {
-                    restore = await _restore.TryDownloadRestoredAsync(db, entry, fullPath, _logger, jobCts.Token);
-                    if (restore is { Downloaded: true })
-                        db.Audit(AuditActions.AudioRestored, entry.Id, $"{restore.RestoredSeconds:0.#}s of muted audio replaced");
-                    if (restore is { StillMutedSeconds: > 0 })
-                        db.Audit(AuditActions.AudioNotRestored, entry.Id, $"{restore.StillMutedSeconds:0.#}s of muted audio had no saved clean copy");
+                    var clipFile = await _clipFiles.MakeFileAsync(db, entry, fullPath, _logger, jobCts.Token);
+                    if (clipFile.Source == ClipFileSource.Gone)
+                    {
+                        await MarkUnavailableAsync(db, entry, ClipGoneMessage, stoppingToken);
+                        return;
+                    }
+
+                    if (clipFile.Source == ClipFileSource.Vod)
+                        db.Audit(AuditActions.DownloadStarted, entry.Id, "The clip is gone from Twitch; cut from its VOD instead");
+
+                    restore = clipFile.Restore;
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
+                else
                 {
-                    _logger.LogWarning(ex, "Restoring audio for entry {EntryId} failed; downloading without it.", entry.Id);
-                    db.Audit(AuditActions.AudioRestoreFailed, entry.Id, ex.Message);
+                    if (await _vodInfo.GetVodAsync(entry.VodId) is null)
+                    {
+                        await MarkUnavailableAsync(db, entry, ReferenceVodCheckService.VodGoneMessage, stoppingToken);
+                        return;
+                    }
+
+                    restore = await DownloadVodCutAsync(db, entry, fullPath, jobCts.Token);
                 }
 
-                if (restore is not { Downloaded: true })
-                {
-                    if (entry.TrimMode == VideoTrimMode.Exact)
-                        await _exactTrim.DownloadAsync(entry, fullPath, _logger, jobCts.Token);
-                    else
-                        await _runner.DownloadAsync(entry.VodId, entry.Quality, entry.TrimMode, entry.StartTime, entry.EndTime,
-                            fullPath, info => info, _logger, jobCts.Token);
-                }
+                if (restore is { Downloaded: true })
+                    db.Audit(AuditActions.AudioRestored, entry.Id, $"{restore.RestoredSeconds:0.#}s of muted audio replaced");
+                if (restore is { StillMutedSeconds: > 0 })
+                    db.Audit(AuditActions.AudioNotRestored, entry.Id, $"{restore.StillMutedSeconds:0.#}s of muted audio had no saved clean copy");
 
                 entry.AudioRestoredSeconds = restore is { Downloaded: true, RestoredSeconds: > 0 } ? restore.RestoredSeconds : null;
                 entry.AudioMutedSeconds = restore is { StillMutedSeconds: > 0 } ? restore.StillMutedSeconds : null;
@@ -253,6 +251,47 @@ namespace TwitchDownloaderWeb.Services
             {
                 _queue.EndJob(entry.Id);
             }
+        }
+
+        /// <summary>
+        /// Downloads a VOD entry's cut. Swaps rescued clean audio into muted parts if we have any; otherwise (or if that fails)
+        /// a normal download. We own this path, so any leftover from an earlier attempt is overwritten.
+        /// </summary>
+        /// <returns>The audio restore attempt, or null if the VOD has no audio rescue or the attempt failed.</returns>
+        private async Task<AudioRestoreResult?> DownloadVodCutAsync(LibraryDbContext db, LibraryEntry entry, string fullPath, CancellationToken cancellationToken)
+        {
+            AudioRestoreResult? restore = null;
+            try
+            {
+                restore = await _restore.TryDownloadRestoredAsync(db, entry, fullPath, _logger, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Restoring audio for entry {EntryId} failed; downloading without it.", entry.Id);
+                db.Audit(AuditActions.AudioRestoreFailed, entry.Id, ex.Message);
+            }
+
+            if (restore is not { Downloaded: true })
+            {
+                if (entry.TrimMode == VideoTrimMode.Exact)
+                    await _exactTrim.DownloadAsync(entry, fullPath, _logger, cancellationToken);
+                else
+                    await _runner.DownloadAsync(entry.VodId, entry.Quality, entry.TrimMode, entry.StartTime, entry.EndTime,
+                        fullPath, info => info, _logger, cancellationToken);
+            }
+
+            return restore;
+        }
+
+        /// <summary>Twitch no longer has what the entry's file would be made from.</summary>
+        private static async Task MarkUnavailableAsync(LibraryDbContext db, LibraryEntry entry, string message, CancellationToken cancellationToken)
+        {
+            entry.Status = EntryStatus.VodUnavailable;
+            entry.GenerationStatus = GenerationStatus.None;
+            entry.Error = message;
+            entry.UpdatedAtUtc = DateTime.UtcNow;
+            db.Audit(AuditActions.DownloadFailed, entry.Id, message);
+            await SaveIgnoringDeletedAsync(db, cancellationToken);
         }
 
         /// <returns>False if the entry was deleted by a request while the job ran.</returns>

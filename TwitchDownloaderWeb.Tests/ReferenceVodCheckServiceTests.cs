@@ -80,6 +80,30 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal(EntryStatus.ReferenceOnly, await StatusAsync(reference, ct));
         }
 
+        [Fact]
+        public async Task LeavesClipEntriesAloneWhenTheirVodIsGone()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            int clip;
+            using (var scope = _services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+                var entry = new LibraryEntry
+                {
+                    Title = "Twitch clip", Kind = EntryKind.Clip, ClipSlug = "FunnyClipSlug-abc123", VodId = VodId, ClipLengthSeconds = 30,
+                    Status = EntryStatus.ReferenceOnly,
+                };
+                db.Entries.Add(entry);
+                await db.SaveChangesAsync(ct);
+                clip = entry.Id;
+            }
+
+            // The clip's file comes from the clip, which outlives its VOD
+            _vods.Exists = false;
+            await _service.RunOnceAsync(ct);
+            Assert.Equal(EntryStatus.ReferenceOnly, await StatusAsync(clip, ct));
+        }
+
         private async Task<EntryStatus> StatusAsync(int id, CancellationToken ct)
         {
             using var scope = _services.CreateScope();

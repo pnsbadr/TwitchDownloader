@@ -6,12 +6,14 @@ using TwitchDownloaderCore.Models;
 using TwitchDownloaderCore.Services;
 using TwitchDownloaderWeb.Data;
 using TwitchDownloaderWeb.Services;
+using TwitchDownloaderWeb.Services.AudioRescue;
 using TwitchDownloaderWeb.Services.Shortform;
 
 namespace TwitchDownloaderWeb.Endpoints
 {
-    /// <param name="VodId">A VOD ID or twitch.tv/videos URL.</param>
-    /// <param name="Title">Blank uses the VOD's Twitch title.</param>
+    /// <param name="VodId">A VOD ID or twitch.tv/videos URL, or a clip link (clips.twitch.tv/…, twitch.tv/{channel}/clip/…) or slug.
+    /// Clips are always reference-only and ignore TrimMode/StartTime/EndTime: they keep Twitch's cut.</param>
+    /// <param name="Title">Blank uses the VOD's (or clip's) Twitch title.</param>
     /// <param name="Quality">e.g. "1080p60". Blank uses the best available quality.</param>
     /// <param name="TrimMode">"Exact" (default) or "Safe".</param>
     /// <param name="StartTime">"h:mm:ss" offset from the start of the VOD. Blank is the start.</param>
@@ -27,6 +29,8 @@ namespace TwitchDownloaderWeb.Endpoints
     public sealed record EntryDto(
         int Id,
         string Title,
+        string Kind,
+        string? ClipSlug,
         long VodId,
         string? ChannelName,
         string? Quality,
@@ -54,6 +58,8 @@ namespace TwitchDownloaderWeb.Endpoints
         public static EntryDto From(LibraryEntry entry) => new(
             entry.Id,
             entry.Title,
+            entry.Kind.ToString(),
+            entry.ClipSlug,
             entry.VodId,
             entry.ChannelName,
             entry.Quality,
@@ -88,6 +94,15 @@ namespace TwitchDownloaderWeb.Endpoints
     public sealed record VodInfoDto(long VodId, string Title, string? ChannelName, int LengthSeconds, string Length, DateTime StreamDateUtc,
         string? ThumbnailUrl, string[] Qualities, bool Restricted, int MaxStoredClipSeconds);
 
+    /// <summary>How much of a clip is muted, from its VOD's playlist. Only known when the VOD has an audio rescue.</summary>
+    public sealed record ClipAudioDto(double MutedSeconds, double RestorableSeconds);
+
+    /// <param name="VodId">The VOD the clip was cut from, if Twitch says (null once the VOD is gone).</param>
+    /// <param name="VodStart">Where the clip sits in that VOD, "h:mm:ss" (whole seconds).</param>
+    /// <param name="Audio">Null when unknown: no VOD, or no audio rescue for it.</param>
+    public sealed record ClipInfoDto(string Slug, string Title, string? ChannelName, int LengthSeconds, string Length, DateTime CreatedAtUtc,
+        DateTime? StreamDateUtc, string? ThumbnailUrl, string[] Qualities, long? VodId, string? VodStart, string? VodEnd, ClipAudioDto? Audio);
+
     public static class EntryEndpoints
     {
         private const int MaxTitleLength = 500;
@@ -95,6 +110,7 @@ namespace TwitchDownloaderWeb.Endpoints
         public static IEndpointRouteBuilder MapEntryEndpoints(this IEndpointRouteBuilder app)
         {
             app.MapGet("/api/vods/info", GetVodInfo);
+            app.MapGet("/api/clips/info", GetClipInfo);
 
             var entries = app.MapGroup("/api/entries");
             entries.MapPost("/", AddEntry);
@@ -126,11 +142,57 @@ namespace TwitchDownloaderWeb.Endpoints
                 settings.Value.MaxStoredClipSeconds));
         }
 
-        private static async Task<IResult> AddEntry(AddEntryRequest request, LibraryDbContext db, VodInfoService vodInfo, DownloadQueue queue,
-            IOptions<DownloadSettings> settings, CancellationToken cancellationToken)
+        private static async Task<IResult> GetClipInfo(string? clip, LibraryDbContext db, ClipInfoService clipInfo, VodInfoService vodInfo,
+            AudioRestoreService restore, ILoggerFactory loggerFactory, CancellationToken cancellationToken)
+        {
+            if (ClipInfoService.ParseClipSlug(clip) is not { } slug)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["clip"] = ["Unable to parse clip link/ID."] });
+
+            var details = await clipInfo.GetClipAsync(slug);
+            if (details is null)
+                return ClipNotFound(slug);
+
+            var vod = details.VodId is { } id ? await vodInfo.GetVodAsync(id) : null;
+            var (start, end) = ClipRange(details);
+
+            ClipAudioDto? audio = null;
+            if (vod is not null)
+            {
+                try
+                {
+                    if (await restore.GetCoverageAsync(db, vod.VodId, start, end, cancellationToken) is { } coverage)
+                        audio = new ClipAudioDto(coverage.MutedSeconds, coverage.RestorableSeconds);
+                }
+                catch (HttpRequestException ex)
+                {
+                    // The clip can still be added; the file job checks again
+                    loggerFactory.CreateLogger("TwitchDownloaderWeb.Entries").LogWarning("Couldn't read the playlist of VOD {VodId}: {Message}", vod.VodId, ex.Message);
+                }
+            }
+
+            return Results.Ok(new ClipInfoDto(slug, details.Title, details.ChannelName, details.DurationSeconds,
+                TrimTime.Format(TimeSpan.FromSeconds(details.DurationSeconds)), details.CreatedAtUtc, vod?.StreamDateUtc, details.ThumbnailUrl,
+                details.Qualities, details.VodId, details.VodId is null ? null : TrimTime.Format(start), details.VodId is null ? null : TrimTime.Format(end),
+                audio));
+        }
+
+        /// <summary>The clip's place in its VOD, or 0..length when Twitch doesn't say.</summary>
+        private static (TimeSpan Start, TimeSpan End) ClipRange(ClipDetails clip)
+        {
+            var start = TimeSpan.FromSeconds(clip.VodOffsetSeconds ?? 0);
+            return (start, start + TimeSpan.FromSeconds(clip.DurationSeconds));
+        }
+
+        private static async Task<IResult> AddEntry(AddEntryRequest request, LibraryDbContext db, VodInfoService vodInfo, ClipInfoService clipInfo,
+            DownloadQueue queue, IOptions<DownloadSettings> settings, CancellationToken cancellationToken)
         {
             if (VodInfoService.ParseVodId(request.VodId) is not { } vodId)
-                return Results.ValidationProblem(new Dictionary<string, string[]> { ["vodId"] = ["Unable to parse VOD ID/URL."] });
+            {
+                if (ClipInfoService.ParseClipSlug(request.VodId) is { } slug)
+                    return await AddClipEntry(slug, request, db, vodInfo, clipInfo, cancellationToken);
+
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["vodId"] = ["Unable to parse VOD or clip ID/URL."] });
+            }
 
             if (!TrimTime.TryParse(request.StartTime, out var parsedStart))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["startTime"] = ["Use h:mm:ss, m:ss or seconds."] });
@@ -216,6 +278,75 @@ namespace TwitchDownloaderWeb.Endpoints
 
             if (isStored)
                 queue.Enqueue(entry.Id, DownloadJobKind.Store);
+
+            return Results.Created($"/api/entries/{entry.Id}", EntryDto.From(entry));
+        }
+
+        /// <summary>
+        /// Adds a clips.twitch.tv clip. Nothing is downloaded: Twitch keeps the clip, and its file is made on demand
+        /// (from the VOD with clean audio when muted parts can be restored, see <see cref="ClipFileService"/>).
+        /// </summary>
+        private static async Task<IResult> AddClipEntry(string slug, AddEntryRequest request, LibraryDbContext db, VodInfoService vodInfo,
+            ClipInfoService clipInfo, CancellationToken cancellationToken)
+        {
+            var title = request.Title?.Trim();
+            if (title is { Length: > MaxTitleLength })
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["title"] = [$"Title cannot be longer than {MaxTitleLength} characters."] });
+
+            var clip = await clipInfo.GetClipAsync(slug);
+            if (clip is null)
+                return ClipNotFound(slug);
+
+            string? quality = null;
+            var requestedQuality = string.IsNullOrWhiteSpace(request.Quality) ? null : request.Quality.Trim();
+            if (requestedQuality is not null)
+            {
+                quality = clip.Qualities.FirstOrDefault(x => string.Equals(x, requestedQuality, StringComparison.OrdinalIgnoreCase));
+                if (quality is null)
+                {
+                    return Results.ValidationProblem(new Dictionary<string, string[]>
+                    {
+                        ["quality"] = [$"Quality \"{requestedQuality}\" is not available. Available: {string.Join(", ", clip.Qualities)}."]
+                    });
+                }
+            }
+
+            var vod = clip.VodId is { } id ? await vodInfo.GetVodAsync(id) : null;
+            var (start, end) = ClipRange(clip);
+            var now = DateTime.UtcNow;
+
+            var entry = new LibraryEntry
+            {
+                Title = string.IsNullOrEmpty(title) ? clip.Title : title,
+                Kind = EntryKind.Clip,
+                ClipSlug = slug,
+                VodId = clip.VodId ?? 0,
+                ChannelName = clip.ChannelName,
+                Quality = quality,
+                TrimMode = VideoTrimMode.Exact,
+                StartTime = start,
+                EndTime = end,
+                ClipLengthSeconds = clip.DurationSeconds,
+                VodLengthSeconds = vod?.LengthSeconds ?? 0,
+                // When the stream started; without the VOD, the clip's own date is the closest we have
+                StreamDateUtc = vod?.StreamDateUtc ?? clip.CreatedAtUtc,
+                AddedAtUtc = now,
+                UpdatedAtUtc = now,
+                ThumbnailUrl = clip.ThumbnailUrl,
+                Status = EntryStatus.ReferenceOnly,
+            };
+
+            await using (var transaction = await db.Database.BeginTransactionAsync(cancellationToken))
+            {
+                db.Entries.Add(entry);
+                await db.SaveChangesAsync(cancellationToken);
+
+                var source = clip.VodId is null ? "no VOD" : $"VOD {clip.VodId} at {TrimTime.Format(start)}";
+                db.Audit(AuditActions.EntryAdded, entry.Id, $"Clip {slug} ({source}), {clip.DurationSeconds}s, reference-only");
+                await db.SaveChangesAsync(cancellationToken);
+
+                await transaction.CommitAsync(cancellationToken);
+            }
 
             return Results.Created($"/api/entries/{entry.Id}", EntryDto.From(entry));
         }
@@ -347,6 +478,9 @@ namespace TwitchDownloaderWeb.Endpoints
             if (entry is null)
                 return EntryNotFound(id);
 
+            if (entry.Kind == EntryKind.Clip)
+                return Results.Problem(detail: "Twitch clips keep Twitch's cut. Use the trim in Make vertical to shorten one.", statusCode: StatusCodes.Status409Conflict);
+
             if (entry.Status == EntryStatus.VodUnavailable)
                 return Results.Problem(detail: "The VOD is no longer available on Twitch, so the clip can't be cut again.", statusCode: StatusCodes.Status410Gone);
 
@@ -440,7 +574,7 @@ namespace TwitchDownloaderWeb.Endpoints
             switch (entry.Status)
             {
                 case EntryStatus.VodUnavailable:
-                    return Results.Problem(detail: "The VOD is no longer available on Twitch.", statusCode: StatusCodes.Status410Gone);
+                    return Results.Problem(detail: entry.Error ?? ReferenceVodCheckService.VodGoneMessage, statusCode: StatusCodes.Status410Gone);
 
                 case EntryStatus.Ready:
                     return Results.Ok(EntryDto.From(entry));
@@ -552,7 +686,7 @@ namespace TwitchDownloaderWeb.Endpoints
         {
             // Windows silently drops trailing dots and spaces, which could leave "" or ".." as the name
             var name = FilenameService.ReplaceInvalidFilenameChars(entry.Title)?.Trim().TrimEnd('.');
-            return (string.IsNullOrEmpty(name) ? entry.VodId.ToString() : name) + ".mp4";
+            return (string.IsNullOrEmpty(name) ? entry.ClipSlug ?? entry.VodId.ToString() : name) + ".mp4";
         }
 
         private static IResult EntryNotFound(int id) =>
@@ -560,6 +694,9 @@ namespace TwitchDownloaderWeb.Endpoints
 
         private static IResult VodNotFound(long vodId) =>
             Results.Problem(detail: $"VOD {vodId} was not found. It may be deleted, expired or private.", statusCode: StatusCodes.Status404NotFound);
+
+        private static IResult ClipNotFound(string slug) =>
+            Results.Problem(detail: $"Clip {slug} was not found. It may be deleted.", statusCode: StatusCodes.Status404NotFound);
 
         private static IResult RestrictedVod() =>
             Results.Problem(detail: "This VOD is restricted (e.g. subscriber-only), which is not supported yet.", statusCode: StatusCodes.Status403Forbidden);
