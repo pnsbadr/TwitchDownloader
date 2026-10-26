@@ -11,7 +11,10 @@ namespace TwitchDownloaderWeb.Data
         /// <summary>Only the clean audio of muted segments is kept.</summary>
         Pruned,
 
-        Failed
+        Failed,
+
+        /// <summary>The VOD was deleted from Twitch and no library entry uses it, so its saved audio was deleted.</summary>
+        VodGone
     }
 
     /// <summary>

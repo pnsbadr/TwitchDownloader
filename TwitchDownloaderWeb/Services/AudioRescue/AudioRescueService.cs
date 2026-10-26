@@ -14,6 +14,9 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
     ///
     /// VODs come from saved channels with WatchMutedAudio (checked every AudioRescue:PollMinutes) or from
     /// POST /api/vods/{id}/rescue. The database is the source of truth, so unfinished work resumes after a restart.
+    ///
+    /// Audio that's kept (pruned or failed rescues) is checked against Twitch every AudioRescue:VodCheckHours and deleted
+    /// once the VOD is gone, since it can't be spliced into anything without the video, unless the library has entries for it.
     /// </summary>
     public sealed class AudioRescueService : BackgroundService
     {
@@ -24,19 +27,21 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
         private readonly LibraryStorage _storage;
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IVodPlaylistSource _playlists;
+        private readonly IVodLookup _vods;
         private readonly IOptions<AudioRescueSettings> _settings;
         private readonly ILogger<AudioRescueService> _logger;
         private readonly Channel<bool> _wake = Channel.CreateBounded<bool>(new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropWrite });
         private DateTime _nextDiscoveryUtc = DateTime.MinValue;
 
         public AudioRescueService(IServiceScopeFactory scopeFactory, ChannelService channels, LibraryStorage storage, IHttpClientFactory httpClientFactory,
-            IVodPlaylistSource playlists, IOptions<AudioRescueSettings> settings, ILogger<AudioRescueService> logger)
+            IVodPlaylistSource playlists, IVodLookup vods, IOptions<AudioRescueSettings> settings, ILogger<AudioRescueService> logger)
         {
             _scopeFactory = scopeFactory;
             _channels = channels;
             _storage = storage;
             _httpClientFactory = httpClientFactory;
             _playlists = playlists;
+            _vods = vods;
             _settings = settings;
             _logger = logger;
         }
@@ -61,6 +66,9 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
 
                         await ProcessDueAsync(stoppingToken);
                     }
+
+                    // Cleanup isn't saving, so it runs even when rescue is turned off
+                    await RemoveGoneVodsAsync(stoppingToken);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
@@ -180,6 +188,90 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
 
                 await db.SaveChangesAsync(cancellationToken);
             }
+        }
+
+        /// <summary>
+        /// Deletes the saved audio of VODs that are gone from Twitch, one due rescue at a time. Audio is kept while any library
+        /// entry uses the VOD. Called by the background loop (and by tests).
+        /// </summary>
+        public async Task RemoveGoneVodsAsync(CancellationToken cancellationToken)
+        {
+            while (true)
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+
+                var now = DateTime.UtcNow;
+                var rescue = await db.AudioRescues
+                    .Where(x => (x.Status == AudioRescueStatus.Pruned || x.Status == AudioRescueStatus.Failed) && x.NextCheckAtUtc <= now)
+                    .OrderBy(x => x.NextCheckAtUtc)
+                    .FirstOrDefaultAsync(cancellationToken);
+                if (rescue is null)
+                    return;
+
+                rescue.NextCheckAtUtc = now.AddHours(Math.Max(1, _settings.Value.VodCheckHours));
+                var hasFiles = await db.RescuedAudioSegments.AnyAsync(x => x.VodId == rescue.VodId && x.FilePath != null, cancellationToken);
+                var usedByLibrary = await db.Entries.AnyAsync(x => x.VodId == rescue.VodId, cancellationToken);
+
+                if (hasFiles && !usedByLibrary)
+                {
+                    bool exists;
+                    try
+                    {
+                        exists = await _vods.ExistsAsync(rescue.VodId);
+                    }
+                    catch (HttpRequestException ex)
+                    {
+                        // Unknown, so keep it and look again next time
+                        _logger.LogWarning("Couldn't check whether VOD {VodId} still exists: {Message}", rescue.VodId, ex.Message);
+                        exists = true;
+                    }
+
+                    if (!exists)
+                        await RemoveAudioAsync(db, rescue, cancellationToken);
+                }
+
+                await db.SaveChangesAsync(cancellationToken);
+            }
+        }
+
+        private async Task RemoveAudioAsync(LibraryDbContext db, VodAudioRescue rescue, CancellationToken cancellationToken)
+        {
+            var rows = await db.RescuedAudioSegments.Where(x => x.VodId == rescue.VodId).ToListAsync(cancellationToken);
+            var left = 0L;
+            foreach (var row in rows)
+            {
+                if (_storage.TryDelete(row.FilePath))
+                    db.RescuedAudioSegments.Remove(row);
+                else
+                    left += row.SizeBytes;
+            }
+
+            // A file still in use (Windows) is retried at the next check
+            if (left > 0)
+            {
+                rescue.StoredBytes = left;
+                rescue.UpdatedAtUtc = DateTime.UtcNow;
+                return;
+            }
+
+            try
+            {
+                Directory.Delete(_storage.RescueVodFolder(rescue.VodId), true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Empty folder left behind; harmless
+            }
+
+            var freed = rescue.StoredBytes;
+            rescue.Status = AudioRescueStatus.VodGone;
+            rescue.SavedCount = 0;
+            rescue.StoredBytes = 0;
+            rescue.Error = null;
+            rescue.UpdatedAtUtc = DateTime.UtcNow;
+            db.Audit(AuditActions.AudioRescueRemoved, null, $"VOD {rescue.VodId} is gone from Twitch: deleted its saved audio ({freed / (1024 * 1024)} MB)");
+            _logger.LogInformation("VOD {VodId} is gone from Twitch; deleted its saved audio.", rescue.VodId);
         }
 
         private async Task GrabAsync(LibraryDbContext db, VodAudioRescue rescue, CancellationToken cancellationToken)
@@ -319,8 +411,8 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
             var rows = await db.RescuedAudioSegments.Where(x => x.VodId == rescue.VodId).ToListAsync(cancellationToken);
             foreach (var row in rows)
             {
-                // A VOD that's gone can't be downloaded again, so its audio is no use either
-                var keep = mutedKeys is not null && (mutedKeys.Contains(row.Key) || row.WasMuted);
+                // No playlist (gone, or now subscriber-only): keep what was muted; the VOD check deletes it if the VOD is gone
+                var keep = row.WasMuted || mutedKeys?.Contains(row.Key) == true;
                 if (keep)
                 {
                     row.WasMuted = true;
@@ -337,7 +429,8 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
             rescue.MutedCount = kept.Count;
             rescue.UnrecoverableCount = kept.Count(x => x.Unrecoverable);
             rescue.StoredBytes = kept.Sum(x => x.SizeBytes);
-            rescue.Error = mutedKeys is null ? "The VOD was no longer available at prune time, so its audio was removed." : null;
+            rescue.Error = null;
+            rescue.NextCheckAtUtc = DateTime.UtcNow.AddHours(Math.Max(1, _settings.Value.VodCheckHours));
             rescue.UpdatedAtUtc = DateTime.UtcNow;
 
             db.Audit(AuditActions.AudioRescuePruned, null,
@@ -349,6 +442,7 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
             rescue.Status = AudioRescueStatus.Failed;
             rescue.Error = message;
             rescue.UpdatedAtUtc = DateTime.UtcNow;
+            rescue.NextCheckAtUtc = rescue.UpdatedAtUtc; // check right away whether the VOD is gone
             db.Audit(AuditActions.AudioRescueFailed, null, $"VOD {rescue.VodId}: {message}");
         }
     }

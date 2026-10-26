@@ -21,6 +21,12 @@ namespace TwitchDownloaderWeb
         /// <summary>How long after a stream ends the full audio is kept before keeping only the muted parts.</summary>
         public double PruneAfterHours { get; set; } = 48;
 
+        /// <summary>
+        /// How often VODs with saved audio are checked on Twitch. Once a VOD is gone its audio is deleted, unless the library
+        /// has entries for that VOD. Runs even when Enabled is off.
+        /// </summary>
+        public double VodCheckHours { get; set; } = 12;
+
         /// <summary>Parallel segment downloads per VOD.</summary>
         public int Threads { get; set; } = 4;
     }

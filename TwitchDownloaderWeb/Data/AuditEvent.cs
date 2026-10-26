@@ -19,6 +19,7 @@ namespace TwitchDownloaderWeb.Data
         public const string AudioRescueSaved = "audio.rescue_saved";
         public const string AudioRescueFailed = "audio.rescue_failed";
         public const string AudioRescuePruned = "audio.rescue_pruned";
+        public const string AudioRescueRemoved = "audio.rescue_removed";
         public const string AudioRestored = "audio.restored";
         public const string AudioRestoreFailed = "audio.restore_failed";
         public const string AudioNotRestored = "audio.not_restored";

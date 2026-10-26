@@ -22,6 +22,7 @@ namespace TwitchDownloaderWeb.Tests
         private readonly ServiceProvider _services;
         private readonly FakePlaylists _playlists = new();
         private readonly FakeTwitchCdn _cdn = new();
+        private readonly FakeVodLookup _vods = new();
         private readonly AudioRescueService _service;
         private readonly LibraryStorage _storage;
 
@@ -39,7 +40,7 @@ namespace TwitchDownloaderWeb.Tests
                 NullLogger<LibraryStorage>.Instance);
 
             _service = new AudioRescueService(_services.GetRequiredService<IServiceScopeFactory>(), new ChannelService(), _storage, new FakeHttpClientFactory(_cdn),
-                _playlists, Options.Create(new AudioRescueSettings { Enabled = false, PruneAfterHours = 48 }), NullLogger<AudioRescueService>.Instance);
+                _playlists, _vods, Options.Create(new AudioRescueSettings { Enabled = false, PruneAfterHours = 48 }), NullLogger<AudioRescueService>.Instance);
         }
 
         public void Dispose()
@@ -137,6 +138,70 @@ namespace TwitchDownloaderWeb.Tests
         }
 
         [Fact]
+        public async Task DeletesAudioOnceTheVodIsGoneUnlessTheLibraryUsesIt()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            using (var scope = _services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+                AudioRescueService.AddRescue(db, VodId, "arky", "Test stream", DateTime.UtcNow.AddHours(-1), "test");
+                await db.SaveChangesAsync(ct);
+            }
+
+            _cdn.Serve("0.ts", 1000);
+            _cdn.Serve("1.ts", 2000);
+            _playlists.Set(live: false, ("0.ts", 10), ("1-muted.ts", 10));
+            await _service.ProcessDueAsync(ct);
+            await MakeDueAsync(ct);
+            await _service.ProcessDueAsync(ct);
+            Assert.Equal(AudioRescueStatus.Pruned, (await GetRescueAsync(ct)).Status);
+            var kept = _storage.Resolve(LibraryStorage.RescuedSegmentRelativePath(VodId, "1"));
+            Assert.True(File.Exists(kept));
+
+            // Still on Twitch: kept
+            await MakeDueAsync(ct);
+            await _service.RemoveGoneVodsAsync(ct);
+            Assert.Equal(AudioRescueStatus.Pruned, (await GetRescueAsync(ct)).Status);
+            Assert.True((await GetRescueAsync(ct)).NextCheckAtUtc > DateTime.UtcNow.AddHours(1), "the next check is hours away");
+
+            // Gone from Twitch, but a library entry uses the VOD: kept
+            _vods.Exists = false;
+            int entryId;
+            using (var scope = _services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+                var entry = new LibraryEntry { Title = "Clip", VodId = VodId };
+                db.Entries.Add(entry);
+                await db.SaveChangesAsync(ct);
+                entryId = entry.Id;
+            }
+
+            var calls = _vods.Calls;
+            await MakeDueAsync(ct);
+            await _service.RemoveGoneVodsAsync(ct);
+            Assert.Equal(AudioRescueStatus.Pruned, (await GetRescueAsync(ct)).Status);
+            Assert.True(File.Exists(kept));
+            Assert.Equal(calls, _vods.Calls); // no need to ask Twitch while the library uses it
+
+            // Entry deleted: the audio goes
+            using (var scope = _services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+                db.Entries.Remove(await db.Entries.SingleAsync(x => x.Id == entryId, ct));
+                await db.SaveChangesAsync(ct);
+            }
+
+            await MakeDueAsync(ct);
+            await _service.RemoveGoneVodsAsync(ct);
+            var rescue = await GetRescueAsync(ct);
+            Assert.Equal(AudioRescueStatus.VodGone, rescue.Status);
+            Assert.Equal(0, rescue.StoredBytes);
+            Assert.False(File.Exists(kept));
+            using var scope2 = _services.CreateScope();
+            Assert.False(await scope2.ServiceProvider.GetRequiredService<LibraryDbContext>().RescuedAudioSegments.AnyAsync(x => x.VodId == VodId, ct));
+        }
+
+        [Fact]
         public async Task FailsWhenTheVodIsGone()
         {
             var ct = TestContext.Current.CancellationToken;
@@ -167,6 +232,18 @@ namespace TwitchDownloaderWeb.Tests
             var rescue = await db.AudioRescues.SingleAsync(x => x.VodId == VodId, ct);
             rescue.NextCheckAtUtc = DateTime.UtcNow.AddSeconds(-1);
             await db.SaveChangesAsync(ct);
+        }
+
+        private sealed class FakeVodLookup : IVodLookup
+        {
+            public bool Exists { get; set; } = true;
+            public int Calls { get; private set; }
+
+            public Task<bool> ExistsAsync(long vodId)
+            {
+                Calls++;
+                return Task.FromResult(Exists);
+            }
         }
 
         private sealed class FakePlaylists : IVodPlaylistSource

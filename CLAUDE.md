@@ -109,7 +109,11 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   segment of the audio-only rendition as raw `.ts` (clean URL for muted ones; 403/404 = unrecoverable) into
   `downloads/rescue/{vodId}/{key}.ts`, re-checks every `LiveRecheckMinutes` while the playlist has no `#EXT-X-ENDLIST`,
   then `PruneAfterHours` (48) after the stream ends keeps only segments that are muted in the playlist by then.
-  The cleanup service never touches `rescue/`. Statuses: Grabbing / WaitingToPrune / Pruned / Failed.
+  The cleanup service never touches `rescue/`. Statuses: Grabbing / WaitingToPrune / Pruned / Failed / VodGone.
+- Kept audio (Pruned/Failed rescues) is checked every `VodCheckHours` (12) via GQL video info (`IVodLookup`, not the playlist:
+  sub-only VODs have no public playlist but still exist). Once the VOD is gone from Twitch its files and rows are deleted
+  (status VodGone, audited `audio.rescue_removed`), **unless any library entry has that VOD ID** (user's rule: never delete
+  audio clips were made from). Runs even when `Enabled` is off. Prune no longer deletes everything when the playlist is missing.
 - **Real-Twitch finding (2026-10-20):** a rescue started ~10 h after a stream ended got 403 for *every* muted segment's
   clean copy (237/237), and Core's own unmute failed too. Don't rely on the "24 h unmute window"; the rescue only helps
   if it runs while the stream is live, before Twitch mutes. The 24 h window/badge is still Core's assumption.

@@ -17,6 +17,7 @@ Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
 builder.Services.AddDbContext<LibraryDbContext>(options => options.UseSqlite($"Data Source={databasePath}"));
 
 builder.Services.AddSingleton<VodInfoService>();
+builder.Services.AddSingleton<IVodLookup>(sp => sp.GetRequiredService<VodInfoService>());
 builder.Services.AddSingleton<ChannelService>();
 builder.Services.AddHttpClient(nameof(AudioRescueService), client => client.Timeout = TimeSpan.FromSeconds(60));
 builder.Services.AddHttpClient(nameof(AudioRestoreService), client => client.Timeout = TimeSpan.FromSeconds(60));
