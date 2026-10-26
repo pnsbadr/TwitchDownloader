@@ -9,6 +9,8 @@ const $ = (id) => document.getElementById(id);
 
 let timeZoneMode = loadTimeZoneMode();
 let vodInfo = null;
+// Set instead of vodInfo when the link is a clips.twitch.tv clip (GET /api/clips/info)
+let clipInfo = null;
 let pollTimer = null;
 let renamingId = null;
 
@@ -160,6 +162,11 @@ function vodIdFromText(text) {
   const value = text.trim();
   if (/^\d+$/.test(value)) return value;
   return value.match(/twitch\.tv\/videos\/(\d+)/i)?.[1] ?? null;
+}
+
+// A VOD ID or link (vodIdFromText) is a VOD; anything else non-blank is treated as a clip link or slug. The server decides for real.
+function isClipText(text) {
+  return text.trim() !== "" && vodIdFromText(text) === null;
 }
 
 // Trim-field format with hundredths when they matter, e.g. "1:02:03.45"
@@ -612,12 +619,48 @@ $("clip-dialog").addEventListener("close", () => {
 
 function resetVodInfo() {
   vodInfo = null;
+  clipInfo = null;
+  setClipMode(false);
   $("vod-info").hidden = true;
   const quality = $("quality");
   quality.replaceChildren(el("option", { value: "" }, "Best available"));
   $("title").placeholder = "Leave blank to use the Twitch title";
   $("end").placeholder = "End of VOD";
   updateRulePreview();
+}
+
+// Clips keep Twitch's cut, so the trim fields and the VOD player don't apply
+function setClipMode(on) {
+  for (const label of document.querySelectorAll("#add-form .vod-only")) label.hidden = on;
+  $("watch-button").hidden = on;
+  if (on) closeWatch();
+}
+
+function renderClipInfo() {
+  $("vod-info").hidden = false;
+  $("vod-thumb").src = clipInfo.thumbnailUrl || "";
+  $("vod-title").textContent = clipInfo.title;
+  $("vod-meta").textContent = [
+    "Twitch clip",
+    clipInfo.channelName,
+    `clipped ${formatDate(clipInfo.createdAtUtc)}`,
+    `length ${clipInfo.length}`,
+    clipInfo.vodId ? `from VOD ${clipInfo.vodId} at ${clipInfo.vodStart}` : "its VOD is gone",
+  ].filter(Boolean).join(" · ");
+}
+
+// What happens to the clip's audio when its file is made; the file job checks again then
+function clipAudioText(info) {
+  const base = "Saved as a reference: nothing is downloaded until you generate the file.";
+  if (!info.vodId) return `${base} Its VOD is gone, so muted audio can't be replaced.`;
+  const audio = info.audio;
+  if (!audio) return `${base} No audio was saved for its VOD, so if Twitch muted it, it stays muted.`;
+  if (audio.mutedSeconds <= 0) return `${base} Not muted.`;
+  if (audio.restorableSeconds <= 0)
+    return `${base} Muted for ${formatDuration(audio.mutedSeconds)} and no clean audio was saved for it, so it stays muted.`;
+  const partial = audio.restorableSeconds < audio.mutedSeconds - 0.5
+    ? ` (${formatDuration(audio.mutedSeconds - audio.restorableSeconds)} stays muted)` : "";
+  return `${base} Muted for ${formatDuration(audio.mutedSeconds)}: the file will be cut from the VOD with ${formatDuration(audio.restorableSeconds)} of saved clean audio swapped in${partial}.`;
 }
 
 function renderVodInfo() {
@@ -629,12 +672,36 @@ function renderVodInfo() {
     .filter(Boolean).join(" · ");
 }
 
+async function getClipInfo(text) {
+  const button = $("get-info");
+  button.disabled = true;
+  setMessage($("add-message"), "Looking up clip…");
+  try {
+    const info = await api("GET", `/api/clips/info?clip=${encodeURIComponent(text)}`);
+    resetVodInfo();
+    clipInfo = info;
+    setClipMode(true);
+    $("quality").replaceChildren(el("option", { value: "" }, "Best available"),
+      ...clipInfo.qualities.map((q) => el("option", { value: q }, q)));
+    $("title").placeholder = clipInfo.title;
+    renderClipInfo();
+    updateRulePreview();
+    setMessage($("add-message"), "");
+  } catch (error) {
+    resetVodInfo();
+    setMessage($("add-message"), error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function getInfo() {
   const vod = $("vod").value.trim();
   if (!vod) {
-    setMessage($("add-message"), "Enter a VOD URL or ID first.", "error");
+    setMessage($("add-message"), "Enter a VOD or clip URL first.", "error");
     return;
   }
+  if (isClipText(vod)) return getClipInfo(vod);
 
   const button = $("get-info");
   button.disabled = true;
@@ -661,6 +728,10 @@ async function getInfo() {
 // Preview only; the server decides stored vs reference-only from the same numbers.
 function updateRulePreview() {
   const preview = $("rule-preview");
+  if (clipInfo) {
+    preview.textContent = clipAudioText(clipInfo);
+    return;
+  }
   if (!vodInfo) {
     preview.textContent = "";
     return;
@@ -716,9 +787,9 @@ $("add-form").addEventListener("submit", async (event) => {
     });
     setMessage($("add-message"),
       `Added "${entry.title}" ${entry.isReferenceOnly ? "as a reference (generated on demand)" : "and queued for download"}.`, "ok");
-    // Check the cut right away; the review dialog plays it and can adjust it
+    // Check the cut right away; the review dialog plays it and can adjust it. Clips keep Twitch's cut.
     closeWatch();
-    openReview(entry);
+    if (entry.kind !== "Clip") openReview(entry);
     $("title").value = "";
     prefilledTitle = null;
     $("start").value = "";
@@ -1023,7 +1094,9 @@ function statusBadge(entry) {
     case "Downloading": return el("span", { class: "badge busy" }, "Downloading…");
     case "Ready": return el("span", { class: "badge ok" }, `Stored · ${formatSize(entry.fileSizeBytes)}`);
     case "Failed": return el("span", { class: "badge error" }, "Failed");
-    case "VodUnavailable": return el("span", { class: "badge error", title: "Twitch no longer has this VOD, so no file can be made from it" }, "VOD deleted");
+    case "VodUnavailable": return entry.kind === "Clip"
+      ? el("span", { class: "badge error", title: "Twitch no longer has this clip or its VOD, so no file can be made from it" }, "Clip deleted")
+      : el("span", { class: "badge error", title: "Twitch no longer has this VOD, so no file can be made from it" }, "VOD deleted");
     case "ReferenceOnly": {
       const text = {
         Queued: "Reference · generation queued",
@@ -1049,8 +1122,8 @@ function entryActions(entry) {
     actions.push(el("button", { type: "button", onclick: () => generate(entry) }, "Retry download"));
   }
 
-  // Twitch deleted the VOD, so there is nothing left to stream
-  if (entry.status !== "VodUnavailable") {
+  // Twitch deleted the VOD, so there is nothing left to stream. Clips keep Twitch's cut, so there is nothing to review.
+  if (entry.status !== "VodUnavailable" && entry.kind !== "Clip") {
     actions.push(el("button", { type: "button", class: "secondary", onclick: () => openReview(entry) }, "Review"));
   }
   actions.push(el("button", { type: "button", class: "link", onclick: () => startRename(entry) }, "Rename"));
@@ -1078,11 +1151,17 @@ function titleNode(entry) {
 
 function renderEntry(entry) {
   const trim = `${entry.startTime}–${entry.endTime ?? formatDuration(entry.vodLengthSeconds)}`;
-  const details = [
-    `${trim} (${formatDuration(entry.clipLengthSeconds)})`,
-    entry.quality ?? "best quality",
-    entry.trimMode,
-  ].join(" · ");
+  const details = entry.kind === "Clip"
+    ? [
+      `Twitch clip (${formatDuration(entry.clipLengthSeconds)})`,
+      entry.vodId ? `VOD ${trim}` : null,
+      entry.quality ?? "best quality",
+    ].filter(Boolean).join(" · ")
+    : [
+      `${trim} (${formatDuration(entry.clipLengthSeconds)})`,
+      entry.quality ?? "best quality",
+      entry.trimMode,
+    ].join(" · ");
 
   const dates = [
     entry.channelName,

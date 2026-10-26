@@ -18,7 +18,7 @@
 
   <main>
     <section class="panel" aria-labelledby="add-heading">
-      <h2 id="add-heading">Add a VOD</h2>
+      <h2 id="add-heading">Add a VOD or clip</h2>
 
       <!-- Pick a VOD from a channel instead of pasting a link; fills the form below -->
       <div id="browse" class="browse" aria-label="Browse a channel's VODs" role="region">
@@ -53,8 +53,8 @@
 
       <form id="add-form" novalidate>
         <div class="row">
-          <label class="grow">VOD URL or ID
-            <input id="vod" name="vod" required placeholder="https://www.twitch.tv/videos/123456789" autocomplete="off">
+          <label class="grow">VOD or clip URL
+            <input id="vod" name="vod" required placeholder="https://www.twitch.tv/videos/123456789 or https://clips.twitch.tv/…" autocomplete="off">
           </label>
           <button type="button" id="get-info" class="secondary">Get Info</button>
           <button type="button" id="watch-button" class="secondary">Watch</button>
@@ -90,16 +90,16 @@
               <option value="">Best available</option>
             </select>
           </label>
-          <label>Trim mode
+          <label class="vod-only">Trim mode
             <select id="trim-mode" name="trimMode">
               <option value="Exact">Exact</option>
               <option value="Safe">Safe</option>
             </select>
           </label>
-          <label>Start
+          <label class="vod-only">Start
             <input id="start" name="startTime" placeholder="0:00:00" autocomplete="off">
           </label>
-          <label>End
+          <label class="vod-only">End
             <input id="end" name="endTime" placeholder="End of VOD" autocomplete="off">
           </label>
         </div>

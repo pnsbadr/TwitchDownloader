@@ -64,6 +64,8 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   `Status` (Queued/Downloading/Ready/Failed/ReferenceOnly/VodUnavailable), stored file path/size, generation
   fields for on-demand files (`GenerationStatus`, path, size, `GeneratedExpiresAtUtc`), `AddedByUserId`
   (string, no FK yet — link to users in phase 3).
+- `LibraryEntries.Kind` (`Vod`/`Clip`, migration default `Vod`) + `ClipSlug`: see Twitch clips. For clips `VodId` is the source
+  VOD (0 if Twitch didn't say) and `StartTime`/`EndTime` the clip's place in it (whole seconds).
 - `Channels` (`SavedChannel`): saved team channels for the VOD browser: login (unique, lower-case), display name,
   Twitch user ID, `WatchMutedAudio` (for the planned muted-audio rescue), `AddedAtUtc`, `AddedByUserId`.
 - `AudioRescues` (`VodAudioRescue`, key = VOD ID) + `RescuedAudioSegments` (unique VodId+Key): see Muted audio rescue.
@@ -140,10 +142,11 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | Endpoint | Notes |
 |---|---|
 | `GET /api/vods/info?vod=` | Title, length, stream date, thumbnail, qualities, `restricted`, `maxStoredClipSeconds` |
-| `POST /api/entries` | `{ vodId, title?, quality?, trimMode?, startTime?, endTime? }` → 201. Validates VOD, times, quality (unknown → 400 listing available) |
+| `POST /api/entries` | `{ vodId, title?, quality?, trimMode?, startTime?, endTime? }` → 201. `vodId` may be a clip link (see Twitch clips). Validates VOD, times, quality (unknown → 400 listing available) |
 | `GET /api/entries?search=&sort=dateAdded\|streamDate&order=desc\|asc&limit=&from=&to=&dateField=dateAdded\|streamDate` | Search is a LIKE substring match (case-insensitive for ASCII only). `from` (inclusive) / `to` (exclusive) are ISO 8601 instants **with an offset** (bare dates/times → 400) and filter on `dateField` (default dateAdded) |
 | `GET /api/entries/{id}` | |
 | `PATCH /api/entries/{id}` | `{ title }` — audited as `entry.renamed` |
+| `GET /api/clips/info?clip=` | Clip title, channel, length, qualities, source VOD + `vodStart`/`vodEnd`, `audio: { mutedSeconds, restorableSeconds }` (null if the VOD has no audio rescue). VOD links → 400 |
 | `PUT /api/entries/{id}/trim` | `{ startTime, endTime }` (blank end = end of VOD) — re-cuts the entry: cancels a running job (waits up to 20 s, else 409), deletes its files, re-applies the stored-vs-reference rule and re-queues a stored download. VodUnavailable → 410. Audited `entry.retrimmed` |
 | `DELETE /api/entries/{id}` | Removes entry + stored/generated files — audited. Phase 3: restrict who can delete |
 | `POST /api/entries/{id}/generate` | Reference-only: queue on-demand file (202) or 200 if ready. Failed stored entry: retry. VodUnavailable → 410 |
@@ -196,6 +199,23 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   The embed's `getCurrentTime()` is a cache refreshed about once a second (and stale right after a seek), so `VodPlayer.position()`
   estimates the live offset (last refresh or seek target + time played since, via PLAYING/PAUSE/SEEK events; refreshes are caught on the iframe's `message` events) and a 40 ms tick
   pauses previews at the end. Using the raw value made Set end land up to ~1 s early and previews stop up to ~1 s late.
+
+### Twitch clips (`ClipInfoService`, `ClipFileService`)
+- clips.twitch.tv / `twitch.tv/{channel}/clip/` links (or slugs) are added through the same `POST /api/entries` (`vodId` field)
+  and are **always reference-only**: Twitch keeps the clip, so nothing is stored (user's call, 2026-10-26). They exist in the
+  library so muted audio can be replaced and the vertical editor can be used on them. Trim fields are ignored; `PUT /trim` → 409.
+- Twitch mutes a clip wherever its VOD is muted. When the file is generated, `ClipFileService`:
+  1. if the source VOD exists and has saved clean audio for muted parts of the clip's range, cuts the file **from the VOD**
+     with `AudioRestoreService` (Exact, the clip's quality where the VOD has it), so the clean audio is in;
+  2. else fetches Twitch's clip file with Core's `ClipDownloader` (`EncodeMetadata` off);
+  3. else (clip deleted) cuts it from the VOD without restore; if both are gone → `VodUnavailable` ("Clip deleted").
+  `AudioRestoredSeconds`/`AudioMutedSeconds` are set as for VOD entries.
+- Twitch's `videoOffsetSeconds` is whole seconds, so a file cut from the VOD can start/end up to ~1 s off Twitch's clip.
+  Audio and video stay in sync (same restore path as VOD entries).
+- `ClipInfoService.GetClipAsync` calls Core's `GetClipInfo` first: `GetShareClipRenderStatus` throws a NullReferenceException
+  for a missing clip. `ReferenceVodCheckService` skips clips (a clip outlives its VOD).
+- Page: a non-VOD link makes Get Info call `/api/clips/info`, hides trim mode/start/end and Watch, and says before adding
+  whether the clip is muted and how much clean audio is saved. No Review for clips.
 
 ### Vertical (9:16) export (`Services/Shortform/`)
 - Like Twitch's portrait clip editor: **Make vertical** on an entry with a file opens a dialog with the landscape video,
