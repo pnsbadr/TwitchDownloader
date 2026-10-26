@@ -16,8 +16,7 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
     /// POST /api/vods/{id}/rescue. The database is the source of truth, so unfinished work resumes after a restart.
     ///
     /// Audio that's kept (pruned or failed rescues) is checked against Twitch every AudioRescue:VodCheckHours and deleted
-    /// once the VOD has been gone for AudioRescue:VodGoneGraceDays, since it can't be spliced into anything without the video,
-    /// unless the library has entries for it.
+    /// once the VOD has been gone for AudioRescue:VodGoneGraceDays, since it can't be spliced into anything without the video.
     /// </summary>
     public sealed class AudioRescueService : BackgroundService
     {
@@ -192,8 +191,8 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
         }
 
         /// <summary>
-        /// Deletes the saved audio of VODs that are gone from Twitch, one due rescue at a time. Audio is kept while any library
-        /// entry uses the VOD. Called by the background loop (and by tests).
+        /// Deletes the saved audio of VODs that have been gone from Twitch for the grace period, one due rescue at a time.
+        /// Called by the background loop (and by tests).
         /// </summary>
         public async Task RemoveGoneVodsAsync(CancellationToken cancellationToken)
         {
@@ -211,10 +210,9 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
                     return;
 
                 rescue.NextCheckAtUtc = now.AddHours(Math.Max(1, _settings.Value.VodCheckHours));
+                // Library entries don't keep it: without the VOD no entry can be generated, and stored files already hold their audio
                 var hasFiles = await db.RescuedAudioSegments.AnyAsync(x => x.VodId == rescue.VodId && x.FilePath != null, cancellationToken);
-                var usedByLibrary = await db.Entries.AnyAsync(x => x.VodId == rescue.VodId, cancellationToken);
-
-                if (hasFiles && !usedByLibrary)
+                if (hasFiles)
                 {
                     bool exists;
                     try

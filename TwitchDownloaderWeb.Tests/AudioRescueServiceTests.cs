@@ -138,7 +138,7 @@ namespace TwitchDownloaderWeb.Tests
         }
 
         [Fact]
-        public async Task DeletesAudioOnceTheVodIsGoneUnlessTheLibraryUsesIt()
+        public async Task DeletesAudioOnceTheVodHasBeenGoneForTheGracePeriod()
         {
             var ct = TestContext.Current.CancellationToken;
             using (var scope = _services.CreateScope())
@@ -164,34 +164,16 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal(AudioRescueStatus.Pruned, (await GetRescueAsync(ct)).Status);
             Assert.True((await GetRescueAsync(ct)).NextCheckAtUtc > DateTime.UtcNow.AddHours(1), "the next check is hours away");
 
-            // Gone from Twitch, but a library entry uses the VOD: kept
-            _vods.Exists = false;
-            int entryId;
+            // A library entry for the VOD doesn't keep its audio: nothing can use it without the VOD
             using (var scope = _services.CreateScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
-                var entry = new LibraryEntry { Title = "Clip", VodId = VodId };
-                db.Entries.Add(entry);
-                await db.SaveChangesAsync(ct);
-                entryId = entry.Id;
-            }
-
-            var calls = _vods.Calls;
-            await MakeDueAsync(ct);
-            await _service.RemoveGoneVodsAsync(ct);
-            Assert.Equal(AudioRescueStatus.Pruned, (await GetRescueAsync(ct)).Status);
-            Assert.True(File.Exists(kept));
-            Assert.Equal(calls, _vods.Calls); // no need to ask Twitch while the library uses it
-
-            // Entry deleted: the audio goes
-            using (var scope = _services.CreateScope())
-            {
-                var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
-                db.Entries.Remove(await db.Entries.SingleAsync(x => x.Id == entryId, ct));
+                db.Entries.Add(new LibraryEntry { Title = "Clip", VodId = VodId });
                 await db.SaveChangesAsync(ct);
             }
 
             // Missing, but maybe only unpublished: kept during the grace period
+            _vods.Exists = false;
             await MakeDueAsync(ct);
             await _service.RemoveGoneVodsAsync(ct);
             var rescue = await GetRescueAsync(ct);
@@ -263,13 +245,8 @@ namespace TwitchDownloaderWeb.Tests
         private sealed class FakeVodLookup : IVodLookup
         {
             public bool Exists { get; set; } = true;
-            public int Calls { get; private set; }
 
-            public Task<bool> ExistsAsync(long vodId)
-            {
-                Calls++;
-                return Task.FromResult(Exists);
-            }
+            public Task<bool> ExistsAsync(long vodId) => Task.FromResult(Exists);
         }
 
         private sealed class FakePlaylists : IVodPlaylistSource

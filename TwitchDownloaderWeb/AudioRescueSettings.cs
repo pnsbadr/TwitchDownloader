@@ -23,7 +23,7 @@ namespace TwitchDownloaderWeb
 
         /// <summary>
         /// How often VODs with saved audio are checked on Twitch. Once a VOD has been gone for VodGoneGraceDays its audio is
-        /// deleted, unless the library has entries for that VOD. Runs even when Enabled is off.
+        /// deleted. Runs even when Enabled is off.
         /// </summary>
         public double VodCheckHours { get; set; } = 12;
 
