@@ -9,6 +9,8 @@ namespace TwitchDownloaderWeb.Tests
         [InlineData("clips.twitch.tv/FunnyClipSlug-abc123?filter=clips", "FunnyClipSlug-abc123")]
         [InlineData("https://www.twitch.tv/somechannel/clip/FunnyClipSlug-abc123", "FunnyClipSlug-abc123")]
         [InlineData("https://www.twitch.tv/somechannel/clip/FunnyClipSlug-abc123?filter=clips&range=7d", "FunnyClipSlug-abc123")]
+        [InlineData("https://www.twitch.tv/arky/clip/HeadstrongRacyShieldEagleEye-Od_lElFBVXHrptlV", "HeadstrongRacyShieldEagleEye-Od_lElFBVXHrptlV")]
+        [InlineData("twitch.tv/arky/clip/HeadstrongRacyShieldEagleEye-Od_lElFBVXHrptlV/", "HeadstrongRacyShieldEagleEye-Od_lElFBVXHrptlV")]
         [InlineData("  FunnyClipSlug-abc123  ", "FunnyClipSlug-abc123")]
         public void ParsesClipLinks(string text, string expected)
         {
