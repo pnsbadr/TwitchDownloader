@@ -839,7 +839,6 @@ const RESCUE_BADGES = {
   WaitingToPrune: ["badge ok", "Audio saved", "Full audio saved; only the muted parts are kept after a couple of days"],
   Pruned: ["badge ok", "Muted audio saved", "Clean audio for the muted parts is saved and swapped in on download"],
   Failed: ["badge error", "Audio rescue failed", "Saving the audio failed; you can try again"],
-  VodGone: ["badge ref", "Saved audio deleted", "The VOD was deleted from Twitch, so its saved audio was deleted too"],
 };
 
 function rescueBadge(status) {
@@ -850,7 +849,7 @@ function rescueBadge(status) {
 // Muted parts Twitch wouldn't give a clean copy of (usually muted before the rescue started), so they stay muted
 function lostAudioBadge(vod) {
   const lost = vod.rescueUnrecoverableCount;
-  if (!lost || vod.rescueStatus === "VodGone") return null;
+  if (!lost) return null;
   const text = lost === vod.rescueMutedCount ? "Muted parts not saved" : `${lost} of ${vod.rescueMutedCount} muted parts not saved`;
   return el("span", { class: "badge error", title: "Twitch had already muted these parts when saving started, so they stay muted in downloads" }, text);
 }
