@@ -8,6 +8,7 @@ namespace TwitchDownloaderWeb
         /// <summary>
         /// Master switch for saving VOD audio. Off: no new rescues (automatic or from the page), and unfinished ones pause
         /// (no grabbing, no pruning) until it is turned back on. Already saved audio is kept and still used to restore downloads.
+        /// Temporary: becomes a per-team setting once teams exist (phase 3).
         /// </summary>
         public bool Enabled { get; set; }
 

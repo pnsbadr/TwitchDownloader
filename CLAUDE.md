@@ -102,6 +102,8 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 - **Off by default** (`AudioRescue:Enabled` = false since 2026-10-25: it filled the dev disk, ~4.8 GB in 5 days for 2 channels). Off means no
   new rescues (watch or `POST`, which returns 409), unfinished ones pause (no grab, no prune) and the page hides the Save audio buttons;
   saved audio is kept and still used for restores. Turn on with `AudioRescue__Enabled=true` or in appsettings.
+  **Temporary:** the config switch is a stopgap; once teams exist (phase 3) it becomes a team setting so a team can turn
+  auto audio saving on/off itself.
 - `AudioRescueService` (BackgroundService, `AudioRescue:*` settings): every `PollMinutes` it checks saved channels with
   `WatchMutedAudio` for VODs in the unmute window; `POST /api/vods/{id}/rescue` starts one by hand. It downloads **every**
   segment of the audio-only rendition as raw `.ts` (clean URL for muted ones; 403/404 = unrecoverable) into
@@ -227,4 +229,5 @@ dotnet build TwitchDownloaderWPF.sln
    (add/list/get/rename/delete/generate/file); on-demand files expiring after 72 h; web page with search, sort,
    status, download, rename/delete and the Local/Pacific toggle (saved in the browser).
 3. **Next:** login/signup, teams with invites, shared team library; link `AddedByUserId` / `AuditEvents.UserId`;
-   restrict delete; per-user time zone setting (replacing localStorage); audit signups/logins. Never log tokens.
+   restrict delete; per-user time zone setting (replacing localStorage); team setting to turn auto audio saving on/off
+   (replacing the temporary `AudioRescue:Enabled` config switch); audit signups/logins. Never log tokens.
