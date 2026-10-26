@@ -109,7 +109,13 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   segment of the audio-only rendition as raw `.ts` (clean URL for muted ones; 403/404 = unrecoverable) into
   `downloads/rescue/{vodId}/{key}.ts`, re-checks every `LiveRecheckMinutes` while the playlist has no `#EXT-X-ENDLIST`,
   then `PruneAfterHours` (48) after the stream ends keeps only segments that are muted in the playlist by then.
-  The cleanup service never touches `rescue/`. Statuses: Grabbing / WaitingToPrune / Pruned / Failed.
+  The cleanup service never touches `rescue/`. Statuses: Grabbing / WaitingToPrune / Pruned / Failed / VodGone.
+- Kept audio (Pruned/Failed rescues) is checked every `VodCheckHours` (12) via GQL video info (`IVodLookup`, not the playlist:
+  sub-only VODs have no public playlist but still exist). Once the VOD has been missing for `VodGoneGraceDays` (14;
+  `VodMissingSinceUtc`, reset when it reappears, since an unpublished VOD looks deleted and can be republished) its files and rows are deleted
+  (status VodGone, audited `audio.rescue_removed`), even if library entries use the VOD (user's call, 2026-10-26: without the
+  VOD nothing can use it; stored files already hold their audio). Runs even when `Enabled` is off. Prune no longer deletes everything when the playlist is missing.
+  No VodGone badge on purpose: Twitch's VOD list drops deleted VODs, so their card disappears from the browser anyway.
 - **Real-Twitch finding (2026-10-20):** a rescue started ~10 h after a stream ended got 403 for *every* muted segment's
   clean copy (237/237), and Core's own unmute failed too. Don't rely on the "24 h unmute window"; the rescue only helps
   if it runs while the stream is live, before Twitch mutes. The 24 h window/badge is still Core's assumption.
@@ -220,7 +226,9 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 - Titles are sanitized with Core's `FilenameService`, which swaps `: ? | / \` etc. for full-width look-alikes
   (`：？｜`), so file names contain non-ASCII characters (Git Bash globbing chokes on some; use PowerShell).
 - Twitch deletes VODs after a while (typically 7–60 days). Reference-only entries then become `VodUnavailable`
-  when generation is attempted; stored entries keep their file.
+  ("VOD deleted" on the page) when generation is attempted, or within `Downloads:VodCheckHours` (12) via
+  `ReferenceVodCheckService`, which also switches them back to ReferenceOnly if the VOD reappears (unpublish/republish).
+  Entries are never deleted automatically (user's choice, 2026-10-26); stored entries keep their file.
 - Restricted (subscriber-only) VODs are rejected until OAuth support exists.
 - Core's `GetGqlVideos` / `GetUserIds` paste the login, type and cursor straight into the GQL query string; the web app
   validates all three first (`ChannelService`). Video cursors aren't plain base64, so the cursor check only rejects quotes,

@@ -290,6 +290,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<DateTime>("UpdatedAtUtc")
                         .HasColumnType("TEXT");
 
+                    b.Property<DateTime?>("VodMissingSinceUtc")
+                        .HasColumnType("TEXT");
+
                     b.HasKey("VodId");
 
                     b.HasIndex("Status", "NextCheckAtUtc");

@@ -1023,7 +1023,7 @@ function statusBadge(entry) {
     case "Downloading": return el("span", { class: "badge busy" }, "Downloading…");
     case "Ready": return el("span", { class: "badge ok" }, `Stored · ${formatSize(entry.fileSizeBytes)}`);
     case "Failed": return el("span", { class: "badge error" }, "Failed");
-    case "VodUnavailable": return el("span", { class: "badge error" }, "VOD unavailable");
+    case "VodUnavailable": return el("span", { class: "badge error", title: "Twitch no longer has this VOD, so no file can be made from it" }, "VOD deleted");
     case "ReferenceOnly": {
       const text = {
         Queued: "Reference · generation queued",

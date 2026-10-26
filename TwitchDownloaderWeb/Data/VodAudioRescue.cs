@@ -11,7 +11,10 @@ namespace TwitchDownloaderWeb.Data
         /// <summary>Only the clean audio of muted segments is kept.</summary>
         Pruned,
 
-        Failed
+        Failed,
+
+        /// <summary>The VOD was deleted from Twitch and no library entry uses it, so its saved audio was deleted.</summary>
+        VodGone
     }
 
     /// <summary>
@@ -38,6 +41,12 @@ namespace TwitchDownloaderWeb.Data
         public DateTime NextCheckAtUtc { get; set; }
         public DateTime? GrabCompletedAtUtc { get; set; }
         public DateTime? PruneAfterUtc { get; set; }
+
+        /// <summary>
+        /// First check that found the VOD missing on Twitch, UTC. Cleared when it shows up again (a streamer can unpublish and
+        /// republish a VOD, and unpublished looks the same as deleted from outside).
+        /// </summary>
+        public DateTime? VodMissingSinceUtc { get; set; }
 
         public int SegmentCount { get; set; }
         public int SavedCount { get; set; }

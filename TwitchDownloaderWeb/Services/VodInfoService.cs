@@ -2,19 +2,23 @@ using TwitchDownloaderCore;
 using TwitchDownloaderCore.Models;
 using TwitchDownloaderCore.Models.Interfaces;
 using TwitchDownloaderCore.Tools;
+using TwitchDownloaderWeb.Services.AudioRescue;
 
 namespace TwitchDownloaderWeb.Services
 {
     public sealed record VodDetails(long VodId, string Title, string? ChannelName, int LengthSeconds, DateTime StreamDateUtc, string? ThumbnailUrl);
 
     /// <summary>Looks up VOD metadata and qualities from Twitch, and holds the request checks shared by the endpoints.</summary>
-    public sealed class VodInfoService
+    public sealed class VodInfoService : IVodLookup
     {
         public static long? ParseVodId(string? text)
         {
             var match = IdParse.MatchVideoId(text ?? "");
             return match is { Success: true } ? long.Parse(match.ValueSpan) : null;
         }
+
+        // Uses the video info, not the playlist: a subscriber-only VOD has no public playlist but still exists
+        public async Task<bool> ExistsAsync(long vodId) => await GetVodAsync(vodId) is not null;
 
         /// <returns>The VOD's details, or null if it doesn't exist (deleted, expired or never existed).</returns>
         public async Task<VodDetails?> GetVodAsync(long vodId)

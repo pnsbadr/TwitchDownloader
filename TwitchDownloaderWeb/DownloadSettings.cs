@@ -20,6 +20,9 @@ namespace TwitchDownloaderWeb
         /// <summary>How long on-demand files for reference-only entries are kept before being deleted.</summary>
         public double GeneratedFileHours { get; set; } = 72;
 
+        /// <summary>How often reference-only entries' VODs are checked on Twitch, so deleted ones show as such.</summary>
+        public double VodCheckHours { get; set; } = 12;
+
         /// <summary>How many background download jobs run at once.</summary>
         public int MaxConcurrentJobs { get; set; } = 1;
 
