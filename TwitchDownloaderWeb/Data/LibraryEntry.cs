@@ -22,11 +22,30 @@ namespace TwitchDownloaderWeb.Data
         Failed
     }
 
+    public enum EntryKind
+    {
+        /// <summary>A cut of a VOD, made by us from the VOD's playlist.</summary>
+        Vod,
+
+        /// <summary>
+        /// A clips.twitch.tv clip. Always reference-only (Twitch keeps the file); its file is made on demand from the clip,
+        /// or from its source VOD when saved clean audio can replace muted parts.
+        /// </summary>
+        Clip
+    }
+
     public class LibraryEntry
     {
         public int Id { get; set; }
 
         public required string Title { get; set; }
+
+        public EntryKind Kind { get; set; }
+
+        /// <summary>The clip's slug (clips.twitch.tv/{slug}) for <see cref="EntryKind.Clip"/> entries.</summary>
+        public string? ClipSlug { get; set; }
+
+        /// <summary>For clips, the VOD the clip was cut from, or 0 if Twitch didn't say (e.g. the VOD was already deleted).</summary>
         public long VodId { get; set; }
         public string? ChannelName { get; set; }
 
@@ -34,7 +53,7 @@ namespace TwitchDownloaderWeb.Data
         public string? Quality { get; set; }
         public VideoTrimMode TrimMode { get; set; }
 
-        /// <summary>Trim start, as an offset from the start of the VOD.</summary>
+        /// <summary>Trim start, as an offset from the start of the VOD. For clips, where the clip starts in its VOD (whole seconds, from Twitch).</summary>
         public TimeSpan StartTime { get; set; }
 
         /// <summary>Trim end, as an offset from the start of the VOD. Null means the end of the VOD.</summary>

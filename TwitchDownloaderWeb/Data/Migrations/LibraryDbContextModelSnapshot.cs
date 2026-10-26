@@ -73,6 +73,10 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<double>("ClipLengthSeconds")
                         .HasColumnType("REAL");
 
+                    b.Property<string>("ClipSlug")
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
                     b.Property<TimeSpan?>("EndTime")
                         .HasColumnType("TEXT");
 
@@ -97,6 +101,11 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<string>("GenerationStatus")
                         .IsRequired()
                         .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(16)
                         .HasColumnType("TEXT");
 
                     b.Property<string>("Quality")

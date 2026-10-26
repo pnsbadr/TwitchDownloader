@@ -60,7 +60,9 @@ namespace TwitchDownloaderWeb.Services
             var maxStored = _settings.Value.MaxStoredClipSeconds;
 
             // Reference entries, plus ones already marked gone (too long to be stored, so they were reference entries)
+            // Clips are skipped: their file comes from the clip itself, which outlives its VOD
             var entries = await db.Entries
+                .Where(x => x.Kind == EntryKind.Vod)
                 .Where(x => x.Status == EntryStatus.ReferenceOnly
                             || (x.Status == EntryStatus.VodUnavailable && x.FilePath == null && x.ClipLengthSeconds > maxStored))
                 .ToListAsync(cancellationToken);
