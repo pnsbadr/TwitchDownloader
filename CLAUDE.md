@@ -172,7 +172,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   **Review** on a library entry (and automatically right after Add to library) opens the clip review dialog: the
   player plus a trim bar spanning the clip ± a margin (25% of its length, 5–60 s, widened when a handle leaves it), with
   draggable handles (arrow keys nudge 0.1 s, Shift 1 s), a playhead, click-to-seek, ±1 s / ±0.1 s buttons, Set to playhead,
-  Play clip / Play last 3s, and **Save new cut** (`PUT /trim`). Unsaved changes ask before closing.
+  Play clip / Play last 3s, and **Save new cut** (`PUT /trim`; closes the dialog on success, result shown above the library). Unsaved changes ask before closing.
   The embed's `getCurrentTime()` is a cache refreshed about once a second (and stale right after a seek), so `VodPlayer.position()`
   estimates the live offset (last refresh or seek target + time played since, via PLAYING/PAUSE/SEEK events; refreshes are caught on the iframe's `message` events) and a 40 ms tick
   pauses previews at the end. Using the raw value made Set end land up to ~1 s early and previews stop up to ~1 s late.

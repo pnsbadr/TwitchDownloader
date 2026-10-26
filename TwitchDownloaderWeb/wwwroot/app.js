@@ -484,10 +484,12 @@ async function saveReview() {
     const updated = await api("PUT", `/api/entries/${entry.id}/trim`, { startTime: formatTrimValue(review.start), endTime });
     if (!review || review.entry.id !== updated.id) return;
     review.entry = updated;
-    setMessage($("trim-message"), updated.isReferenceOnly
-      ? "Saved. It's over the stored-clip limit, so it's kept as a reference; generate the file when you need it."
-      : "Saved. The clip is being downloaded again with the new cut.", "ok");
-    refresh();
+    // Done with this clip: close the review and say what happens next above the library
+    $("clip-dialog").close();
+    await refresh();
+    showLibraryNote(updated.isReferenceOnly
+      ? `Saved the new cut of "${updated.title}". It's over the stored-clip limit, so it's kept as a reference; generate the file when you need it.`
+      : `Saved the new cut of "${updated.title}". It's being downloaded again.`);
   } catch (error) {
     setMessage($("trim-message"), error.message, "error");
   } finally {
@@ -496,6 +498,17 @@ async function saveReview() {
       renderReview();
     }
   }
+}
+
+// A confirmation above the library that goes away after a while unless something replaced it
+let libraryNoteTimer = null;
+function showLibraryNote(text) {
+  const element = $("library-message");
+  setMessage(element, text, "ok");
+  clearTimeout(libraryNoteTimer);
+  libraryNoteTimer = setTimeout(() => {
+    if (element.textContent === text) setMessage(element, "");
+  }, 10000);
 }
 
 function closeReview() {
@@ -1425,7 +1438,8 @@ async function loadEntries() {
     $("empty").textContent = recentOnly ? `No clips ${fieldVerb()} in the last 24 hours.`
       : selectedDay ? "No clips on that day."
       : params.has("search") ? "No entries match that search." : "No entries yet.";
-    setMessage($("library-message"), "");
+    // A successful load clears an earlier error, but not a confirmation (those clear themselves)
+    if ($("library-message").classList.contains("error")) setMessage($("library-message"), "");
     schedulePoll(entries.some(isBusy));
   } catch (error) {
     setMessage($("library-message"), error.message, "error");
