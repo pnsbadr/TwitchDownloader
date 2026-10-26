@@ -102,7 +102,7 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
 Twitch mutes segments (`123-muted.ts`) and keeps the clean copy (`123.ts`) for a limited time (Core assumes 24 h and
 only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We save clean audio and splice it back:
 - **Off by default** (`AudioRescue:Enabled` = false since 2026-10-25: it filled the dev disk, ~4.8 GB in 5 days for 2 channels). Off means no
-  new rescues (watch or `POST`, which returns 409), unfinished ones pause (no grab, no prune) and the page hides the Save audio buttons;
+  new rescues (watch or `POST`, which returns 409), unfinished ones pause (no grab, no prune; their VOD cards say "Audio saving paused") and the page hides the Save audio buttons;
   saved audio is kept and still used for restores. Turn on with `AudioRescue__Enabled=true` or in appsettings.
   **Temporary:** the config switch is a stopgap; once teams exist (phase 3) it becomes a team setting so a team can turn
   auto audio saving on/off itself.
