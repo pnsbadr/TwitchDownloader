@@ -42,6 +42,12 @@ namespace TwitchDownloaderWeb.Data
         public DateTime? GrabCompletedAtUtc { get; set; }
         public DateTime? PruneAfterUtc { get; set; }
 
+        /// <summary>
+        /// First check that found the VOD missing on Twitch, UTC. Cleared when it shows up again (a streamer can unpublish and
+        /// republish a VOD, and unpublished looks the same as deleted from outside).
+        /// </summary>
+        public DateTime? VodMissingSinceUtc { get; set; }
+
         public int SegmentCount { get; set; }
         public int SavedCount { get; set; }
         public int MutedCount { get; set; }

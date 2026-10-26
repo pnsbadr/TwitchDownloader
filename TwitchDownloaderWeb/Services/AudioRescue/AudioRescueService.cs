@@ -16,7 +16,8 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
     /// POST /api/vods/{id}/rescue. The database is the source of truth, so unfinished work resumes after a restart.
     ///
     /// Audio that's kept (pruned or failed rescues) is checked against Twitch every AudioRescue:VodCheckHours and deleted
-    /// once the VOD is gone, since it can't be spliced into anything without the video, unless the library has entries for it.
+    /// once the VOD has been gone for AudioRescue:VodGoneGraceDays, since it can't be spliced into anything without the video,
+    /// unless the library has entries for it.
     /// </summary>
     public sealed class AudioRescueService : BackgroundService
     {
@@ -227,8 +228,16 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
                         exists = true;
                     }
 
-                    if (!exists)
-                        await RemoveAudioAsync(db, rescue, cancellationToken);
+                    if (exists)
+                    {
+                        rescue.VodMissingSinceUtc = null;
+                    }
+                    else
+                    {
+                        rescue.VodMissingSinceUtc ??= now;
+                        if (now - rescue.VodMissingSinceUtc >= TimeSpan.FromDays(Math.Max(0, _settings.Value.VodGoneGraceDays)))
+                            await RemoveAudioAsync(db, rescue, cancellationToken);
+                    }
                 }
 
                 await db.SaveChangesAsync(cancellationToken);

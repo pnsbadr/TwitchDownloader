@@ -111,7 +111,8 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   then `PruneAfterHours` (48) after the stream ends keeps only segments that are muted in the playlist by then.
   The cleanup service never touches `rescue/`. Statuses: Grabbing / WaitingToPrune / Pruned / Failed / VodGone.
 - Kept audio (Pruned/Failed rescues) is checked every `VodCheckHours` (12) via GQL video info (`IVodLookup`, not the playlist:
-  sub-only VODs have no public playlist but still exist). Once the VOD is gone from Twitch its files and rows are deleted
+  sub-only VODs have no public playlist but still exist). Once the VOD has been missing for `VodGoneGraceDays` (14;
+  `VodMissingSinceUtc`, reset when it reappears, since an unpublished VOD looks deleted and can be republished) its files and rows are deleted
   (status VodGone, audited `audio.rescue_removed`), **unless any library entry has that VOD ID** (user's rule: never delete
   audio clips were made from). Runs even when `Enabled` is off. Prune no longer deletes everything when the playlist is missing.
   No VodGone badge on purpose: Twitch's VOD list drops deleted VODs, so their card disappears from the browser anyway.

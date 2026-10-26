@@ -191,9 +191,35 @@ namespace TwitchDownloaderWeb.Tests
                 await db.SaveChangesAsync(ct);
             }
 
+            // Missing, but maybe only unpublished: kept during the grace period
             await MakeDueAsync(ct);
             await _service.RemoveGoneVodsAsync(ct);
             var rescue = await GetRescueAsync(ct);
+            Assert.Equal(AudioRescueStatus.Pruned, rescue.Status);
+            Assert.NotNull(rescue.VodMissingSinceUtc);
+            Assert.True(File.Exists(kept));
+
+            // Republished: the clock resets
+            _vods.Exists = true;
+            await MakeDueAsync(ct);
+            await _service.RemoveGoneVodsAsync(ct);
+            Assert.Null((await GetRescueAsync(ct)).VodMissingSinceUtc);
+
+            // Missing for longer than the grace period: the audio goes
+            _vods.Exists = false;
+            await MakeDueAsync(ct);
+            await _service.RemoveGoneVodsAsync(ct);
+            using (var scope = _services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+                var row = await db.AudioRescues.SingleAsync(x => x.VodId == VodId, ct);
+                row.VodMissingSinceUtc = DateTime.UtcNow.AddDays(-15);
+                await db.SaveChangesAsync(ct);
+            }
+
+            await MakeDueAsync(ct);
+            await _service.RemoveGoneVodsAsync(ct);
+            rescue = await GetRescueAsync(ct);
             Assert.Equal(AudioRescueStatus.VodGone, rescue.Status);
             Assert.Equal(0, rescue.StoredBytes);
             Assert.False(File.Exists(kept));

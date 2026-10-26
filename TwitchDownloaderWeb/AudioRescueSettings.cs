@@ -22,10 +22,16 @@ namespace TwitchDownloaderWeb
         public double PruneAfterHours { get; set; } = 48;
 
         /// <summary>
-        /// How often VODs with saved audio are checked on Twitch. Once a VOD is gone its audio is deleted, unless the library
-        /// has entries for that VOD. Runs even when Enabled is off.
+        /// How often VODs with saved audio are checked on Twitch. Once a VOD has been gone for VodGoneGraceDays its audio is
+        /// deleted, unless the library has entries for that VOD. Runs even when Enabled is off.
         /// </summary>
         public double VodCheckHours { get; set; } = 12;
+
+        /// <summary>
+        /// How long a VOD must stay missing before its audio is deleted. Unpublished VODs look deleted from outside, and the
+        /// streamer can republish them.
+        /// </summary>
+        public double VodGoneGraceDays { get; set; } = 14;
 
         /// <summary>Parallel segment downloads per VOD.</summary>
         public int Threads { get; set; } = 4;
