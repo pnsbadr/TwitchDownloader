@@ -841,8 +841,12 @@ const RESCUE_BADGES = {
   Failed: ["badge error", "Audio rescue failed", "Saving the audio failed; you can try again"],
 };
 
+// While audio saving is turned off (AudioRescue:Enabled), unfinished rescues are paused, not saving
+const PAUSED_RESCUE_BADGE = ["badge ref", "Audio saving paused", "Audio saving is turned off; what was saved so far is kept"];
+
 function rescueBadge(status) {
-  const badge = RESCUE_BADGES[status];
+  const paused = !browse.rescueEnabled && (status === "Grabbing" || status === "WaitingToPrune");
+  const badge = paused ? PAUSED_RESCUE_BADGE : RESCUE_BADGES[status];
   return badge ? el("span", { class: badge[0], title: badge[2] }, badge[1]) : null;
 }
 
