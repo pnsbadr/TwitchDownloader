@@ -143,6 +143,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   (per browser until per-user settings exist in phase 3). Formatting only — the API always returns UTC (`...Z`).
 - `Intl.DateTimeFormat` throws if `dateStyle`/`timeStyle` are combined with `timeZoneName`; format parts explicitly.
 - The list polls every 3 s while any entry is queued/downloading/generating.
+- Static files are served with `Cache-Control: no-cache` (no build step, no versioned names), so a normal reload always picks up a new `app.js`.
 - Calendar (plain JS, no library): month view of clip counts per day, by stream date or date added (saved in
   `localStorage` key `clipLibrary.calendarField`). **Days are computed in the shown time zone**: the page converts
   that zone's midnights to UTC (`zonedMidnightUtc`, via `Intl` parts) and sends them as `from`/`to`, so the
