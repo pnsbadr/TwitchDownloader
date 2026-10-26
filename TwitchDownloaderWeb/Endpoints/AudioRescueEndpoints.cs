@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using TwitchDownloaderWeb.Data;
 using TwitchDownloaderWeb.Services;
 using TwitchDownloaderWeb.Services.AudioRescue;
@@ -32,8 +33,11 @@ namespace TwitchDownloaderWeb.Endpoints
 
         /// <summary>Starts saving a VOD's audio now (any VOD, saved channel or not). A failed rescue is retried; others are returned as they are.</summary>
         private static async Task<IResult> StartRescue(long vodId, LibraryDbContext db, VodInfoService vodInfo, AudioRescueService rescueService,
-            CancellationToken cancellationToken)
+            IOptions<AudioRescueSettings> settings, CancellationToken cancellationToken)
         {
+            if (!settings.Value.Enabled)
+                return Results.Problem(detail: "Saving audio is turned off (AudioRescue:Enabled in appsettings.json).", statusCode: StatusCodes.Status409Conflict);
+
             var rescue = await db.AudioRescues.FirstOrDefaultAsync(x => x.VodId == vodId, cancellationToken);
             if (rescue is not null && rescue.Status != AudioRescueStatus.Failed)
                 return Results.Ok(AudioRescueDto.From(rescue));

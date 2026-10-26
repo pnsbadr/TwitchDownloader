@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using TwitchDownloaderWeb.Data;
 using TwitchDownloaderWeb.Services;
 
@@ -16,7 +17,8 @@ namespace TwitchDownloaderWeb.Endpoints
     public sealed record ChannelVodDto(long VodId, string Title, int LengthSeconds, string Length, DateTime CreatedAtUtc, string? ThumbnailUrl,
         int ViewCount, string? Game, bool UnmuteWindowOpen, string? RescueStatus, int? RescueMutedCount, int? RescueUnrecoverableCount);
 
-    public sealed record ChannelVodPageDto(string Login, string Type, IEnumerable<ChannelVodDto> Items, string? NextCursor, int TotalCount);
+    public sealed record ChannelVodPageDto(string Login, string Type, IEnumerable<ChannelVodDto> Items, string? NextCursor, int TotalCount,
+        bool RescueEnabled);
 
     public static class ChannelEndpoints
     {
@@ -100,7 +102,7 @@ namespace TwitchDownloaderWeb.Endpoints
         /// <param name="type">"archive" (past broadcasts, default), "highlight", "upload" or "all".</param>
         /// <param name="cursor">nextCursor from the previous page.</param>
         private static async Task<IResult> ListChannelVods(string login, string? type, string? cursor, int? limit, ChannelService channelService,
-            LibraryDbContext db, CancellationToken cancellationToken)
+            LibraryDbContext db, IOptions<AudioRescueSettings> rescueSettings, CancellationToken cancellationToken)
         {
             if (ChannelService.NormalizeLogin(login) is not { } normalizedLogin)
                 return InvalidLogin("login");
@@ -135,7 +137,8 @@ namespace TwitchDownloaderWeb.Endpoints
                     x.CreatedAtUtc, x.ThumbnailUrl, x.ViewCount, x.Game, x.UnmuteWindowOpen, rescue?.Status.ToString(), rescue?.MutedCount, rescue?.UnrecoverableCount);
             });
 
-            return Results.Ok(new ChannelVodPageDto(normalizedLogin, vodType.ToString().ToLowerInvariant(), items, page.NextCursor, page.TotalCount));
+            return Results.Ok(new ChannelVodPageDto(normalizedLogin, vodType.ToString().ToLowerInvariant(), items, page.NextCursor, page.TotalCount,
+                rescueSettings.Value.Enabled));
         }
 
         private static IResult InvalidLogin(string field) =>

@@ -742,7 +742,7 @@ const BROWSE_TYPE_STORAGE_KEY = "clipLibrary.browseType";
 const VOD_TYPES = ["archive", "highlight", "upload", "all"];
 
 let savedChannels = [];
-let browse = { login: null, type: loadBrowseType(), items: [], nextCursor: null, loading: false, selectedId: null };
+let browse = { login: null, type: loadBrowseType(), items: [], nextCursor: null, loading: false, selectedId: null, rescueEnabled: false };
 let prefilledTitle = null;
 let browseRequest = 0;
 
@@ -873,8 +873,8 @@ function vodCard(vod) {
 
   const meta = [formatDate(vod.createdAtUtc), vod.length, vod.game].filter(Boolean).join(" · ");
 
-  // Offer a manual rescue for VODs that are still in the unmute window (or whose rescue failed)
-  const canRescue = (vod.unmuteWindowOpen && !vod.rescueStatus) || vod.rescueStatus === "Failed";
+  // Offer a manual rescue for VODs that are still in the unmute window (or whose rescue failed), unless saving audio is turned off
+  const canRescue = browse.rescueEnabled && ((vod.unmuteWindowOpen && !vod.rescueStatus) || vod.rescueStatus === "Failed");
   const rescueButton = canRescue
     ? el("button", { type: "button", class: "small secondary", onclick: (event) => startRescue(vod, event.currentTarget) },
       vod.rescueStatus === "Failed" ? "Retry saving audio" : "Save audio now")
@@ -935,6 +935,7 @@ async function loadChannelVods(append) {
     const seen = new Set(browse.items.map((x) => x.vodId));
     browse.items = browse.items.concat(page.items.filter((x) => !seen.has(x.vodId)));
     browse.nextCursor = page.nextCursor;
+    browse.rescueEnabled = page.rescueEnabled;
     saveBrowsePrefs();
 
     const typeName = VOD_TYPE_NAMES[browse.type];
