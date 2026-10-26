@@ -38,7 +38,12 @@ using (var scope = app.Services.CreateScope())
 
 app.UseExceptionHandler();
 app.UseDefaultFiles();
-app.UseStaticFiles();
+// The page has no build step or versioned file names, so make browsers check for a newer app.js/app.css on every load
+// (a cheap 304 when unchanged) instead of guessing a cache lifetime and running old code after an update
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = context => context.Context.Response.Headers.CacheControl = "no-cache"
+});
 
 app.MapVodDownloadEndpoints();
 app.MapEntryEndpoints();
