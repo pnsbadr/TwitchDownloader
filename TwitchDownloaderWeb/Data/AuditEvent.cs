@@ -4,6 +4,7 @@ namespace TwitchDownloaderWeb.Data
     {
         public const string EntryAdded = "entry.added";
         public const string EntryRenamed = "entry.renamed";
+        public const string EntryRetrimmed = "entry.retrimmed";
         public const string EntryDeleted = "entry.deleted";
         public const string DownloadStarted = "download.started";
         public const string DownloadCompleted = "download.completed";

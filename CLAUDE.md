@@ -56,6 +56,7 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
 - `Downloads:MaxStoredClipSeconds` (default 180) — clips **at or under** this are downloaded and stored;
   longer ones are reference-only. Enforced on the server from the trim times; the page only previews it.
 - `Downloads:GeneratedFileHours` (default 72) — on-demand files for reference-only entries are deleted after this.
+- `Downloads:ExactTrimPreset` (default `veryfast`) / `Downloads:ExactTrimCrf` (default 18) — libx264 settings for Exact trims (see Jobs and files).
 
 ### Data (EF Core 10 + SQLite, `Data/`)
 - `LibraryEntries`: title, VOD ID, channel, quality (resolved name, null = best), trim mode, start/end
@@ -86,6 +87,11 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   in `downloads/` (e.g. output of the phase 1 dev endpoint).
 - Deleting an entry cancels its running job. On Windows a file still open by ffmpeg can't be deleted by the
   request; the cancelled job and then the sweep remove it.
+- **Exact trims don't use Core's Exact mode.** Core cuts with `-ss` + `-c copy` on the concat input, and copied video can only
+  start on a keyframe (Twitch: every ~2 s), so audio started on time while the first frame stayed frozen up to ~2 s.
+  `ExactTrimService` has Core download in Safe mode, then re-encodes the cut (libx264 + AAC 192k, `+faststart`), finding the
+  cut inside the Safe file from the playlist's segment offsets. If the playlist can't be read it falls back to Core's Exact.
+  Safe entries are still plain stream copy. (The phase 1 dev endpoint still uses Core's Exact.)
 - `VodInfoService` (Twitch lookups + shared validation), `VodDownloadRunner` (builds `VideoDownloadOptions`),
   `LoggerTaskProgress` (Core `ITaskProgress` → `ILogger`), `TrimTime` (parses `h:mm:ss`/`m:ss`/seconds with
   unbounded hours; TimeSpan's own format caps hours at 23).
@@ -104,7 +110,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   if it runs while the stream is live, before Twitch mutes. The 24 h window/badge is still Core's assumption.
 - `AudioRestoreService`, called by `DownloadWorker` when an entry's trim overlaps muted segments with saved audio:
   Core downloads in **Safe** mode, then `AudioSplicer` mixes the clean audio in (video `-c:v copy`, audio re-encoded AAC
-  192k, muted ranges gated to silence), then Exact entries are trimmed with `-ss/-t -c copy` like Core. Any failure falls
+  192k, muted ranges gated to silence), then Exact entries are cut by `ExactTrimService` (re-encode). Any failure falls
   back to a normal download (audited `audio.restore_failed`). Scratch files go in `downloads/work/` (cleared at startup).
 - **Placement must use the segments' PTS, not just #EXTINF sums** (those were ~16 ms off in testing): Core concatenates
   with `duration` directives, so a segment's audio sits at (playlist offset - first segment's offset) +
@@ -127,6 +133,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/entries?search=&sort=dateAdded\|streamDate&order=desc\|asc&limit=&from=&to=&dateField=dateAdded\|streamDate` | Search is a LIKE substring match (case-insensitive for ASCII only). `from` (inclusive) / `to` (exclusive) are ISO 8601 instants **with an offset** (bare dates/times → 400) and filter on `dateField` (default dateAdded) |
 | `GET /api/entries/{id}` | |
 | `PATCH /api/entries/{id}` | `{ title }` — audited as `entry.renamed` |
+| `PUT /api/entries/{id}/trim` | `{ startTime, endTime }` (blank end = end of VOD) — re-cuts the entry: cancels a running job (waits up to 20 s, else 409), deletes its files, re-applies the stored-vs-reference rule and re-queues a stored download. VodUnavailable → 410. Audited `entry.retrimmed` |
 | `DELETE /api/entries/{id}` | Removes entry + stored/generated files — audited. Phase 3: restrict who can delete |
 | `POST /api/entries/{id}/generate` | Reference-only: queue on-demand file (202) or 200 if ready. Failed stored entry: retry. VodUnavailable → 410 |
 | `GET /api/entries/{id}/file` | Streams the file (range requests supported); 409 if not ready; 410 if missing on disk (entry then becomes retryable). `?preview=true` (the vertical editor's player) isn't audited as a download |
@@ -144,6 +151,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   (per browser until per-user settings exist in phase 3). Formatting only — the API always returns UTC (`...Z`).
 - `Intl.DateTimeFormat` throws if `dateStyle`/`timeStyle` are combined with `timeZoneName`; format parts explicitly.
 - The list polls every 3 s while any entry is queued/downloading/generating.
+- Static files are served with `Cache-Control: no-cache` (no build step, no versioned names), so a normal reload always picks up a new `app.js`.
 - Calendar (plain JS, no library): month view of clip counts per day, by stream date or date added (saved in
   `localStorage` key `clipLibrary.calendarField`). **Days are computed in the shown time zone**: the page converts
   that zone's midnights to UTC (`zonedMidnightUtc`, via `Intl` parts) and sends them as `from`/`to`, so the
@@ -164,6 +172,19 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   status and a **Save audio now** button (unmute window open, no rescue yet) or **Retry saving audio** (failed).
   Library entries with restored audio show an "Audio restored" badge, and "Still muted" when muted parts had no clean copy;
   VOD cards show "Muted parts not saved" when a rescue got 403s for muted segments.
+- **Watching VODs** (no server part): the official Twitch embed (`player.twitch.tv/js/embed/v1.js`, loaded lazily) streams
+  the VOD straight from Twitch. `parent` is `location.hostname`, so open the page as `localhost` (Twitch may reject a bare IP).
+  **Watch** next to Get Info / on VOD cards opens an inline player with **Set start here / Set end here** (fills the trim
+  fields from the estimated position below, hundredths of a second) and **Play clip** (seeks to start, pauses at end). The review dialog
+  starts at the clip start and pauses at its end (not shown for VodUnavailable). Closing a player
+  removes the iframe so playback stops. Sub-only VODs play only if the browser is logged in to Twitch with access.
+  **Review** on a library entry (and automatically right after Add to library) opens the clip review dialog: the
+  player plus a trim bar spanning the clip ± a margin (25% of its length, 5–60 s, widened when a handle leaves it), with
+  draggable handles (arrow keys nudge 0.1 s, Shift 1 s), a playhead, click-to-seek, ±1 s / ±0.1 s buttons, Set to playhead,
+  Play clip / Play last 3s, and **Save new cut** (`PUT /trim`; closes the dialog on success, result shown above the library). Unsaved changes ask before closing.
+  The embed's `getCurrentTime()` is a cache refreshed about once a second (and stale right after a seek), so `VodPlayer.position()`
+  estimates the live offset (last refresh or seek target + time played since, via PLAYING/PAUSE/SEEK events; refreshes are caught on the iframe's `message` events) and a 40 ms tick
+  pauses previews at the end. Using the raw value made Set end land up to ~1 s early and previews stop up to ~1 s late.
 
 ### Vertical (9:16) export (`Services/Shortform/`)
 - Like Twitch's portrait clip editor: **Make vertical** on an entry with a file opens a dialog with the landscape video,

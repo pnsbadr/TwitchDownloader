@@ -129,6 +129,485 @@ for (const button of document.querySelectorAll(".seg[data-tz]")) {
   });
 }
 
+// ---------- Twitch player ----------
+//
+// VODs play straight from Twitch through the official embed (player.twitch.tv); nothing goes through the server.
+// Twitch only plays the embed on the "parent" host it is told about, so the page passes its own host name
+// (localhost works; a bare IP address may not).
+
+const TWITCH_EMBED_SRC = "https://player.twitch.tv/js/embed/v1.js";
+let embedScript = null;
+
+function loadTwitchEmbed() {
+  if (window.Twitch?.Player) return Promise.resolve();
+  embedScript ??= new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = TWITCH_EMBED_SRC;
+    script.async = true;
+    script.onload = resolve;
+    script.onerror = () => {
+      embedScript = null;
+      script.remove();
+      reject(new Error("Couldn't load the Twitch player. Check the internet connection."));
+    };
+    document.head.append(script);
+  });
+  return embedScript;
+}
+
+// "123456789" or a twitch.tv/videos/123456789 link → the VOD ID, else null. The server does the real validation.
+function vodIdFromText(text) {
+  const value = text.trim();
+  if (/^\d+$/.test(value)) return value;
+  return value.match(/twitch\.tv\/videos\/(\d+)/i)?.[1] ?? null;
+}
+
+// Trim-field format with hundredths when they matter, e.g. "1:02:03.45"
+function formatTrimValue(seconds) {
+  const hundredths = Math.round(seconds * 100);
+  const text = formatDuration(Math.floor(hundredths / 100));
+  const fraction = hundredths % 100;
+  if (!fraction) return text;
+  return `${text}.${String(fraction).padStart(2, "0").replace(/0$/, "")}`;
+}
+
+// The embed's "time" option: "1h2m3s"
+function embedTime(seconds) {
+  const s = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m${s % 60}s`;
+}
+
+// The embed's getCurrentTime() is a cached value that the player only refreshes every so often (about once a
+// second), so on its own it lags playback by up to a second, by a different amount each time, and still shows the
+// old offset for a moment after a seek. position() tracks a base offset (the last refreshed value, or a seek target)
+// plus the time played since, and the tick runs often enough to pause clip previews within a few frames of their end.
+const PLAYER_TICK_MS = 40;
+const MAX_EXTRAPOLATION_SECONDS = 1.5; // don't run ahead while buffering; the next refresh corrects it
+
+class VodPlayer {
+  constructor(containerId, timeId) {
+    this.containerId = containerId;
+    this.timeId = timeId;
+    this.player = null;
+    this.vodId = null;
+    this.ready = false;
+    this.stopAt = null; // pause once playback reaches this offset (clip previews)
+    this.timer = null;
+    this.onMessage = null;
+    this.lastReported = null; // last value seen from getCurrentTime(); a different value means a fresh refresh
+    this.base = 0; // offset at baseAt
+    this.baseAt = null; // performance.now() the base was taken while playing, null while not advancing
+  }
+
+  async open(vodId, startSeconds = 0, stopAt = null) {
+    vodId = String(vodId);
+    if (this.player && this.vodId === vodId) {
+      this.playRange(startSeconds, stopAt);
+      return;
+    }
+
+    await loadTwitchEmbed();
+    this.close();
+    this.vodId = vodId;
+    this.stopAt = stopAt;
+    this.base = startSeconds;
+    this.player = new Twitch.Player(this.containerId, {
+      width: "100%",
+      height: "100%",
+      video: `v${vodId}`,
+      time: embedTime(startSeconds),
+      parent: [location.hostname],
+      autoplay: true,
+    });
+    const player = this.player;
+    player.addEventListener(Twitch.Player.READY, () => {
+      if (player !== this.player) return;
+      this.ready = true;
+      this.lastReported = player.getCurrentTime();
+      // The "time" option is whole seconds; land on the exact offset
+      if (startSeconds % 1) player.seek(startSeconds);
+    });
+    player.addEventListener(Twitch.Player.PLAYING, () => {
+      if (player !== this.player) return;
+      this.baseAt = performance.now();
+    });
+    player.addEventListener(Twitch.Player.PAUSE, () => {
+      if (player !== this.player) return;
+      this.freeze();
+    });
+    player.addEventListener(Twitch.Player.SEEK, (event) => {
+      if (player !== this.player) return;
+      // Seeks from the player's own controls; hold still until it plays from the new spot
+      if (typeof event?.position === "number") this.base = event.position;
+      this.baseAt = null;
+    });
+    // The embed refreshes its cached time when a message from the player iframe arrives. Its own listener runs
+    // first (it was added earlier), so reading the time here catches each refresh the moment it lands instead of
+    // up to a tick later.
+    this.onMessage = (event) => {
+      if (event.origin === "https://player.twitch.tv" && player === this.player) this.position();
+    };
+    window.addEventListener("message", this.onMessage);
+    this.timer = setInterval(() => this.tick(), PLAYER_TICK_MS);
+  }
+
+  close() {
+    clearInterval(this.timer);
+    window.removeEventListener("message", this.onMessage);
+    this.timer = null;
+    this.player = null;
+    this.vodId = null;
+    this.ready = false;
+    this.stopAt = null;
+    this.lastReported = null;
+    this.baseAt = null;
+    $(this.containerId).replaceChildren();
+    $(this.timeId).textContent = "–";
+  }
+
+  // Estimated current offset into the VOD in seconds, or null before the player is ready
+  position() {
+    if (!this.ready) return null;
+    const reported = this.player.getCurrentTime();
+    if (reported !== this.lastReported) {
+      // A fresh refresh: trust it, and keep counting from here if playing
+      this.lastReported = reported;
+      this.base = reported;
+      if (this.baseAt != null) this.baseAt = performance.now();
+    }
+    if (this.baseAt == null || this.player.isPaused()) return this.base;
+    return this.base + Math.min((performance.now() - this.baseAt) / 1000, MAX_EXTRAPOLATION_SECONDS);
+  }
+
+  freeze() {
+    this.base = this.position() ?? this.base;
+    this.baseAt = null;
+  }
+
+  playRange(startSeconds, stopAt = null) {
+    if (!this.ready) return;
+    this.stopAt = stopAt;
+    // The cached time still shows the old spot until the next refresh; don't mistake that for the new position
+    this.lastReported = this.player.getCurrentTime();
+    this.base = startSeconds;
+    this.baseAt = null;
+    this.player.seek(startSeconds);
+    this.player.play();
+  }
+
+  tick() {
+    const position = this.position();
+    if (position == null) return;
+    $(this.timeId).textContent = formatTrimValue(position);
+    this.onTick?.(position);
+    if (this.stopAt != null && position >= this.stopAt) {
+      this.stopAt = null;
+      this.player.pause();
+      this.freeze();
+    }
+  }
+}
+
+const watchPlayer = new VodPlayer("watch-player", "watch-time");
+const clipPlayer = new VodPlayer("clip-player", "clip-time");
+
+async function openWatch(vodId) {
+  $("watch").hidden = false;
+  $("watch-button").textContent = "Hide player";
+  try {
+    await watchPlayer.open(vodId, parseTrim($("start").value) || 0);
+    $("watch").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (error) {
+    closeWatch();
+    setMessage($("add-message"), error.message, "error");
+  }
+}
+
+function closeWatch() {
+  watchPlayer.close();
+  $("watch").hidden = true;
+  $("watch-button").textContent = "Watch";
+}
+
+function setTrimFromPlayer(fieldId) {
+  const now = watchPlayer.position();
+  if (now == null) return;
+  $(fieldId).value = formatTrimValue(now);
+  updateRulePreview();
+}
+
+$("watch-button").addEventListener("click", () => {
+  if (!$("watch").hidden) {
+    closeWatch();
+    return;
+  }
+  const vodId = vodIdFromText($("vod").value);
+  if (!vodId) {
+    setMessage($("add-message"), "Enter a VOD URL or ID first.", "error");
+    return;
+  }
+  setMessage($("add-message"), "");
+  openWatch(vodId);
+});
+$("watch-close").addEventListener("click", closeWatch);
+$("watch-set-start").addEventListener("click", () => setTrimFromPlayer("start"));
+$("watch-set-end").addEventListener("click", () => setTrimFromPlayer("end"));
+$("watch-preview").addEventListener("click", () => {
+  const start = parseTrim($("start").value) ?? 0;
+  const end = parseTrim($("end").value);
+  if (Number.isNaN(start) || Number.isNaN(end)) {
+    setMessage($("add-message"), "Times use h:mm:ss, m:ss or seconds.", "error");
+    return;
+  }
+  watchPlayer.playRange(start, end);
+});
+
+// ---------- clip review (library entries) ----------
+//
+// Plays an entry's clip from Twitch with a trim bar around it. The bar shows the clip plus some VOD on each side so
+// the cut can be widened as well as narrowed; handles drag, ±1s/±0.1s buttons nudge, and Save re-cuts the entry on
+// the server (PUT /trim), which downloads it again.
+
+const NUDGE_MIN_LENGTH = 0.1; // keep end after start
+
+let review = null; // { entry, start, end, vodLength, from, to }
+
+function entryRange(entry) {
+  return {
+    start: parseTrim(entry.startTime) || 0,
+    end: entry.endTime ? parseTrim(entry.endTime) : entry.vodLengthSeconds,
+  };
+}
+
+function roundHundredths(seconds) {
+  return Math.round(seconds * 100) / 100;
+}
+
+function reviewDirty() {
+  if (!review) return false;
+  const saved = entryRange(review.entry);
+  return review.start !== saved.start || review.end !== saved.end;
+}
+
+// The bar spans the clip plus a margin on each side; widen it when a handle leaves it
+function fitReviewWindow(force) {
+  const { start, end, vodLength } = review;
+  if (!force && start >= review.from && end <= review.to) return;
+  const pad = Math.min(60, Math.max(5, (end - start) * 0.25));
+  review.from = Math.max(0, start - pad);
+  review.to = Math.min(vodLength, end + pad);
+}
+
+function barPercent(seconds) {
+  return ((seconds - review.from) / (review.to - review.from)) * 100;
+}
+
+function renderReview() {
+  if (!review) return;
+  const startPct = barPercent(review.start);
+  const endPct = barPercent(review.end);
+  $("trim-range").style.left = `${startPct}%`;
+  $("trim-range").style.width = `${endPct - startPct}%`;
+  $("trim-handle-start").style.left = `${startPct}%`;
+  $("trim-handle-end").style.left = `${endPct}%`;
+  $("trim-scale-from").textContent = formatTrimValue(review.from);
+  $("trim-scale-to").textContent = formatTrimValue(review.to);
+
+  for (const [edge, id] of [["start", "trim-start"], ["end", "trim-end"]]) {
+    const input = $(id);
+    if (document.activeElement !== input) input.value = formatTrimValue(review[edge]);
+    input.classList.remove("invalid");
+  }
+
+  const dirty = reviewDirty();
+  $("trim-length").textContent = `Length ${formatTrimValue(review.end - review.start)}`;
+  $("trim-save").disabled = !dirty || review.saving;
+  $("trim-revert").disabled = !dirty || review.saving;
+}
+
+function setReviewEdge(edge, seconds) {
+  if (!review || seconds == null || Number.isNaN(seconds)) return;
+  let value = roundHundredths(seconds);
+  if (edge === "start") value = Math.min(Math.max(0, value), roundHundredths(review.end - NUDGE_MIN_LENGTH));
+  else value = Math.max(Math.min(review.vodLength, value), roundHundredths(review.start + NUDGE_MIN_LENGTH));
+  review[edge] = value;
+  // Keep the preview's stop in step with the end being edited
+  if (edge === "end" && clipPlayer.stopAt != null) clipPlayer.stopAt = value;
+  fitReviewWindow(false);
+  setMessage($("trim-message"), "");
+  renderReview();
+}
+
+function barSeconds(clientX) {
+  const rect = $("trim-bar").getBoundingClientRect();
+  const fraction = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+  return review.from + fraction * (review.to - review.from);
+}
+
+function updatePlayhead(position) {
+  const playhead = $("trim-playhead");
+  if (!review || position < review.from || position > review.to) {
+    playhead.hidden = true;
+    return;
+  }
+  playhead.hidden = false;
+  playhead.style.left = `${barPercent(position)}%`;
+}
+
+clipPlayer.onTick = updatePlayhead;
+
+function openReview(entry) {
+  const { start, end } = entryRange(entry);
+  review = { entry, start, end, vodLength: entry.vodLengthSeconds, from: 0, to: 0, saving: false };
+  fitReviewWindow(true);
+  $("clip-dialog-title").textContent = entry.title;
+  $("trim-playhead").hidden = true;
+  setMessage($("trim-message"), "");
+  renderReview();
+  if (!$("clip-dialog").open) $("clip-dialog").showModal();
+  clipPlayer.open(entry.vodId, start, end).catch((error) => {
+    review = null;
+    $("clip-dialog").close();
+    setMessage($("library-message"), error.message, "error");
+  });
+}
+
+async function saveReview() {
+  if (!review || !reviewDirty()) return;
+  const { entry } = review;
+  // An entry that ran to the end of the VOD keeps "end of VOD" unless the end was moved
+  const endTime = entry.endTime == null && review.end === review.vodLength ? null : formatTrimValue(review.end);
+  review.saving = true;
+  renderReview();
+  setMessage($("trim-message"), "Saving…");
+  try {
+    const updated = await api("PUT", `/api/entries/${entry.id}/trim`, { startTime: formatTrimValue(review.start), endTime });
+    if (!review || review.entry.id !== updated.id) return;
+    review.entry = updated;
+    // Done with this clip: close the review and say what happens next above the library
+    $("clip-dialog").close();
+    await refresh();
+    showLibraryNote(updated.isReferenceOnly
+      ? `Saved the new cut of "${updated.title}". It's over the stored-clip limit, so it's kept as a reference; generate the file when you need it.`
+      : `Saved the new cut of "${updated.title}". It's being downloaded again.`);
+  } catch (error) {
+    setMessage($("trim-message"), error.message, "error");
+  } finally {
+    if (review) {
+      review.saving = false;
+      renderReview();
+    }
+  }
+}
+
+// A confirmation above the library that goes away after a while unless something replaced it
+let libraryNoteTimer = null;
+function showLibraryNote(text) {
+  const element = $("library-message");
+  setMessage(element, text, "ok");
+  clearTimeout(libraryNoteTimer);
+  libraryNoteTimer = setTimeout(() => {
+    if (element.textContent === text) setMessage(element, "");
+  }, 10000);
+}
+
+function closeReview() {
+  if (reviewDirty() && !confirm("Discard the changes to this clip's start and end?")) return false;
+  $("clip-dialog").close();
+  return true;
+}
+
+for (const button of document.querySelectorAll(".nudge")) {
+  button.addEventListener("click", () => {
+    if (!review) return;
+    setReviewEdge(button.dataset.edge, review[button.dataset.edge] + parseFloat(button.dataset.delta));
+  });
+}
+
+for (const button of document.querySelectorAll("[data-set-edge]")) {
+  button.addEventListener("click", () => setReviewEdge(button.dataset.setEdge, clipPlayer.position()));
+}
+
+for (const [edge, id] of [["start", "trim-start"], ["end", "trim-end"]]) {
+  const input = $(id);
+  const apply = () => {
+    const value = parseTrim(input.value);
+    if (value == null || Number.isNaN(value)) {
+      input.classList.add("invalid");
+      return;
+    }
+    setReviewEdge(edge, value);
+    input.value = formatTrimValue(review[edge]);
+  };
+  input.addEventListener("change", apply);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      apply();
+    }
+  });
+}
+
+// Dragging a handle moves that edge; clicking elsewhere on the bar seeks the player there
+for (const [edge, id] of [["start", "trim-handle-start"], ["end", "trim-handle-end"]]) {
+  const handle = $(id);
+  handle.addEventListener("pointerdown", (event) => {
+    if (!review) return;
+    event.preventDefault();
+    event.stopPropagation();
+    handle.setPointerCapture(event.pointerId);
+    handle.classList.add("dragging");
+  });
+  handle.addEventListener("pointermove", (event) => {
+    if (handle.hasPointerCapture(event.pointerId)) setReviewEdge(edge, barSeconds(event.clientX));
+  });
+  const stop = (event) => {
+    if (!handle.hasPointerCapture(event.pointerId)) return;
+    handle.releasePointerCapture(event.pointerId);
+    handle.classList.remove("dragging");
+    // Let the editor hear the new edge
+    if (edge === "start") clipPlayer.playRange(review.start, review.end);
+    else clipPlayer.playRange(Math.max(review.start, review.end - 3), review.end);
+  };
+  handle.addEventListener("pointerup", stop);
+  handle.addEventListener("pointercancel", stop);
+  // Arrow keys nudge by 0.1s (1s with Shift) when a handle has focus
+  handle.addEventListener("keydown", (event) => {
+    if (!review || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) return;
+    event.preventDefault();
+    const step = (event.shiftKey ? 1 : 0.1) * (event.key === "ArrowLeft" ? -1 : 1);
+    setReviewEdge(edge, review[edge] + step);
+  });
+}
+
+$("trim-bar").addEventListener("pointerdown", (event) => {
+  if (!review || event.target.classList.contains("trim-handle")) return;
+  const seconds = barSeconds(event.clientX);
+  clipPlayer.playRange(seconds, seconds < review.end ? review.end : null);
+});
+
+$("clip-replay").addEventListener("click", () => review && clipPlayer.playRange(review.start, review.end));
+$("clip-play-end").addEventListener("click", () => review && clipPlayer.playRange(Math.max(review.start, review.end - 3), review.end));
+$("trim-save").addEventListener("click", saveReview);
+$("trim-revert").addEventListener("click", () => {
+  if (!review) return;
+  Object.assign(review, entryRange(review.entry));
+  fitReviewWindow(true);
+  setMessage($("trim-message"), "");
+  renderReview();
+});
+
+$("clip-close").addEventListener("click", closeReview);
+// Escape fires "cancel" first; ask before throwing away unsaved changes
+$("clip-dialog").addEventListener("cancel", (event) => {
+  if (reviewDirty() && !confirm("Discard the changes to this clip's start and end?")) event.preventDefault();
+});
+// Either way stop playback
+$("clip-dialog").addEventListener("close", () => {
+  review = null;
+  clipPlayer.close();
+});
+
 // ---------- add form ----------
 
 function resetVodInfo() {
@@ -216,6 +695,7 @@ $("vod").addEventListener("change", () => {
   browse.selectedId = null;
   renderBrowseList();
   resetVodInfo();
+  if (watchPlayer.vodId && watchPlayer.vodId !== vodIdFromText($("vod").value)) closeWatch();
 });
 $("start").addEventListener("input", updateRulePreview);
 $("end").addEventListener("input", updateRulePreview);
@@ -236,6 +716,9 @@ $("add-form").addEventListener("submit", async (event) => {
     });
     setMessage($("add-message"),
       `Added "${entry.title}" ${entry.isReferenceOnly ? "as a reference (generated on demand)" : "and queued for download"}.`, "ok");
+    // Check the cut right away; the review dialog plays it and can adjust it
+    closeWatch();
+    openReview(entry);
     $("title").value = "";
     prefilledTitle = null;
     $("start").value = "";
@@ -408,7 +891,9 @@ function vodCard(vod) {
           : null,
         rescueBadge(vod.rescueStatus),
         lostAudioBadge(vod))),
-    rescueButton ? el("div", { class: "vod-item-actions" }, rescueButton) : null);
+    el("div", { class: "vod-item-actions" },
+      el("button", { type: "button", class: "small secondary", onclick: () => watchVod(vod) }, "Watch"),
+      rescueButton));
 }
 
 function renderBrowseList() {
@@ -478,7 +963,13 @@ function pickVod(vod) {
   }
   resetVodInfo();
   getInfo();
+  if (!$("watch").hidden && watchPlayer.vodId !== String(vod.vodId)) openWatch(vod.vodId);
   $("vod-info").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function watchVod(vod) {
+  pickVod(vod);
+  if ($("watch").hidden) openWatch(vod.vodId);
 }
 
 $("browse-saved").addEventListener("change", () => {
@@ -557,6 +1048,10 @@ function entryActions(entry) {
     actions.push(el("button", { type: "button", onclick: () => generate(entry) }, "Retry download"));
   }
 
+  // Twitch deleted the VOD, so there is nothing left to stream
+  if (entry.status !== "VodUnavailable") {
+    actions.push(el("button", { type: "button", class: "secondary", onclick: () => openReview(entry) }, "Review"));
+  }
   actions.push(el("button", { type: "button", class: "link", onclick: () => startRename(entry) }, "Rename"));
   actions.push(el("button", { type: "button", class: "link danger", onclick: () => deleteEntry(entry) }, "Delete"));
   return actions;
@@ -944,7 +1439,8 @@ async function loadEntries() {
     $("empty").textContent = recentOnly ? `No clips ${fieldVerb()} in the last 24 hours.`
       : selectedDay ? "No clips on that day."
       : params.has("search") ? "No entries match that search." : "No entries yet.";
-    setMessage($("library-message"), "");
+    // A successful load clears an earlier error, but not a confirmation (those clear themselves)
+    if ($("library-message").classList.contains("error")) setMessage($("library-message"), "");
     schedulePoll(entries.some(isBusy));
   } catch (error) {
     setMessage($("library-message"), error.message, "error");

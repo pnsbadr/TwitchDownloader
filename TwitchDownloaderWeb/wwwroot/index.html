@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Clip Library</title>
-  <link rel="stylesheet" href="app.css">
+  <link rel="stylesheet" href="app.css?v=vertical">
 </head>
 <body>
   <header class="topbar">
@@ -57,6 +57,7 @@
             <input id="vod" name="vod" required placeholder="https://www.twitch.tv/videos/123456789" autocomplete="off">
           </label>
           <button type="button" id="get-info" class="secondary">Get Info</button>
+          <button type="button" id="watch-button" class="secondary">Watch</button>
         </div>
 
         <div id="vod-info" class="vod-info" hidden>
@@ -65,6 +66,19 @@
             <div id="vod-title" class="vod-title"></div>
             <div id="vod-meta" class="muted"></div>
           </div>
+        </div>
+
+        <!-- Plays the VOD from Twitch (official embed) so start/end can be picked while watching -->
+        <div id="watch" class="watch" hidden>
+          <div class="player-frame"><div id="watch-player"></div></div>
+          <div class="row watch-controls">
+            <span class="watch-time">At <strong id="watch-time">–</strong></span>
+            <button type="button" id="watch-set-start" class="secondary">Set start here</button>
+            <button type="button" id="watch-set-end" class="secondary">Set end here</button>
+            <button type="button" id="watch-preview" class="secondary">Play clip</button>
+            <button type="button" id="watch-close" class="link">Close player</button>
+          </div>
+          <p class="muted">Streams straight from Twitch; nothing is downloaded. Parts Twitch muted are muted here too.</p>
         </div>
 
         <div class="grid">
@@ -146,6 +160,63 @@
     </section>
   </main>
 
+  <!-- Reviewing a library clip: plays it from Twitch and lets the cut be adjusted, then re-downloaded -->
+  <dialog id="clip-dialog" class="clip-dialog" aria-labelledby="clip-dialog-title">
+    <div class="dialog-head">
+      <h3 id="clip-dialog-title"></h3>
+      <button type="button" id="clip-close" class="link">Close</button>
+    </div>
+    <div class="player-frame"><div id="clip-player"></div></div>
+
+    <div class="trim-bar-wrap">
+      <div id="trim-bar" class="trim-bar" aria-label="Clip range. Drag the handles to adjust; click to seek.">
+        <div id="trim-range" class="trim-range"></div>
+        <button type="button" id="trim-handle-start" class="trim-handle" aria-label="Start handle"></button>
+        <button type="button" id="trim-handle-end" class="trim-handle" aria-label="End handle"></button>
+        <div id="trim-playhead" class="trim-playhead" hidden></div>
+      </div>
+      <div class="trim-scale muted"><span id="trim-scale-from"></span><span id="trim-scale-to"></span></div>
+    </div>
+
+    <div class="trim-edit">
+      <div class="trim-side">
+        <span class="trim-label">Start</span>
+        <div class="nudges">
+          <button type="button" class="nudge" data-edge="start" data-delta="-1">−1s</button>
+          <button type="button" class="nudge" data-edge="start" data-delta="-0.1">−0.1s</button>
+          <input id="trim-start" class="trim-value" autocomplete="off" spellcheck="false" aria-label="Start time">
+          <button type="button" class="nudge" data-edge="start" data-delta="0.1">+0.1s</button>
+          <button type="button" class="nudge" data-edge="start" data-delta="1">+1s</button>
+        </div>
+        <button type="button" class="link small" data-set-edge="start">Set to playhead</button>
+      </div>
+      <div class="trim-side">
+        <span class="trim-label">End</span>
+        <div class="nudges">
+          <button type="button" class="nudge" data-edge="end" data-delta="-1">−1s</button>
+          <button type="button" class="nudge" data-edge="end" data-delta="-0.1">−0.1s</button>
+          <input id="trim-end" class="trim-value" autocomplete="off" spellcheck="false" aria-label="End time">
+          <button type="button" class="nudge" data-edge="end" data-delta="0.1">+0.1s</button>
+          <button type="button" class="nudge" data-edge="end" data-delta="1">+1s</button>
+        </div>
+        <button type="button" class="link small" data-set-edge="end">Set to playhead</button>
+      </div>
+    </div>
+
+    <div class="row watch-controls">
+      <span class="watch-time">At <strong id="clip-time">–</strong></span>
+      <span id="trim-length" class="muted"></span>
+      <button type="button" id="clip-replay" class="secondary">Play clip</button>
+      <button type="button" id="clip-play-end" class="secondary">Play last 3s</button>
+    </div>
+    <div class="row">
+      <button type="button" id="trim-save" disabled>Save new cut</button>
+      <button type="button" id="trim-revert" class="link" disabled>Undo changes</button>
+      <span id="trim-message" class="message" role="status"></span>
+    </div>
+    <p class="muted">Plays from Twitch and pauses at the end. Saving re-downloads the clip with the new start and end.</p>
+  </dialog>
+
   <!-- Vertical (9:16) editor: drag/resize boxes on the landscape video, like Twitch's portrait clip editor -->
   <dialog id="vx" class="vx" aria-labelledby="vx-heading">
     <div class="vx-head">
@@ -220,6 +291,6 @@
     </div>
   </dialog>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=vertical"></script>
 </body>
 </html>
