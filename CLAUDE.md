@@ -141,10 +141,12 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `PUT /api/entries/{id}/trim` | `{ startTime, endTime }` (blank end = end of VOD) — re-cuts the entry: cancels a running job (waits up to 20 s, else 409), deletes its files, re-applies the stored-vs-reference rule and re-queues a stored download. VodUnavailable → 410. Audited `entry.retrimmed` |
 | `DELETE /api/entries/{id}` | Removes entry + stored/generated files — audited. Phase 3: restrict who can delete |
 | `POST /api/entries/{id}/generate` | Reference-only: queue on-demand file (202) or 200 if ready. Failed stored entry: retry. VodUnavailable → 410 |
-| `GET /api/entries/{id}/file` | Streams the file (range requests supported); 409 if not ready; 410 if missing on disk (entry then becomes retryable) |
+| `GET /api/entries/{id}/file` | Streams the file (range requests supported); 409 if not ready; 410 if missing on disk (entry then becomes retryable). `?preview=true` (the vertical editor's player) isn't audited as a download |
 | `GET /api/channels` / `POST /api/channels` `{ login }` / `DELETE /api/channels/{id}` | Saved channels. POST checks the login exists on Twitch (404) and isn't saved (409); add/remove audited |
 | `GET /api/channels/{login}/vods?type=archive\|highlight\|upload\|all&cursor=&limit=` | Any channel's VODs, newest first, via Core's `GetGqlVideos`. `nextCursor` = last edge's cursor; `unmuteWindowOpen` = ended < 24 h ago. 502 if Twitch is unreachable |
 | `GET /api/vods/{id}/rescue` / `POST /api/vods/{id}/rescue` | Audio rescue status (404 if none) / start one now (202; a Failed one is retried; others returned as is; 409 while `AudioRescue:Enabled` is off) |
+| `GET /api/entries/{id}/shortform` / `POST /api/entries/{id}/shortform` | Vertical (9:16) renders: `{ status: None\|Rendering\|Failed, progress, error, layout, renders: [{ id, createdAtUtc, expiresAtUtc, sizeBytes, layout, fileUrl, thumbnailUrl }] }` (newest first) / start a render (202) with `{ mode: single\|split, top: {x,y,width,height}, bottom?, splitRatio?, trimStart?, trimEnd? }` (fractions of the source video). 409 if the entry has no file |
+| `GET /api/entries/{id}/shortform/{renderId}/file[?inline=true]` / `.../thumbnail` / `DELETE .../{renderId}` | A render's mp4 (`<title> (vertical).mp4`, audited `file.served`; `inline` = the page's preview player, not audited), its jpg thumbnail, delete it. 404 if gone/expired |
 | `POST /api/vods/download` | Phase 1 dev endpoint: synchronous, writes `<title>.mp4` straight into `downloads/`, not part of the library |
 
 `canDownload` in entry responses checks the generated file's expiry itself, since cleanup runs periodically.
@@ -188,6 +190,30 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   The embed's `getCurrentTime()` is a cache refreshed about once a second (and stale right after a seek), so `VodPlayer.position()`
   estimates the live offset (last refresh or seek target + time played since, via PLAYING/PAUSE/SEEK events; refreshes are caught on the iframe's `message` events) and a 40 ms tick
   pauses previews at the end. Using the raw value made Set end land up to ~1 s early and previews stop up to ~1 s late.
+
+### Vertical (9:16) export (`Services/Shortform/`)
+- Like Twitch's portrait clip editor: **Make vertical** on an entry with a file opens a dialog with the landscape video,
+  one box ("One box") or two boxes ("Two boxes": pink top over cyan bottom) you drag/resize, and a live canvas preview of
+  the portrait frame; the pill in the preview sets the top/bottom split (20–80 %). Each box keeps the shape of the slot it
+  fills, so nothing is stretched. The player has a preview-only volume slider/mute (default 30 %, saved in `localStorage` key
+  `clipLibrary.previewVolume`); renders always keep the clip's audio as is.
+- **Renders list** under the editor (shared with the team): every render is kept with its layout and a thumbnail; each row
+  has Download, Preview (plays it in the portrait panel), "Use these settings" and Delete. A "Matches the editor" badge marks
+  the render made from exactly the boxes and trim on screen, so a stale file isn't mistaken for the new one.
+- **Trim**: a bar under the player with start/end handles (arrow keys ±0.1 s, Shift ±1 s), "Start here"/"End here" at the
+  playhead, and Reset. The preview loops over the trimmed part. Sent as `trimStart`/`trimEnd` (seconds from the start of the
+  entry's file, null = start/end; min 1 s). The server uses input `-ss`/`-t` (frame-accurate since video is re-encoded) and
+  re-encodes audio to AAC 192k only when trimmed (copied otherwise). The trim end isn't capped at `ClipLengthSeconds`
+  because Safe-mode files run longer.
+- Rendering is server-side (ffmpeg on the machine running the app); the browser only plays the video and draws the preview.
+- `ShortformService` renders with ffmpeg: crop by fractions of `iw`/`ih` (no ffprobe), scale to 1080 wide, `vstack`,
+  libx264 veryfast CRF 20, audio copied, to `downloads/shortform/{entryId}/{renderId}.mp4` (+ `.json` layout/created time,
+  `.jpg` thumbnail; the json is written last, so a render is listed only when complete). Render IDs are UTC timestamps and
+  are checked to be alphanumeric before touching paths. Numbers are written with the invariant culture (a decimal comma
+  would break the filter). Newest `MaxRendersPerEntry` (5) kept for `Downloads:GeneratedFileHours`; the cleanup service
+  deletes older/expired ones, leftovers, and folders of deleted entries. One render at a time; job state is in memory
+  (an interrupted render is just gone). Deleting the entry deletes its folder. The editor reopens with the newest render's layout.
+  Audited `shortform.rendered` / `shortform.failed`. No chat overlay yet.
 
 ### Gotchas
 - Core silently falls back to the best quality when the requested one doesn't exist — always validate first.

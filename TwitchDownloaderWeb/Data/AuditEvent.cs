@@ -22,6 +22,8 @@ namespace TwitchDownloaderWeb.Data
         public const string AudioRestored = "audio.restored";
         public const string AudioRestoreFailed = "audio.restore_failed";
         public const string AudioNotRestored = "audio.not_restored";
+        public const string ShortformRendered = "shortform.rendered";
+        public const string ShortformFailed = "shortform.failed";
     }
 
     /// <summary>
