@@ -33,6 +33,7 @@ builder.Services.AddSingleton<DownloadQueue>();
 builder.Services.AddSingleton<ShortformService>();
 builder.Services.AddHostedService<DownloadWorker>();
 builder.Services.AddHostedService<LibraryCleanupService>();
+builder.Services.AddHostedService<ReferenceVodCheckService>();
 
 var app = builder.Build();
 

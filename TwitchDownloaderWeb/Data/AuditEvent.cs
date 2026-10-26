@@ -13,6 +13,8 @@ namespace TwitchDownloaderWeb.Data
         public const string GenerationRequested = "generation.requested";
         public const string GeneratedFileExpired = "generation.expired";
         public const string FileServed = "file.served";
+        public const string EntryVodGone = "entry.vod_gone";
+        public const string EntryVodBack = "entry.vod_back";
         public const string ChannelAdded = "channel.added";
         public const string ChannelRemoved = "channel.removed";
         public const string AudioRescueStarted = "audio.rescue_started";

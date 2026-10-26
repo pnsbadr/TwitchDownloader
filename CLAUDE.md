@@ -226,7 +226,9 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 - Titles are sanitized with Core's `FilenameService`, which swaps `: ? | / \` etc. for full-width look-alikes
   (`：？｜`), so file names contain non-ASCII characters (Git Bash globbing chokes on some; use PowerShell).
 - Twitch deletes VODs after a while (typically 7–60 days). Reference-only entries then become `VodUnavailable`
-  when generation is attempted; stored entries keep their file.
+  ("VOD deleted" on the page) when generation is attempted, or within `Downloads:VodCheckHours` (12) via
+  `ReferenceVodCheckService`, which also switches them back to ReferenceOnly if the VOD reappears (unpublish/republish).
+  Entries are never deleted automatically (user's choice, 2026-10-26); stored entries keep their file.
 - Restricted (subscriber-only) VODs are rejected until OAuth support exists.
 - Core's `GetGqlVideos` / `GetUserIds` paste the login, type and cursor straight into the GQL query string; the web app
   validates all three first (`ChannelService`). Video cursors aren't plain base64, so the cursor check only rejects quotes,
