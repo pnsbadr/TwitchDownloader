@@ -56,6 +56,7 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
 - `Downloads:MaxStoredClipSeconds` (default 180) — clips **at or under** this are downloaded and stored;
   longer ones are reference-only. Enforced on the server from the trim times; the page only previews it.
 - `Downloads:GeneratedFileHours` (default 72) — on-demand files for reference-only entries are deleted after this.
+- `Downloads:ExactTrimPreset` (default `veryfast`) / `Downloads:ExactTrimCrf` (default 18) — libx264 settings for Exact trims (see Jobs and files).
 
 ### Data (EF Core 10 + SQLite, `Data/`)
 - `LibraryEntries`: title, VOD ID, channel, quality (resolved name, null = best), trim mode, start/end
@@ -86,6 +87,11 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   in `downloads/` (e.g. output of the phase 1 dev endpoint).
 - Deleting an entry cancels its running job. On Windows a file still open by ffmpeg can't be deleted by the
   request; the cancelled job and then the sweep remove it.
+- **Exact trims don't use Core's Exact mode.** Core cuts with `-ss` + `-c copy` on the concat input, and copied video can only
+  start on a keyframe (Twitch: every ~2 s), so audio started on time while the first frame stayed frozen up to ~2 s.
+  `ExactTrimService` has Core download in Safe mode, then re-encodes the cut (libx264 + AAC 192k, `+faststart`), finding the
+  cut inside the Safe file from the playlist's segment offsets. If the playlist can't be read it falls back to Core's Exact.
+  Safe entries are still plain stream copy. (The phase 1 dev endpoint still uses Core's Exact.)
 - `VodInfoService` (Twitch lookups + shared validation), `VodDownloadRunner` (builds `VideoDownloadOptions`),
   `LoggerTaskProgress` (Core `ITaskProgress` → `ILogger`), `TrimTime` (parses `h:mm:ss`/`m:ss`/seconds with
   unbounded hours; TimeSpan's own format caps hours at 23).
@@ -104,7 +110,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   if it runs while the stream is live, before Twitch mutes. The 24 h window/badge is still Core's assumption.
 - `AudioRestoreService`, called by `DownloadWorker` when an entry's trim overlaps muted segments with saved audio:
   Core downloads in **Safe** mode, then `AudioSplicer` mixes the clean audio in (video `-c:v copy`, audio re-encoded AAC
-  192k, muted ranges gated to silence), then Exact entries are trimmed with `-ss/-t -c copy` like Core. Any failure falls
+  192k, muted ranges gated to silence), then Exact entries are cut by `ExactTrimService` (re-encode). Any failure falls
   back to a normal download (audited `audio.restore_failed`). Scratch files go in `downloads/work/` (cleared at startup).
 - **Placement must use the segments' PTS, not just #EXTINF sums** (those were ~16 ms off in testing): Core concatenates
   with `duration` directives, so a segment's audio sits at (playlist offset - first segment's offset) +

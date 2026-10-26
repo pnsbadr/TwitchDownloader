@@ -22,5 +22,11 @@ namespace TwitchDownloaderWeb
 
         /// <summary>How many background download jobs run at once.</summary>
         public int MaxConcurrentJobs { get; set; } = 1;
+
+        /// <summary>libx264 preset for Exact trims, which are re-encoded so the video starts on the exact frame.</summary>
+        public string ExactTrimPreset { get; set; } = "veryfast";
+
+        /// <summary>libx264 CRF for Exact trims (lower is better quality and bigger files).</summary>
+        public int ExactTrimCrf { get; set; } = 18;
     }
 }

@@ -14,7 +14,7 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
     /// Makes a library file with rescued clean audio in place of Twitch's muted parts:
     /// 1. Core downloads the range in Safe mode, so the file starts exactly on a known segment.
     /// 2. The clean audio is placed by the segments' own timestamps and mixed in; the video is copied untouched.
-    /// 3. For an Exact entry, the fixed file is trimmed the same way Core trims, so the new audio stays in sync.
+    /// 3. For an Exact entry, the fixed file is cut with <see cref="ExactTrimService"/> (a re-encode, so the video starts on the exact frame).
     /// </summary>
     public sealed class AudioRestoreService
     {
@@ -25,15 +25,17 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IVodPlaylistSource _playlists;
         private readonly IConfiguration _configuration;
+        private readonly ExactTrimService _exactTrim;
 
         public AudioRestoreService(VodDownloadRunner runner, LibraryStorage storage, IHttpClientFactory httpClientFactory, IVodPlaylistSource playlists,
-            IConfiguration configuration)
+            IConfiguration configuration, ExactTrimService exactTrim)
         {
             _runner = runner;
             _storage = storage;
             _httpClientFactory = httpClientFactory;
             _playlists = playlists;
             _configuration = configuration;
+            _exactTrim = exactTrim;
         }
 
         /// <returns>
@@ -91,9 +93,8 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
 
                 if (entry.TrimMode == VideoTrimMode.Exact)
                 {
-                    var end = entry.EndTime ?? TimeSpan.FromSeconds((double)segments.Sum(x => x.Duration));
-                    var start = entry.StartTime - TimeSpan.FromSeconds((double)startSegment.Offset);
-                    await AudioSplicer.TrimAsync(ffmpegPath, restoredFile, start.TotalSeconds, (end - entry.StartTime).TotalSeconds, outputPath, work, logger, cancellationToken);
+                    var (start, length) = ExactTrimService.CutWithin(segments, startSegment, entry);
+                    await _exactTrim.TrimAsync(restoredFile, start, length, outputPath, work, logger, cancellationToken);
                 }
                 else
                 {

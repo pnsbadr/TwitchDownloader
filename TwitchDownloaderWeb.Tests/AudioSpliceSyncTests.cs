@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging.Abstractions;
+using TwitchDownloaderWeb.Services;
 using TwitchDownloaderWeb.Services.AudioRescue;
 
 namespace TwitchDownloaderWeb.Tests
@@ -137,9 +138,52 @@ namespace TwitchDownloaderWeb.Tests
         private async Task<string> TrimAsync(string input, double start, double length, CancellationToken ct)
         {
             var output = Path.ChangeExtension(input, ".exact.mp4");
-            await AudioSplicer.TrimAsync(Ffmpeg, input, start, length, output, _dir, NullLogger.Instance, ct);
+            await ExactTrimService.TrimAsync(Ffmpeg, input, start, length, output, _dir, "ultrafast", 18, NullLogger.Instance, ct);
             return output;
         }
+
+        /// <summary>
+        /// An Exact cut between keyframes must start on the cut frame. Core's stream-copy cut started the video at the next
+        /// keyframe, so the first ~1 s showed a frozen frame while the audio played.
+        /// </summary>
+        [Fact]
+        public async Task ExactTrimStartsOnTheCutFrame()
+        {
+            SkipIfNoFfmpeg();
+            var ct = TestContext.Current.CancellationToken;
+
+            // Keyframes every 2 s, like Twitch
+            await Ff(ct, "-f", "lavfi", "-i", "testsrc2=s=320x180:r=30:d=10", "-f", "lavfi", "-i", "sine=f=440:d=10",
+                "-c:v", "libx264", "-preset", "ultrafast", "-g", "60", "-keyint_min", "60", "-sc_threshold", "0", "-c:a", "aac", "src.mp4");
+
+            var output = Path.Combine(_dir, "exact.mp4");
+            await ExactTrimService.TrimAsync(Ffmpeg, Path.Combine(_dir, "src.mp4"), 0.5, 5, output, _dir, "ultrafast", 18, NullLogger.Instance, ct);
+
+            var frames = ShowInfoPtsRegex.Matches(await Ff(ct, "-i", output, "-map", "0:v", "-vf", "showinfo", "-f", "null", "-"))
+                .Select(m => double.Parse(m.Groups["t"].Value, CultureInfo.InvariantCulture)).ToList();
+            Assert.Equal(150, frames.Count);
+            Assert.True(frames[0] < 0.001, $"first frame at {frames[0]} s");
+
+            // The first frame is the source frame at 0.5 s, not a keyframe (0 s or 2 s)
+            var atCut = await FirstFramePsnrAsync(output, 0.5, ct);
+            Assert.True(atCut > 40, $"PSNR vs 0.5 s: {atCut}");
+            Assert.True(atCut > await FirstFramePsnrAsync(output, 0, ct) + 10);
+            Assert.True(atCut > await FirstFramePsnrAsync(output, 2, ct) + 10);
+        }
+
+        private async Task<double> FirstFramePsnrAsync(string file, double sourceSeconds, CancellationToken ct)
+        {
+            var stderr = await Ff(ct, "-i", file, "-ss", sourceSeconds.ToString(CultureInfo.InvariantCulture), "-i", "src.mp4",
+                "-lavfi", "[0:v][1:v]psnr", "-frames:v", "1", "-f", "null", "-");
+            var value = PsnrRegex.Match(stderr).Groups["v"].Value;
+            return value == "inf" ? double.PositiveInfinity : double.Parse(value, CultureInfo.InvariantCulture);
+        }
+
+        [GeneratedRegex(@"\bpts_time:(?<t>-?[0-9.]+)")]
+        private static partial Regex ShowInfoPtsRegex { get; }
+
+        [GeneratedRegex(@"average:(?<v>inf|[0-9.]+)")]
+        private static partial Regex PsnrRegex { get; }
 
         [GeneratedRegex(@"silence_end: (?<t>-?[0-9.]+)")]
         private static partial Regex SilenceEndRegex { get; }
