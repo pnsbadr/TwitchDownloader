@@ -55,17 +55,13 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
             {
                 try
                 {
-                    // Turned off: unfinished rescues stay as they are and resume when it is turned back on
-                    if (_settings.Value.Enabled)
+                    if (_settings.Value.Enabled && DateTime.UtcNow >= _nextDiscoveryUtc)
                     {
-                        if (DateTime.UtcNow >= _nextDiscoveryUtc)
-                        {
-                            _nextDiscoveryUtc = DateTime.UtcNow.AddMinutes(Math.Max(1, _settings.Value.PollMinutes));
-                            await DiscoverAsync(stoppingToken);
-                        }
-
-                        await ProcessDueAsync(stoppingToken);
+                        _nextDiscoveryUtc = DateTime.UtcNow.AddMinutes(Math.Max(1, _settings.Value.PollMinutes));
+                        await DiscoverAsync(stoppingToken);
                     }
+
+                    await ProcessDueAsync(stoppingToken);
 
                     // Cleanup isn't saving, so it runs even when rescue is turned off
                     await RemoveGoneVodsAsync(stoppingToken);
@@ -130,7 +126,8 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
         }
 
         /// <returns>The new rescue (not yet saved).</returns>
-        public static VodAudioRescue AddRescue(LibraryDbContext db, long vodId, string? channelLogin, string? title, DateTime streamStartUtc, string reason, string? userId = null)
+        public static VodAudioRescue AddRescue(LibraryDbContext db, long vodId, string? channelLogin, string? title, DateTime streamStartUtc, string reason, string? userId = null,
+            bool manuallyRequested = false)
         {
             var now = DateTime.UtcNow;
             var rescue = new VodAudioRescue
@@ -143,6 +140,7 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
                 CreatedAtUtc = now,
                 UpdatedAtUtc = now,
                 NextCheckAtUtc = now,
+                ManuallyRequested = manuallyRequested,
                 RequestedByUserId = userId,
             };
             db.AudioRescues.Add(rescue);
@@ -159,8 +157,10 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
                 var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
 
                 var now = DateTime.UtcNow;
+                // Automatic saving turned off: rescues not started by hand stay as they are and resume when it is turned back on
+                var enabled = _settings.Value.Enabled;
                 var rescue = await db.AudioRescues
-                    .Where(x => (x.Status == AudioRescueStatus.Grabbing || x.Status == AudioRescueStatus.WaitingToPrune) && x.NextCheckAtUtc <= now)
+                    .Where(x => (enabled || x.ManuallyRequested) && (x.Status == AudioRescueStatus.Grabbing || x.Status == AudioRescueStatus.WaitingToPrune) && x.NextCheckAtUtc <= now)
                     .OrderBy(x => x.NextCheckAtUtc)
                     .FirstOrDefaultAsync(cancellationToken);
                 if (rescue is null)

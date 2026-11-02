@@ -101,9 +101,10 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
 ### Muted audio rescue (`Services/AudioRescue/`)
 Twitch mutes segments (`123-muted.ts`) and keeps the clean copy (`123.ts`) for a limited time (Core assumes 24 h and
 only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We save clean audio and splice it back:
-- **Off by default** (`AudioRescue:Enabled` = false since 2026-10-25: it filled the dev disk, ~4.8 GB in 5 days for 2 channels). Off means no
-  new rescues (watch or `POST`, which returns 409), unfinished ones pause (no grab, no prune; their VOD cards say "Audio saving paused") and the page hides the Save audio buttons;
-  saved audio is kept and still used for restores. Turn on with `AudioRescue__Enabled=true` or in appsettings.
+- **Automatic saving is off by default** (`AudioRescue:Enabled` = false since 2026-10-25: it filled the dev disk, ~4.8 GB in 5 days for 2 channels). Off means
+  saved channels aren't watched and rescues not started by hand pause (no grab, no prune; their VOD cards say "Audio saving paused"). The **Save audio now** button
+  still works (user's call, 2026-11-02): `POST` sets `ManuallyRequested`, which runs that rescue through grab and prune, and resumes it if it was paused.
+  Saved audio is kept and still used for restores. Turn automatic saving on with `AudioRescue__Enabled=true` or in appsettings.
   **Temporary:** the config switch is a stopgap; once teams exist (phase 3) it becomes a team setting so a team can turn
   auto audio saving on/off itself.
 - `AudioRescueService` (BackgroundService, `AudioRescue:*` settings): every `PollMinutes` it checks saved channels with
@@ -153,7 +154,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/entries/{id}/file` | Streams the file (range requests supported); 409 if not ready; 410 if missing on disk (entry then becomes retryable). `?preview=true` (the vertical editor's player) isn't audited as a download |
 | `GET /api/channels` / `POST /api/channels` `{ login }` / `DELETE /api/channels/{id}` | Saved channels. POST checks the login exists on Twitch (404) and isn't saved (409); add/remove audited |
 | `GET /api/channels/{login}/vods?type=archive\|highlight\|upload\|all&cursor=&limit=` | Any channel's VODs, newest first, via Core's `GetGqlVideos`. `nextCursor` = last edge's cursor; `unmuteWindowOpen` = ended < 24 h ago. 502 if Twitch is unreachable |
-| `GET /api/vods/{id}/rescue` / `POST /api/vods/{id}/rescue` | Audio rescue status (404 if none) / start one now (202; a Failed one is retried; others returned as is; 409 while `AudioRescue:Enabled` is off) |
+| `GET /api/vods/{id}/rescue` / `POST /api/vods/{id}/rescue` | Audio rescue status (404 if none) / start one now (202; a Failed one is retried; one paused by `AudioRescue:Enabled` being off is resumed; others returned as is) |
 | `GET /api/entries/{id}/shortform` / `POST /api/entries/{id}/shortform` | Vertical (9:16) renders: `{ status: None\|Rendering\|Failed, progress, error, layout, renders: [{ id, createdAtUtc, expiresAtUtc, sizeBytes, layout, fileUrl, thumbnailUrl }] }` (newest first) / start a render (202) with `{ mode: single\|split, top: {x,y,width,height}, bottom?, splitRatio?, trimStart?, trimEnd? }` (fractions of the source video). 409 if the entry has no file |
 | `GET /api/entries/{id}/shortform/{renderId}/file[?inline=true]` / `.../thumbnail` / `DELETE .../{renderId}` | A render's mp4 (`<title> (vertical).mp4`, audited `file.served`; `inline` = the page's preview player, not audited), its jpg thumbnail, delete it. 404 if gone/expired |
 | `POST /api/vods/download` | Phase 1 dev endpoint: synchronous, writes `<title>.mp4` straight into `downloads/`, not part of the library |
@@ -183,7 +184,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   toggle, Show VODs / Load more. Clicking a card fills the VOD field and the title (only replacing a title the page
   filled itself), then runs Get Info. Last channel and type are saved in `localStorage` keys `clipLibrary.browseChannel`
   / `clipLibrary.browseType`. Cards use `formatDate`, so they follow the time zone toggle. Cards show the rescue
-  status and a **Save audio now** button (unmute window open, no rescue yet) or **Retry saving audio** (failed).
+  status and a **Save audio now** button (live or unmute window open, no rescue yet or paused) or **Retry saving audio** (failed).
   Library entries with restored audio show an "Audio restored" badge, and "Still muted" when muted parts had no clean copy;
   VOD cards show "Muted parts not saved" when a rescue got 403s for muted segments.
 - **Watching VODs** (no server part): the official Twitch embed (`player.twitch.tv/js/embed/v1.js`, loaded lazily) streams

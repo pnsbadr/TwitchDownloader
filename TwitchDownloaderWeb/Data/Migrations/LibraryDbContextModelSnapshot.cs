@@ -256,6 +256,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<DateTime?>("GrabCompletedAtUtc")
                         .HasColumnType("TEXT");
 
+                    b.Property<bool>("ManuallyRequested")
+                        .HasColumnType("INTEGER");
+
                     b.Property<int>("MutedCount")
                         .HasColumnType("INTEGER");
 

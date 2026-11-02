@@ -40,13 +40,42 @@ namespace TwitchDownloaderWeb.Tests
                 NullLogger<LibraryStorage>.Instance);
 
             _service = new AudioRescueService(_services.GetRequiredService<IServiceScopeFactory>(), new ChannelService(), _storage, new FakeHttpClientFactory(_cdn),
-                _playlists, _vods, Options.Create(new AudioRescueSettings { Enabled = false, PruneAfterHours = 48 }), NullLogger<AudioRescueService>.Instance);
+                _playlists, _vods, Options.Create(new AudioRescueSettings { Enabled = true, PruneAfterHours = 48 }), NullLogger<AudioRescueService>.Instance);
         }
 
         public void Dispose()
         {
             _services.Dispose();
             try { Directory.Delete(_dir, true); } catch (IOException) { }
+        }
+
+        [Fact]
+        public async Task WithAutomaticSavingOffOnlyRescuesStartedByHandRun()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            const long manualVodId = VodId + 1;
+
+            using (var scope = _services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+                AudioRescueService.AddRescue(db, VodId, "arky", "Paused", DateTime.UtcNow.AddHours(-1), "test");
+                AudioRescueService.AddRescue(db, manualVodId, "arky", "By hand", DateTime.UtcNow.AddHours(-1), "test", manuallyRequested: true);
+                await db.SaveChangesAsync(ct);
+            }
+
+            var off = new AudioRescueService(_services.GetRequiredService<IServiceScopeFactory>(), new ChannelService(), _storage, new FakeHttpClientFactory(_cdn),
+                _playlists, _vods, Options.Create(new AudioRescueSettings { Enabled = false, PruneAfterHours = 48 }), NullLogger<AudioRescueService>.Instance);
+
+            _cdn.Serve("0.ts", 1000);
+            _playlists.Set(live: false, ("0.ts", 10));
+            await off.ProcessDueAsync(ct);
+
+            using var check = _services.CreateScope();
+            var rescues = await check.ServiceProvider.GetRequiredService<LibraryDbContext>().AudioRescues.AsNoTracking().ToDictionaryAsync(x => x.VodId, ct);
+            Assert.Equal(AudioRescueStatus.Grabbing, rescues[VodId].Status);
+            Assert.Equal(0, rescues[VodId].SavedCount);
+            Assert.Equal(AudioRescueStatus.WaitingToPrune, rescues[manualVodId].Status);
+            Assert.Equal(1, rescues[manualVodId].SavedCount);
         }
 
         [Fact]

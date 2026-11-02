@@ -813,7 +813,7 @@ const BROWSE_TYPE_STORAGE_KEY = "clipLibrary.browseType";
 const VOD_TYPES = ["archive", "highlight", "upload", "all"];
 
 let savedChannels = [];
-let browse = { login: null, type: loadBrowseType(), items: [], nextCursor: null, loading: false, selectedId: null, rescueEnabled: false };
+let browse = { login: null, type: loadBrowseType(), items: [], nextCursor: null, loading: false, selectedId: null };
 let prefilledTitle = null;
 let browseRequest = 0;
 
@@ -912,11 +912,10 @@ const RESCUE_BADGES = {
   Failed: ["badge error", "Audio rescue failed", "Saving the audio failed; you can try again"],
 };
 
-// While audio saving is turned off (AudioRescue:Enabled), unfinished rescues are paused, not saving
-const PAUSED_RESCUE_BADGE = ["badge ref", "Audio saving paused", "Audio saving is turned off; what was saved so far is kept"];
+// While automatic saving is off (AudioRescue:Enabled), rescues not started with the button are paused, not saving
+const PAUSED_RESCUE_BADGE = ["badge ref", "Audio saving paused", "Automatic audio saving is off; what was saved so far is kept"];
 
-function rescueBadge(status) {
-  const paused = !browse.rescueEnabled && (status === "Grabbing" || status === "WaitingToPrune");
+function rescueBadge(status, paused) {
   const badge = paused ? PAUSED_RESCUE_BADGE : RESCUE_BADGES[status];
   return badge ? el("span", { class: badge[0], title: badge[2] }, badge[1]) : null;
 }
@@ -934,6 +933,7 @@ async function startRescue(vod, button) {
   try {
     const rescue = await api("POST", `/api/vods/${vod.vodId}/rescue`);
     vod.rescueStatus = rescue.status;
+    vod.rescuePaused = false;
     setMessage($("browse-message"), `Saving the audio of "${vod.title}". This runs in the background.`, "ok");
   } catch (error) {
     setMessage($("browse-message"), error.message, "error");
@@ -948,8 +948,9 @@ function vodCard(vod) {
 
   const meta = [formatDate(vod.createdAtUtc), vod.length, vod.game].filter(Boolean).join(" · ");
 
-  // Offer a manual rescue for VODs that are still in the unmute window (or whose rescue failed), unless saving audio is turned off
-  const canRescue = browse.rescueEnabled && ((vod.unmuteWindowOpen && !vod.rescueStatus) || vod.rescueStatus === "Failed");
+  // Offer a manual rescue for VODs that are live or still in the unmute window (or whose rescue failed), even with automatic saving off
+  const canStart = !vod.rescueStatus || (vod.rescuePaused && vod.rescueStatus === "Grabbing");
+  const canRescue = (vod.unmuteWindowOpen && canStart) || vod.rescueStatus === "Failed";
   const rescueButton = canRescue
     ? el("button", { type: "button", class: "small secondary", onclick: (event) => startRescue(vod, event.currentTarget) },
       vod.rescueStatus === "Failed" ? "Retry saving audio" : "Save audio now")
@@ -964,7 +965,7 @@ function vodCard(vod) {
         vod.unmuteWindowOpen
           ? el("span", { class: "badge ref", title: "Ended less than 24 hours ago: Twitch may still have unmuted audio for muted parts" }, "Unmute window open")
           : null,
-        rescueBadge(vod.rescueStatus),
+        rescueBadge(vod.rescueStatus, vod.rescuePaused),
         lostAudioBadge(vod))),
     el("div", { class: "vod-item-actions" },
       el("button", { type: "button", class: "small secondary", onclick: () => watchVod(vod) }, "Watch"),
@@ -1010,7 +1011,6 @@ async function loadChannelVods(append) {
     const seen = new Set(browse.items.map((x) => x.vodId));
     browse.items = browse.items.concat(page.items.filter((x) => !seen.has(x.vodId)));
     browse.nextCursor = page.nextCursor;
-    browse.rescueEnabled = page.rescueEnabled;
     saveBrowsePrefs();
 
     const typeName = VOD_TYPE_NAMES[browse.type];

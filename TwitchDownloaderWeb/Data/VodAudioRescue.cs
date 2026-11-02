@@ -56,6 +56,9 @@ namespace TwitchDownloaderWeb.Data
         public int UnrecoverableCount { get; set; }
         public long StoredBytes { get; set; }
 
+        /// <summary>Started or resumed with the Save audio button, so it runs even while AudioRescue:Enabled is off.</summary>
+        public bool ManuallyRequested { get; set; }
+
         /// <summary>Linked to users in phase 3.</summary>
         public string? RequestedByUserId { get; set; }
     }

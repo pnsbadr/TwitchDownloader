@@ -15,10 +15,9 @@ namespace TwitchDownloaderWeb.Endpoints
     }
 
     public sealed record ChannelVodDto(long VodId, string Title, int LengthSeconds, string Length, DateTime CreatedAtUtc, string? ThumbnailUrl,
-        int ViewCount, string? Game, bool UnmuteWindowOpen, string? RescueStatus, int? RescueMutedCount, int? RescueUnrecoverableCount);
+        int ViewCount, string? Game, bool UnmuteWindowOpen, string? RescueStatus, bool RescuePaused, int? RescueMutedCount, int? RescueUnrecoverableCount);
 
-    public sealed record ChannelVodPageDto(string Login, string Type, IEnumerable<ChannelVodDto> Items, string? NextCursor, int TotalCount,
-        bool RescueEnabled);
+    public sealed record ChannelVodPageDto(string Login, string Type, IEnumerable<ChannelVodDto> Items, string? NextCursor, int TotalCount);
 
     public static class ChannelEndpoints
     {
@@ -134,11 +133,12 @@ namespace TwitchDownloaderWeb.Endpoints
             {
                 var rescue = rescues.GetValueOrDefault(x.VodId);
                 return new ChannelVodDto(x.VodId, x.Title, x.LengthSeconds, TrimTime.Format(TimeSpan.FromSeconds(x.LengthSeconds)),
-                    x.CreatedAtUtc, x.ThumbnailUrl, x.ViewCount, x.Game, x.UnmuteWindowOpen, rescue?.Status.ToString(), rescue?.MutedCount, rescue?.UnrecoverableCount);
+                    x.CreatedAtUtc, x.ThumbnailUrl, x.ViewCount, x.Game, x.UnmuteWindowOpen, rescue?.Status.ToString(),
+                    rescue is { ManuallyRequested: false, Status: AudioRescueStatus.Grabbing or AudioRescueStatus.WaitingToPrune } && !rescueSettings.Value.Enabled,
+                    rescue?.MutedCount, rescue?.UnrecoverableCount);
             });
 
-            return Results.Ok(new ChannelVodPageDto(normalizedLogin, vodType.ToString().ToLowerInvariant(), items, page.NextCursor, page.TotalCount,
-                rescueSettings.Value.Enabled));
+            return Results.Ok(new ChannelVodPageDto(normalizedLogin, vodType.ToString().ToLowerInvariant(), items, page.NextCursor, page.TotalCount));
         }
 
         private static IResult InvalidLogin(string field) =>

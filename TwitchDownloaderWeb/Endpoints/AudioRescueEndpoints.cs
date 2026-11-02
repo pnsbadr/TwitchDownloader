@@ -31,24 +31,26 @@ namespace TwitchDownloaderWeb.Endpoints
                 : Results.Ok(AudioRescueDto.From(rescue));
         }
 
-        /// <summary>Starts saving a VOD's audio now (any VOD, saved channel or not). A failed rescue is retried; others are returned as they are.</summary>
+        /// <summary>
+        /// Starts saving a VOD's audio now (any VOD, saved channel or not), whether or not automatic saving is on.
+        /// A failed rescue is retried, one paused because automatic saving is off is resumed; others are returned as they are.
+        /// </summary>
         private static async Task<IResult> StartRescue(long vodId, LibraryDbContext db, VodInfoService vodInfo, AudioRescueService rescueService,
             IOptions<AudioRescueSettings> settings, CancellationToken cancellationToken)
         {
-            if (!settings.Value.Enabled)
-                return Results.Problem(detail: "Saving audio is turned off (AudioRescue:Enabled in appsettings.json).", statusCode: StatusCodes.Status409Conflict);
-
             var rescue = await db.AudioRescues.FirstOrDefaultAsync(x => x.VodId == vodId, cancellationToken);
-            if (rescue is not null && rescue.Status != AudioRescueStatus.Failed)
+            var paused = rescue is not null && rescue.Status == AudioRescueStatus.Grabbing && !rescue.ManuallyRequested && !settings.Value.Enabled;
+            if (rescue is not null && rescue.Status != AudioRescueStatus.Failed && !paused)
                 return Results.Ok(AudioRescueDto.From(rescue));
 
             if (rescue is not null)
             {
                 rescue.Status = AudioRescueStatus.Grabbing;
                 rescue.Error = null;
+                rescue.ManuallyRequested = true;
                 rescue.NextCheckAtUtc = DateTime.UtcNow;
                 rescue.UpdatedAtUtc = DateTime.UtcNow;
-                db.Audit(AuditActions.AudioRescueStarted, null, $"VOD {vodId}: retry requested");
+                db.Audit(AuditActions.AudioRescueStarted, null, $"VOD {vodId}: {(paused ? "resume" : "retry")} requested");
             }
             else
             {
@@ -65,7 +67,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 if (vod is null)
                     return Results.Problem(detail: $"VOD {vodId} was not found. It may be deleted, expired or private.", statusCode: StatusCodes.Status404NotFound);
 
-                rescue = AudioRescueService.AddRescue(db, vodId, vod.ChannelName?.ToLowerInvariant(), vod.Title, vod.StreamDateUtc, "Requested from the page");
+                rescue = AudioRescueService.AddRescue(db, vodId, vod.ChannelName?.ToLowerInvariant(), vod.Title, vod.StreamDateUtc, "Requested from the page", manuallyRequested: true);
             }
 
             try
