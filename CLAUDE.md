@@ -79,7 +79,8 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   They are applied automatically at startup.
 
 ### Accounts and teams (`Services/Accounts/`, phase 3)
-Plan and badrfly's decisions: Claude Doc "Logins, teams and permissions plan". Built in steps; step 1 (this) = logins, teams, links, scoping.
+Plan and badrfly's decisions: Claude Doc "Logins, teams and permissions plan". Built in steps: 1 = logins, teams, links, scoping;
+2 = roles and permissions, activity, team audio setting, per-user time zone, password change/reset; 3 (next) = app moderators, view as support.
 - **Two separate structures** (badrfly's call): team users (`Users`, `Teams`, `TeamMembers`) and app staff (`StaffAccounts`: the app Owner
   and later app moderators). Separate tables, cookies (`clipco.user` / `clipco.staff`, HttpOnly, SameSite=Strict, 30 days sliding) and
   login pages (`login.html` / `admin.html`). A staff login is never a team login or the other way round. badrfly has one of each.
@@ -92,8 +93,27 @@ Plan and badrfly's decisions: Claude Doc "Logins, teams and permissions plan". B
   a request without a resolved team sees nothing). Background jobs have no request, so they see all teams. `SaveChanges` fills
   `TeamId`/`AddedByUserId` on new entries/channels and `UserId`/`TeamId`/`StaffId` on audit events from the actor (entry events from
   background jobs get their entry's team). Use `IgnoreQueryFilters()` only in staff code. Saved audio (`AudioRescues`) stays shared per VOD.
-- Until roles exist (next step) **only the team owner can use a team**; other members get 403 `code: "no-access"` and the page shows
-  "Waiting for access". Members always join with no permissions; invite links never carry a role (badrfly: security).
+- **Roles and permissions** (`Data/TeamPermissions.cs`): the team owner makes roles (`TeamRoles`, unique name per team) from the
+  `TeamPermission` flags (stored as a bit mask: never renumber, add at the end) and gives each member one (`TeamMembers.RoleId`, null =
+  no access). The owner has `All`. Members always join with no role; invite links never carry one (badrfly: security). A member with
+  no permissions gets 403 `code: "no-access"` everywhere ("Waiting for access" on the page).
+- **Every team endpoint declares its permission** with `.RequireTeam(TeamPermission.X)` (any one of the flags) or `.RequireTeamOwner()`;
+  `TeamScope` checks it and **refuses endpoints that declare nothing** (fail closed), with 403 `code: "forbidden"`. Own/any pairs
+  (EditOwn/AnyEntries, DeleteOwn/AnyEntries) are checked in the handler with `TeamContext.CanOnOwnOrAny(entry.AddedByUserId, ...)`.
+  Viewing (`ViewLibrary`) covers playback, VOD browsing, info lookups, files and renders; the phase 1 dev endpoint is owner-only.
+- **Guard rails** (so a "Moderator" role can't take over): members can only create/edit roles and give roles whose permissions they hold
+  themselves, never change their own role or the owner, and only manage (role, remove, reset) members whose role is within theirs.
+  Deleting a role leaves its members with no role.
+- **Activity** (`ViewActivity`): `GET /api/team/activity?days=` counts each member's audited actions in the team (added, edited,
+  deleted, downloaded, generated, vertical) plus entries added and disk used now by their entries' files and renders;
+  `GET /api/team/audit?userId=&before=` is the team log. `shortform.requested`/`shortform.deleted` are audited by the endpoint (the
+  render job doesn't know the user).
+- **Automatic audio saving is a team setting** (`Teams.AutoSaveAudio`, off by default, `ManageAudioSettings`). A saved channel is watched
+  when its team has it on; rescues not started by hand run only while such a team watches their channel (`AudioRescueService.AutoWatchedLogins`,
+  across all teams). `AudioRescue:Enabled` is now the app-wide kill switch (default true).
+- Per-user time zone (`Users.TimeZone`, `PUT /api/auth/settings`), still cached in `localStorage` for the other pages. `POST /api/auth/password`
+  (current password needed) and `PasswordReset` links (24 h, `ResetPasswords`) set a new security stamp, which signs out other sessions.
+  A team can only reset members who are in no other team (the account is shared; staff handle the rest, step 3).
 - **One-time links** (`AccountLinks`): `TeamRegistration` (staff; new team, opener = owner), `TeamOwnership` (staff; opener becomes owner of
   an existing team: claiming "Main team", hand-over, recovery), `TeamInvite` (team owner). 7 days, revocable, claimed with a conditional
   update so they can't be used twice. Only the token's SHA-256 is stored; the token is in the URL **fragment** (`/join.html#token`) and
@@ -130,12 +150,11 @@ Plan and badrfly's decisions: Claude Doc "Logins, teams and permissions plan". B
 ### Muted audio rescue (`Services/AudioRescue/`)
 Twitch mutes segments (`123-muted.ts`) and keeps the clean copy (`123.ts`) for a limited time (Core assumes 24 h and
 only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We save clean audio and splice it back:
-- **Automatic saving is off by default** (`AudioRescue:Enabled` = false since 2026-10-25: it filled the dev disk, ~4.8 GB in 5 days for 2 channels). Off means
-  saved channels aren't watched and rescues not started by hand pause (no grab, no prune; their VOD cards say "Audio saving paused"). The **Save audio now** button
-  still works (user's call, 2026-11-02): `POST` sets `ManuallyRequested`, which runs that rescue through grab and prune, and resumes it if it was paused.
-  Saved audio is kept and still used for restores. Turn automatic saving on with `AudioRescue__Enabled=true` or in appsettings.
-  **Temporary:** the config switch is a stopgap; once teams exist (phase 3) it becomes a team setting so a team can turn
-  auto audio saving on/off itself.
+- **Automatic saving is off by default, per team** (it filled the dev disk, ~4.8 GB in 5 days for 2 channels). It's the team setting
+  `Teams.AutoSaveAudio` (Team page, permission `ManageAudioSettings`); `AudioRescue:Enabled` (default true) is only the app-wide kill switch.
+  Without a team that has it on, a channel isn't watched and rescues not started by hand pause (no grab, no prune; VOD cards say
+  "Audio saving paused"). The **Save audio now** button still works (user's call, 2026-11-02; permission `SaveAudio`): `POST` sets
+  `ManuallyRequested`, which runs that rescue through grab and prune, and resumes it if it was paused. Saved audio is kept and still used for restores.
 - `AudioRescueService` (BackgroundService, `AudioRescue:*` settings): every `PollMinutes` it checks saved channels with
   `WatchMutedAudio` for VODs in the unmute window; `POST /api/vods/{id}/rescue` starts one by hand. It downloads **every**
   segment of the audio-only rendition as raw `.ts` (clean URL for muted ones; 403/404 = unrecoverable) into
@@ -189,17 +208,21 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/vods/{id}/play.m3u8[?segments=proxy]` / `.../play/{n}.m3u8` / `.../play/{n}/{segment}` | HLS for the page's player (see Watching VODs), plus `.../play/{n}/clean/{key}.ts` (muted segment with saved audio swapped in). 403 sub-only, 404 gone, 502 Twitch unreachable. Playlists `no-store` |
 | `POST /api/auth/login` / `logout` / `GET /api/auth/me` / `POST /api/auth/team` `{ teamId }` | Team user session; `me` = `{ id, username, teams: [{ id, name, isOwner }], currentTeamId }` |
 | `POST /api/links/inspect` `{ token }` / `POST /api/links/accept` `{ token, newAccount, username?, password?, teamName? }` | One-time links (see Accounts). Blank username with a session = join as the logged-in user |
-| `GET /api/team` / `DELETE /api/team/members/{userId}` / `GET,POST /api/team/invites` / `DELETE /api/team/invites/{id}` | Current team's members and invite links (owner only for now). The link URL is only in the POST response |
+| `GET /api/team` / `DELETE /api/team/members/{userId}` / `PUT /api/team/members/{userId}/role` `{ roleId }` / `POST /api/team/members/{userId}/password-reset` | Team page: members, roles, permission catalog, `myPermissions` |
+| `POST /api/team/roles` `{ name, permissions: [keys] }` / `PUT,DELETE /api/team/roles/{id}` | Roles (guard rails above) |
+| `GET,POST /api/team/invites` / `DELETE /api/team/invites/{id}` | Invite links. A link URL is only in the POST response |
+| `GET /api/team/activity?days=` / `GET /api/team/audit?userId=&before=&limit=` / `GET,PUT /api/team/settings` `{ autoSaveAudio }` | Activity, team log, team settings |
+| `PUT /api/auth/settings` `{ timeZone: local\|pacific }` / `POST /api/auth/password` `{ currentPassword, newPassword }` | Own account |
 | `GET,POST /api/admin/setup` / `POST /api/admin/login`, `logout` / `GET /api/admin/me`, `teams`, `links` / `POST /api/admin/links` `{ kind: registration\|ownership, teamId?, note? }` / `DELETE /api/admin/links/{id}` | Staff API |
 | `POST /api/vods/download` | Phase 1 dev endpoint: synchronous, writes `<title>.mp4` straight into `downloads/`, not part of the library |
 
 `canDownload` in entry responses checks the generated file's expiry itself, since cleanup runs periodically.
 
 ### Web page
-- Not logged in → `login.html`; account bar (team switcher when in 2+ teams, Team page link for owners, Log out). `team.html` = members
-  + invite links, `join.html` = opening a link, `admin.html` = staff.
-- Time zone toggle (Local / Pacific `America/Los_Angeles`) saved in `localStorage` key `clipLibrary.timeZone`
-  (per browser until per-user settings exist in phase 3). Formatting only — the API always returns UTC (`...Z`).
+- Not logged in → `login.html`; account bar (team switcher when in 2+ teams, Team page link for members with any Team permission,
+  username → `account.html` (time zone, password), Log out). `team.html` = members/roles/activity/log/invites/audio setting,
+  `join.html` = opening any link, `admin.html` = staff. The page hides buttons the user's permissions (`me.permissions`) don't allow.
+- Time zone toggle (Local / Pacific `America/Los_Angeles`) saved per user on the server and cached in `localStorage` key `clipLibrary.timeZone`. Formatting only — the API always returns UTC (`...Z`).
 - `Intl.DateTimeFormat` throws if `dateStyle`/`timeStyle` are combined with `timeZoneName`; format parts explicitly.
 - The list polls every 3 s while any entry is queued/downloading/generating.
 - Static files are served with `Cache-Control: no-cache` (no build step, no versioned names), so a normal reload always picks up a new `app.js`.
@@ -337,7 +360,7 @@ dotnet build TwitchDownloaderWPF.sln
 2. **Done.** SQLite library + audit log; stored vs reference-only rule with a background job queue; entry API
    (add/list/get/rename/delete/generate/file); on-demand files expiring after 72 h; web page with search, sort,
    status, download, rename/delete and the Local/Pacific toggle (saved in the browser).
-3. **In progress.** Step 1 done: logins, staff Owner, teams (multi-team accounts), one-time links, team-scoped library, audit of
-   signups/logins. Next: roles + permissions chosen by the team owner (incl. "view member activity", delete own/any, team setting to
-   turn auto audio saving on/off replacing `AudioRescue:Enabled`), per-user time zone, password reset links. Then app moderators
-   (permissions picked by the Owner), "view as support" (Owner; per moderator on/off) and per-user/team activity and disk use for staff.
+3. **In progress.** Step 1: logins, staff Owner, teams (multi-team accounts), one-time links, team-scoped library, audit of
+   signups/logins. Step 2: roles + permissions, member activity, team audio setting, per-user time zone, password change/reset.
+   Next: app moderators (permissions picked by the Owner), "view as support" (Owner; per moderator on/off), staff password resets,
+   and per-user/team activity and disk use for staff.

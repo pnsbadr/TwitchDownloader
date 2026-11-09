@@ -20,7 +20,7 @@
       </label>
       <span id="team-single" class="muted"></span>
       <a class="button secondary small" id="team-link" href="/team.html" hidden>Team</a>
-      <span class="muted" id="account-name"></span>
+      <a class="account-link" id="account-name" href="/account.html" title="Your account"></a>
       <button type="button" class="secondary small" id="logout">Log out</button>
     </div>
   </header>
@@ -123,6 +123,7 @@
         <p id="rule-preview" class="muted" aria-live="polite"></p>
         <div class="row">
           <button type="submit" id="add-button">Add to library</button>
+          <span id="add-not-allowed" class="muted" hidden>Your role can watch VODs but not add them to the library.</span>
           <span id="add-message" class="message" role="status"></span>
         </div>
       </form>
