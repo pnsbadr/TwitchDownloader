@@ -131,30 +131,89 @@ for (const button of document.querySelectorAll(".seg[data-tz]")) {
   });
 }
 
-// ---------- Twitch player ----------
+// ---------- VOD player ----------
 //
-// VODs play straight from Twitch through the official embed (player.twitch.tv); nothing goes through the server.
+// VODs play in the app's own <video> player: hls.js plays Twitch's HLS playlists, which the server reads with an
+// access token the way the downloader does (GET /api/vods/{id}/play.m3u8). Segments load straight from Twitch's
+// CDN, or through the server if the CDN won't serve this page. Its currentTime is the exact offset into the VOD, so
+// Set start/end and clip previews are frame-accurate. If the app player can't play a VOD (sub-only, hls.js didn't
+// load, a video format the browser can't decode...), the official Twitch embed is used instead; the link under the
+// player switches between the two. Either way nothing is downloaded, and parts Twitch muted are muted here too.
+//
 // Twitch only plays the embed on the "parent" host it is told about, so the page passes its own host name
 // (localhost works; a bare IP address may not).
 
 const TWITCH_EMBED_SRC = "https://player.twitch.tv/js/embed/v1.js";
-let embedScript = null;
+const HLS_SRC = "https://cdn.jsdelivr.net/npm/hls.js@1.6.16/dist/hls.min.js";
+const PLAYER_MODE_STORAGE_KEY = "clipLibrary.playerMode"; // "app" (default) or "twitch"
+const PLAYER_VOLUME_STORAGE_KEY = "clipLibrary.playerVolume";
+const HLS_START_TIMEOUT_MS = 20000;
+const scripts = new Map();
+
+function loadScript(src, errorMessage) {
+  if (!scripts.has(src)) {
+    scripts.set(src, new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = src;
+      script.async = true;
+      script.onload = resolve;
+      script.onerror = () => {
+        scripts.delete(src);
+        script.remove();
+        reject(new Error(errorMessage));
+      };
+      document.head.append(script);
+    }));
+  }
+  return scripts.get(src);
+}
 
 function loadTwitchEmbed() {
   if (window.Twitch?.Player) return Promise.resolve();
-  embedScript ??= new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = TWITCH_EMBED_SRC;
-    script.async = true;
-    script.onload = resolve;
-    script.onerror = () => {
-      embedScript = null;
-      script.remove();
-      reject(new Error("Couldn't load the Twitch player. Check the internet connection."));
-    };
-    document.head.append(script);
-  });
-  return embedScript;
+  return loadScript(TWITCH_EMBED_SRC, "Couldn't load the Twitch player. Check the internet connection.");
+}
+
+function loadHls() {
+  if (window.Hls) return Promise.resolve();
+  return loadScript(HLS_SRC, "Couldn't load the app player.");
+}
+
+function loadPlayerMode() {
+  try {
+    return localStorage.getItem(PLAYER_MODE_STORAGE_KEY) === "twitch" ? "twitch" : "app";
+  } catch {
+    return "app";
+  }
+}
+
+function savePlayerMode(mode) {
+  try {
+    localStorage.setItem(PLAYER_MODE_STORAGE_KEY, mode);
+  } catch {
+    // Still applies to the player that is open now
+  }
+}
+
+function loadPlayerVolume(video) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PLAYER_VOLUME_STORAGE_KEY));
+    if (saved && Number.isFinite(saved.volume)) {
+      video.volume = Math.min(Math.max(saved.volume, 0), 1);
+      video.muted = !!saved.muted;
+      return;
+    }
+  } catch {
+    // Unavailable or unreadable storage: use the default
+  }
+  video.volume = 0.5;
+}
+
+function savePlayerVolume(video) {
+  try {
+    localStorage.setItem(PLAYER_VOLUME_STORAGE_KEY, JSON.stringify({ volume: video.volume, muted: video.muted }));
+  } catch {
+    // Still applies for this visit
+  }
 }
 
 // "123456789" or a twitch.tv/videos/123456789 link → the VOD ID, else null. The server does the real validation.
@@ -184,40 +243,197 @@ function embedTime(seconds) {
   return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m${s % 60}s`;
 }
 
+// Why the app player couldn't start. retryWithProxy: a loading error that might be the CDN refusing this page, so
+// loading the segments through the server may work.
+class PlayerUnavailable extends Error {
+  constructor(message, retryWithProxy = false) {
+    super(message);
+    this.retryWithProxy = retryWithProxy;
+  }
+}
+
+function describeHlsError(data) {
+  const details = String(data?.details ?? "");
+  if (/incompatible|codec/i.test(details)) return "this browser can't play this VOD's video format";
+  if (data?.type === "networkError") return "couldn't load the video from Twitch";
+  return `playback error (${details || "unknown"})`;
+}
+
+// The app's own player: a <video> fed by hls.js (or the browser's own HLS support, e.g. Safari)
+class HlsBackend {
+  constructor(containerId) {
+    this.containerId = containerId;
+    this.kind = "app";
+    this.video = null;
+    this.hls = null;
+    this.ready = false;
+  }
+
+  // Resolves once the first frame at startSeconds is loaded; rejects with PlayerUnavailable if it can't play
+  async open(vodId, startSeconds, segmentMode) {
+    const src = `/api/vods/${encodeURIComponent(vodId)}/play.m3u8${segmentMode === "proxy" ? "?segments=proxy" : ""}`;
+    // Ask first, so a sub-only or deleted VOD gives the server's reason instead of a bare loading error (the
+    // server keeps the master for a few minutes, so the player's own request for it is cheap)
+    let check;
+    try {
+      check = await fetch(src);
+    } catch {
+      throw new PlayerUnavailable("couldn't reach the app");
+    }
+    if (!check.ok) {
+      let problem = null;
+      try {
+        problem = await check.json();
+      } catch {
+        // Not a problem response
+      }
+      throw new PlayerUnavailable(problemMessage(problem, check.status));
+    }
+
+    const video = document.createElement("video");
+    video.controls = true;
+    video.playsInline = true;
+    video.autoplay = true;
+    loadPlayerVolume(video);
+    video.addEventListener("volumechange", () => savePlayerVolume(video));
+    this.video = video;
+    $(this.containerId).replaceChildren(video);
+
+    try {
+      await loadHls();
+    } catch {
+      // Without hls.js only browsers with their own HLS support (Safari) can play it
+    }
+    if (window.Hls?.isSupported()) await this.openHls(src, startSeconds);
+    else if (video.canPlayType("application/vnd.apple.mpegurl")) await this.openNative(src, startSeconds);
+    else throw new PlayerUnavailable(window.Hls ? "this browser can't play HLS video" : "couldn't load hls.js");
+  }
+
+  openHls(src, startSeconds) {
+    const video = this.video;
+    const hls = new Hls({
+      startPosition: startSeconds,
+      // Fail over to the next option quickly if segments won't load at all instead of retrying for a minute
+      fragLoadPolicy: {
+        default: {
+          maxTimeToFirstByteMs: 10000,
+          maxLoadTimeMs: 120000,
+          timeoutRetry: { maxNumRetry: 2, retryDelayMs: 0, maxRetryDelayMs: 0 },
+          errorRetry: { maxNumRetry: 2, retryDelayMs: 500, maxRetryDelayMs: 2000 },
+        },
+      },
+    });
+    this.hls = hls;
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (!this.ready) reject(new PlayerUnavailable("the video took too long to start", true));
+      }, HLS_START_TIMEOUT_MS);
+      video.addEventListener("loadeddata", () => {
+        clearTimeout(timeout);
+        this.ready = true;
+        resolve();
+      }, { once: true });
+      hls.on(Hls.Events.ERROR, (_, data) => {
+        if (!data.fatal || this.hls !== hls) return;
+        if (!this.ready) {
+          clearTimeout(timeout);
+          reject(new PlayerUnavailable(describeHlsError(data), data.type === Hls.ErrorTypes.NETWORK_ERROR));
+          return;
+        }
+        // Once it has played, keep going: a dropped connection or a decoding hiccup shouldn't swap the player
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+        else hls.startLoad();
+      });
+      hls.loadSource(src);
+      hls.attachMedia(video);
+    });
+  }
+
+  openNative(src, startSeconds) {
+    const video = this.video;
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new PlayerUnavailable("the video took too long to start")), HLS_START_TIMEOUT_MS);
+      video.addEventListener("loadedmetadata", () => {
+        video.currentTime = startSeconds;
+      }, { once: true });
+      video.addEventListener("loadeddata", () => {
+        clearTimeout(timeout);
+        this.ready = true;
+        resolve();
+      }, { once: true });
+      video.addEventListener("error", () => {
+        clearTimeout(timeout);
+        if (!this.ready) reject(new PlayerUnavailable("couldn't play the video"));
+      }, { once: true });
+      video.src = src;
+    });
+  }
+
+  // The renditions, best first, for the quality menu (hls.js only; it keeps them lowest bitrate first)
+  levels() {
+    const levels = this.hls?.levels.map((level, index) => ({ index, bitrate: level.bitrate, name: level.name || (level.height ? `${level.height}p` : `Quality ${index + 1}`) })) ?? [];
+    return levels.sort((a, b) => b.bitrate - a.bitrate);
+  }
+
+  get level() {
+    return this.hls?.autoLevelEnabled === false ? this.hls.currentLevel : -1;
+  }
+
+  set level(index) {
+    if (this.hls) this.hls.currentLevel = index; // -1 = automatic
+  }
+
+  position() {
+    return this.ready ? this.video.currentTime : null;
+  }
+
+  playFrom(seconds) {
+    this.video.currentTime = seconds;
+    this.video.play().catch(() => {});
+  }
+
+  pause() {
+    this.video?.pause();
+  }
+
+  close() {
+    this.ready = false;
+    this.hls?.destroy();
+    this.hls = null;
+    if (this.video) {
+      this.video.pause();
+      this.video.removeAttribute("src");
+      this.video.load();
+      this.video = null;
+    }
+    $(this.containerId).replaceChildren();
+  }
+}
+
 // The embed's getCurrentTime() is a cached value that the player only refreshes every so often (about once a
 // second), so on its own it lags playback by up to a second, by a different amount each time, and still shows the
 // old offset for a moment after a seek. position() tracks a base offset (the last refreshed value, or a seek target)
-// plus the time played since, and the tick runs often enough to pause clip previews within a few frames of their end.
+// plus the time played since.
 const PLAYER_TICK_MS = 40;
 const MAX_EXTRAPOLATION_SECONDS = 1.5; // don't run ahead while buffering; the next refresh corrects it
 
-class VodPlayer {
-  constructor(containerId, timeId) {
+// The official Twitch embed (fallback)
+class EmbedBackend {
+  constructor(containerId) {
     this.containerId = containerId;
-    this.timeId = timeId;
+    this.kind = "twitch";
     this.player = null;
-    this.vodId = null;
     this.ready = false;
-    this.stopAt = null; // pause once playback reaches this offset (clip previews)
-    this.timer = null;
     this.onMessage = null;
     this.lastReported = null; // last value seen from getCurrentTime(); a different value means a fresh refresh
     this.base = 0; // offset at baseAt
     this.baseAt = null; // performance.now() the base was taken while playing, null while not advancing
   }
 
-  async open(vodId, startSeconds = 0, stopAt = null) {
-    vodId = String(vodId);
-    if (this.player && this.vodId === vodId) {
-      this.playRange(startSeconds, stopAt);
-      return;
-    }
-
+  async open(vodId, startSeconds) {
     await loadTwitchEmbed();
-    this.close();
-    this.vodId = vodId;
-    this.stopAt = stopAt;
     this.base = startSeconds;
+    $(this.containerId).replaceChildren();
     this.player = new Twitch.Player(this.containerId, {
       width: "100%",
       height: "100%",
@@ -255,21 +471,6 @@ class VodPlayer {
       if (event.origin === "https://player.twitch.tv" && player === this.player) this.position();
     };
     window.addEventListener("message", this.onMessage);
-    this.timer = setInterval(() => this.tick(), PLAYER_TICK_MS);
-  }
-
-  close() {
-    clearInterval(this.timer);
-    window.removeEventListener("message", this.onMessage);
-    this.timer = null;
-    this.player = null;
-    this.vodId = null;
-    this.ready = false;
-    this.stopAt = null;
-    this.lastReported = null;
-    this.baseAt = null;
-    $(this.containerId).replaceChildren();
-    $(this.timeId).textContent = "–";
   }
 
   // Estimated current offset into the VOD in seconds, or null before the player is ready
@@ -291,15 +492,173 @@ class VodPlayer {
     this.baseAt = null;
   }
 
-  playRange(startSeconds, stopAt = null) {
-    if (!this.ready) return;
-    this.stopAt = stopAt;
+  playFrom(seconds) {
     // The cached time still shows the old spot until the next refresh; don't mistake that for the new position
     this.lastReported = this.player.getCurrentTime();
-    this.base = startSeconds;
+    this.base = seconds;
     this.baseAt = null;
-    this.player.seek(startSeconds);
+    this.player.seek(seconds);
     this.player.play();
+  }
+
+  pause() {
+    this.player.pause();
+    this.freeze();
+  }
+
+  close() {
+    window.removeEventListener("message", this.onMessage);
+    this.player = null;
+    this.ready = false;
+    $(this.containerId).replaceChildren();
+  }
+}
+
+// Segments load straight from Twitch's CDN until that fails once, then through the server for the rest of the visit
+let segmentMode = "direct";
+
+// One player slot on the page (Watch, clip review). Plays a VOD in the app player, falling back to the Twitch embed,
+// and pauses clip previews at stopAt; the tick runs often enough to stop within a few frames of the end.
+class VodPlayer {
+  constructor(containerId, timeId, sourceId) {
+    this.containerId = containerId;
+    this.timeId = timeId;
+    this.sourceId = sourceId;
+    this.backend = null;
+    this.vodId = null;
+    this.stopAt = null; // pause once playback reaches this offset (clip previews)
+    this.timer = null;
+    this.fallbackReason = null; // why the chosen player (app or Twitch) couldn't play this VOD, if it couldn't
+    this.generation = 0; // bumped by close(), so a slow open() that was overtaken gives up
+  }
+
+  async open(vodId, startSeconds = 0, stopAt = null, mode = null) {
+    vodId = String(vodId);
+    if (this.backend && this.vodId === vodId && !mode) {
+      this.playRange(startSeconds, stopAt);
+      return;
+    }
+
+    this.close();
+    const generation = this.generation;
+    this.vodId = vodId;
+    this.stopAt = stopAt;
+    this.timer = setInterval(() => this.tick(), PLAYER_TICK_MS);
+    $(this.sourceId).textContent = "Loading…";
+
+    // The chosen player first, the other one if it can't play this VOD
+    const wanted = mode ?? loadPlayerMode();
+    let failure = null;
+    for (const kind of wanted === "app" ? ["app", "twitch"] : ["twitch", "app"]) {
+      try {
+        if (await this.startKind(kind, vodId, startSeconds, generation)) {
+          this.fallbackReason = failure?.message ?? null;
+          this.renderSource();
+        }
+        return;
+      } catch (error) {
+        if (generation !== this.generation) return;
+        console.warn(`The ${kind === "app" ? "app" : "Twitch"} player couldn't play VOD ${vodId}:`, error);
+        failure = error;
+      }
+    }
+    throw failure;
+  }
+
+  async startKind(kind, vodId, startSeconds, generation) {
+    if (kind === "twitch") return this.start(new EmbedBackend(this.containerId), vodId, startSeconds, null, generation);
+    try {
+      return await this.start(new HlsBackend(this.containerId), vodId, startSeconds, segmentMode, generation);
+    } catch (error) {
+      if (!error.retryWithProxy || segmentMode !== "direct" || generation !== this.generation) throw error;
+      const started = await this.start(new HlsBackend(this.containerId), vodId, startSeconds, "proxy", generation);
+      segmentMode = "proxy";
+      return started;
+    }
+  }
+
+  // Opens a backend; false if the player was closed or reopened meanwhile
+  async start(backend, vodId, startSeconds, segments, generation) {
+    this.backend = backend; // so close() during loading cleans it up
+    try {
+      await backend.open(vodId, startSeconds, segments);
+    } catch (error) {
+      backend.close();
+      if (this.backend === backend) this.backend = null;
+      throw error;
+    }
+    return generation === this.generation;
+  }
+
+  close() {
+    this.generation++;
+    clearInterval(this.timer);
+    this.timer = null;
+    this.backend?.close();
+    this.backend = null;
+    this.vodId = null;
+    this.stopAt = null;
+    this.fallbackReason = null;
+    $(this.timeId).textContent = "–";
+    $(this.sourceId).replaceChildren();
+  }
+
+  // Current offset into the VOD in seconds, or null before the player is ready
+  position() {
+    return this.backend?.position() ?? null;
+  }
+
+  playRange(startSeconds, stopAt = null) {
+    if (!this.backend?.ready) return;
+    this.stopAt = stopAt;
+    this.backend.playFrom(startSeconds);
+  }
+
+  // Reopens the VOD at the same spot in the other player, and remembers the choice
+  async switchPlayer() {
+    if (!this.vodId) return;
+    const mode = this.backend?.kind === "app" ? "twitch" : "app";
+    savePlayerMode(mode);
+    const vodId = this.vodId;
+    const stopAt = this.stopAt;
+    const position = this.position() ?? 0;
+    await this.open(vodId, position, stopAt, mode);
+  }
+
+  // The line under the player: which player is playing, its quality menu and the switch link
+  renderSource() {
+    const line = $(this.sourceId);
+    line.replaceChildren();
+    const backend = this.backend;
+    if (!backend) return;
+
+    const label = document.createElement("span");
+    if (backend.kind === "app") {
+      label.textContent = (segmentMode === "proxy" ? "App player (through the app)" : "App player") +
+        (this.fallbackReason ? ` (Twitch player: ${this.fallbackReason})` : "");
+      line.append(label);
+      const levels = backend.levels();
+      if (levels.length > 1) {
+        const select = document.createElement("select");
+        select.className = "player-quality";
+        select.setAttribute("aria-label", "Playback quality");
+        select.append(new Option("Auto quality", "-1"));
+        for (const level of levels) select.append(new Option(level.name, String(level.index)));
+        select.value = String(backend.level);
+        select.addEventListener("change", () => (backend.level = Number(select.value)));
+        line.append(select);
+      }
+    } else {
+      label.textContent = this.fallbackReason ? `Twitch player (app player: ${this.fallbackReason})` : "Twitch player";
+      line.append(label);
+    }
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "link small";
+    toggle.textContent = backend.kind === "app" ? "Use Twitch player" : "Use app player";
+    toggle.addEventListener("click", () => this.switchPlayer().catch((error) => ($(this.sourceId).textContent = error.message)));
+    line.append(toggle);
   }
 
   tick() {
@@ -309,14 +668,13 @@ class VodPlayer {
     this.onTick?.(position);
     if (this.stopAt != null && position >= this.stopAt) {
       this.stopAt = null;
-      this.player.pause();
-      this.freeze();
+      this.backend.pause();
     }
   }
 }
 
-const watchPlayer = new VodPlayer("watch-player", "watch-time");
-const clipPlayer = new VodPlayer("clip-player", "clip-time");
+const watchPlayer = new VodPlayer("watch-player", "watch-time", "watch-source");
+const clipPlayer = new VodPlayer("clip-player", "clip-time", "clip-source");
 
 async function openWatch(vodId) {
   $("watch").hidden = false;

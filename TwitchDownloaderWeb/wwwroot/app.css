@@ -477,6 +477,12 @@ button.small, a.button.small { padding: 3px 10px; font-size: 13px; }
 }
 
 .player-frame > div, .player-frame iframe { width: 100%; height: 100%; border: 0; display: block; }
+.player-frame video { width: 100%; height: 100%; display: block; background: #000; }
+
+.player-source { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 6px; font-size: 13px; min-height: 1.6em; }
+.player-source:empty { display: none; }
+.player-quality { font-size: 13px; padding: 2px 4px; }
+.player-source button.link.small { align-self: center; }
 
 .watch-controls { margin-top: 8px; }
 .watch-time { font-size: 14px; font-variant-numeric: tabular-nums; min-width: 7.5em; }

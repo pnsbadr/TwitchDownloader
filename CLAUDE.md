@@ -157,6 +157,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/vods/{id}/rescue` / `POST /api/vods/{id}/rescue` | Audio rescue status (404 if none) / start one now (202; a Failed one is retried; one paused by `AudioRescue:Enabled` being off is resumed; others returned as is) |
 | `GET /api/entries/{id}/shortform` / `POST /api/entries/{id}/shortform` | Vertical (9:16) renders: `{ status: None\|Rendering\|Failed, progress, error, layout, renders: [{ id, createdAtUtc, expiresAtUtc, sizeBytes, layout, fileUrl, thumbnailUrl }] }` (newest first) / start a render (202) with `{ mode: single\|split, top: {x,y,width,height}, bottom?, splitRatio?, trimStart?, trimEnd? }` (fractions of the source video). 409 if the entry has no file |
 | `GET /api/entries/{id}/shortform/{renderId}/file[?inline=true]` / `.../thumbnail` / `DELETE .../{renderId}` | A render's mp4 (`<title> (vertical).mp4`, audited `file.served`; `inline` = the page's preview player, not audited), its jpg thumbnail, delete it. 404 if gone/expired |
+| `GET /api/vods/{id}/play.m3u8[?segments=proxy]` / `.../play/{n}.m3u8` / `.../play/{n}/{segment}` | HLS for the page's player (see Watching VODs). 403 sub-only, 404 gone, 502 Twitch unreachable. Playlists `no-store` |
 | `POST /api/vods/download` | Phase 1 dev endpoint: synchronous, writes `<title>.mp4` straight into `downloads/`, not part of the library |
 
 `canDownload` in entry responses checks the generated file's expiry itself, since cleanup runs periodically.
@@ -187,17 +188,29 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   status and a **Save audio now** button (live or unmute window open, no rescue yet or paused) or **Retry saving audio** (failed).
   Library entries with restored audio show an "Audio restored" badge, and "Still muted" when muted parts had no clean copy;
   VOD cards show "Muted parts not saved" when a rescue got 403s for muted segments.
-- **Watching VODs** (no server part): the official Twitch embed (`player.twitch.tv/js/embed/v1.js`, loaded lazily) streams
-  the VOD straight from Twitch. `parent` is `location.hostname`, so open the page as `localhost` (Twitch may reject a bare IP).
+- **Watching VODs** (`VodPlayer` in app.js, `Services/Playback/`): VODs play in the app's own `<video>` player with hls.js
+  (`cdn.jsdelivr.net/npm/hls.js@1.6.16`, loaded lazily). The server gets the access token + master playlist like Core's downloader
+  (`VodPlaybackService`, master cached 10 min) and serves `GET /api/vods/{id}/play.m3u8`: landscape video renditions only (no audio-only,
+  no portrait), pointing at our `/play/{n}.m3u8`, which is Twitch's media playlist with segment URLs rewritten. Segments load straight
+  from Twitch's CDN; if that fails while starting, the page retries with `?segments=proxy` (segments through `/play/{n}/{segment}`,
+  only file names in the rendition's folder) and keeps that for the visit. Tokens never reach the browser or the logs.
+  The video's `currentTime` is the offset into the VOD (hls.js maps the playlist start to 0), so Set start/end and previews are exact.
+  A quality menu (Auto + renditions) sits under the player. **Fallback:** if the app player can't play a VOD (403 sub-only, 404, hls.js
+  missing, unsupported codec, no first frame in 20 s) the official Twitch embed (`player.twitch.tv/js/embed/v1.js`) is used, and the
+  line under the player says why; its link switches players (choice saved in `localStorage` key `clipLibrary.playerMode`, `app`/`twitch`;
+  if the chosen one fails the other is tried). Volume is saved in `clipLibrary.playerVolume`. The embed needs `parent` =
+  `location.hostname`, so open the page as `localhost` (Twitch may reject a bare IP); sub-only VODs play there only if the browser is
+  logged in to Twitch with access. Swapping saved clean audio in during playback isn't built yet: the media playlist rewrite
+  (`HlsPlaylists.RewriteMedia`) is where muted segments can later be pointed elsewhere.
   **Watch** next to Get Info / on VOD cards opens an inline player with **Set start here / Set end here** (fills the trim
-  fields from the estimated position below, hundredths of a second) and **Play clip** (seeks to start, pauses at end). The review dialog
+  fields from the position below, hundredths of a second) and **Play clip** (seeks to start, pauses at end). The review dialog
   starts at the clip start and pauses at its end (not shown for VodUnavailable). Closing a player
-  removes the iframe so playback stops. Sub-only VODs play only if the browser is logged in to Twitch with access.
+  removes the video/iframe so playback stops.
   **Review** on a library entry (and automatically right after Add to library) opens the clip review dialog: the
   player plus a trim bar spanning the clip ± a margin (25% of its length, 5–60 s, widened when a handle leaves it), with
   draggable handles (arrow keys nudge 0.1 s, Shift 1 s), a playhead, click-to-seek, ±1 s / ±0.1 s buttons, Set to playhead,
   Play clip / Play last 3s, and **Save new cut** (`PUT /trim`; closes the dialog on success, result shown above the library). Unsaved changes ask before closing.
-  The embed's `getCurrentTime()` is a cache refreshed about once a second (and stale right after a seek), so `VodPlayer.position()`
+  With the Twitch embed, `getCurrentTime()` is a cache refreshed about once a second (and stale right after a seek), so `EmbedBackend.position()`
   estimates the live offset (last refresh or seek target + time played since, via PLAYING/PAUSE/SEEK events; refreshes are caught on the iframe's `message` events) and a 40 ms tick
   pauses previews at the end. Using the raw value made Set end land up to ~1 s early and previews stop up to ~1 s late.
 
