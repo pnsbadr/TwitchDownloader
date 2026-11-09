@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Log in · Clip Library</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="topbar"><h1>Clip Library</h1></header>
+  <main class="narrow">
+    <section class="panel">
+      <h2>Log in</h2>
+      <form id="login-form" class="stack" novalidate>
+        <label>Username <input id="username" autocomplete="username" required spellcheck="false" autocapitalize="off"></label>
+        <label>Password <input id="password" type="password" autocomplete="current-password" required></label>
+        <div class="row"><button type="submit" id="login-button">Log in</button></div>
+        <p id="login-message" class="message" role="status"></p>
+      </form>
+      <p class="muted small-text">New here? Accounts are made from an invite link. Ask your team owner for one.
+        Forgot your password? Ask your team owner for help.</p>
+    </section>
+  </main>
+  <script src="account.js"></script>
+  <script>
+    $("login-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      $("login-button").disabled = true;
+      setMessage($("login-message"), "Logging in…");
+      try {
+        await api("POST", "/api/auth/login", { username: $("username").value, password: $("password").value });
+        location.href = "/";
+      } catch (error) {
+        setMessage($("login-message"), error.message, "error");
+        $("login-button").disabled = false;
+      }
+    });
+    $("username").focus();
+  </script>
+</body>
+</html>

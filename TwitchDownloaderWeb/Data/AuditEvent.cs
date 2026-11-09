@@ -27,6 +27,20 @@ namespace TwitchDownloaderWeb.Data
         public const string AudioNotRestored = "audio.not_restored";
         public const string ShortformRendered = "shortform.rendered";
         public const string ShortformFailed = "shortform.failed";
+        public const string UserSignedUp = "user.signed_up";
+        public const string UserLoggedIn = "user.logged_in";
+        public const string UserLoginFailed = "user.login_failed";
+        public const string UserLoggedOut = "user.logged_out";
+        public const string TeamCreated = "team.created";
+        public const string TeamOwnerChanged = "team.owner_changed";
+        public const string TeamMemberJoined = "team.member_joined";
+        public const string TeamMemberRemoved = "team.member_removed";
+        public const string LinkCreated = "link.created";
+        public const string LinkRevoked = "link.revoked";
+        public const string StaffSetUp = "staff.set_up";
+        public const string StaffLoggedIn = "staff.logged_in";
+        public const string StaffLoginFailed = "staff.login_failed";
+        public const string StaffLoggedOut = "staff.logged_out";
     }
 
     /// <summary>
@@ -39,8 +53,14 @@ namespace TwitchDownloaderWeb.Data
         public required string Action { get; set; }
         public int? EntryId { get; set; }
 
-        /// <summary>Linked to users in phase 3.</summary>
+        /// <summary>The <see cref="UserAccount"/> ID (as text) that did it; null for background jobs and staff actions.</summary>
         public string? UserId { get; set; }
+
+        /// <summary>The team it happened in, if any. Entry events get their entry's team.</summary>
+        public int? TeamId { get; set; }
+
+        /// <summary>The <see cref="StaffAccount"/> that did it, for app staff actions.</summary>
+        public int? StaffId { get; set; }
         public string? Details { get; set; }
     }
 }

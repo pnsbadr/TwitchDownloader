@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using TwitchDownloaderWeb;
 using TwitchDownloaderWeb.Data;
 using TwitchDownloaderWeb.Endpoints;
+using TwitchDownloaderWeb.Services.Accounts;
 using TwitchDownloaderWeb.Services;
 using TwitchDownloaderWeb.Services.AudioRescue;
 using TwitchDownloaderWeb.Services.Playback;
@@ -12,6 +13,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<DownloadSettings>(builder.Configuration.GetSection(DownloadSettings.SectionName));
 builder.Services.Configure<AudioRescueSettings>(builder.Configuration.GetSection(AudioRescueSettings.SectionName));
 builder.Services.AddProblemDetails();
+builder.Services.AddClipcoAuth(builder.Configuration.GetValue("Auth:LoginAttemptsPerMinute", 10));
 
 var databasePath = Path.GetFullPath(builder.Configuration["Database:Path"] ?? "App_Data/clipco.db", builder.Environment.ContentRootPath);
 Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
@@ -59,6 +61,14 @@ app.UseStaticFiles(new StaticFileOptions
     OnPrepareResponse = context => context.Context.Response.Headers.CacheControl = "no-cache"
 });
 
+app.UseRateLimiter();
+app.UseAuthentication();
+// After authentication: checks the login and team for /api requests and scopes the database to that team
+app.UseTeamScope();
+
+app.MapAuthEndpoints();
+app.MapAdminEndpoints();
+app.MapTeamEndpoints();
 app.MapVodDownloadEndpoints();
 app.MapEntryEndpoints();
 app.MapChannelEndpoints();
@@ -67,3 +77,6 @@ app.MapShortformEndpoints();
 app.MapPlaybackEndpoints();
 
 app.Run();
+
+// Lets the tests start the app with WebApplicationFactory
+public partial class Program;

@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Join · Clip Library</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="topbar"><h1>Clip Library</h1></header>
+  <main class="narrow">
+    <section class="panel">
+      <h2 id="join-heading">Checking your link…</h2>
+      <p id="join-intro" class="muted"></p>
+      <p id="join-message" class="message" role="status"></p>
+
+      <div id="join-body" hidden>
+        <form id="join-form" class="stack" novalidate>
+          <label id="team-name-label" hidden>Team name <input id="team-name" maxlength="100" placeholder="e.g. Arky's editors"></label>
+
+          <div id="continue-as" hidden>
+            <p>Logged in as <strong id="continue-name"></strong>.</p>
+            <div class="row">
+              <button type="submit" id="continue-button">Continue as <span id="continue-name-2"></span></button>
+              <button type="button" id="other-account" class="link">Use another account</button>
+            </div>
+          </div>
+
+          <div id="account-fields" class="stack">
+            <div class="tz" role="group" aria-label="Account">
+              <button type="button" class="seg" data-mode="new" aria-pressed="true">Create an account</button>
+              <button type="button" class="seg" data-mode="existing" aria-pressed="false">I already have one</button>
+            </div>
+            <p id="mode-hint" class="muted small-text">One account works for every team you're in, so keep using the same one.</p>
+            <label>Username <input id="username" autocomplete="username" spellcheck="false" autocapitalize="off" maxlength="32"></label>
+            <label>Password <input id="password" type="password" autocomplete="new-password" maxlength="200"></label>
+            <label id="confirm-label">Repeat password <input id="password2" type="password" autocomplete="new-password" maxlength="200"></label>
+            <div class="row"><button type="submit" id="join-button">Create account</button></div>
+          </div>
+        </form>
+      </div>
+    </section>
+  </main>
+  <script src="account.js"></script>
+  <script>
+    // The token is in the fragment (#…), which the browser never sends to the server; it goes in request bodies only
+    const token = location.hash.slice(1);
+    let link = null;
+    let mode = "new";
+    let useLoggedIn = false;
+
+    function render() {
+      const registration = link.kind === "TeamRegistration";
+      $("team-name-label").hidden = !registration;
+      $("continue-as").hidden = !useLoggedIn;
+      $("account-fields").hidden = useLoggedIn;
+      for (const button of document.querySelectorAll(".seg[data-mode]")) button.setAttribute("aria-pressed", String(button.dataset.mode === mode));
+      $("confirm-label").hidden = mode !== "new";
+      $("password").autocomplete = mode === "new" ? "new-password" : "current-password";
+      $("join-button").textContent = mode === "new" ? "Create account" : "Log in and continue";
+      $("mode-hint").textContent = mode === "new"
+        ? "Already in another team? Use \"I already have one\": one account works for every team you're in."
+        : "Log in with the account you use for your other teams.";
+    }
+
+    async function load() {
+      if (!token) {
+        $("join-heading").textContent = "This link is incomplete";
+        setMessage($("join-message"), "Open the whole link you were sent.", "error");
+        return;
+      }
+      try {
+        link = await api("POST", "/api/links/inspect", { token });
+      } catch (error) {
+        $("join-heading").textContent = "This link doesn't work";
+        setMessage($("join-message"), error.message, "error");
+        return;
+      }
+      const texts = {
+        TeamRegistration: ["Create your team", "You'll be the owner of the new team: you invite your editors and clippers and decide what each of them can do."],
+        TeamOwnership: [`Become the owner of ${link.teamName}`, `You'll own ${link.teamName}: its library, members and invite links.`],
+        TeamInvite: [`Join ${link.teamName}`, "You'll start with no access; the team owner gives you a role after you join."],
+      };
+      const [heading, intro] = texts[link.kind];
+      $("join-heading").textContent = heading;
+      $("join-intro").textContent = `${intro} This link works once and expires ${formatWhen(link.expiresAtUtc)}.`;
+      if (link.loggedInAs) {
+        useLoggedIn = true;
+        $("continue-name").textContent = link.loggedInAs;
+        $("continue-name-2").textContent = link.loggedInAs;
+      }
+      $("join-body").hidden = false;
+      render();
+    }
+
+    for (const button of document.querySelectorAll(".seg[data-mode]")) {
+      button.addEventListener("click", () => { mode = button.dataset.mode; render(); });
+    }
+    $("other-account").addEventListener("click", () => { useLoggedIn = false; render(); });
+
+    $("join-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const body = { token, newAccount: !useLoggedIn && mode === "new", teamName: $("team-name").value };
+      if (!useLoggedIn) {
+        body.username = $("username").value.trim();
+        body.password = $("password").value;
+        if (mode === "new" && body.password !== $("password2").value) {
+          setMessage($("join-message"), "The passwords don't match.", "error");
+          return;
+        }
+      }
+      for (const button of document.querySelectorAll("#join-form button[type=submit]")) button.disabled = true;
+      setMessage($("join-message"), "Working…");
+      try {
+        await api("POST", "/api/links/accept", body);
+        // Drop the token from the address bar and history before leaving
+        history.replaceState(null, "", "/join.html");
+        location.href = "/";
+      } catch (error) {
+        setMessage($("join-message"), error.message, "error");
+        for (const button of document.querySelectorAll("#join-form button[type=submit]")) button.disabled = false;
+      }
+    });
+
+    load();
+  </script>
+</body>
+</html>

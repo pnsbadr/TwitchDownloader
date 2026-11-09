@@ -83,7 +83,14 @@ async function api(method, url, body) {
   }
   const response = await fetch(url, options);
   const text = await response.text();
-  const data = text ? JSON.parse(text) : null;
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+  if (response.status === 401) {
+    // Session ended (logged out elsewhere, password changed, account disabled)
+    location.href = "/login.html";
+  } else if (response.status === 403 && (data?.code === "no-access" || data?.code === "no-team")) {
+    showGate(data.detail);
+  }
   if (!response.ok) throw new Error(problemMessage(data, response.status));
   return data;
 }
@@ -1538,7 +1545,7 @@ function renderEntry(entry) {
   const dates = [
     entry.channelName,
     `streamed ${formatDate(entry.streamDateUtc)}`,
-    `added ${formatDate(entry.addedAtUtc)}`,
+    `added ${formatDate(entry.addedAtUtc)}${entry.addedBy ? ` by ${entry.addedBy}` : ""}`,
   ].filter(Boolean).join(" · ");
 
   const expiry = entry.canDownload && entry.generatedExpiresAtUtc
@@ -2591,9 +2598,62 @@ $("vx-trim-reset").addEventListener("click", () => vxSetTrim(0, Infinity));
 $("vx-close").addEventListener("click", () => $("vx").close());
 $("vx").addEventListener("close", closeVertical);
 
-renderTimeZoneToggle();
-renderVodTypeToggle();
-$("browse-channel").value = loadBrowseChannel();
-loadSavedChannels();
-renderCalendarOpen();
-refresh();
+// ---------- account / team ----------
+
+function showGate(text, heading = "Waiting for access") {
+  $("gate-heading").textContent = heading;
+  $("gate-text").textContent = text;
+  $("gate").hidden = false;
+  $("library-main").hidden = true;
+  if (pollTimer) clearTimeout(pollTimer);
+}
+
+function renderAccountBar(me) {
+  $("account-bar").hidden = false;
+  $("account-name").textContent = me.username;
+  const current = me.teams.find((x) => x.id === me.currentTeamId);
+  $("team-switch-label").hidden = me.teams.length < 2;
+  $("team-single").textContent = me.teams.length === 1 ? me.teams[0].name : "";
+  $("team-switch").replaceChildren(...me.teams.map((team) => el("option", { value: team.id }, team.name)));
+  if (current) $("team-switch").value = String(current.id);
+  $("team-link").hidden = !current?.isOwner;
+}
+
+$("team-switch").addEventListener("change", async () => {
+  await api("POST", "/api/auth/team", { teamId: Number($("team-switch").value) });
+  location.reload();
+});
+
+$("logout").addEventListener("click", async () => {
+  await fetch("/api/auth/logout", { method: "POST" });
+  location.href = "/login.html";
+});
+
+async function startApp() {
+  let me;
+  try {
+    me = await api("GET", "/api/auth/me");
+  } catch {
+    return; // 401 already went to the login page
+  }
+  renderAccountBar(me);
+  if (!me.currentTeamId) {
+    showGate("You aren't in a team yet. Ask a team owner for an invite link.", "No team yet");
+    return;
+  }
+  const current = me.teams.find((x) => x.id === me.currentTeamId);
+  if (!current.isOwner) {
+    showGate(`You're in ${current.name}, but its owner hasn't given you access yet. They'll give you a role; reload this page after that.`);
+    return;
+  }
+  $("library-main").hidden = false;
+
+  renderTimeZoneToggle();
+  renderVodTypeToggle();
+  $("browse-channel").value = loadBrowseChannel();
+  loadSavedChannels();
+  renderCalendarOpen();
+  refresh();
+}
+
+startApp();

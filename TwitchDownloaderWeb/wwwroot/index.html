@@ -14,9 +14,24 @@
       <button type="button" class="seg" data-tz="local" aria-pressed="true">Local</button>
       <button type="button" class="seg" data-tz="pacific" aria-pressed="false">Pacific</button>
     </div>
+    <div class="account-bar" id="account-bar" hidden>
+      <label class="team-switch" id="team-switch-label" hidden>Team
+        <select id="team-switch"></select>
+      </label>
+      <span id="team-single" class="muted"></span>
+      <a class="button secondary small" id="team-link" href="/team.html" hidden>Team</a>
+      <span class="muted" id="account-name"></span>
+      <button type="button" class="secondary small" id="logout">Log out</button>
+    </div>
   </header>
 
-  <main>
+  <!-- Shown instead of the library when the user can't use it yet (no team, or no permissions in this team) -->
+  <section class="panel gate" id="gate" hidden>
+    <h2 id="gate-heading">Waiting for access</h2>
+    <p id="gate-text"></p>
+  </section>
+
+  <main id="library-main" hidden>
     <section class="panel" aria-labelledby="add-heading">
       <h2 id="add-heading">Add a VOD or clip</h2>
 

@@ -828,3 +828,20 @@ a.button.disabled { opacity: 0.55; cursor: default; pointer-events: none; }
 .vx-trim-handle:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 
 .vx-trim-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+
+/* ---------- accounts ---------- */
+
+.account-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.team-switch { flex-direction: row; align-items: center; gap: 6px; }
+.gate { max-width: 600px; margin: 32px 16px; }
+@media (min-width: 640px) { .gate { margin: 32px auto; } }
+main.narrow { max-width: 460px; }
+.narrow-panel { max-width: 460px; }
+.stack { display: grid; gap: 12px; }
+.small-text { font-size: 13px; }
+.plain-list { list-style: none; margin: 0; padding: 0; }
+.list-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); flex-wrap: wrap; }
+.list-row:first-child { border-top: none; }
+.list-row .badge { margin-left: 8px; }
+.link-box { margin: 12px 0; padding: 12px; border: 1px solid var(--accent); border-radius: 8px; }
+.link-box input { font-family: ui-monospace, monospace; font-size: 13px; min-width: 0; }
