@@ -49,9 +49,18 @@
     let mode = "new";
     let useLoggedIn = false;
 
+    const isReset = () => link.kind === "PasswordReset" || link.kind === "StaffPasswordReset";
+
     function render() {
       const registration = link.kind === "TeamRegistration";
-      if (link.kind === "PasswordReset") {
+      if (link.kind === "StaffInvite") {
+        // Always a new staff account: staff logins are separate from team accounts
+        useLoggedIn = false;
+        mode = "new";
+        document.querySelector(".tz[aria-label=Account]").hidden = true;
+        $("mode-hint").hidden = true;
+      }
+      if (isReset()) {
         // Only a new password: the link already says whose account it is
         useLoggedIn = false;
         mode = "new";
@@ -65,7 +74,7 @@
       for (const button of document.querySelectorAll(".seg[data-mode]")) button.setAttribute("aria-pressed", String(button.dataset.mode === mode));
       $("confirm-label").hidden = mode !== "new";
       $("password").autocomplete = mode === "new" ? "new-password" : "current-password";
-      $("join-button").textContent = link.kind === "PasswordReset" ? "Set new password" : mode === "new" ? "Create account" : "Log in and continue";
+      $("join-button").textContent = isReset() ? "Set new password" : mode === "new" ? "Create account" : "Log in and continue";
       $("mode-hint").textContent = mode === "new"
         ? "Already in another team? Use \"I already have one\": one account works for every team you're in."
         : "Log in with the account you use for your other teams.";
@@ -89,11 +98,14 @@
         TeamOwnership: [`Become the owner of ${link.teamName}`, `You'll own ${link.teamName}: its library, members and invite links.`],
         TeamInvite: [`Join ${link.teamName}`, "You'll start with no access; the team owner gives you a role after you join."],
         PasswordReset: [`New password for ${link.forUsername}`, "Choose a new password. You'll be signed out everywhere else."],
+        StaffInvite: ["Become an app moderator", "This makes a staff account for the Admin page, separate from any team account. "
+          + "You start with no permissions; the app Owner picks them."],
+        StaffPasswordReset: [`New staff password for ${link.forUsername}`, "Choose a new password. You'll be signed out everywhere else."],
       };
       const [heading, intro] = texts[link.kind];
       $("join-heading").textContent = heading;
       $("join-intro").textContent = `${intro} This link works once and expires ${formatWhen(link.expiresAtUtc)}.`;
-      if (link.loggedInAs && link.kind !== "PasswordReset") {
+      if (link.loggedInAs && !isReset() && link.kind !== "StaffInvite") {
         useLoggedIn = true;
         $("continue-name").textContent = link.loggedInAs;
         $("continue-name-2").textContent = link.loggedInAs;
@@ -110,7 +122,7 @@
     $("join-form").addEventListener("submit", async (event) => {
       event.preventDefault();
       const body = { token, newAccount: !useLoggedIn && mode === "new", teamName: $("team-name").value };
-      if (link.kind === "PasswordReset") {
+      if (isReset()) {
         body.newAccount = false;
         body.password = $("password").value;
         if (body.password !== $("password2").value) {
@@ -128,10 +140,10 @@
       for (const button of document.querySelectorAll("#join-form button[type=submit]")) button.disabled = true;
       setMessage($("join-message"), "Working…");
       try {
-        await api("POST", "/api/links/accept", body);
+        const result = await api("POST", "/api/links/accept", body);
         // Drop the token from the address bar and history before leaving
         history.replaceState(null, "", "/join.html");
-        location.href = "/";
+        location.href = result?.staff ? "/admin.html" : "/";
       } catch (error) {
         setMessage($("join-message"), error.message, "error");
         for (const button of document.querySelectorAll("#join-form button[type=submit]")) button.disabled = false;

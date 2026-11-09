@@ -7,8 +7,11 @@ namespace TwitchDownloaderWeb.Services.Accounts
     /// <summary>
     /// The logged-in user and the team a library request works in, with their permissions there. Put a <c>TeamContext team</c> parameter on
     /// an endpoint to get it; <see cref="TeamScope"/> has already checked the login, membership and the endpoint's required permission.
+    /// During a support visit (<see cref="SupportView"/>) <see cref="UserId"/> is 0, <see cref="Username"/> is the staff account's and
+    /// <see cref="SupportStaffId"/> is set.
     /// </summary>
-    public sealed record TeamContext(int UserId, string Username, int TeamId, string TeamName, bool IsOwner, TeamPermission Permissions)
+    public sealed record TeamContext(int UserId, string Username, int TeamId, string TeamName, bool IsOwner, TeamPermission Permissions,
+        int? SupportStaffId = null)
     {
         private const string ItemKey = nameof(TeamContext);
 
@@ -21,6 +24,9 @@ namespace TwitchDownloaderWeb.Services.Accounts
         public bool Can(TeamPermission permission) => (Permissions & permission) == permission;
 
         public string UserIdText => UserId.ToString();
+
+        /// <summary>App staff viewing the team read-only, not a member.</summary>
+        public bool IsSupport => SupportStaffId is not null;
 
         /// <summary>For own/any permission pairs: may this member act on something added by <paramref name="addedByUserId"/>?</summary>
         public bool CanOnOwnOrAny(string? addedByUserId, TeamPermission own, TeamPermission any) =>
@@ -45,7 +51,8 @@ namespace TwitchDownloaderWeb.Services.Accounts
     /// a member of an enabled team, and the permission the endpoint declares with <see cref="TeamPermissionExtensions.RequireTeam"/>.
     /// An endpoint that declares nothing is refused (fail closed). Picks the team from the <c>clipco.team</c> cookie (the page's team
     /// switcher), else the user's first. Also marks every request on <see cref="RequestActor"/>, which makes <see cref="LibraryDbContext"/>
-    /// show only that team's rows.
+    /// show only that team's rows. A support visit (<see cref="SupportView"/> cookie) takes precedence over the user login: it acts as the
+    /// visited team, read-only.
     /// </summary>
     public static class TeamScope
     {
@@ -63,6 +70,12 @@ namespace TwitchDownloaderWeb.Services.Accounts
             if (!path.StartsWithSegments("/api") || OpenPrefixes.Any(x => path.StartsWithSegments(x)))
             {
                 await next(context);
+                return;
+            }
+
+            if (SupportView.Requested(context))
+            {
+                await SupportRequestAsync(context, actor, next);
                 return;
             }
 
@@ -100,14 +113,7 @@ namespace TwitchDownloaderWeb.Services.Accounts
                 return;
             }
 
-            var requirement = context.GetEndpoint()?.Metadata.GetMetadata<TeamPermissionRequirement>();
-            var allowed = requirement switch
-            {
-                null => false,
-                { OwnerOnly: true } => team.IsOwner,
-                _ => (team.Permissions & requirement.AnyOf) != 0,
-            };
-            if (!allowed)
+            if (!Allowed(context, team))
             {
                 await Problem(context, StatusCodes.Status403Forbidden, "forbidden", "Your role doesn't allow that.");
                 return;
@@ -115,6 +121,48 @@ namespace TwitchDownloaderWeb.Services.Accounts
 
             await next(context);
         });
+
+        /// <summary>The endpoint's declared requirement against the caller's permissions; nothing declared = refused.</summary>
+        private static bool Allowed(HttpContext context, TeamContext team)
+        {
+            var requirement = context.GetEndpoint()?.Metadata.GetMetadata<TeamPermissionRequirement>();
+            return requirement switch
+            {
+                null => false,
+                { OwnerOnly: true } => team.IsOwner,
+                _ => (team.Permissions & requirement.AnyOf) != 0,
+            };
+        }
+
+        private static async Task SupportRequestAsync(HttpContext context, RequestActor actor, RequestDelegate next)
+        {
+            var db = context.RequestServices.GetRequiredService<LibraryDbContext>();
+            if (await SupportView.ResolveAsync(context, db) is not { } support)
+            {
+                await Problem(context, StatusCodes.Status403Forbidden, "support-ended",
+                    "This support view has ended (staff login or permission gone). Open it again from the Admin page.");
+                return;
+            }
+
+            if (!HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsHead(context.Request.Method))
+            {
+                await Problem(context, StatusCodes.Status403Forbidden, "read-only", "Support view is read-only.");
+                return;
+            }
+
+            var team = new TeamContext(0, support.Staff.Username, support.TeamId, support.TeamName, false, SupportView.Permissions, support.Staff.Id);
+            team.Store(context);
+            actor.StaffId = support.Staff.Id;
+            actor.TeamId = support.TeamId;
+
+            if (!Allowed(context, team))
+            {
+                await Problem(context, StatusCodes.Status403Forbidden, "forbidden", "Support view can't open that.");
+                return;
+            }
+
+            await next(context);
+        }
 
         public static Task Problem(HttpContext context, int status, string code, string detail)
         {

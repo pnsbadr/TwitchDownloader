@@ -65,6 +65,7 @@ app.UseRateLimiter();
 app.UseAuthentication();
 // After authentication: checks the login and team for /api requests and scopes the database to that team
 app.UseTeamScope();
+app.UseStaffScope();
 
 app.MapAuthEndpoints();
 app.MapAdminEndpoints();

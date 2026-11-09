@@ -20,6 +20,13 @@ function has(permission) {
 }
 
 async function load() {
+  // A support visit (app staff, read-only) shows the banner with the way out
+  api("GET", "/api/auth/me").then((me) => {
+    if (!me.support) return;
+    $("support-team").textContent = me.support.teamName;
+    $("support-banner").hidden = false;
+  }).catch(() => {});
+
   try {
     team = await api("GET", "/api/team");
   } catch (error) {
@@ -298,6 +305,11 @@ $("auto-save-audio").addEventListener("change", async () => {
     box.checked = !box.checked;
     setMessage($("team-message"), error.message, "error");
   }
+});
+
+$("support-exit").addEventListener("click", async () => {
+  await fetch("/api/admin/support", { method: "DELETE" });
+  location.href = "/admin.html";
 });
 
 load();

@@ -11,6 +11,7 @@
     <h1>Clip Library admin</h1>
     <div class="row" id="staff-bar" hidden>
       <span class="muted">Staff: <strong id="staff-name"></strong></span>
+      <button type="button" id="password-toggle" class="link small">Change password</button>
       <button type="button" id="staff-logout" class="secondary small">Log out</button>
     </div>
   </header>
@@ -40,23 +41,81 @@
       </form>
     </section>
 
+    <section class="panel narrow-panel" id="password-panel" hidden>
+      <h2>Change your staff password</h2>
+      <form id="password-form" class="stack" novalidate>
+        <label>Current password <input id="current-password" type="password" autocomplete="current-password" maxlength="200"></label>
+        <label>New password <input id="new-password" type="password" autocomplete="new-password" maxlength="200"></label>
+        <label>Repeat new password <input id="new-password2" type="password" autocomplete="new-password" maxlength="200"></label>
+        <p class="muted small-text">Your other staff sessions are signed out.</p>
+        <div class="row">
+          <button type="submit">Save password</button>
+          <button type="button" id="password-cancel" class="link">Cancel</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel" id="no-permissions" hidden>
+      <h2>No staff permissions yet</h2>
+      <p>The app Owner picks what each moderator can do. Reload this page after they have.</p>
+    </section>
+
+    <nav class="tz admin-tabs" id="tabs" role="group" aria-label="Admin sections" hidden></nav>
+
     <section class="panel" id="teams-panel" hidden>
       <h2>Teams</h2>
       <ul id="teams" class="plain-list"></ul>
     </section>
 
-    <section class="panel" id="links-panel" hidden>
-      <h2>Team links</h2>
-      <p class="muted small-text">A team registration link lets one person make an account (or use theirs) and a new team they own.
-        An owner link makes whoever opens it the owner of an existing team. Each works once and expires after 7 days.</p>
-      <form id="registration-form" class="row" novalidate>
-        <label class="grow">Who is it for? (optional, only staff see this)
-          <input id="registration-note" maxlength="200" placeholder="e.g. Arky's team">
-        </label>
-        <button type="submit">Make team registration link</button>
+    <section class="panel" id="users-panel" hidden>
+      <h2>Users</h2>
+      <form id="user-search-form" class="row" novalidate>
+        <input id="user-search" class="grow" type="search" placeholder="Search usernames" aria-label="Search usernames" spellcheck="false">
+        <button type="submit" class="secondary">Search</button>
       </form>
+      <div id="user-link-new"></div>
+      <ul id="users" class="plain-list"></ul>
+    </section>
+
+    <section class="panel" id="links-panel" hidden>
+      <h2>Links</h2>
+      <div id="registration-block">
+        <p class="muted small-text">A team registration link lets one person make an account (or use theirs) and a new team they own.
+          An owner link (from Teams) makes whoever opens it the owner of an existing team. Each works once and expires after 7 days.</p>
+        <form id="registration-form" class="row" novalidate>
+          <label class="grow">Who is it for? (optional, only staff see this)
+            <input id="registration-note" maxlength="200" placeholder="e.g. Arky's team">
+          </label>
+          <button type="submit">Make team registration link</button>
+        </form>
+      </div>
       <div id="link-new"></div>
       <ul id="links" class="plain-list"></ul>
+    </section>
+
+    <section class="panel" id="staff-panel" hidden>
+      <h2>Moderators</h2>
+      <p class="muted small-text">Moderators help run the app. Only you (the Owner) can invite them and pick what they can do. Like team
+        members, they start with no permissions. An invite link works once and expires after 7 days.</p>
+      <form id="staff-invite-form" class="row" novalidate>
+        <label class="grow">Who is it for? (optional)
+          <input id="staff-invite-note" maxlength="200" placeholder="e.g. Sam">
+        </label>
+        <button type="submit">Make moderator invite link</button>
+      </form>
+      <div id="staff-link-new"></div>
+      <ul id="staff" class="plain-list"></ul>
+    </section>
+
+    <section class="panel" id="log-panel" hidden>
+      <h2>App log</h2>
+      <div class="row">
+        <label class="inline-label">Team
+          <select id="log-team"><option value="">All teams and staff</option></select>
+        </label>
+      </div>
+      <ul id="log" class="plain-list log-list"></ul>
+      <div class="row"><button type="button" id="log-more" class="secondary small" hidden>Load more</button></div>
     </section>
   </main>
   <script src="account.js"></script>
