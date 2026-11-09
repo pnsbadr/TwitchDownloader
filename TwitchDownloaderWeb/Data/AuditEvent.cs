@@ -51,6 +51,8 @@ namespace TwitchDownloaderWeb.Data
         public const string PasswordReset = "user.password_reset";
         public const string ShortformRequested = "shortform.requested";
         public const string ShortformDeleted = "shortform.deleted";
+        public const string MarkerAdded = "marker.added";
+        public const string MarkerDeleted = "marker.deleted";
         public const string StaffJoined = "staff.joined";
         public const string StaffPermissionsChanged = "staff.permissions_changed";
         public const string StaffDisabled = "staff.disabled";

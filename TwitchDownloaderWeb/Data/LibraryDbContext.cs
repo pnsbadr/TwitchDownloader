@@ -31,6 +31,7 @@ namespace TwitchDownloaderWeb.Data
         public DbSet<StaffAccount> StaffAccounts => Set<StaffAccount>();
         public DbSet<AccountLink> AccountLinks => Set<AccountLink>();
         public DbSet<TeamRole> TeamRoles => Set<TeamRole>();
+        public DbSet<VodMarker> Markers => Set<VodMarker>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -105,6 +106,16 @@ namespace TwitchDownloaderWeb.Data
                 entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
             });
 
+            modelBuilder.Entity<VodMarker>(entity =>
+            {
+                entity.ToTable("VodMarkers");
+                entity.Property(x => x.Label).HasMaxLength(VodMarker.MaxLabelLength);
+                entity.Property(x => x.Color).HasMaxLength(16);
+                entity.HasIndex(x => new { x.TeamId, x.VodId });
+                entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasQueryFilter(x => !ScopedToTeam || x.TeamId == ScopeTeamId);
+            });
+
             modelBuilder.Entity<StaffAccount>(entity =>
             {
                 entity.Property(x => x.Username).HasMaxLength(32);
@@ -172,6 +183,10 @@ namespace TwitchDownloaderWeb.Data
                     case LibraryEntry entry:
                         if (entry.TeamId == 0 && _actor.TeamId is { } entryTeam) entry.TeamId = entryTeam;
                         entry.AddedByUserId ??= userId;
+                        break;
+                    case VodMarker marker:
+                        if (marker.TeamId == 0 && _actor.TeamId is { } markerTeam) marker.TeamId = markerTeam;
+                        if (marker.CreatedByUserId == 0 && _actor.UserId is { } markerUser) marker.CreatedByUserId = markerUser;
                         break;
                     case SavedChannel channel:
                         if (channel.TeamId == 0 && _actor.TeamId is { } channelTeam) channel.TeamId = channelTeam;

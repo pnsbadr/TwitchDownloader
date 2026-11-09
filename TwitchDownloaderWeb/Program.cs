@@ -76,6 +76,7 @@ app.MapChannelEndpoints();
 app.MapAudioRescueEndpoints();
 app.MapShortformEndpoints();
 app.MapPlaybackEndpoints();
+app.MapTimelineEndpoints();
 
 app.Run();
 

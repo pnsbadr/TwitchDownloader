@@ -595,6 +595,44 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.ToTable("AudioRescues", (string)null);
                 });
 
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.VodMarker", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Color")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("CreatedByUserId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Label")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<double>("Seconds")
+                        .HasColumnType("REAL");
+
+                    b.Property<int>("TeamId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("VodId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TeamId", "VodId");
+
+                    b.ToTable("VodMarkers", (string)null);
+                });
+
             modelBuilder.Entity("TwitchDownloaderWeb.Data.AccountLink", b =>
                 {
                     b.HasOne("TwitchDownloaderWeb.Data.Team", "Team")
@@ -660,6 +698,15 @@ namespace TwitchDownloaderWeb.Data.Migrations
                 });
 
             modelBuilder.Entity("TwitchDownloaderWeb.Data.TeamRole", b =>
+                {
+                    b.HasOne("TwitchDownloaderWeb.Data.Team", null)
+                        .WithMany()
+                        .HasForeignKey("TeamId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.VodMarker", b =>
                 {
                     b.HasOne("TwitchDownloaderWeb.Data.Team", null)
                         .WithMany()
