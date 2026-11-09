@@ -864,3 +864,22 @@ table.activity td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .log-list .log-row { display: flex; gap: 10px; padding: 6px 0; border-top: 1px solid var(--border); flex-wrap: wrap; }
 .log-list .log-row:first-child { border-top: none; }
 .log-time { min-width: 160px; }
+
+/* View as support: app staff looking at a team read-only */
+.support-banner {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px;
+  margin: 0; padding: 10px 16px; background: var(--warn); color: #fff; font-size: 14px;
+}
+.support-banner[hidden] { display: none; }
+.support-banner button.secondary { background: #fff; color: #222; border-color: #fff; }
+@media (prefers-color-scheme: dark) { .support-banner { color: #1b1b1b; } }
+
+/* Admin page */
+.admin-tabs { margin: 0 0 16px; }
+.admin-row { align-items: flex-start; }
+.admin-actions { flex-wrap: wrap; gap: 6px 10px; }
+.admin-details { flex: 1 1 100%; min-width: 0; }
+.admin-details[hidden] { display: none; }
+.staff-perms { border: 1px solid var(--border); border-radius: 8px; margin: 0 0 8px; padding: 8px 12px; display: grid; gap: 6px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.staff-perms legend { font-weight: 600; padding: 0 4px; }

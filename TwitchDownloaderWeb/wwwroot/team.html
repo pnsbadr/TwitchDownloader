@@ -11,6 +11,11 @@
     <h1 id="team-title">Team</h1>
     <a class="button secondary" href="/">Back to the library</a>
   </header>
+  <!-- App staff viewing this team read-only ("view as support"); the server refuses every change -->
+  <div class="support-banner" id="support-banner" role="status" hidden>
+    <span>Viewing <strong id="support-team"></strong> as support (read-only). This visit is logged.</span>
+    <button type="button" class="secondary small" id="support-exit">Exit support view</button>
+  </div>
   <main>
     <p id="team-message" class="message" role="status"></p>
 

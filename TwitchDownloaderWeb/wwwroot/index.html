@@ -24,6 +24,11 @@
       <button type="button" class="secondary small" id="logout">Log out</button>
     </div>
   </header>
+  <!-- App staff viewing this team read-only ("view as support"); the server refuses every change -->
+  <div class="support-banner" id="support-banner" role="status" hidden>
+    <span>Viewing <strong id="support-team"></strong> as support (read-only). This visit is logged.</span>
+    <button type="button" class="secondary small" id="support-exit">Exit support view</button>
+  </div>
 
   <!-- Shown instead of the library when the user can't use it yet (no team, or no permissions in this team) -->
   <section class="panel gate" id="gate" hidden>

@@ -102,6 +102,9 @@ async function api(method, url, body) {
     location.href = "/login.html";
   } else if (response.status === 403 && (data?.code === "no-access" || data?.code === "no-team")) {
     showGate(data.detail);
+  } else if (response.status === 403 && data?.code === "support-ended") {
+    showGate(data.detail, "Support view ended");
+    $("gate").append(el("p", {}, el("button", { type: "button", onclick: exitSupport }, "Back to the Admin page")));
   }
   if (!response.ok) throw new Error(problemMessage(data, response.status));
   return data;
@@ -143,8 +146,8 @@ for (const button of document.querySelectorAll(".seg[data-tz]")) {
   button.addEventListener("click", () => {
     timeZoneMode = button.dataset.tz;
     saveTimeZoneMode(timeZoneMode);
-    // Per user on the server; localStorage stays as a cache for the other pages
-    api("PUT", "/api/auth/settings", { timeZone: timeZoneMode }).catch(() => {});
+    // Per user on the server; localStorage stays as a cache for the other pages. Not during a support visit (no user).
+    if (!me?.support) api("PUT", "/api/auth/settings", { timeZone: timeZoneMode }).catch(() => {});
     renderTimeZoneToggle();
     renderVodInfo();
     renderBrowseList();
@@ -2631,7 +2634,27 @@ function showGate(text, heading = "Waiting for access") {
 
 const TEAM_PAGE_PERMISSIONS = ["InviteMembers", "AssignRoles", "ManageRoles", "RemoveMembers", "ResetPasswords", "ViewActivity", "ManageAudioSettings"];
 
+// Ending a support visit only clears its cookie, then goes back to the Admin page
+async function exitSupport() {
+  await fetch("/api/admin/support", { method: "DELETE" });
+  location.href = "/admin.html";
+}
+
+$("support-exit").addEventListener("click", exitSupport);
+
 function renderAccountBar() {
+  if (me.support) {
+    // No user here: just the team being viewed and the way out
+    $("support-team").textContent = me.support.teamName;
+    $("support-banner").hidden = false;
+    $("account-bar").hidden = false;
+    $("team-switch-label").hidden = true;
+    $("team-single").textContent = `${me.support.teamName} · staff ${me.support.staffUsername}`;
+    $("account-name").hidden = true;
+    $("logout").hidden = true;
+    $("team-link").hidden = !TEAM_PAGE_PERMISSIONS.some(can);
+    return;
+  }
   $("account-bar").hidden = false;
   $("account-name").textContent = me.username;
   const current = me.teams.find((x) => x.id === me.currentTeamId);
@@ -2678,6 +2701,7 @@ async function startApp() {
   $("library-main").hidden = false;
   $("add-button").hidden = !can("AddEntries");
   $("add-not-allowed").hidden = can("AddEntries");
+  if (me.support) $("add-not-allowed").textContent = "Support view: you can watch VODs and play files, but nothing can be changed.";
 
   renderTimeZoneToggle();
   renderVodTypeToggle();
