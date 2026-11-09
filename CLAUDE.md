@@ -74,6 +74,8 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
 - `AuditEvents`: timestamp, action (`AuditActions`), entry ID (no FK so rows outlive deleted entries),
   user ID (null until phase 3), details. Write via `db.Audit(...)` so it commits with the change; **never
   put tokens in details**.
+- `VodMarkers` (`VodMarker`): team markers on a VOD's player timeline: TeamId (team query filter, cascade), VodId, Seconds, Label
+  (≤ 200, may be blank), Color (`yellow`/`blue`/`pink`/`orange`), CreatedByUserId, CreatedAtUtc. Audited `marker.added` / `marker.deleted`.
 - A converter marks every `DateTime` as UTC when read back (SQLite has no date type) — keep all times UTC.
 - Migrations: `cd TwitchDownloaderWeb && dotnet tool restore && dotnet ef migrations add <Name> -o Data/Migrations`.
   They are applied automatically at startup.
@@ -232,6 +234,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/admin/users?search=` / `GET /api/admin/users/{id}?days=` / `PUT .../disabled` / `POST .../password-reset` | Users across teams |
 | `GET /api/admin/audit?teamId=&userId=&staffId=&before=&limit=` / `POST,DELETE /api/admin/support` | App log; view as support |
 | `GET /api/admin/staff` / `POST /api/admin/staff/invites` / `PUT /api/admin/staff/{id}/permissions` `{ permissions }` / `PUT .../disabled` / `POST .../password-reset` | Moderators (Owner only) |
+| `GET /api/vods/{id}/timeline` / `POST /api/vods/{id}/markers` `{ seconds, label?, color? }` / `DELETE /api/markers/{id}` | Player timeline: `{ clips: [{ id, title, kind, start, end }], markers: [{ id, seconds, label, color, createdBy, createdAtUtc, canDelete }] }` (team's own). Add 201 (`AddEntries`); delete own (`AddEntries`) or anyone's (`DeleteAnyEntries`), else 403 |
 | `POST /api/vods/download` | Phase 1 dev endpoint: synchronous, writes `<title>.mp4` straight into `downloads/`, not part of the library |
 
 `canDownload` in entry responses checks the generated file's expiry itself, since cleanup runs periodically.
@@ -285,6 +288,15 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   rate/channels differ from the segment's (`AdtsFormat`), audio is re-encoded to match (~21 ms AAC priming). Results are cached in
   `downloads/work/play/{vodId}/{n}/{key}.ts` for 2 h (work/ is cleared at startup); any failure serves the muted segment. The master
   sends `X-Clean-Audio-Segments` (count) and the page shows "Saved audio plays over muted parts". fMP4 (`.mp4`) segments aren't swapped.
+  **Control bar** (`wwwroot/player-bar.js`, `PlayerBar`; app player only, the Twitch embed keeps its own controls): replaces the
+  native controls on the Watch and Review players. A canvas timeline shows buffered/played, Twitch's **muted parts in red** and parts
+  with **saved clean audio in green** (read from hls.js `LEVEL_LOADED`/`LEVEL_UPDATED` fragments: `-muted.ts` vs `/clean/` URLs, so a
+  live VOD updates as it grows), the team's library clips from the VOD (purple lane on top) and team markers (colored lines with a
+  triangle; chips under the bar seek, × deletes). Hover shows time + what's there. Zoom (wheel, +/−, Fit; min 10 s) with an
+  overview strip while zoomed; the view follows the playhead. `GET /api/vods/{id}/timeline` feeds clips and markers; it's reloaded
+  after adding/re-trimming/deleting an entry. Keys (not while typing): Space/K play, J/L ±10 s, ←/→ ±5 s, `,`/`.` one frame,
+  M marker, F fullscreen, +/−/0 zoom. Markers need `AddEntries` to add (and delete own) and `DeleteAnyEntries` for anyone's;
+  view as support sees them read-only.
   **Watch** next to Get Info / on VOD cards opens an inline player with **Set start here / Set end here** (fills the trim
   fields from the position below, hundredths of a second) and **Play clip** (seeks to start, pauses at end). The review dialog
   starts at the clip start and pauses at its end (not shown for VodUnavailable). Closing a player

@@ -292,6 +292,8 @@ class HlsBackend {
     this.hls = null;
     this.ready = false;
     this.cleanSegments = 0;
+    this.details = null; // the playing rendition's playlist (hls.js), for the control bar's timeline
+    this.onDetails = null;
   }
 
   // Resolves once the first frame at startSeconds is loaded; rejects with PlayerUnavailable if it can't play
@@ -360,6 +362,13 @@ class HlsBackend {
         this.ready = true;
         resolve();
       }, { once: true });
+      const onLevel = (_, data) => {
+        if (this.hls !== hls) return;
+        this.details = data.details;
+        this.onDetails?.(data.details);
+      };
+      hls.on(Hls.Events.LEVEL_LOADED, onLevel);
+      hls.on(Hls.Events.LEVEL_UPDATED, onLevel);
       hls.on(Hls.Events.ERROR, (_, data) => {
         if (!data.fatal || this.hls !== hls) return;
         if (!this.ready) {
@@ -547,10 +556,11 @@ let segmentMode = "direct";
 // One player slot on the page (Watch, clip review). Plays a VOD in the app player, falling back to the Twitch embed,
 // and pauses clip previews at stopAt; the tick runs often enough to stop within a few frames of the end.
 class VodPlayer {
-  constructor(containerId, timeId, sourceId) {
+  constructor(containerId, timeId, sourceId, bar = null) {
     this.containerId = containerId;
     this.timeId = timeId;
     this.sourceId = sourceId;
+    this.bar = bar; // PlayerBar (player-bar.js) shown while the app player plays
     this.backend = null;
     this.vodId = null;
     this.stopAt = null; // pause once playback reaches this offset (clip previews)
@@ -580,6 +590,7 @@ class VodPlayer {
       try {
         if (await this.startKind(kind, vodId, startSeconds, generation)) {
           this.fallbackReason = failure?.message ?? null;
+          if (this.backend.kind === "app") this.bar?.attach(this.backend, vodId);
           this.renderSource();
         }
         return;
@@ -619,6 +630,7 @@ class VodPlayer {
 
   close() {
     this.generation++;
+    this.bar?.detach();
     clearInterval(this.timer);
     this.timer = null;
     this.backend?.close();
@@ -707,8 +719,14 @@ class VodPlayer {
   }
 }
 
-const watchPlayer = new VodPlayer("watch-player", "watch-time", "watch-source");
-const clipPlayer = new VodPlayer("clip-player", "clip-time", "clip-source");
+const watchPlayer = new VodPlayer("watch-player", "watch-time", "watch-source", new PlayerBar("watch-wrap", "watch-bar"));
+const clipPlayer = new VodPlayer("clip-player", "clip-time", "clip-source", new PlayerBar("clip-wrap", "clip-bar"));
+
+// After the library changes, so the players' timelines show the new clip ranges
+function reloadPlayerTimelines() {
+  watchPlayer.bar?.reload();
+  clipPlayer.bar?.reload();
+}
 
 async function openWatch(vodId) {
   $("watch").hidden = false;
@@ -883,6 +901,7 @@ async function saveReview() {
   setMessage($("trim-message"), "Saving…");
   try {
     const updated = await api("PUT", `/api/entries/${entry.id}/trim`, { startTime: formatTrimValue(review.start), endTime });
+    reloadPlayerTimelines();
     if (!review || review.entry.id !== updated.id) return;
     review.entry = updated;
     // Done with this clip: close the review and say what happens next above the library
@@ -1179,6 +1198,7 @@ $("add-form").addEventListener("submit", async (event) => {
       startTime: $("start").value.trim() || null,
       endTime: $("end").value.trim() || null,
     });
+    reloadPlayerTimelines();
     setMessage($("add-message"),
       `Added "${entry.title}" ${entry.isReferenceOnly ? "as a reference (generated on demand)" : "and queued for download"}.`, "ok");
     // Check the cut right away; the review dialog plays it and can adjust it. Clips keep Twitch's cut.
@@ -1978,6 +1998,7 @@ async function deleteEntry(entry) {
   if (!confirm(`Delete "${entry.title}"${what}? This can't be undone.`)) return;
   try {
     await api("DELETE", `/api/entries/${entry.id}`);
+    reloadPlayerTimelines();
   } catch (error) {
     setMessage($("library-message"), error.message, "error");
   }
