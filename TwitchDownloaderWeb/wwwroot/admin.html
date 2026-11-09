@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin · Clip Library</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Clip Library admin</h1>
+    <div class="row" id="staff-bar" hidden>
+      <span class="muted">Staff: <strong id="staff-name"></strong></span>
+      <button type="button" id="staff-logout" class="secondary small">Log out</button>
+    </div>
+  </header>
+  <main>
+    <p id="admin-message" class="message" role="status"></p>
+
+    <!-- First run: make the app Owner's staff account (only from the machine running the app) -->
+    <section class="panel narrow-panel" id="setup-panel" hidden>
+      <h2>Set up the Owner account</h2>
+      <p class="muted">This is the app's staff account for running the app (teams, links, moderators). It's separate from team
+        accounts: to work in a team's library, make a normal account with a team link.</p>
+      <p id="setup-remote" class="message error" hidden>Open this page on the computer running the app, as http://localhost:5254/admin.html.</p>
+      <form id="setup-form" class="stack" novalidate>
+        <label>Username <input id="setup-username" autocomplete="username" spellcheck="false" autocapitalize="off" maxlength="32"></label>
+        <label>Password <input id="setup-password" type="password" autocomplete="new-password" maxlength="200"></label>
+        <label>Repeat password <input id="setup-password2" type="password" autocomplete="new-password" maxlength="200"></label>
+        <div class="row"><button type="submit">Create Owner account</button></div>
+      </form>
+    </section>
+
+    <section class="panel narrow-panel" id="login-panel" hidden>
+      <h2>Staff log in</h2>
+      <form id="staff-login-form" class="stack" novalidate>
+        <label>Username <input id="staff-username" autocomplete="username" spellcheck="false" autocapitalize="off"></label>
+        <label>Password <input id="staff-password" type="password" autocomplete="current-password"></label>
+        <div class="row"><button type="submit">Log in</button></div>
+      </form>
+    </section>
+
+    <section class="panel" id="teams-panel" hidden>
+      <h2>Teams</h2>
+      <ul id="teams" class="plain-list"></ul>
+    </section>
+
+    <section class="panel" id="links-panel" hidden>
+      <h2>Team links</h2>
+      <p class="muted small-text">A team registration link lets one person make an account (or use theirs) and a new team they own.
+        An owner link makes whoever opens it the owner of an existing team. Each works once and expires after 7 days.</p>
+      <form id="registration-form" class="row" novalidate>
+        <label class="grow">Who is it for? (optional, only staff see this)
+          <input id="registration-note" maxlength="200" placeholder="e.g. Arky's team">
+        </label>
+        <button type="submit">Make team registration link</button>
+      </form>
+      <div id="link-new"></div>
+      <ul id="links" class="plain-list"></ul>
+    </section>
+  </main>
+  <script src="account.js"></script>
+  <script src="admin.js"></script>
+</body>
+</html>

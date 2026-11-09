@@ -53,7 +53,8 @@ namespace TwitchDownloaderWeb.Endpoints
         bool CanDownload,
         double? AudioRestoredSeconds,
         double? AudioMutedSeconds,
-        string? AddedByUserId)
+        string? AddedByUserId,
+        string? AddedBy = null)
     {
         public static EntryDto From(LibraryEntry entry) => new(
             entry.Id,
@@ -409,7 +410,16 @@ namespace TwitchDownloaderWeb.Endpoints
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["sort"] = ["Sort must be streamDate or dateAdded."] });
 
             var entries = await query.Take(Math.Clamp(limit ?? 200, 1, 1000)).ToListAsync(cancellationToken);
-            return Results.Ok(entries.Select(EntryDto.From));
+            var names = await UsernamesAsync(db, entries.Select(x => x.AddedByUserId), cancellationToken);
+            return Results.Ok(entries.Select(x => EntryDto.From(x) with { AddedBy = x.AddedByUserId is { } u ? names.GetValueOrDefault(u) : null }));
+        }
+
+        /// <summary>Usernames by user ID text (AddedByUserId). Unknown IDs are left out.</summary>
+        internal static async Task<Dictionary<string, string>> UsernamesAsync(LibraryDbContext db, IEnumerable<string?> userIds, CancellationToken cancellationToken)
+        {
+            var ids = userIds.Select(x => int.TryParse(x, out var id) ? id : (int?)null).OfType<int>().Distinct().ToList();
+            return ids.Count == 0 ? []
+                : await db.Users.AsNoTracking().Where(x => ids.Contains(x.Id)).ToDictionaryAsync(x => x.Id.ToString(), x => x.Username, cancellationToken);
         }
 
         /// <summary>Parses an instant that states its offset; a bare local time would be ambiguous. Blank parses to null.</summary>

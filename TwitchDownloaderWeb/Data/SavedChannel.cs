@@ -1,11 +1,11 @@
 namespace TwitchDownloaderWeb.Data
 {
-    /// <summary>A Twitch channel saved for the team, shown in the VOD browser's channel list.</summary>
+    /// <summary>A Twitch channel saved by a team, shown in the VOD browser's channel list.</summary>
     public class SavedChannel
     {
         public int Id { get; set; }
 
-        /// <summary>Twitch login, lower-case. Unique.</summary>
+        /// <summary>Twitch login, lower-case. Unique within a team.</summary>
         public required string Login { get; set; }
         public required string DisplayName { get; set; }
         public string? TwitchUserId { get; set; }
@@ -15,7 +15,9 @@ namespace TwitchDownloaderWeb.Data
 
         public DateTime AddedAtUtc { get; set; }
 
-        /// <summary>Linked to users in phase 3.</summary>
+        /// <summary>The <see cref="UserAccount"/> ID (as text) of whoever saved it. Null for channels saved before accounts existed.</summary>
         public string? AddedByUserId { get; set; }
+
+        public int TeamId { get; set; }
     }
 }

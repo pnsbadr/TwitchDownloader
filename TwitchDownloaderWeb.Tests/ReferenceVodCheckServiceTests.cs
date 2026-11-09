@@ -11,6 +11,9 @@ namespace TwitchDownloaderWeb.Tests
     /// <summary>Reference-only entries are marked when their VOD leaves Twitch, and unmarked when it comes back.</summary>
     public sealed class ReferenceVodCheckServiceTests : IDisposable
     {
+        /// <summary>"Main team", made by the accounts migration.</summary>
+        private const int MainTeam = 1;
+
         private const long VodId = 987654321;
 
         private readonly string _dir = Path.Combine(Path.GetTempPath(), "td-web-refcheck-" + Guid.NewGuid().ToString("N"));
@@ -46,11 +49,11 @@ namespace TwitchDownloaderWeb.Tests
             using (var scope = _services.CreateScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
-                var a = new LibraryEntry { Title = "Long clip", VodId = VodId, ClipLengthSeconds = 300, Status = EntryStatus.ReferenceOnly };
-                var b = new LibraryEntry { Title = "Short clip", VodId = VodId, ClipLengthSeconds = 60, Status = EntryStatus.Ready, FilePath = "library/2.mp4" };
+                var a = new LibraryEntry { TeamId = MainTeam, Title = "Long clip", VodId = VodId, ClipLengthSeconds = 300, Status = EntryStatus.ReferenceOnly };
+                var b = new LibraryEntry { TeamId = MainTeam, Title = "Short clip", VodId = VodId, ClipLengthSeconds = 60, Status = EntryStatus.Ready, FilePath = "library/2.mp4" };
                 var c = new LibraryEntry
                 {
-                    Title = "Generated", VodId = VodId, ClipLengthSeconds = 300, Status = EntryStatus.ReferenceOnly,
+                    TeamId = MainTeam, Title = "Generated", VodId = VodId, ClipLengthSeconds = 300, Status = EntryStatus.ReferenceOnly,
                     GenerationStatus = GenerationStatus.Ready, GeneratedFilePath = "generated/3.mp4", GeneratedExpiresAtUtc = DateTime.UtcNow.AddHours(1),
                 };
                 db.Entries.AddRange(a, b, c);
@@ -90,7 +93,7 @@ namespace TwitchDownloaderWeb.Tests
                 var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
                 var entry = new LibraryEntry
                 {
-                    Title = "Twitch clip", Kind = EntryKind.Clip, ClipSlug = "FunnyClipSlug-abc123", VodId = VodId, ClipLengthSeconds = 30,
+                    TeamId = MainTeam, Title = "Twitch clip", Kind = EntryKind.Clip, ClipSlug = "FunnyClipSlug-abc123", VodId = VodId, ClipLengthSeconds = 30,
                     Status = EntryStatus.ReferenceOnly,
                 };
                 db.Entries.Add(entry);

@@ -78,6 +78,35 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
 - Migrations: `cd TwitchDownloaderWeb && dotnet tool restore && dotnet ef migrations add <Name> -o Data/Migrations`.
   They are applied automatically at startup.
 
+### Accounts and teams (`Services/Accounts/`, phase 3)
+Plan and badrfly's decisions: Claude Doc "Logins, teams and permissions plan". Built in steps; step 1 (this) = logins, teams, links, scoping.
+- **Two separate structures** (badrfly's call): team users (`Users`, `Teams`, `TeamMembers`) and app staff (`StaffAccounts`: the app Owner
+  and later app moderators). Separate tables, cookies (`clipco.user` / `clipco.staff`, HttpOnly, SameSite=Strict, 30 days sliding) and
+  login pages (`login.html` / `admin.html`). A staff login is never a team login or the other way round. badrfly has one of each.
+- **One account, many teams**: `TeamMembers` (unique TeamId+UserId). The page's team switcher sets the `clipco.team` cookie
+  (`POST /api/auth/team`); without it the first team joined is used.
+- **Every `/api` request needs a team login** except `/api/auth/*`, `/api/links/*` and `/api/admin/*` (staff endpoints check the staff
+  cookie with an endpoint filter). `TeamScope` middleware (after `UseAuthentication`) checks membership, stores a `TeamContext`
+  (bind it as an endpoint parameter) and fills the scoped `RequestActor`.
+- **Team scoping is a global query filter** on `LibraryEntries` and `Channels` (`TeamId == actor team`, active whenever `RequestActor.IsRequest`;
+  a request without a resolved team sees nothing). Background jobs have no request, so they see all teams. `SaveChanges` fills
+  `TeamId`/`AddedByUserId` on new entries/channels and `UserId`/`TeamId`/`StaffId` on audit events from the actor (entry events from
+  background jobs get their entry's team). Use `IgnoreQueryFilters()` only in staff code. Saved audio (`AudioRescues`) stays shared per VOD.
+- Until roles exist (next step) **only the team owner can use a team**; other members get 403 `code: "no-access"` and the page shows
+  "Waiting for access". Members always join with no permissions; invite links never carry a role (badrfly: security).
+- **One-time links** (`AccountLinks`): `TeamRegistration` (staff; new team, opener = owner), `TeamOwnership` (staff; opener becomes owner of
+  an existing team: claiming "Main team", hand-over, recovery), `TeamInvite` (team owner). 7 days, revocable, claimed with a conditional
+  update so they can't be used twice. Only the token's SHA-256 is stored; the token is in the URL **fragment** (`/join.html#token`) and
+  sent in request bodies only, so it never reaches server logs. Opening a link while logged in offers "Continue as …".
+- **Owner setup**: `admin.html` while no staff account exists, only from loopback without `X-Forwarded-For` (open the page as
+  `http://localhost:5254/admin.html` on the machine running the app). Set it up before exposing the app.
+- The accounts migration put all existing entries/channels/entry audit events in team 1 **"Main team"** with no owner; the Owner makes an
+  owner link for it on the Admin page.
+- Passwords: ASP.NET Core `PasswordHasher` (PBKDF2), 10–200 chars. 5 wrong passwords lock an account for 15 min; login/link endpoints are
+  rate limited per IP (`Auth:LoginAttemptsPerMinute`, default 10). Changing `SecurityStamp` signs out every session of the account.
+  `LastActiveAtUtc` is updated at most every 2 min. Never audit or log passwords, link tokens or cookies.
+- Tests: `AccountsTests` runs the real pipeline with `WebApplicationFactory<Program>` (temp DB).
+
 ### Jobs and files (`Services/`)
 - `DownloadQueue` (in-memory channel) + `DownloadWorker` (BackgroundService). The DB status is the source of
   truth: on startup, entries left Queued/Downloading (or generation Queued/Generating) are re-queued and an
@@ -158,11 +187,17 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/entries/{id}/shortform` / `POST /api/entries/{id}/shortform` | Vertical (9:16) renders: `{ status: None\|Rendering\|Failed, progress, error, layout, renders: [{ id, createdAtUtc, expiresAtUtc, sizeBytes, layout, fileUrl, thumbnailUrl }] }` (newest first) / start a render (202) with `{ mode: single\|split, top: {x,y,width,height}, bottom?, splitRatio?, trimStart?, trimEnd? }` (fractions of the source video). 409 if the entry has no file |
 | `GET /api/entries/{id}/shortform/{renderId}/file[?inline=true]` / `.../thumbnail` / `DELETE .../{renderId}` | A render's mp4 (`<title> (vertical).mp4`, audited `file.served`; `inline` = the page's preview player, not audited), its jpg thumbnail, delete it. 404 if gone/expired |
 | `GET /api/vods/{id}/play.m3u8[?segments=proxy]` / `.../play/{n}.m3u8` / `.../play/{n}/{segment}` | HLS for the page's player (see Watching VODs), plus `.../play/{n}/clean/{key}.ts` (muted segment with saved audio swapped in). 403 sub-only, 404 gone, 502 Twitch unreachable. Playlists `no-store` |
+| `POST /api/auth/login` / `logout` / `GET /api/auth/me` / `POST /api/auth/team` `{ teamId }` | Team user session; `me` = `{ id, username, teams: [{ id, name, isOwner }], currentTeamId }` |
+| `POST /api/links/inspect` `{ token }` / `POST /api/links/accept` `{ token, newAccount, username?, password?, teamName? }` | One-time links (see Accounts). Blank username with a session = join as the logged-in user |
+| `GET /api/team` / `DELETE /api/team/members/{userId}` / `GET,POST /api/team/invites` / `DELETE /api/team/invites/{id}` | Current team's members and invite links (owner only for now). The link URL is only in the POST response |
+| `GET,POST /api/admin/setup` / `POST /api/admin/login`, `logout` / `GET /api/admin/me`, `teams`, `links` / `POST /api/admin/links` `{ kind: registration\|ownership, teamId?, note? }` / `DELETE /api/admin/links/{id}` | Staff API |
 | `POST /api/vods/download` | Phase 1 dev endpoint: synchronous, writes `<title>.mp4` straight into `downloads/`, not part of the library |
 
 `canDownload` in entry responses checks the generated file's expiry itself, since cleanup runs periodically.
 
 ### Web page
+- Not logged in → `login.html`; account bar (team switcher when in 2+ teams, Team page link for owners, Log out). `team.html` = members
+  + invite links, `join.html` = opening a link, `admin.html` = staff.
 - Time zone toggle (Local / Pacific `America/Los_Angeles`) saved in `localStorage` key `clipLibrary.timeZone`
   (per browser until per-user settings exist in phase 3). Formatting only — the API always returns UTC (`...Z`).
 - `Intl.DateTimeFormat` throws if `dateStyle`/`timeStyle` are combined with `timeZoneName`; format parts explicitly.
@@ -302,6 +337,7 @@ dotnet build TwitchDownloaderWPF.sln
 2. **Done.** SQLite library + audit log; stored vs reference-only rule with a background job queue; entry API
    (add/list/get/rename/delete/generate/file); on-demand files expiring after 72 h; web page with search, sort,
    status, download, rename/delete and the Local/Pacific toggle (saved in the browser).
-3. **Next:** login/signup, teams with invites, shared team library; link `AddedByUserId` / `AuditEvents.UserId`;
-   restrict delete; per-user time zone setting (replacing localStorage); team setting to turn auto audio saving on/off
-   (replacing the temporary `AudioRescue:Enabled` config switch); audit signups/logins. Never log tokens.
+3. **In progress.** Step 1 done: logins, staff Owner, teams (multi-team accounts), one-time links, team-scoped library, audit of
+   signups/logins. Next: roles + permissions chosen by the team owner (incl. "view member activity", delete own/any, team setting to
+   turn auto audio saving on/off replacing `AudioRescue:Enabled`), per-user time zone, password reset links. Then app moderators
+   (permissions picked by the Owner), "view as support" (Owner; per moderator on/off) and per-user/team activity and disk use for staff.

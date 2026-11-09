@@ -84,14 +84,23 @@ namespace TwitchDownloaderWeb.Endpoints
             return Results.File(path, "video/mp4", fileName, enableRangeProcessing: true);
         }
 
-        private static IResult GetThumbnail(int id, string renderId, ShortformService shortform)
+        private static async Task<IResult> GetThumbnail(int id, string renderId, LibraryDbContext db, ShortformService shortform, CancellationToken cancellationToken)
         {
+            // The lookup is team-scoped, so another team's renders 404 like missing ones
+            if (await db.Entries.FindAsync([id], cancellationToken) is null)
+                return EntryNotFound(id);
+
             var path = shortform.RenderPath(id, renderId, "jpg");
             return path is not null && File.Exists(path) ? Results.File(path, "image/jpeg") : RenderNotFound();
         }
 
-        private static IResult DeleteRender(int id, string renderId, ShortformService shortform) =>
-            shortform.DeleteRender(id, renderId) ? Results.NoContent() : RenderNotFound();
+        private static async Task<IResult> DeleteRender(int id, string renderId, LibraryDbContext db, ShortformService shortform, CancellationToken cancellationToken)
+        {
+            if (await db.Entries.FindAsync([id], cancellationToken) is null)
+                return EntryNotFound(id);
+
+            return shortform.DeleteRender(id, renderId) ? Results.NoContent() : RenderNotFound();
+        }
 
         private static IResult EntryNotFound(int id) =>
             Results.Problem(detail: $"Entry {id} not found.", statusCode: StatusCodes.Status404NotFound);

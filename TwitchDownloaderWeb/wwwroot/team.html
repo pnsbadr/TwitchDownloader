@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Team · Clip Library</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1 id="team-title">Team</h1>
+    <a class="button secondary" href="/">Back to the library</a>
+  </header>
+  <main>
+    <p id="team-message" class="message" role="status"></p>
+
+    <section class="panel" id="members-panel" hidden>
+      <h2>Members</h2>
+      <ul id="members" class="plain-list"></ul>
+    </section>
+
+    <section class="panel" id="invites-panel" hidden>
+      <h2>Invite links</h2>
+      <p class="muted small-text">Each link works once and expires after 7 days. Whoever opens it makes an account (or logs in to theirs)
+        and joins with no access. Roles and permissions are coming next.</p>
+      <form id="invite-form" class="row" novalidate>
+        <label class="grow">Who is it for? (optional, only you see this)
+          <input id="invite-note" maxlength="200" placeholder="e.g. Sam, editor">
+        </label>
+        <button type="submit">Make invite link</button>
+      </form>
+      <div id="invite-new"></div>
+      <ul id="invites" class="plain-list"></ul>
+    </section>
+  </main>
+  <script src="account.js"></script>
+  <script>
+    let team = null;
+
+    async function load() {
+      try {
+        team = await api("GET", "/api/team");
+      } catch (error) {
+        if (error.status === 401) { location.href = "/login.html"; return; }
+        setMessage($("team-message"), error.message, "error");
+        return;
+      }
+      $("team-title").textContent = team.name;
+      document.title = `${team.name} · Clip Library`;
+      $("members-panel").hidden = false;
+      $("invites-panel").hidden = false;
+      renderMembers();
+      loadInvites();
+    }
+
+    function renderMembers() {
+      $("members").replaceChildren(...team.members.map((member) => el("li", { class: "list-row" },
+        el("div", { class: "grow" },
+          el("strong", {}, member.username), member.isOwner ? el("span", { class: "badge" }, "Owner") : null,
+          el("div", { class: "muted small-text" },
+            `Joined ${formatWhen(member.joinedAtUtc)} · ${member.lastActiveAtUtc ? `last active ${formatWhen(member.lastActiveAtUtc)}` : "not active yet"}`)),
+        member.isOwner ? null : el("button", { type: "button", class: "danger small", onclick: () => removeMember(member) }, "Remove"))));
+    }
+
+    async function removeMember(member) {
+      if (!confirm(`Remove ${member.username} from ${team.name}? They keep their account and their other teams.`)) return;
+      try {
+        await api("DELETE", `/api/team/members/${member.userId}`);
+        team.members = team.members.filter((x) => x.userId !== member.userId);
+        renderMembers();
+      } catch (error) {
+        setMessage($("team-message"), error.message, "error");
+      }
+    }
+
+    async function loadInvites() {
+      const links = await api("GET", "/api/team/invites");
+      $("invites").replaceChildren(...links.map((link) => {
+        const state = linkState(link);
+        return el("li", { class: "list-row" },
+          el("div", { class: "grow" },
+            el("strong", {}, link.note || "Invite link"),
+            el("div", { class: "muted small-text" }, `Made ${formatWhen(link.createdAtUtc)} · ${state.text}`)),
+          state.open ? el("button", { type: "button", class: "secondary small", onclick: () => revoke(link) }, "Revoke") : null);
+      }));
+    }
+
+    async function revoke(link) {
+      try {
+        await api("DELETE", `/api/team/invites/${link.id}`);
+        loadInvites();
+      } catch (error) {
+        setMessage($("team-message"), error.message, "error");
+      }
+    }
+
+    $("invite-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        const link = await api("POST", "/api/team/invites", { note: $("invite-note").value });
+        $("invite-note").value = "";
+        $("invite-new").replaceChildren(linkBox(link.url));
+        loadInvites();
+      } catch (error) {
+        setMessage($("team-message"), error.message, "error");
+      }
+    });
+
+    load();
+  </script>
+</body>
+</html>

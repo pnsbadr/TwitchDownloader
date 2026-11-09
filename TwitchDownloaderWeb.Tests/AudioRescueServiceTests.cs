@@ -15,6 +15,9 @@ namespace TwitchDownloaderWeb.Tests
     /// <summary>The grab → live re-check → prune lifecycle, against a fake Twitch serving fake segments.</summary>
     public sealed class AudioRescueServiceTests : IDisposable
     {
+        /// <summary>"Main team", made by the accounts migration.</summary>
+        private const int MainTeam = 1;
+
         private const long VodId = 123456789;
         private static readonly Uri BaseUrl = new("https://vod.example/abc/audio_only/");
 
@@ -157,12 +160,12 @@ namespace TwitchDownloaderWeb.Tests
             using var scope2 = _services.CreateScope();
             var db2 = scope2.ServiceProvider.GetRequiredService<LibraryDbContext>();
 
-            var entry = new LibraryEntry { Title = "Clip", VodId = VodId, StartTime = TimeSpan.FromSeconds(5), EndTime = TimeSpan.FromSeconds(15) };
+            var entry = new LibraryEntry { TeamId = MainTeam, Title = "Clip", VodId = VodId, StartTime = TimeSpan.FromSeconds(5), EndTime = TimeSpan.FromSeconds(15) };
             var result = await restore.TryDownloadRestoredAsync(db2, entry, Path.Combine(_dir, "out.mp4"), NullLogger.Instance, ct);
             Assert.Equal(new AudioRestoreResult(0, 5, false), result);
 
             // No rescue for this VOD: we don't know what's muted
-            var other = new LibraryEntry { Title = "Other", VodId = VodId + 1, StartTime = TimeSpan.Zero };
+            var other = new LibraryEntry { TeamId = MainTeam, Title = "Other", VodId = VodId + 1, StartTime = TimeSpan.Zero };
             Assert.Null(await restore.TryDownloadRestoredAsync(db2, other, Path.Combine(_dir, "out2.mp4"), NullLogger.Instance, ct));
         }
 
@@ -197,7 +200,7 @@ namespace TwitchDownloaderWeb.Tests
             using (var scope = _services.CreateScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
-                db.Entries.Add(new LibraryEntry { Title = "Clip", VodId = VodId });
+                db.Entries.Add(new LibraryEntry { TeamId = MainTeam, Title = "Clip", VodId = VodId });
                 await db.SaveChangesAsync(ct);
             }
 

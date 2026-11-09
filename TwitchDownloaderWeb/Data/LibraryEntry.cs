@@ -93,7 +93,10 @@ namespace TwitchDownloaderWeb.Data
         /// </summary>
         public double? AudioMutedSeconds { get; set; }
 
-        /// <summary>Linked to users in phase 3.</summary>
+        /// <summary>The <see cref="UserAccount"/> ID (as text) of whoever added it. Null for entries added before accounts existed.</summary>
         public string? AddedByUserId { get; set; }
+
+        /// <summary>The team whose library this is in. Requests only see their own team's entries (query filter in <see cref="LibraryDbContext"/>).</summary>
+        public int TeamId { get; set; }
     }
 }
