@@ -80,14 +80,13 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
 
 ### Accounts and teams (`Services/Accounts/`, phase 3)
 Plan and badrfly's decisions: Claude Doc "Logins, teams and permissions plan". Built in steps: 1 = logins, teams, links, scoping;
-2 = roles and permissions, activity, team audio setting, per-user time zone, password change/reset; 3 (next) = app moderators, view as support.
+2 = roles and permissions, activity, team audio setting, per-user time zone, password change/reset; 3 = app moderators, view as support, staff tools.
 - **Two separate structures** (badrfly's call): team users (`Users`, `Teams`, `TeamMembers`) and app staff (`StaffAccounts`: the app Owner
   and later app moderators). Separate tables, cookies (`clipco.user` / `clipco.staff`, HttpOnly, SameSite=Strict, 30 days sliding) and
   login pages (`login.html` / `admin.html`). A staff login is never a team login or the other way round. badrfly has one of each.
 - **One account, many teams**: `TeamMembers` (unique TeamId+UserId). The page's team switcher sets the `clipco.team` cookie
   (`POST /api/auth/team`); without it the first team joined is used.
-- **Every `/api` request needs a team login** except `/api/auth/*`, `/api/links/*` and `/api/admin/*` (staff endpoints check the staff
-  cookie with an endpoint filter). `TeamScope` middleware (after `UseAuthentication`) checks membership, stores a `TeamContext`
+- **Every `/api` request needs a team login** except `/api/auth/*`, `/api/links/*` and `/api/admin/*` (staff endpoints: see Staff below). `TeamScope` middleware (after `UseAuthentication`) checks membership, stores a `TeamContext`
   (bind it as an endpoint parameter) and fills the scoped `RequestActor`.
 - **Team scoping is a global query filter** on `LibraryEntries` and `Channels` (`TeamId == actor team`, active whenever `RequestActor.IsRequest`;
   a request without a resolved team sees nothing). Background jobs have no request, so they see all teams. `SaveChanges` fills
@@ -111,6 +110,21 @@ Plan and badrfly's decisions: Claude Doc "Logins, teams and permissions plan". B
 - **Automatic audio saving is a team setting** (`Teams.AutoSaveAudio`, off by default, `ManageAudioSettings`). A saved channel is watched
   when its team has it on; rescues not started by hand run only while such a team watches their channel (`AudioRescueService.AutoWatchedLogins`,
   across all teams). `AudioRescue:Enabled` is now the app-wide kill switch (default true).
+- **Staff** (`Data/StaffPermissions.cs`, `StaffScope`): the Owner (`IsOwner`) has everything and alone manages moderators
+  (`/api/admin/staff*`: invite links `StaffInvite`, permissions, disable, `StaffPasswordReset` links; never the Owner account). Moderators
+  join with **no permissions** (same rule as team invites) and get `StaffPermission` flags (bit mask on `StaffAccounts.Permissions`: never
+  renumber). `StaffScope` is middleware (after `UseTeamScope`; parameters are bound before endpoint filters run) that checks the staff
+  cookie and each `/api/admin` endpoint's `.RequireStaff(...)` / `.RequireStaffOwner()` / `.RequireAnyStaff()`; open ones are
+  `.AllowWithoutStaff()`; anything else is refused (fail closed). Bind `StaffContext` as a parameter. Staff tools: teams (disk, last active,
+  members' activity), users (teams, role, activity, disk across teams), disable users/teams (disabling a user also rotates the stamp), password
+  reset links for any user (including multi-team), app log, own password change.
+- **View as support** (`SupportView`, permission `ViewAsSupport`, the Owner turns it on per moderator): `POST /api/admin/support { teamId }`
+  sets the `clipco.support` cookie (12 h). While it's there, `TeamScope` acts as that team **before** looking at the user login, with only
+  `ViewLibrary | ViewActivity`, `UserId` 0 and `TeamContext.SupportStaffId` set, and refuses anything but GET/HEAD (`code: "read-only"`).
+  The staff login and permission are re-checked every request (`code: "support-ended"` when gone). `/api/auth/me` returns `support` and
+  the library/Team pages show a banner with Exit (`DELETE /api/admin/support`, works without a staff login). Start/end are audited; events in
+  a visit carry `StaffId` and no user, so they never count as member activity, and the **team log leaves out staff events** (`StaffId != null`).
+- `ActivityReport` computes per team+user counts, entries added and disk use for both the Team page and the Admin page.
 - Per-user time zone (`Users.TimeZone`, `PUT /api/auth/settings`), still cached in `localStorage` for the other pages. `POST /api/auth/password`
   (current password needed) and `PasswordReset` links (24 h, `ResetPasswords`) set a new security stamp, which signs out other sessions.
   A team can only reset members who are in no other team (the account is shared; staff handle the rest, step 3).
@@ -213,7 +227,11 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET,POST /api/team/invites` / `DELETE /api/team/invites/{id}` | Invite links. A link URL is only in the POST response |
 | `GET /api/team/activity?days=` / `GET /api/team/audit?userId=&before=&limit=` / `GET,PUT /api/team/settings` `{ autoSaveAudio }` | Activity, team log, team settings |
 | `PUT /api/auth/settings` `{ timeZone: local\|pacific }` / `POST /api/auth/password` `{ currentPassword, newPassword }` | Own account |
-| `GET,POST /api/admin/setup` / `POST /api/admin/login`, `logout` / `GET /api/admin/me`, `teams`, `links` / `POST /api/admin/links` `{ kind: registration\|ownership, teamId?, note? }` / `DELETE /api/admin/links/{id}` | Staff API |
+| `GET,POST /api/admin/setup` / `POST /api/admin/login`, `logout`, `password` / `GET /api/admin/me` / `GET,POST /api/admin/links` `{ kind: registration\|ownership, teamId?, note? }` / `DELETE /api/admin/links/{id}` | Staff API (each endpoint's staff permission: see Staff) |
+| `GET /api/admin/teams` / `GET /api/admin/teams/{id}?days=` / `PUT /api/admin/teams/{id}/disabled` `{ disabled }` | Teams with disk use and last active; members' activity |
+| `GET /api/admin/users?search=` / `GET /api/admin/users/{id}?days=` / `PUT .../disabled` / `POST .../password-reset` | Users across teams |
+| `GET /api/admin/audit?teamId=&userId=&staffId=&before=&limit=` / `POST,DELETE /api/admin/support` | App log; view as support |
+| `GET /api/admin/staff` / `POST /api/admin/staff/invites` / `PUT /api/admin/staff/{id}/permissions` `{ permissions }` / `PUT .../disabled` / `POST .../password-reset` | Moderators (Owner only) |
 | `POST /api/vods/download` | Phase 1 dev endpoint: synchronous, writes `<title>.mp4` straight into `downloads/`, not part of the library |
 
 `canDownload` in entry responses checks the generated file's expiry itself, since cleanup runs periodically.
@@ -221,7 +239,8 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 ### Web page
 - Not logged in → `login.html`; account bar (team switcher when in 2+ teams, Team page link for members with any Team permission,
   username → `account.html` (time zone, password), Log out). `team.html` = members/roles/activity/log/invites/audio setting,
-  `join.html` = opening any link, `admin.html` = staff. The page hides buttons the user's permissions (`me.permissions`) don't allow.
+  `join.html` = opening any link (staff links go to `admin.html` after), `admin.html` = staff (tabs Teams/Users/Links/Moderators/App log, shown by
+  permission; tab saved in `localStorage` key `clipAdmin.tab`). The page hides buttons the user's permissions (`me.permissions`) don't allow.
 - Time zone toggle (Local / Pacific `America/Los_Angeles`) saved per user on the server and cached in `localStorage` key `clipLibrary.timeZone`. Formatting only — the API always returns UTC (`...Z`).
 - `Intl.DateTimeFormat` throws if `dateStyle`/`timeStyle` are combined with `timeZoneName`; format parts explicitly.
 - The list polls every 3 s while any entry is queued/downloading/generating.
@@ -360,7 +379,7 @@ dotnet build TwitchDownloaderWPF.sln
 2. **Done.** SQLite library + audit log; stored vs reference-only rule with a background job queue; entry API
    (add/list/get/rename/delete/generate/file); on-demand files expiring after 72 h; web page with search, sort,
    status, download, rename/delete and the Local/Pacific toggle (saved in the browser).
-3. **In progress.** Step 1: logins, staff Owner, teams (multi-team accounts), one-time links, team-scoped library, audit of
+3. **Done.** Step 1: logins, staff Owner, teams (multi-team accounts), one-time links, team-scoped library, audit of
    signups/logins. Step 2: roles + permissions, member activity, team audio setting, per-user time zone, password change/reset.
-   Next: app moderators (permissions picked by the Owner), "view as support" (Owner; per moderator on/off), staff password resets,
-   and per-user/team activity and disk use for staff.
+   Step 3: app moderators (permissions picked by the Owner), "view as support" (per moderator on/off), staff password resets,
+   disabling users/teams, and per-user/team activity and disk use for staff.
