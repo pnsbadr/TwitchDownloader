@@ -51,13 +51,21 @@
 
     function render() {
       const registration = link.kind === "TeamRegistration";
+      if (link.kind === "PasswordReset") {
+        // Only a new password: the link already says whose account it is
+        useLoggedIn = false;
+        mode = "new";
+        document.querySelector(".tz[aria-label=Account]").hidden = true;
+        $("mode-hint").hidden = true;
+        $("username").closest("label").hidden = true;
+      }
       $("team-name-label").hidden = !registration;
       $("continue-as").hidden = !useLoggedIn;
       $("account-fields").hidden = useLoggedIn;
       for (const button of document.querySelectorAll(".seg[data-mode]")) button.setAttribute("aria-pressed", String(button.dataset.mode === mode));
       $("confirm-label").hidden = mode !== "new";
       $("password").autocomplete = mode === "new" ? "new-password" : "current-password";
-      $("join-button").textContent = mode === "new" ? "Create account" : "Log in and continue";
+      $("join-button").textContent = link.kind === "PasswordReset" ? "Set new password" : mode === "new" ? "Create account" : "Log in and continue";
       $("mode-hint").textContent = mode === "new"
         ? "Already in another team? Use \"I already have one\": one account works for every team you're in."
         : "Log in with the account you use for your other teams.";
@@ -80,11 +88,12 @@
         TeamRegistration: ["Create your team", "You'll be the owner of the new team: you invite your editors and clippers and decide what each of them can do."],
         TeamOwnership: [`Become the owner of ${link.teamName}`, `You'll own ${link.teamName}: its library, members and invite links.`],
         TeamInvite: [`Join ${link.teamName}`, "You'll start with no access; the team owner gives you a role after you join."],
+        PasswordReset: [`New password for ${link.forUsername}`, "Choose a new password. You'll be signed out everywhere else."],
       };
       const [heading, intro] = texts[link.kind];
       $("join-heading").textContent = heading;
       $("join-intro").textContent = `${intro} This link works once and expires ${formatWhen(link.expiresAtUtc)}.`;
-      if (link.loggedInAs) {
+      if (link.loggedInAs && link.kind !== "PasswordReset") {
         useLoggedIn = true;
         $("continue-name").textContent = link.loggedInAs;
         $("continue-name-2").textContent = link.loggedInAs;
@@ -101,7 +110,14 @@
     $("join-form").addEventListener("submit", async (event) => {
       event.preventDefault();
       const body = { token, newAccount: !useLoggedIn && mode === "new", teamName: $("team-name").value };
-      if (!useLoggedIn) {
+      if (link.kind === "PasswordReset") {
+        body.newAccount = false;
+        body.password = $("password").value;
+        if (body.password !== $("password2").value) {
+          setMessage($("join-message"), "The passwords don't match.", "error");
+          return;
+        }
+      } else if (!useLoggedIn) {
         body.username = $("username").value.trim();
         body.password = $("password").value;
         if (mode === "new" && body.password !== $("password2").value) {

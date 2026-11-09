@@ -12,7 +12,13 @@ namespace TwitchDownloaderWeb.Endpoints
     public sealed record MeTeamDto(int Id, string Name, bool IsOwner);
 
     /// <param name="CurrentTeamId">The team library requests use (switcher cookie, else the first team). Null when not in any team.</param>
-    public sealed record MeDto(int Id, string Username, IReadOnlyList<MeTeamDto> Teams, int? CurrentTeamId);
+    /// <param name="Permissions">The caller's permissions in that team (all of them for its owner); the page hides what they can't do.</param>
+    /// <param name="TimeZone">"local" or "pacific".</param>
+    public sealed record MeDto(int Id, string Username, IReadOnlyList<MeTeamDto> Teams, int? CurrentTeamId, IReadOnlyList<string> Permissions, string TimeZone);
+
+    public sealed record UserSettingsRequest(string? TimeZone);
+
+    public sealed record ChangePasswordRequest(string? CurrentPassword, string? NewPassword);
 
     public sealed record LinkTokenRequest(string? Token);
 
@@ -22,7 +28,8 @@ namespace TwitchDownloaderWeb.Endpoints
     public sealed record AcceptLinkRequest(string? Token, bool NewAccount, string? Username, string? Password, string? TeamName);
 
     /// <param name="LoggedInAs">The user already logged in in this browser, if any, so the page can offer "join as …".</param>
-    public sealed record LinkInfoDto(string Kind, string? TeamName, DateTime ExpiresAtUtc, string? LoggedInAs);
+    /// <param name="ForUsername">Password reset links: whose password it sets.</param>
+    public sealed record LinkInfoDto(string Kind, string? TeamName, DateTime ExpiresAtUtc, string? LoggedInAs, string? ForUsername);
 
     /// <summary>Team user login and one-time links (team registration, team ownership, team invites).</summary>
     public static class AuthEndpoints
@@ -34,6 +41,8 @@ namespace TwitchDownloaderWeb.Endpoints
             auth.MapPost("/logout", Logout);
             auth.MapGet("/me", Me);
             auth.MapPost("/team", SwitchTeam);
+            auth.MapPut("/settings", UpdateSettings);
+            auth.MapPost("/password", ChangePassword).RequireRateLimiting(AuthSchemes.LoginRateLimit);
 
             // Tokens travel in the body, never the URL, so they can't end up in request logs
             var links = app.MapGroup("/api/links");
@@ -84,15 +93,64 @@ namespace TwitchDownloaderWeb.Endpoints
                 return Results.Problem(detail: "Log in first.", statusCode: StatusCodes.Status401Unauthorized);
 
             var user = await db.Users.AsNoTracking().FirstAsync(x => x.Id == id, cancellationToken);
-            var teams = await db.TeamMembers.AsNoTracking()
+            var memberships = await db.TeamMembers.AsNoTracking()
                 .Where(x => x.UserId == id && x.Team!.DisabledAtUtc == null)
                 .OrderBy(x => x.JoinedAtUtc)
-                .Select(x => new MeTeamDto(x.TeamId, x.Team!.Name, x.Team.OwnerUserId == id))
+                .Select(x => new { x.TeamId, x.Team!.Name, IsOwner = x.Team.OwnerUserId == id, Permissions = x.Role == null ? TeamPermission.None : x.Role.Permissions })
                 .ToListAsync(cancellationToken);
 
             var wanted = int.TryParse(context.Request.Cookies[TeamScope.TeamCookie], out var cookieTeam) ? cookieTeam : (int?)null;
-            var current = teams.FirstOrDefault(x => x.Id == wanted) ?? teams.FirstOrDefault();
-            return Results.Ok(new MeDto(user.Id, user.Username, teams, current?.Id));
+            var current = memberships.FirstOrDefault(x => x.TeamId == wanted) ?? memberships.FirstOrDefault();
+            var permissions = current is null ? TeamPermission.None : current.IsOwner ? TeamPermission.All : current.Permissions;
+            return Results.Ok(new MeDto(user.Id, user.Username, memberships.Select(x => new MeTeamDto(x.TeamId, x.Name, x.IsOwner)).ToList(), current?.TeamId,
+                TeamPermissions.ToKeys(permissions), user.TimeZone ?? "local"));
+        }
+
+        private static async Task<IResult> UpdateSettings(UserSettingsRequest request, HttpContext context, LibraryDbContext db, CancellationToken cancellationToken)
+        {
+            if (AuthSetup.GetId(context.User) is not { } id)
+                return Results.Problem(detail: "Log in first.", statusCode: StatusCodes.Status401Unauthorized);
+            if (request.TimeZone is not ("local" or "pacific"))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["timeZone"] = ["Time zone must be local or pacific."] });
+
+            var user = await db.Users.FirstAsync(x => x.Id == id, cancellationToken);
+            user.TimeZone = request.TimeZone;
+            await db.SaveChangesAsync(cancellationToken);
+            return Results.NoContent();
+        }
+
+        /// <summary>Needs the current password. Signs out the account's other sessions (new security stamp) and keeps this one.</summary>
+        private static async Task<IResult> ChangePassword(ChangePasswordRequest request, HttpContext context, LibraryDbContext db, CancellationToken cancellationToken)
+        {
+            if (AuthSetup.GetId(context.User) is not { } id)
+                return Results.Problem(detail: "Log in first.", statusCode: StatusCodes.Status401Unauthorized);
+            if (AccountRules.PasswordError(request.NewPassword) is { } passwordError)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["newPassword"] = [passwordError] });
+
+            var user = await db.Users.FirstAsync(x => x.Id == id, cancellationToken);
+            var outcome = LoginCheck.Check(user, request.CurrentPassword ?? "", DateTime.UtcNow);
+            if (outcome != LoginOutcome.Success)
+            {
+                await db.SaveChangesAsync(cancellationToken);
+                return outcome == LoginOutcome.WrongPassword
+                    ? Results.ValidationProblem(new Dictionary<string, string[]> { ["currentPassword"] = ["Your current password is wrong."] })
+                    : LoginCheck.FailureResult(outcome);
+            }
+
+            SetPassword(user, request.NewPassword!);
+            db.Audit(AuditActions.PasswordChanged, null, user.Username);
+            await db.SaveChangesAsync(cancellationToken);
+            await SignInAsync(context, user);
+            return Results.NoContent();
+        }
+
+        /// <summary>New hash and security stamp (every other session ends), and any lockout cleared.</summary>
+        private static void SetPassword(UserAccount user, string password)
+        {
+            user.PasswordHash = AccountRules.HashPassword(password);
+            user.SecurityStamp = AccountRules.NewSecurityStamp();
+            user.FailedLoginCount = 0;
+            user.LockedUntilUtc = null;
         }
 
         private static async Task<IResult> SwitchTeam(SwitchTeamRequest request, HttpContext context, LibraryDbContext db, CancellationToken cancellationToken)
@@ -113,8 +171,11 @@ namespace TwitchDownloaderWeb.Endpoints
             if (link is null)
                 return LinkInvalid();
 
+            var forUsername = link.TargetUserId is { } target
+                ? await db.Users.Where(x => x.Id == target).Select(x => x.Username).FirstOrDefaultAsync(cancellationToken)
+                : null;
             return Results.Ok(new LinkInfoDto(link.Kind.ToString(), link.Team?.Name, link.ExpiresAtUtc,
-                AuthSetup.GetId(context.User) is not null ? context.User.Identity?.Name : null));
+                AuthSetup.GetId(context.User) is not null ? context.User.Identity?.Name : null, forUsername));
         }
 
         /// <summary>
@@ -126,6 +187,9 @@ namespace TwitchDownloaderWeb.Endpoints
             var link = await FindUsableLinkAsync(db, request.Token, cancellationToken);
             if (link is null)
                 return LinkInvalid();
+
+            if (link.Kind == AccountLinkKind.PasswordReset)
+                return await ResetPasswordAsync(link, request, context, db, cancellationToken);
 
             string? teamName = null;
             if (link.Kind == AccountLinkKind.TeamRegistration)
@@ -240,6 +304,34 @@ namespace TwitchDownloaderWeb.Endpoints
             await SignInAsync(context, user);
             SetTeamCookie(context, team.Id);
             return Results.Ok(new { teamId = team.Id, teamName = team.Name });
+        }
+
+        private static async Task<IResult> ResetPasswordAsync(AccountLink link, AcceptLinkRequest request, HttpContext context, LibraryDbContext db,
+            CancellationToken cancellationToken)
+        {
+            if (AccountRules.PasswordError(request.Password) is { } passwordError)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["password"] = [passwordError] });
+
+            var now = DateTime.UtcNow;
+            var user = await db.Users.FirstOrDefaultAsync(x => x.Id == link.TargetUserId, cancellationToken);
+            if (user is null)
+                return LinkInvalid();
+
+            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+            var claimed = await db.AccountLinks
+                .Where(x => x.Id == link.Id && x.UsedAtUtc == null && x.RevokedAtUtc == null && x.ExpiresAtUtc > now)
+                .ExecuteUpdateAsync(x => x.SetProperty(l => l.UsedAtUtc, now).SetProperty(l => l.UsedByUserId, user.Id), cancellationToken);
+            if (claimed == 0)
+                return LinkInvalid();
+
+            SetPassword(user, request.Password!);
+            user.LastLoginAtUtc = now;
+            db.Audit(AuditActions.PasswordReset, null, $"{user.Username} (reset link {link.Id})", userId: user.Id.ToString(), teamId: link.TeamId);
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+
+            await SignInAsync(context, user);
+            return Results.Ok(new { teamId = link.TeamId, teamName = (string?)null });
         }
 
         private static async Task<AccountLink?> FindUsableLinkAsync(LibraryDbContext db, string? token, CancellationToken cancellationToken)

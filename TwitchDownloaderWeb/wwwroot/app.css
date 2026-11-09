@@ -845,3 +845,22 @@ main.narrow { max-width: 460px; }
 .list-row .badge { margin-left: 8px; }
 .link-box { margin: 12px 0; padding: 12px; border: 1px solid var(--accent); border-radius: 8px; }
 .link-box input { font-family: ui-monospace, monospace; font-size: 13px; min-width: 0; }
+.account-link { color: var(--muted); text-decoration: none; }
+.account-link:hover { text-decoration: underline; }
+.role-form { margin-top: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; display: grid; gap: 12px; }
+.role-form h3 { margin: 0; font-size: 15px; }
+.perm-groups { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.perm-groups fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 0; padding: 8px 12px; display: grid; gap: 6px; }
+.perm-groups legend { font-weight: 600; padding: 0 4px; }
+.check-label { flex-direction: row; align-items: flex-start; gap: 8px; }
+.check-label input { margin-top: 3px; flex: none; }
+.perm-desc { display: block; }
+.inline-label { flex-direction: row; align-items: center; gap: 8px; }
+.table-wrap { overflow-x: auto; }
+table.activity { border-collapse: collapse; width: 100%; font-size: 14px; }
+table.activity th, table.activity td { padding: 6px 8px; border-top: 1px solid var(--border); text-align: left; vertical-align: top; white-space: nowrap; }
+table.activity th { font-weight: 600; font-size: 13px; color: var(--muted); border-top: none; }
+table.activity td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.log-list .log-row { display: flex; gap: 10px; padding: 6px 0; border-top: 1px solid var(--border); flex-wrap: wrap; }
+.log-list .log-row:first-child { border-top: none; }
+.log-time { min-width: 160px; }

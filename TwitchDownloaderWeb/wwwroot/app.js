@@ -13,6 +13,18 @@ let vodInfo = null;
 let clipInfo = null;
 let pollTimer = null;
 let renamingId = null;
+// GET /api/auth/me: the user, their teams and their permissions in the current team. The server enforces permissions;
+// the page only hides what wouldn't work.
+let me = null;
+
+function can(permission) {
+  return Boolean(me?.permissions.includes(permission));
+}
+
+// For own/any pairs (EditOwnEntries/EditAnyEntries, DeleteOwnEntries/DeleteAnyEntries)
+function canOnEntry(entry, own, any) {
+  return can(any) || (can(own) && entry.addedByUserId === String(me.id));
+}
 
 // ---------- helpers ----------
 
@@ -131,6 +143,8 @@ for (const button of document.querySelectorAll(".seg[data-tz]")) {
   button.addEventListener("click", () => {
     timeZoneMode = button.dataset.tz;
     saveTimeZoneMode(timeZoneMode);
+    // Per user on the server; localStorage stays as a cache for the other pages
+    api("PUT", "/api/auth/settings", { timeZone: timeZoneMode }).catch(() => {});
     renderTimeZoneToggle();
     renderVodInfo();
     renderBrowseList();
@@ -843,6 +857,8 @@ function openReview(entry) {
   review = { entry, start, end, vodLength: entry.vodLengthSeconds, from: 0, to: 0, saving: false };
   fitReviewWindow(true);
   $("clip-dialog-title").textContent = entry.title;
+  // Members who can't re-cut this entry can still watch it
+  $("trim-save").hidden = !canOnEntry(entry, "EditOwnEntries", "EditAnyEntries");
   $("trim-playhead").hidden = true;
   setMessage($("trim-message"), "");
   renderReview();
@@ -1239,6 +1255,7 @@ function renderSavedChannels() {
   select.value = current?.login ?? "";
 
   const save = $("browse-save");
+  save.hidden = !can("ManageChannels");
   save.textContent = current ? "Remove saved" : "Save channel";
   save.classList.toggle("danger", Boolean(current));
   save.disabled = !current && !normalizeLogin($("browse-channel").value);
@@ -1325,7 +1342,7 @@ function vodCard(vod) {
 
   // Offer a manual rescue for VODs that are live or still in the unmute window (or whose rescue failed), even with automatic saving off
   const canStart = !vod.rescueStatus || (vod.rescuePaused && vod.rescueStatus === "Grabbing");
-  const canRescue = (vod.unmuteWindowOpen && canStart) || vod.rescueStatus === "Failed";
+  const canRescue = can("SaveAudio") && ((vod.unmuteWindowOpen && canStart) || vod.rescueStatus === "Failed");
   const rescueButton = canRescue
     ? el("button", { type: "button", class: "small secondary", onclick: (event) => startRescue(vod, event.currentTarget) },
       vod.rescueStatus === "Failed" ? "Retry saving audio" : "Save audio now")
@@ -1493,11 +1510,11 @@ function entryActions(entry) {
 
   if (entry.canDownload) {
     actions.push(el("a", { class: "button", href: `/api/entries/${entry.id}/file`, download: "" }, "Download"));
-    actions.push(el("button", { type: "button", class: "secondary", onclick: () => openVertical(entry) }, "Make vertical"));
-  } else if (entry.status === "ReferenceOnly" && !isBusy(entry)) {
+    if (can("MakeVertical")) actions.push(el("button", { type: "button", class: "secondary", onclick: () => openVertical(entry) }, "Make vertical"));
+  } else if (entry.status === "ReferenceOnly" && !isBusy(entry) && can("GenerateFiles")) {
     actions.push(el("button", { type: "button", onclick: () => generate(entry) },
       entry.generationStatus === "Failed" ? "Retry generate" : "Generate file"));
-  } else if (entry.status === "Failed") {
+  } else if (entry.status === "Failed" && can("GenerateFiles")) {
     actions.push(el("button", { type: "button", onclick: () => generate(entry) }, "Retry download"));
   }
 
@@ -1505,8 +1522,12 @@ function entryActions(entry) {
   if (entry.status !== "VodUnavailable" && entry.kind !== "Clip") {
     actions.push(el("button", { type: "button", class: "secondary", onclick: () => openReview(entry) }, "Review"));
   }
-  actions.push(el("button", { type: "button", class: "link", onclick: () => startRename(entry) }, "Rename"));
-  actions.push(el("button", { type: "button", class: "link danger", onclick: () => deleteEntry(entry) }, "Delete"));
+  if (canOnEntry(entry, "EditOwnEntries", "EditAnyEntries")) {
+    actions.push(el("button", { type: "button", class: "link", onclick: () => startRename(entry) }, "Rename"));
+  }
+  if (canOnEntry(entry, "DeleteOwnEntries", "DeleteAnyEntries")) {
+    actions.push(el("button", { type: "button", class: "link danger", onclick: () => deleteEntry(entry) }, "Delete"));
+  }
   return actions;
 }
 
@@ -2354,7 +2375,7 @@ function vxRenderRenders(renders, newId) {
           el("a", { class: "button small", href: render.fileUrl, download: "" }, "Download"),
           el("button", { type: "button", class: "secondary small", onclick: play }, "Preview"),
           el("button", { type: "button", class: "link", onclick: () => vxUseLayout(render) }, "Use these settings"),
-          el("button", { type: "button", class: "link danger", onclick: () => vxDeleteRender(render) }, "Delete"))));
+          can("DeleteRenders") ? el("button", { type: "button", class: "link danger", onclick: () => vxDeleteRender(render) }, "Delete") : null)));
     item.vxLayout = render.layout;
     return item;
   }));
@@ -2608,7 +2629,9 @@ function showGate(text, heading = "Waiting for access") {
   if (pollTimer) clearTimeout(pollTimer);
 }
 
-function renderAccountBar(me) {
+const TEAM_PAGE_PERMISSIONS = ["InviteMembers", "AssignRoles", "ManageRoles", "RemoveMembers", "ResetPasswords", "ViewActivity", "ManageAudioSettings"];
+
+function renderAccountBar() {
   $("account-bar").hidden = false;
   $("account-name").textContent = me.username;
   const current = me.teams.find((x) => x.id === me.currentTeamId);
@@ -2616,7 +2639,7 @@ function renderAccountBar(me) {
   $("team-single").textContent = me.teams.length === 1 ? me.teams[0].name : "";
   $("team-switch").replaceChildren(...me.teams.map((team) => el("option", { value: team.id }, team.name)));
   if (current) $("team-switch").value = String(current.id);
-  $("team-link").hidden = !current?.isOwner;
+  $("team-link").hidden = !TEAM_PAGE_PERMISSIONS.some(can);
 }
 
 $("team-switch").addEventListener("change", async () => {
@@ -2630,23 +2653,31 @@ $("logout").addEventListener("click", async () => {
 });
 
 async function startApp() {
-  let me;
   try {
     me = await api("GET", "/api/auth/me");
   } catch {
     return; // 401 already went to the login page
   }
-  renderAccountBar(me);
+  renderAccountBar();
+  timeZoneMode = me.timeZone === "pacific" ? "pacific" : "local";
+  saveTimeZoneMode(timeZoneMode);
   if (!me.currentTeamId) {
     showGate("You aren't in a team yet. Ask a team owner for an invite link.", "No team yet");
     return;
   }
   const current = me.teams.find((x) => x.id === me.currentTeamId);
-  if (!current.isOwner) {
-    showGate(`You're in ${current.name}, but its owner hasn't given you access yet. They'll give you a role; reload this page after that.`);
+  if (me.permissions.length === 0) {
+    showGate(`You're in ${current.name}, but you don't have a role there yet. The team owner gives you one; reload this page after that.`);
+    return;
+  }
+  if (!can("ViewLibrary")) {
+    showGate(`Your role in ${current.name} doesn't include the library. Open the Team page from the top bar.`, "Team tools only");
+    $("gate").append(el("p", {}, el("a", { class: "button", href: "/team.html" }, "Open the Team page")));
     return;
   }
   $("library-main").hidden = false;
+  $("add-button").hidden = !can("AddEntries");
+  $("add-not-allowed").hidden = can("AddEntries");
 
   renderTimeZoneToggle();
   renderVodTypeToggle();

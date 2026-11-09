@@ -16,15 +16,63 @@
 
     <section class="panel" id="members-panel" hidden>
       <h2>Members</h2>
+      <p class="muted small-text">New members join with no role, so they can't see anything until you give them one.</p>
       <ul id="members" class="plain-list"></ul>
+      <div id="reset-new"></div>
+    </section>
+
+    <section class="panel" id="roles-panel" hidden>
+      <h2>Roles</h2>
+      <p class="muted small-text" id="roles-hint">A role is a set of permissions. Give each member one role.</p>
+      <ul id="roles" class="plain-list"></ul>
+      <div class="row"><button type="button" id="new-role" class="secondary">New role</button></div>
+      <form id="role-form" class="role-form" hidden novalidate>
+        <h3 id="role-form-title">New role</h3>
+        <label>Name <input id="role-name" maxlength="50" placeholder="e.g. Clipper"></label>
+        <div id="role-permissions" class="perm-groups"></div>
+        <div class="row">
+          <button type="submit" id="role-save">Save role</button>
+          <button type="button" id="role-cancel" class="link">Cancel</button>
+          <button type="button" id="role-delete" class="link danger" hidden>Delete role</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel" id="activity-panel" hidden>
+      <h2>Activity</h2>
+      <div class="row">
+        <label class="inline-label">Period
+          <select id="activity-days">
+            <option value="1">Last 24 hours</option>
+            <option value="7" selected>Last 7 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="90">Last 90 days</option>
+          </select>
+        </label>
+      </div>
+      <div class="table-wrap">
+        <table class="activity">
+          <thead><tr><th>Member</th><th>Last active</th><th title="Entries added">Added</th><th title="Renamed or re-cut">Edited</th>
+            <th>Deleted</th><th title="Files downloaded">Downloads</th><th title="On-demand files made">Files made</th><th title="Vertical renders started">Vertical</th>
+            <th title="Entries they added, all time">Entries</th><th title="Files of their entries on disk now">Disk</th><th></th></tr></thead>
+          <tbody id="activity-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel" id="log-panel" hidden>
+      <h2 id="log-heading">Team log</h2>
+      <div class="row"><button type="button" id="log-all" class="link small" hidden>Show everyone</button></div>
+      <ul id="log" class="plain-list log-list"></ul>
+      <div class="row"><button type="button" id="log-more" class="secondary small" hidden>Load more</button></div>
     </section>
 
     <section class="panel" id="invites-panel" hidden>
       <h2>Invite links</h2>
-      <p class="muted small-text">Each link works once and expires after 7 days. Whoever opens it makes an account (or logs in to theirs)
-        and joins with no access. Roles and permissions are coming next.</p>
+      <p class="muted small-text">Each link works once and expires after 7 days. Whoever opens it makes an account (or uses theirs)
+        and joins with no role.</p>
       <form id="invite-form" class="row" novalidate>
-        <label class="grow">Who is it for? (optional, only you see this)
+        <label class="grow">Who is it for? (optional, only the team sees this)
           <input id="invite-note" maxlength="200" placeholder="e.g. Sam, editor">
         </label>
         <button type="submit">Make invite link</button>
@@ -32,81 +80,15 @@
       <div id="invite-new"></div>
       <ul id="invites" class="plain-list"></ul>
     </section>
+
+    <section class="panel" id="settings-panel" hidden>
+      <h2>Audio saving</h2>
+      <label class="check-label"><input type="checkbox" id="auto-save-audio"> Automatically save audio for our saved channels</label>
+      <p class="muted small-text" id="auto-save-hint">Saves each new stream's audio while it's live, so muted parts can be restored later. Uses a lot
+        of disk space (about 1 GB per channel per day until the muted parts are picked out). Save audio now on a VOD works either way.</p>
+    </section>
   </main>
   <script src="account.js"></script>
-  <script>
-    let team = null;
-
-    async function load() {
-      try {
-        team = await api("GET", "/api/team");
-      } catch (error) {
-        if (error.status === 401) { location.href = "/login.html"; return; }
-        setMessage($("team-message"), error.message, "error");
-        return;
-      }
-      $("team-title").textContent = team.name;
-      document.title = `${team.name} · Clip Library`;
-      $("members-panel").hidden = false;
-      $("invites-panel").hidden = false;
-      renderMembers();
-      loadInvites();
-    }
-
-    function renderMembers() {
-      $("members").replaceChildren(...team.members.map((member) => el("li", { class: "list-row" },
-        el("div", { class: "grow" },
-          el("strong", {}, member.username), member.isOwner ? el("span", { class: "badge" }, "Owner") : null,
-          el("div", { class: "muted small-text" },
-            `Joined ${formatWhen(member.joinedAtUtc)} · ${member.lastActiveAtUtc ? `last active ${formatWhen(member.lastActiveAtUtc)}` : "not active yet"}`)),
-        member.isOwner ? null : el("button", { type: "button", class: "danger small", onclick: () => removeMember(member) }, "Remove"))));
-    }
-
-    async function removeMember(member) {
-      if (!confirm(`Remove ${member.username} from ${team.name}? They keep their account and their other teams.`)) return;
-      try {
-        await api("DELETE", `/api/team/members/${member.userId}`);
-        team.members = team.members.filter((x) => x.userId !== member.userId);
-        renderMembers();
-      } catch (error) {
-        setMessage($("team-message"), error.message, "error");
-      }
-    }
-
-    async function loadInvites() {
-      const links = await api("GET", "/api/team/invites");
-      $("invites").replaceChildren(...links.map((link) => {
-        const state = linkState(link);
-        return el("li", { class: "list-row" },
-          el("div", { class: "grow" },
-            el("strong", {}, link.note || "Invite link"),
-            el("div", { class: "muted small-text" }, `Made ${formatWhen(link.createdAtUtc)} · ${state.text}`)),
-          state.open ? el("button", { type: "button", class: "secondary small", onclick: () => revoke(link) }, "Revoke") : null);
-      }));
-    }
-
-    async function revoke(link) {
-      try {
-        await api("DELETE", `/api/team/invites/${link.id}`);
-        loadInvites();
-      } catch (error) {
-        setMessage($("team-message"), error.message, "error");
-      }
-    }
-
-    $("invite-form").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      try {
-        const link = await api("POST", "/api/team/invites", { note: $("invite-note").value });
-        $("invite-note").value = "";
-        $("invite-new").replaceChildren(linkBox(link.url));
-        loadInvites();
-      } catch (error) {
-        setMessage($("team-message"), error.message, "error");
-      }
-    });
-
-    load();
-  </script>
+  <script src="team.js"></script>
 </body>
 </html>

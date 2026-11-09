@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Account · Clip Library</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Your account</h1>
+    <a class="button secondary" href="/">Back to the library</a>
+  </header>
+  <main class="narrow">
+    <p id="account-message" class="message" role="status"></p>
+    <section class="panel">
+      <h2 id="account-heading">Account</h2>
+      <p id="account-teams" class="muted"></p>
+      <div class="tz" role="group" aria-label="Show times in">
+        <span class="tz-label">Show times in:</span>
+        <button type="button" class="seg" data-tz="local" aria-pressed="true">Local</button>
+        <button type="button" class="seg" data-tz="pacific" aria-pressed="false">Pacific</button>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>Change password</h2>
+      <form id="password-form" class="stack" novalidate>
+        <label>Current password <input id="current-password" type="password" autocomplete="current-password" maxlength="200"></label>
+        <label>New password <input id="new-password" type="password" autocomplete="new-password" maxlength="200"></label>
+        <label>Repeat new password <input id="new-password2" type="password" autocomplete="new-password" maxlength="200"></label>
+        <div class="row"><button type="submit">Change password</button></div>
+        <p class="muted small-text">This signs you out everywhere else.</p>
+      </form>
+    </section>
+  </main>
+  <script src="account.js"></script>
+  <script>
+    let timeZone = "local";
+
+    function renderTimeZone() {
+      for (const button of document.querySelectorAll(".seg[data-tz]")) button.setAttribute("aria-pressed", String(button.dataset.tz === timeZone));
+    }
+
+    async function load() {
+      let me;
+      try {
+        me = await api("GET", "/api/auth/me");
+      } catch (error) {
+        if (error.status === 401) location.href = "/login.html";
+        else setMessage($("account-message"), error.message, "error");
+        return;
+      }
+      $("account-heading").textContent = me.username;
+      $("account-teams").textContent = me.teams.length
+        ? `Teams: ${me.teams.map((t) => t.name + (t.isOwner ? " (owner)" : "")).join(", ")}`
+        : "You aren't in a team yet.";
+      timeZone = me.timeZone;
+      renderTimeZone();
+    }
+
+    for (const button of document.querySelectorAll(".seg[data-tz]")) {
+      button.addEventListener("click", async () => {
+        timeZone = button.dataset.tz;
+        renderTimeZone();
+        try { localStorage.setItem("clipLibrary.timeZone", timeZone); } catch { /* storage blocked */ }
+        try {
+          await api("PUT", "/api/auth/settings", { timeZone });
+          setMessage($("account-message"), "Saved.", "ok");
+        } catch (error) {
+          setMessage($("account-message"), error.message, "error");
+        }
+      });
+    }
+
+    $("password-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if ($("new-password").value !== $("new-password2").value) {
+        setMessage($("account-message"), "The new passwords don't match.", "error");
+        return;
+      }
+      try {
+        await api("POST", "/api/auth/password", { currentPassword: $("current-password").value, newPassword: $("new-password").value });
+        event.target.reset();
+        setMessage($("account-message"), "Password changed. Other sessions are signed out.", "ok");
+      } catch (error) {
+        setMessage($("account-message"), error.message, "error");
+      }
+    });
+
+    load();
+  </script>
+</body>
+</html>

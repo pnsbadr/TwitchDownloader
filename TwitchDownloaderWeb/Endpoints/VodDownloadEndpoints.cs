@@ -1,7 +1,10 @@
+using TwitchDownloaderWeb.Data;
 using Microsoft.Extensions.Options;
 using TwitchDownloaderCore.Models;
 using TwitchDownloaderCore.Services;
 using TwitchDownloaderWeb.Services;
+
+using TwitchDownloaderWeb.Services.Accounts;
 
 namespace TwitchDownloaderWeb.Endpoints
 {
@@ -22,7 +25,7 @@ namespace TwitchDownloaderWeb.Endpoints
     {
         public static IEndpointRouteBuilder MapVodDownloadEndpoints(this IEndpointRouteBuilder app)
         {
-            app.MapPost("/api/vods/download", DownloadVod);
+            app.MapPost("/api/vods/download", DownloadVod).RequireTeamOwner();
             return app;
         }
 

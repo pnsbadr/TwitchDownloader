@@ -47,6 +47,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<DateTime?>("RevokedAtUtc")
                         .HasColumnType("TEXT");
 
+                    b.Property<int?>("TargetUserId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<int?>("TeamId")
                         .HasColumnType("INTEGER");
 
@@ -368,6 +371,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
+                    b.Property<bool>("AutoSaveAudio")
+                        .HasColumnType("INTEGER");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("TEXT");
 
@@ -398,6 +404,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<DateTime>("JoinedAtUtc")
                         .HasColumnType("TEXT");
 
+                    b.Property<int?>("RoleId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<int>("TeamId")
                         .HasColumnType("INTEGER");
 
@@ -406,12 +415,45 @@ namespace TwitchDownloaderWeb.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("RoleId");
+
                     b.HasIndex("UserId");
 
                     b.HasIndex("TeamId", "UserId")
                         .IsUnique();
 
                     b.ToTable("TeamMembers");
+                });
+
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.TeamRole", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("Permissions")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("TeamId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TeamId", "Name")
+                        .IsUnique();
+
+                    b.ToTable("TeamRoles");
                 });
 
             modelBuilder.Entity("TwitchDownloaderWeb.Data.UserAccount", b =>
@@ -451,6 +493,10 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<string>("SecurityStamp")
                         .IsRequired()
                         .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("TimeZone")
+                        .HasMaxLength(16)
                         .HasColumnType("TEXT");
 
                     b.Property<string>("Username")
@@ -580,6 +626,11 @@ namespace TwitchDownloaderWeb.Data.Migrations
 
             modelBuilder.Entity("TwitchDownloaderWeb.Data.TeamMember", b =>
                 {
+                    b.HasOne("TwitchDownloaderWeb.Data.TeamRole", "Role")
+                        .WithMany()
+                        .HasForeignKey("RoleId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("TwitchDownloaderWeb.Data.Team", "Team")
                         .WithMany("Members")
                         .HasForeignKey("TeamId")
@@ -592,9 +643,20 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.Navigation("Role");
+
                     b.Navigation("Team");
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.TeamRole", b =>
+                {
+                    b.HasOne("TwitchDownloaderWeb.Data.Team", null)
+                        .WithMany()
+                        .HasForeignKey("TeamId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("TwitchDownloaderWeb.Data.Team", b =>

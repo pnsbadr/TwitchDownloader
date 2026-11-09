@@ -37,7 +37,14 @@ namespace TwitchDownloaderWeb.Tests
             _services = collection.BuildServiceProvider();
 
             using (var scope = _services.CreateScope())
-                scope.ServiceProvider.GetRequiredService<LibraryDbContext>().Database.Migrate();
+            {
+                var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+                db.Database.Migrate();
+                // Rescues not started by hand only run for channels a team with automatic saving on has saved
+                db.Teams.First(x => x.Id == MainTeam).AutoSaveAudio = true;
+                db.Channels.Add(new SavedChannel { TeamId = MainTeam, Login = "arky", DisplayName = "Arky", AddedAtUtc = DateTime.UtcNow });
+                db.SaveChanges();
+            }
 
             _storage = new LibraryStorage(Options.Create(new DownloadSettings { OutputFolder = Path.Combine(_dir, "downloads") }), new FakeEnvironment(_dir),
                 NullLogger<LibraryStorage>.Instance);
@@ -79,6 +86,40 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal(0, rescues[VodId].SavedCount);
             Assert.Equal(AudioRescueStatus.WaitingToPrune, rescues[manualVodId].Status);
             Assert.Equal(1, rescues[manualVodId].SavedCount);
+        }
+
+        [Fact]
+        public async Task RescuesWaitWhileNoTeamWithAutomaticSavingWatchesTheChannel()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            using (var scope = _services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+                db.Teams.First(x => x.Id == MainTeam).AutoSaveAudio = false;
+                AudioRescueService.AddRescue(db, VodId, "arky", "Team has it off", DateTime.UtcNow.AddHours(-1), "test");
+                AudioRescueService.AddRescue(db, VodId + 1, "someone_else", "Not saved by any team", DateTime.UtcNow.AddHours(-1), "test");
+                await db.SaveChangesAsync(ct);
+            }
+
+            _cdn.Serve("0.ts", 1000);
+            _playlists.Set(live: false, ("0.ts", 10));
+            await _service.ProcessDueAsync(ct);
+
+            using (var scope = _services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+                Assert.All(await db.AudioRescues.ToListAsync(ct), x => Assert.Equal(0, x.SavedCount));
+
+                // Turning it on for the team that saved arky resumes that one only
+                db.Teams.First(x => x.Id == MainTeam).AutoSaveAudio = true;
+                await db.SaveChangesAsync(ct);
+            }
+
+            await _service.ProcessDueAsync(ct);
+            using var check = _services.CreateScope();
+            var rescues = await check.ServiceProvider.GetRequiredService<LibraryDbContext>().AudioRescues.AsNoTracking().ToDictionaryAsync(x => x.VodId, ct);
+            Assert.Equal(1, rescues[VodId].SavedCount);
+            Assert.Equal(0, rescues[VodId + 1].SavedCount);
         }
 
         [Fact]
