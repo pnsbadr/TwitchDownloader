@@ -157,7 +157,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/vods/{id}/rescue` / `POST /api/vods/{id}/rescue` | Audio rescue status (404 if none) / start one now (202; a Failed one is retried; one paused by `AudioRescue:Enabled` being off is resumed; others returned as is) |
 | `GET /api/entries/{id}/shortform` / `POST /api/entries/{id}/shortform` | Vertical (9:16) renders: `{ status: None\|Rendering\|Failed, progress, error, layout, renders: [{ id, createdAtUtc, expiresAtUtc, sizeBytes, layout, fileUrl, thumbnailUrl }] }` (newest first) / start a render (202) with `{ mode: single\|split, top: {x,y,width,height}, bottom?, splitRatio?, trimStart?, trimEnd? }` (fractions of the source video). 409 if the entry has no file |
 | `GET /api/entries/{id}/shortform/{renderId}/file[?inline=true]` / `.../thumbnail` / `DELETE .../{renderId}` | A render's mp4 (`<title> (vertical).mp4`, audited `file.served`; `inline` = the page's preview player, not audited), its jpg thumbnail, delete it. 404 if gone/expired |
-| `GET /api/vods/{id}/play.m3u8[?segments=proxy]` / `.../play/{n}.m3u8` / `.../play/{n}/{segment}` | HLS for the page's player (see Watching VODs). 403 sub-only, 404 gone, 502 Twitch unreachable. Playlists `no-store` |
+| `GET /api/vods/{id}/play.m3u8[?segments=proxy]` / `.../play/{n}.m3u8` / `.../play/{n}/{segment}` | HLS for the page's player (see Watching VODs), plus `.../play/{n}/clean/{key}.ts` (muted segment with saved audio swapped in). 403 sub-only, 404 gone, 502 Twitch unreachable. Playlists `no-store` |
 | `POST /api/vods/download` | Phase 1 dev endpoint: synchronous, writes `<title>.mp4` straight into `downloads/`, not part of the library |
 
 `canDownload` in entry responses checks the generated file's expiry itself, since cleanup runs periodically.
@@ -200,8 +200,14 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   line under the player says why; its link switches players (choice saved in `localStorage` key `clipLibrary.playerMode`, `app`/`twitch`;
   if the chosen one fails the other is tried). Volume is saved in `clipLibrary.playerVolume`. The embed needs `parent` =
   `location.hostname`, so open the page as `localhost` (Twitch may reject a bare IP); sub-only VODs play there only if the browser is
-  logged in to Twitch with access. Swapping saved clean audio in during playback isn't built yet: the media playlist rewrite
-  (`HlsPlaylists.RewriteMedia`) is where muted segments can later be pointed elsewhere.
+  logged in to Twitch with access.
+  **Clean audio in the player** (`PlaybackAudioSwap`): the media playlist rewrite points every `{key}-muted.ts` that has saved
+  clean audio (`RescuedAudioSegments` with a file) at `/play/{n}/clean/{key}.ts`, in either segment mode. That endpoint fetches the
+  muted segment, and ffmpeg swaps its audio for the saved one with `-copyts -mpegts_copyts 1` (video and audio copied, so both keep
+  their PTS; the audio-only rendition shares the stream's clock, so it lines up as in RestorePlanner). If the saved audio's sample
+  rate/channels differ from the segment's (`AdtsFormat`), audio is re-encoded to match (~21 ms AAC priming). Results are cached in
+  `downloads/work/play/{vodId}/{n}/{key}.ts` for 2 h (work/ is cleared at startup); any failure serves the muted segment. The master
+  sends `X-Clean-Audio-Segments` (count) and the page shows "Saved audio plays over muted parts". fMP4 (`.mp4`) segments aren't swapped.
   **Watch** next to Get Info / on VOD cards opens an inline player with **Set start here / Set end here** (fills the trim
   fields from the position below, hundredths of a second) and **Play clip** (seeks to start, pauses at end). The review dialog
   starts at the clip start and pauses at its end (not shown for VodUnavailable). Closing a player

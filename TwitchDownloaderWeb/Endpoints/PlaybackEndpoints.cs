@@ -14,12 +14,17 @@ namespace TwitchDownloaderWeb.Endpoints
             app.MapGet("/api/vods/{vodId:long}/play.m3u8", GetMaster);
             app.MapGet("/api/vods/{vodId:long}/play/{variant:int}.m3u8", GetMedia);
             app.MapGet("/api/vods/{vodId:long}/play/{variant:int}/{segment}", GetSegment);
+            app.MapGet("/api/vods/{vodId:long}/play/{variant:int}/clean/{key}.ts", GetCleanSegment);
             return app;
         }
 
         private static bool UseProxy(string? segments) => string.Equals(segments, "proxy", StringComparison.OrdinalIgnoreCase);
 
-        private static async Task<IResult> GetMaster(long vodId, string? segments, VodPlaybackService playback, HttpContext context, CancellationToken cancellationToken)
+        /// <summary>Response header on the master: how many of the VOD's segments have saved clean audio the player will use.</summary>
+        public const string CleanAudioHeader = "X-Clean-Audio-Segments";
+
+        private static async Task<IResult> GetMaster(long vodId, string? segments, VodPlaybackService playback, PlaybackAudioSwap audioSwap,
+            HttpContext context, CancellationToken cancellationToken)
         {
             PlaybackVariants variants;
             try
@@ -41,21 +46,27 @@ namespace TwitchDownloaderWeb.Endpoints
             }
 
             var query = UseProxy(segments) ? "?segments=proxy" : "";
+            context.Response.Headers[CleanAudioHeader] = (await audioSwap.GetCleanKeysAsync(vodId, cancellationToken)).Count.ToString();
             NoStore(context);
             return Results.Text(HlsPlaylists.BuildMaster(variants.Variants, i => $"/api/vods/{vodId}/play/{i}.m3u8{query}"), HlsPlaylists.ContentType);
         }
 
-        private static async Task<IResult> GetMedia(long vodId, int variant, string? segments, VodPlaybackService playback, HttpContext context, CancellationToken cancellationToken)
+        private static async Task<IResult> GetMedia(long vodId, int variant, string? segments, VodPlaybackService playback, PlaybackAudioSwap audioSwap,
+            HttpContext context, CancellationToken cancellationToken)
         {
             var proxy = UseProxy(segments);
+            var cleanKeys = await audioSwap.GetCleanKeysAsync(vodId, cancellationToken);
             string? playlist;
             try
             {
                 playlist = await playback.GetMediaPlaylistAsync(vodId, variant, (segment, baseUrl) =>
-                    proxy && HlsPlaylists.ProxyableSegmentName(segment, baseUrl) is { } name
-                        ? $"/api/vods/{vodId}/play/{variant}/{name}"
-                        : segment.AbsoluteUri,
-                    cancellationToken);
+                {
+                    var name = HlsPlaylists.ProxyableSegmentName(segment, baseUrl);
+                    // Muted with clean audio saved: our server swaps the audio in (in either mode)
+                    if (name is not null && PlaybackAudioSwap.MutedKey(name) is { } key && cleanKeys.Contains(key))
+                        return $"/api/vods/{vodId}/play/{variant}/clean/{key}.ts";
+                    return proxy && name is not null ? $"/api/vods/{vodId}/play/{variant}/{name}" : segment.AbsoluteUri;
+                }, cancellationToken);
             }
             catch (HttpRequestException)
             {
@@ -96,6 +107,22 @@ namespace TwitchDownloaderWeb.Endpoints
             var contentType = response.Content.Headers.ContentType?.MediaType
                 ?? (segment.EndsWith(".ts", StringComparison.OrdinalIgnoreCase) ? "video/mp2t" : "video/mp4");
             return Results.Stream(await response.Content.ReadAsStreamAsync(cancellationToken), contentType);
+        }
+
+        /// <summary>A muted segment with the saved clean audio swapped in, or the muted one if that can't be done.</summary>
+        private static async Task<IResult> GetCleanSegment(long vodId, int variant, string key, VodPlaybackService playback, PlaybackAudioSwap audioSwap,
+            HttpContext context, CancellationToken cancellationToken)
+        {
+            if (!PlaybackAudioSwap.KeyRegex.IsMatch(key))
+                return Results.NotFound();
+
+            if (await audioSwap.GetSegmentAsync(vodId, variant, key, cancellationToken) is { } path)
+            {
+                context.Response.Headers.CacheControl = "private, max-age=3600";
+                return Results.File(path, "video/mp2t", enableRangeProcessing: true);
+            }
+
+            return await GetSegment(vodId, variant, $"{key}-muted.ts", playback, context, cancellationToken);
         }
 
         private static void NoStore(HttpContext context) => context.Response.Headers.CacheControl = "no-store";

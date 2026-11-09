@@ -32,6 +32,7 @@ builder.Services.AddMemoryCache();
 builder.Services.AddHttpClient(VodPlaybackService.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(30));
 builder.Services.AddSingleton<IVodPlaybackSource, TwitchVodPlaybackSource>();
 builder.Services.AddSingleton<VodPlaybackService>();
+builder.Services.AddSingleton<PlaybackAudioSwap>();
 builder.Services.AddSingleton<VodDownloadRunner>();
 builder.Services.AddSingleton<ExactTrimService>();
 builder.Services.AddSingleton<ClipFileService>();

@@ -267,6 +267,7 @@ class HlsBackend {
     this.video = null;
     this.hls = null;
     this.ready = false;
+    this.cleanSegments = 0;
   }
 
   // Resolves once the first frame at startSeconds is loaded; rejects with PlayerUnavailable if it can't play
@@ -289,6 +290,8 @@ class HlsBackend {
       }
       throw new PlayerUnavailable(problemMessage(problem, check.status));
     }
+    // Muted segments the server will play with saved clean audio instead
+    this.cleanSegments = Number(check.headers.get("X-Clean-Audio-Segments")) || 0;
 
     const video = document.createElement("video");
     video.controls = true;
@@ -647,6 +650,13 @@ class VodPlayer {
         select.value = String(backend.level);
         select.addEventListener("change", () => (backend.level = Number(select.value)));
         line.append(select);
+      }
+      if (backend.cleanSegments > 0) {
+        const clean = document.createElement("span");
+        clean.className = "badge ok";
+        clean.textContent = "Saved audio plays over muted parts";
+        clean.title = `${backend.cleanSegments} muted part${backend.cleanSegments === 1 ? "" : "s"} of this VOD have clean audio saved; the player uses it.`;
+        line.append(clean);
       }
     } else {
       label.textContent = this.fallbackReason ? `Twitch player (app player: ${this.fallbackReason})` : "Twitch player";
