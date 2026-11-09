@@ -4,6 +4,7 @@ using TwitchDownloaderWeb.Data;
 using TwitchDownloaderWeb.Endpoints;
 using TwitchDownloaderWeb.Services;
 using TwitchDownloaderWeb.Services.AudioRescue;
+using TwitchDownloaderWeb.Services.Playback;
 using TwitchDownloaderWeb.Services.Shortform;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -27,6 +28,10 @@ builder.Services.AddSingleton<IVodPlaylistSource, TwitchVodPlaylistSource>();
 builder.Services.AddSingleton<AudioRestoreService>();
 builder.Services.AddSingleton<AudioRescueService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AudioRescueService>());
+builder.Services.AddMemoryCache();
+builder.Services.AddHttpClient(VodPlaybackService.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(30));
+builder.Services.AddSingleton<IVodPlaybackSource, TwitchVodPlaybackSource>();
+builder.Services.AddSingleton<VodPlaybackService>();
 builder.Services.AddSingleton<VodDownloadRunner>();
 builder.Services.AddSingleton<ExactTrimService>();
 builder.Services.AddSingleton<ClipFileService>();
@@ -58,5 +63,6 @@ app.MapEntryEndpoints();
 app.MapChannelEndpoints();
 app.MapAudioRescueEndpoints();
 app.MapShortformEndpoints();
+app.MapPlaybackEndpoints();
 
 app.Run();
