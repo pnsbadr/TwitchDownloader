@@ -42,6 +42,9 @@ namespace TwitchDownloaderWeb.Data
         public DateTime? LockedUntilUtc { get; set; }
         public DateTime? DisabledAtUtc { get; set; }
 
+        /// <summary>How the page shows times: "local" (the browser's zone) or "pacific". Display only; everything is stored in UTC.</summary>
+        public string? TimeZone { get; set; }
+
         public List<TeamMember> Memberships { get; set; } = [];
     }
 
@@ -58,6 +61,12 @@ namespace TwitchDownloaderWeb.Data
 
         public DateTime? DisabledAtUtc { get; set; }
 
+        /// <summary>
+        /// Automatic audio saving for this team's saved channels (replaces the old app-wide AudioRescue:Enabled switch, which is now the
+        /// app's kill switch). Off by default: it fills disks fast.
+        /// </summary>
+        public bool AutoSaveAudio { get; set; }
+
         public List<TeamMember> Members { get; set; } = [];
     }
 
@@ -69,6 +78,10 @@ namespace TwitchDownloaderWeb.Data
         public int UserId { get; set; }
         public UserAccount? User { get; set; }
         public DateTime JoinedAtUtc { get; set; }
+
+        /// <summary>Null = no permissions (how everyone joins). The team owner has every permission whatever this says.</summary>
+        public int? RoleId { get; set; }
+        public TeamRole? Role { get; set; }
     }
 
     /// <summary>
@@ -100,6 +113,9 @@ namespace TwitchDownloaderWeb.Data
 
         /// <summary>From a team owner: whoever opens it joins the team with no permissions. Never carries a role (badrfly's call).</summary>
         TeamInvite,
+
+        /// <summary>Sets a new password for <see cref="AccountLink.TargetUserId"/>. Lives 24 hours.</summary>
+        PasswordReset,
     }
 
     /// <summary>
@@ -117,6 +133,9 @@ namespace TwitchDownloaderWeb.Data
         /// <summary>The team joined or taken over; null for <see cref="AccountLinkKind.TeamRegistration"/>.</summary>
         public int? TeamId { get; set; }
         public Team? Team { get; set; }
+
+        /// <summary>The account whose password a <see cref="AccountLinkKind.PasswordReset"/> link sets.</summary>
+        public int? TargetUserId { get; set; }
 
         /// <summary>A label for whoever made it (e.g. who it's for). Shown in link lists only.</summary>
         public string? Note { get; set; }

@@ -30,6 +30,7 @@ namespace TwitchDownloaderWeb.Data
         public DbSet<TeamMember> TeamMembers => Set<TeamMember>();
         public DbSet<StaffAccount> StaffAccounts => Set<StaffAccount>();
         public DbSet<AccountLink> AccountLinks => Set<AccountLink>();
+        public DbSet<TeamRole> TeamRoles => Set<TeamRole>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -78,6 +79,7 @@ namespace TwitchDownloaderWeb.Data
                 entity.Property(x => x.NormalizedUsername).HasMaxLength(32);
                 entity.Property(x => x.PasswordHash).HasMaxLength(200);
                 entity.Property(x => x.SecurityStamp).HasMaxLength(64);
+                entity.Property(x => x.TimeZone).HasMaxLength(16);
                 entity.HasIndex(x => x.NormalizedUsername).IsUnique();
             });
 
@@ -93,6 +95,14 @@ namespace TwitchDownloaderWeb.Data
                 entity.HasIndex(x => x.UserId);
                 entity.HasOne(x => x.Team).WithMany(x => x.Members).HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
                 entity.HasOne(x => x.User).WithMany(x => x.Memberships).HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(x => x.Role).WithMany().HasForeignKey(x => x.RoleId).OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<TeamRole>(entity =>
+            {
+                entity.Property(x => x.Name).HasMaxLength(50);
+                entity.HasIndex(x => new { x.TeamId, x.Name }).IsUnique();
+                entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
             });
 
             modelBuilder.Entity<StaffAccount>(entity =>

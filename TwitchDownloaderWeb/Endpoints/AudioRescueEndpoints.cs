@@ -4,6 +4,8 @@ using TwitchDownloaderWeb.Data;
 using TwitchDownloaderWeb.Services;
 using TwitchDownloaderWeb.Services.AudioRescue;
 
+using TwitchDownloaderWeb.Services.Accounts;
+
 namespace TwitchDownloaderWeb.Endpoints
 {
     public sealed record AudioRescueDto(long VodId, string? ChannelLogin, string? Title, string Status, string? Error, int SegmentCount, int SavedCount,
@@ -18,8 +20,8 @@ namespace TwitchDownloaderWeb.Endpoints
     {
         public static IEndpointRouteBuilder MapAudioRescueEndpoints(this IEndpointRouteBuilder app)
         {
-            app.MapGet("/api/vods/{vodId:long}/rescue", GetRescue);
-            app.MapPost("/api/vods/{vodId:long}/rescue", StartRescue);
+            app.MapGet("/api/vods/{vodId:long}/rescue", GetRescue).RequireTeam(TeamPermission.ViewLibrary);
+            app.MapPost("/api/vods/{vodId:long}/rescue", StartRescue).RequireTeam(TeamPermission.SaveAudio);
             return app;
         }
 
@@ -39,7 +41,7 @@ namespace TwitchDownloaderWeb.Endpoints
             IOptions<AudioRescueSettings> settings, CancellationToken cancellationToken)
         {
             var rescue = await db.AudioRescues.FirstOrDefaultAsync(x => x.VodId == vodId, cancellationToken);
-            var paused = rescue is not null && rescue.Status == AudioRescueStatus.Grabbing && !rescue.ManuallyRequested && !settings.Value.Enabled;
+            var paused = rescue is { Status: AudioRescueStatus.Grabbing } && await AudioRescueService.IsPausedAsync(db, rescue, settings.Value.Enabled, cancellationToken);
             if (rescue is not null && rescue.Status != AudioRescueStatus.Failed && !paused)
                 return Results.Ok(AudioRescueDto.From(rescue));
 

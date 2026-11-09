@@ -2,6 +2,8 @@ using TwitchDownloaderWeb.Data;
 using TwitchDownloaderWeb.Services;
 using TwitchDownloaderWeb.Services.Shortform;
 
+using TwitchDownloaderWeb.Services.Accounts;
+
 namespace TwitchDownloaderWeb.Endpoints
 {
     public sealed record ShortformRenderDto(string Id, DateTime CreatedAtUtc, DateTime ExpiresAtUtc, long SizeBytes, ShortformLayout Layout,
@@ -25,11 +27,11 @@ namespace TwitchDownloaderWeb.Endpoints
         public static IEndpointRouteBuilder MapShortformEndpoints(this IEndpointRouteBuilder app)
         {
             var group = app.MapGroup("/api/entries/{id:int}/shortform");
-            group.MapGet("/", GetShortform);
-            group.MapPost("/", StartShortform);
-            group.MapGet("/{renderId}/file", DownloadRender);
-            group.MapGet("/{renderId}/thumbnail", GetThumbnail);
-            group.MapDelete("/{renderId}", DeleteRender);
+            group.MapGet("/", GetShortform).RequireTeam(TeamPermission.ViewLibrary);
+            group.MapPost("/", StartShortform).RequireTeam(TeamPermission.MakeVertical);
+            group.MapGet("/{renderId}/file", DownloadRender).RequireTeam(TeamPermission.ViewLibrary);
+            group.MapGet("/{renderId}/thumbnail", GetThumbnail).RequireTeam(TeamPermission.ViewLibrary);
+            group.MapDelete("/{renderId}", DeleteRender).RequireTeam(TeamPermission.DeleteRenders);
             return app;
         }
 
@@ -59,6 +61,9 @@ namespace TwitchDownloaderWeb.Endpoints
                 return Results.Problem(detail: "The entry's file isn't ready, so it can't be made vertical yet.", statusCode: StatusCodes.Status409Conflict);
 
             shortform.Start(id, storage.Resolve(relativePath), entry.ClipLengthSeconds, layout);
+            // The render itself is audited by the background job, which doesn't know who asked; this records who did
+            db.Audit(AuditActions.ShortformRequested, id, layout.IsSplit ? "split" : "single");
+            await db.SaveChangesAsync(cancellationToken);
             return Results.Accepted($"/api/entries/{id}/shortform", ShortformDto.From(id, shortform.GetState(id)));
         }
 
@@ -99,7 +104,12 @@ namespace TwitchDownloaderWeb.Endpoints
             if (await db.Entries.FindAsync([id], cancellationToken) is null)
                 return EntryNotFound(id);
 
-            return shortform.DeleteRender(id, renderId) ? Results.NoContent() : RenderNotFound();
+            if (!shortform.DeleteRender(id, renderId))
+                return RenderNotFound();
+
+            db.Audit(AuditActions.ShortformDeleted, id, renderId);
+            await db.SaveChangesAsync(cancellationToken);
+            return Results.NoContent();
         }
 
         private static IResult EntryNotFound(int id) =>

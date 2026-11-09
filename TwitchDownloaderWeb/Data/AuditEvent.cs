@@ -41,6 +41,16 @@ namespace TwitchDownloaderWeb.Data
         public const string StaffLoggedIn = "staff.logged_in";
         public const string StaffLoginFailed = "staff.login_failed";
         public const string StaffLoggedOut = "staff.logged_out";
+        public const string RoleCreated = "role.created";
+        public const string RoleChanged = "role.changed";
+        public const string RoleDeleted = "role.deleted";
+        public const string MemberRoleChanged = "team.member_role_changed";
+        public const string TeamSettingsChanged = "team.settings_changed";
+        public const string PasswordChanged = "user.password_changed";
+        public const string PasswordResetLinkCreated = "user.password_reset_link";
+        public const string PasswordReset = "user.password_reset";
+        public const string ShortformRequested = "shortform.requested";
+        public const string ShortformDeleted = "shortform.deleted";
     }
 
     /// <summary>

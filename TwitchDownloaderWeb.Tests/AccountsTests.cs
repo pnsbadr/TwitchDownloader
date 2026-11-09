@@ -234,5 +234,197 @@ namespace TwitchDownloaderWeb.Tests
             var details = await db.AuditEvents.Select(x => x.Details ?? "").ToListAsync(TestContext.Current.CancellationToken);
             Assert.DoesNotContain(details, x => x.Contains("wrong-password") || x.Contains(Password) || x.Contains(registration));
         }
+
+        // ---------- roles and permissions ----------
+
+        /// <summary>A new team with its owner, and one invited member who has no role yet.</summary>
+        private async Task<(HttpClient Owner, HttpClient Member, int TeamId, int MemberId)> TeamWithMemberAsync(string prefix)
+        {
+            var staff = await StaffClientAsync();
+            var registration = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration" });
+            var owner = NewClient();
+            await AcceptAsync(owner, registration, prefix + "owner", newAccount: true, teamName: prefix + " team");
+            var invite = await MakeLinkAsync(owner, "/api/team/invites", new { });
+            var member = NewClient();
+            await AcceptAsync(member, invite, prefix + "member", newAccount: true);
+
+            var me = await GetJsonAsync(member, "/api/auth/me");
+            return (owner, member, me.GetProperty("currentTeamId").GetInt32(), me.GetProperty("id").GetInt32());
+        }
+
+        private static async Task<int> CreateRoleAsync(HttpClient client, string name, params string[] permissions)
+        {
+            var response = await client.PostAsJsonAsync("/api/team/roles", new { name, permissions }, TestContext.Current.CancellationToken);
+            Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+            return (await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken)).GetProperty("id").GetInt32();
+        }
+
+        private static async Task<HttpStatusCode> AssignAsync(HttpClient client, int userId, int? roleId) =>
+            (await client.PutAsJsonAsync($"/api/team/members/{userId}/role", new { roleId }, TestContext.Current.CancellationToken)).StatusCode;
+
+        private int AddEntry(int teamId, int? addedBy, string title)
+        {
+            using var scope = _factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+            var entry = new LibraryEntry { TeamId = teamId, Title = title, VodId = 1, Status = EntryStatus.ReferenceOnly, AddedAtUtc = DateTime.UtcNow,
+                AddedByUserId = addedBy?.ToString() };
+            db.Entries.Add(entry);
+            db.SaveChanges();
+            return entry.Id;
+        }
+
+        [Fact]
+        public async Task RolesDecideWhatMembersCanDo()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            var (owner, member, teamId, memberId) = await TeamWithMemberAsync("r1");
+            var ownerId = (await GetJsonAsync(owner, "/api/auth/me")).GetProperty("id").GetInt32();
+            var mine = AddEntry(teamId, memberId, "Mine");
+            var theirs = AddEntry(teamId, ownerId, "Theirs");
+
+            var clipper = await CreateRoleAsync(owner, "Clipper", "ViewLibrary", "EditOwnEntries", "DeleteOwnEntries");
+            Assert.Equal(HttpStatusCode.NoContent, await AssignAsync(owner, memberId, clipper));
+
+            var me = await GetJsonAsync(member, "/api/auth/me");
+            Assert.Equal(["ViewLibrary", "EditOwnEntries", "DeleteOwnEntries"], me.GetProperty("permissions").EnumerateArray().Select(x => x.GetString()!).ToArray());
+
+            Assert.Equal(2, (await GetJsonAsync(member, "/api/entries")).GetArrayLength());
+            Assert.Equal(HttpStatusCode.OK, (await member.PatchAsJsonAsync($"/api/entries/{mine}", new { title = "Renamed" }, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await member.PatchAsJsonAsync($"/api/entries/{theirs}", new { title = "Nope" }, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await member.DeleteAsync($"/api/entries/{theirs}", ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.NoContent, (await member.DeleteAsync($"/api/entries/{mine}", ct)).StatusCode);
+
+            // Not in the role at all
+            Assert.Equal(HttpStatusCode.Forbidden, (await member.PostAsJsonAsync("/api/entries", new { vodId = "123" }, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await member.PostAsJsonAsync("/api/channels", new { login = "arky" }, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await member.GetAsync("/api/team", ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await member.PostAsJsonAsync($"/api/entries/{theirs}/generate", new { }, ct)).StatusCode);
+            // Owner-only dev endpoint, even with every permission
+            var all = await CreateRoleAsync(owner, "Everything", TeamPermissions.Catalog.Select(x => x.Info.Key).ToArray());
+            await AssignAsync(owner, memberId, all);
+            Assert.Equal(HttpStatusCode.Forbidden, (await member.PostAsJsonAsync("/api/vods/download", new { vodId = "123" }, ct)).StatusCode);
+
+            // Taking the role away takes the access away
+            Assert.Equal(HttpStatusCode.NoContent, await AssignAsync(owner, memberId, null));
+            Assert.Equal(HttpStatusCode.Forbidden, (await member.GetAsync("/api/entries", ct)).StatusCode);
+        }
+
+        [Fact]
+        public async Task MembersCantGrantMoreThanTheyHave()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            var (owner, mod, teamId, modId) = await TeamWithMemberAsync("r2");
+            var invite = await MakeLinkAsync(owner, "/api/team/invites", new { });
+            var clipperClient = NewClient();
+            await AcceptAsync(clipperClient, invite, "r2clipper", newAccount: true);
+            var clipperId = (await GetJsonAsync(clipperClient, "/api/auth/me")).GetProperty("id").GetInt32();
+            var ownerId = (await GetJsonAsync(owner, "/api/auth/me")).GetProperty("id").GetInt32();
+
+            var moderator = await CreateRoleAsync(owner, "Moderator", "ViewLibrary", "AddEntries", "AssignRoles", "ManageRoles", "RemoveMembers");
+            var admin = await CreateRoleAsync(owner, "Admin", "ViewLibrary", "DeleteAnyEntries", "AssignRoles");
+            await AssignAsync(owner, modId, moderator);
+
+            // Can make and give a role within their own permissions
+            var viewer = await CreateRoleAsync(mod, "Viewer", "ViewLibrary");
+            Assert.Equal(HttpStatusCode.NoContent, await AssignAsync(mod, clipperId, viewer));
+
+            // ...but not one with permissions they lack
+            var tooMuch = await mod.PostAsJsonAsync("/api/team/roles", new { name = "Deleter", permissions = new[] { "DeleteAnyEntries" } }, ct);
+            Assert.Equal(HttpStatusCode.Forbidden, tooMuch.StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, await AssignAsync(mod, clipperId, admin));
+            Assert.Equal(HttpStatusCode.Forbidden, (await mod.PutAsJsonAsync($"/api/team/roles/{admin}", new { name = "Admin", permissions = new[] { "ViewLibrary" } }, ct)).StatusCode);
+
+            // Never their own role or the owner
+            Assert.Equal(HttpStatusCode.Forbidden, await AssignAsync(mod, modId, viewer));
+            Assert.Equal(HttpStatusCode.Forbidden, (await mod.PutAsJsonAsync($"/api/team/roles/{moderator}",
+                new { name = "Moderator", permissions = new[] { "ViewLibrary", "AddEntries", "AssignRoles", "ManageRoles", "RemoveMembers" } }, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, await AssignAsync(mod, ownerId, viewer));
+            Assert.Equal(HttpStatusCode.Forbidden, (await mod.DeleteAsync($"/api/team/members/{ownerId}", ct)).StatusCode);
+
+            // Someone whose role is beyond theirs can't be touched either
+            await AssignAsync(owner, clipperId, admin);
+            Assert.Equal(HttpStatusCode.Forbidden, (await mod.DeleteAsync($"/api/team/members/{clipperId}", ct)).StatusCode);
+            await AssignAsync(owner, clipperId, viewer);
+            Assert.Equal(HttpStatusCode.NoContent, (await mod.DeleteAsync($"/api/team/members/{clipperId}", ct)).StatusCode);
+
+            // Deleting a role leaves its members with no access
+            await AssignAsync(owner, modId, admin);
+            Assert.Equal(HttpStatusCode.NoContent, (await owner.DeleteAsync($"/api/team/roles/{admin}", ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await mod.GetAsync("/api/entries", ct)).StatusCode);
+        }
+
+        [Fact]
+        public async Task ActivityShowsWhatEachMemberDid()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            var (owner, member, teamId, memberId) = await TeamWithMemberAsync("r3");
+            var role = await CreateRoleAsync(owner, "Editor", "ViewLibrary", "EditOwnEntries");
+            await AssignAsync(owner, memberId, role);
+            var entry = AddEntry(teamId, memberId, "Clip one");
+            await member.PatchAsJsonAsync($"/api/entries/{entry}", new { title = "Clip one v2" }, ct);
+            await member.PatchAsJsonAsync($"/api/entries/{entry}", new { title = "Clip one v3" }, ct);
+
+            var activity = await GetJsonAsync(owner, "/api/team/activity?days=7");
+            var row = activity.GetProperty("members").EnumerateArray().First(x => x.GetProperty("userId").GetInt32() == memberId);
+            Assert.Equal(2, row.GetProperty("counts").GetProperty("edited").GetInt32());
+            Assert.Equal(1, row.GetProperty("entriesAdded").GetInt32());
+            Assert.Equal("Editor", row.GetProperty("roleName").GetString());
+
+            var log = await GetJsonAsync(owner, $"/api/team/audit?userId={memberId}");
+            Assert.All(log.EnumerateArray(), x => Assert.Equal("r3member", x.GetProperty("username").GetString()));
+            Assert.Contains(log.EnumerateArray(), x => x.GetProperty("action").GetString() == AuditActions.EntryRenamed
+                                                     && x.GetProperty("entryTitle").GetString() == "Clip one v3");
+
+            // The member can't see it
+            Assert.Equal(HttpStatusCode.Forbidden, (await member.GetAsync("/api/team/activity", ct)).StatusCode);
+        }
+
+        [Fact]
+        public async Task ResetLinksOnlyForMembersInNoOtherTeam()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            var (owner, member, _, memberId) = await TeamWithMemberAsync("r4");
+
+            var reset = await MakeLinkAsync(owner, $"/api/team/members/{memberId}/password-reset", new { });
+            var info = await (await NewClient().PostAsJsonAsync("/api/links/inspect", new { token = reset }, ct)).Content.ReadFromJsonAsync<JsonElement>(ct);
+            Assert.Equal("r4member", info.GetProperty("forUsername").GetString());
+
+            var accepted = await NewClient().PostAsJsonAsync("/api/links/accept", new { token = reset, password = "brand-new-password" }, ct);
+            Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
+
+            // The old session is signed out; the new password works, the old one doesn't
+            Assert.Equal(HttpStatusCode.Unauthorized, (await member.GetAsync("/api/auth/me", ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.NoContent, (await NewClient().PostAsJsonAsync("/api/auth/login", new { username = "r4member", password = "brand-new-password" }, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await NewClient().PostAsJsonAsync("/api/auth/login", new { username = "r4member", password = Password }, ct)).StatusCode);
+
+            // Someone who also works for another team can only be reset by app staff
+            var (other, _, _, _) = await TeamWithMemberAsync("r5");
+            var invite = await MakeLinkAsync(other, "/api/team/invites", new { });
+            var again = NewClient();
+            await again.PostAsJsonAsync("/api/auth/login", new { username = "r4member", password = "brand-new-password" }, ct);
+            Assert.Equal(HttpStatusCode.OK, (await again.PostAsJsonAsync("/api/links/accept", new { token = invite, newAccount = false }, ct)).StatusCode);
+            var blocked = await owner.PostAsJsonAsync($"/api/team/members/{memberId}/password-reset", new { }, ct);
+            Assert.Equal(HttpStatusCode.Conflict, blocked.StatusCode);
+        }
+
+        [Fact]
+        public async Task ChangingThePasswordSignsOutOtherSessions()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            var (_, member, _, _) = await TeamWithMemberAsync("r6");
+            var otherDevice = NewClient();
+            await otherDevice.PostAsJsonAsync("/api/auth/login", new { username = "r6member", password = Password }, ct);
+
+            var wrong = await member.PostAsJsonAsync("/api/auth/password", new { currentPassword = "nope-nope-nope", newPassword = "another-password" }, ct);
+            Assert.Equal(HttpStatusCode.BadRequest, wrong.StatusCode);
+            var changed = await member.PostAsJsonAsync("/api/auth/password", new { currentPassword = Password, newPassword = "another-password" }, ct);
+            Assert.Equal(HttpStatusCode.NoContent, changed.StatusCode);
+
+            Assert.Equal(HttpStatusCode.OK, (await member.GetAsync("/api/auth/me", ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await otherDevice.GetAsync("/api/auth/me", ct)).StatusCode);
+
+            Assert.Equal(HttpStatusCode.NoContent, (await member.PutAsJsonAsync("/api/auth/settings", new { timeZone = "pacific" }, ct)).StatusCode);
+            Assert.Equal("pacific", (await GetJsonAsync(member, "/api/auth/me")).GetProperty("timeZone").GetString());
+        }
     }
 }

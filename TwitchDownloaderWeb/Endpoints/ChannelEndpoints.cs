@@ -2,6 +2,9 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using TwitchDownloaderWeb.Data;
 using TwitchDownloaderWeb.Services;
+using TwitchDownloaderWeb.Services.AudioRescue;
+
+using TwitchDownloaderWeb.Services.Accounts;
 
 namespace TwitchDownloaderWeb.Endpoints
 {
@@ -26,10 +29,10 @@ namespace TwitchDownloaderWeb.Endpoints
         public static IEndpointRouteBuilder MapChannelEndpoints(this IEndpointRouteBuilder app)
         {
             var channels = app.MapGroup("/api/channels");
-            channels.MapGet("/", ListChannels);
-            channels.MapPost("/", AddChannel);
-            channels.MapDelete("/{id:int}", DeleteChannel);
-            channels.MapGet("/{login}/vods", ListChannelVods);
+            channels.MapGet("/", ListChannels).RequireTeam(TeamPermission.ViewLibrary);
+            channels.MapPost("/", AddChannel).RequireTeam(TeamPermission.ManageChannels);
+            channels.MapDelete("/{id:int}", DeleteChannel).RequireTeam(TeamPermission.ManageChannels);
+            channels.MapGet("/{login}/vods", ListChannelVods).RequireTeam(TeamPermission.ViewLibrary);
 
             return app;
         }
@@ -128,13 +131,16 @@ namespace TwitchDownloaderWeb.Endpoints
             var vodIds = page.Items.Select(x => x.VodId).ToArray();
             var rescues = await db.AudioRescues.AsNoTracking().Where(x => vodIds.Contains(x.VodId))
                 .ToDictionaryAsync(x => x.VodId, cancellationToken);
+            var enabled = rescueSettings.Value.Enabled;
+            var watched = enabled ? (await AudioRescueService.AutoWatchedLogins(db).Distinct().ToListAsync(cancellationToken)).ToHashSet() : [];
 
             var items = page.Items.Select(x =>
             {
                 var rescue = rescues.GetValueOrDefault(x.VodId);
                 return new ChannelVodDto(x.VodId, x.Title, x.LengthSeconds, TrimTime.Format(TimeSpan.FromSeconds(x.LengthSeconds)),
                     x.CreatedAtUtc, x.ThumbnailUrl, x.ViewCount, x.Game, x.UnmuteWindowOpen, rescue?.Status.ToString(),
-                    rescue is { ManuallyRequested: false, Status: AudioRescueStatus.Grabbing or AudioRescueStatus.WaitingToPrune } && !rescueSettings.Value.Enabled,
+                    rescue is { ManuallyRequested: false, Status: AudioRescueStatus.Grabbing or AudioRescueStatus.WaitingToPrune }
+                    && !(rescue.ChannelLogin is not null && watched.Contains(rescue.ChannelLogin)),
                     rescue?.MutedCount, rescue?.UnrecoverableCount);
             });
 

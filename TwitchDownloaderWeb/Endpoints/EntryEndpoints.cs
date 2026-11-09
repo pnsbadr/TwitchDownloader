@@ -9,6 +9,8 @@ using TwitchDownloaderWeb.Services;
 using TwitchDownloaderWeb.Services.AudioRescue;
 using TwitchDownloaderWeb.Services.Shortform;
 
+using TwitchDownloaderWeb.Services.Accounts;
+
 namespace TwitchDownloaderWeb.Endpoints
 {
     /// <param name="VodId">A VOD ID or twitch.tv/videos URL, or a clip link (clips.twitch.tv/…, twitch.tv/{channel}/clip/…) or slug.
@@ -110,18 +112,18 @@ namespace TwitchDownloaderWeb.Endpoints
 
         public static IEndpointRouteBuilder MapEntryEndpoints(this IEndpointRouteBuilder app)
         {
-            app.MapGet("/api/vods/info", GetVodInfo);
-            app.MapGet("/api/clips/info", GetClipInfo);
+            app.MapGet("/api/vods/info", GetVodInfo).RequireTeam(TeamPermission.ViewLibrary);
+            app.MapGet("/api/clips/info", GetClipInfo).RequireTeam(TeamPermission.ViewLibrary);
 
             var entries = app.MapGroup("/api/entries");
-            entries.MapPost("/", AddEntry);
-            entries.MapGet("/", ListEntries);
-            entries.MapGet("/{id:int}", GetEntry);
-            entries.MapPatch("/{id:int}", RenameEntry);
-            entries.MapPut("/{id:int}/trim", RetrimEntry);
-            entries.MapDelete("/{id:int}", DeleteEntry);
-            entries.MapPost("/{id:int}/generate", GenerateEntry);
-            entries.MapGet("/{id:int}/file", DownloadEntryFile);
+            entries.MapPost("/", AddEntry).RequireTeam(TeamPermission.AddEntries);
+            entries.MapGet("/", ListEntries).RequireTeam(TeamPermission.ViewLibrary);
+            entries.MapGet("/{id:int}", GetEntry).RequireTeam(TeamPermission.ViewLibrary);
+            entries.MapPatch("/{id:int}", RenameEntry).RequireTeam(TeamPermission.EditOwnEntries | TeamPermission.EditAnyEntries);
+            entries.MapPut("/{id:int}/trim", RetrimEntry).RequireTeam(TeamPermission.EditOwnEntries | TeamPermission.EditAnyEntries);
+            entries.MapDelete("/{id:int}", DeleteEntry).RequireTeam(TeamPermission.DeleteOwnEntries | TeamPermission.DeleteAnyEntries);
+            entries.MapPost("/{id:int}/generate", GenerateEntry).RequireTeam(TeamPermission.GenerateFiles);
+            entries.MapGet("/{id:int}/file", DownloadEntryFile).RequireTeam(TeamPermission.ViewLibrary);
 
             return app;
         }
@@ -444,7 +446,7 @@ namespace TwitchDownloaderWeb.Endpoints
             return entry is null ? EntryNotFound(id) : Results.Ok(EntryDto.From(entry));
         }
 
-        private static async Task<IResult> RenameEntry(int id, RenameEntryRequest request, LibraryDbContext db, CancellationToken cancellationToken)
+        private static async Task<IResult> RenameEntry(int id, RenameEntryRequest request, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
         {
             var title = request.Title?.Trim();
             if (string.IsNullOrEmpty(title))
@@ -456,6 +458,9 @@ namespace TwitchDownloaderWeb.Endpoints
             var entry = await db.Entries.FindAsync([id], cancellationToken);
             if (entry is null)
                 return EntryNotFound(id);
+
+            if (!team.CanOnOwnOrAny(entry.AddedByUserId, TeamPermission.EditOwnEntries, TeamPermission.EditAnyEntries))
+                return NotYours("edit");
 
             if (entry.Title != title)
             {
@@ -475,7 +480,7 @@ namespace TwitchDownloaderWeb.Endpoints
         /// Changes an entry's start/end. Any running download is cancelled and its file deleted; the stored-vs-reference rule is
         /// applied again to the new length, so a stored clip is downloaded again (or becomes reference-only if it got too long).
         /// </summary>
-        private static async Task<IResult> RetrimEntry(int id, RetrimEntryRequest request, LibraryDbContext db, DownloadQueue queue,
+        private static async Task<IResult> RetrimEntry(int id, RetrimEntryRequest request, TeamContext team, LibraryDbContext db, DownloadQueue queue,
             LibraryStorage storage, IOptions<DownloadSettings> settings, CancellationToken cancellationToken)
         {
             if (!TrimTime.TryParse(request.StartTime, out var parsedStart))
@@ -487,6 +492,9 @@ namespace TwitchDownloaderWeb.Endpoints
             var entry = await db.Entries.FindAsync([id], cancellationToken);
             if (entry is null)
                 return EntryNotFound(id);
+
+            if (!team.CanOnOwnOrAny(entry.AddedByUserId, TeamPermission.EditOwnEntries, TeamPermission.EditAnyEntries))
+                return NotYours("edit");
 
             if (entry.Kind == EntryKind.Clip)
                 return Results.Problem(detail: "Twitch clips keep Twitch's cut. Use the trim in Make vertical to shorten one.", statusCode: StatusCodes.Status409Conflict);
@@ -548,12 +556,15 @@ namespace TwitchDownloaderWeb.Endpoints
             return Results.Ok(EntryDto.From(entry));
         }
 
-        private static async Task<IResult> DeleteEntry(int id, LibraryDbContext db, DownloadQueue queue, LibraryStorage storage, ShortformService shortform,
+        private static async Task<IResult> DeleteEntry(int id, TeamContext team, LibraryDbContext db, DownloadQueue queue, LibraryStorage storage, ShortformService shortform,
             CancellationToken cancellationToken)
         {
             var entry = await db.Entries.FindAsync([id], cancellationToken);
             if (entry is null)
                 return EntryNotFound(id);
+
+            if (!team.CanOnOwnOrAny(entry.AddedByUserId, TeamPermission.DeleteOwnEntries, TeamPermission.DeleteAnyEntries))
+                return NotYours("delete");
 
             queue.Cancel(id);
 
@@ -698,6 +709,10 @@ namespace TwitchDownloaderWeb.Endpoints
             var name = FilenameService.ReplaceInvalidFilenameChars(entry.Title)?.Trim().TrimEnd('.');
             return (string.IsNullOrEmpty(name) ? entry.ClipSlug ?? entry.VodId.ToString() : name) + ".mp4";
         }
+
+        /// <summary>The member only has the "own entries" permission and this entry was added by someone else.</summary>
+        private static IResult NotYours(string action) =>
+            Results.Problem(detail: $"Your role only lets you {action} entries you added.", statusCode: StatusCodes.Status403Forbidden);
 
         private static IResult EntryNotFound(int id) =>
             Results.Problem(detail: $"Entry {id} was not found.", statusCode: StatusCodes.Status404NotFound);

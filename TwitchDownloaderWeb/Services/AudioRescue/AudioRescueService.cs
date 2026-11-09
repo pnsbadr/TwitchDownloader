@@ -98,7 +98,7 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
 
-            var logins = await db.Channels.AsNoTracking().Where(x => x.WatchMutedAudio).Select(x => x.Login).ToListAsync(cancellationToken);
+            var logins = await AutoWatchedLogins(db).Distinct().ToListAsync(cancellationToken);
             foreach (var login in logins)
             {
                 ChannelVodPage? page;
@@ -124,6 +124,21 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
 
             await db.SaveChangesAsync(cancellationToken);
         }
+
+        /// <summary>
+        /// Logins of saved channels whose team has automatic audio saving on. Across all teams (saved audio is shared per VOD), so it
+        /// ignores the request's team filter.
+        /// </summary>
+        public static IQueryable<string> AutoWatchedLogins(LibraryDbContext db) =>
+            db.Channels.IgnoreQueryFilters()
+                .Where(x => x.WatchMutedAudio && db.Teams.Any(t => t.Id == x.TeamId && t.AutoSaveAudio && t.DisabledAtUtc == null))
+                .Select(x => x.Login);
+
+        /// <summary>Whether a rescue not started by hand is waiting because nothing automatic watches its channel.</summary>
+        public static async Task<bool> IsPausedAsync(LibraryDbContext db, VodAudioRescue rescue, bool enabled, CancellationToken cancellationToken) =>
+            !rescue.ManuallyRequested
+            && rescue.Status is AudioRescueStatus.Grabbing or AudioRescueStatus.WaitingToPrune
+            && !(enabled && rescue.ChannelLogin is not null && await AutoWatchedLogins(db).ContainsAsync(rescue.ChannelLogin, cancellationToken));
 
         /// <returns>The new rescue (not yet saved).</returns>
         public static VodAudioRescue AddRescue(LibraryDbContext db, long vodId, string? channelLogin, string? title, DateTime streamStartUtc, string reason, string? userId = null,
@@ -157,10 +172,12 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
                 var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
 
                 var now = DateTime.UtcNow;
-                // Automatic saving turned off: rescues not started by hand stay as they are and resume when it is turned back on
+                // Rescues not started by hand only run while a team with automatic saving on watches their channel; otherwise they stay as
+                // they are and resume when it is turned back on
                 var enabled = _settings.Value.Enabled;
+                var watched = AutoWatchedLogins(db);
                 var rescue = await db.AudioRescues
-                    .Where(x => (enabled || x.ManuallyRequested) && (x.Status == AudioRescueStatus.Grabbing || x.Status == AudioRescueStatus.WaitingToPrune) && x.NextCheckAtUtc <= now)
+                    .Where(x => (x.ManuallyRequested || (enabled && watched.Contains(x.ChannelLogin!))) && (x.Status == AudioRescueStatus.Grabbing || x.Status == AudioRescueStatus.WaitingToPrune) && x.NextCheckAtUtc <= now)
                     .OrderBy(x => x.NextCheckAtUtc)
                     .FirstOrDefaultAsync(cancellationToken);
                 if (rescue is null)
