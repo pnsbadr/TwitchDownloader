@@ -47,6 +47,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<DateTime?>("RevokedAtUtc")
                         .HasColumnType("TEXT");
 
+                    b.Property<int?>("TargetStaffId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<int?>("TargetUserId")
                         .HasColumnType("INTEGER");
 
@@ -60,6 +63,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
 
                     b.Property<DateTime?>("UsedAtUtc")
                         .HasColumnType("TEXT");
+
+                    b.Property<int?>("UsedByStaffId")
+                        .HasColumnType("INTEGER");
 
                     b.Property<int?>("UsedByUserId")
                         .HasColumnType("INTEGER");
@@ -346,6 +352,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("TEXT");
+
+                    b.Property<long>("Permissions")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("SecurityStamp")
                         .IsRequired()

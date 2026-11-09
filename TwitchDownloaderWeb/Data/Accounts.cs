@@ -96,6 +96,10 @@ namespace TwitchDownloaderWeb.Data
         public required string PasswordHash { get; set; }
         public required string SecurityStamp { get; set; }
         public bool IsOwner { get; set; }
+
+        /// <summary>What a moderator may do (picked by the Owner; new moderators start with none). Ignored for the Owner, who has everything.</summary>
+        public StaffPermission Permissions { get; set; }
+
         public DateTime CreatedAtUtc { get; set; }
         public DateTime? LastLoginAtUtc { get; set; }
         public int FailedLoginCount { get; set; }
@@ -116,6 +120,12 @@ namespace TwitchDownloaderWeb.Data
 
         /// <summary>Sets a new password for <see cref="AccountLink.TargetUserId"/>. Lives 24 hours.</summary>
         PasswordReset,
+
+        /// <summary>From the app Owner: whoever opens it creates a new staff account (an app moderator) with no permissions.</summary>
+        StaffInvite,
+
+        /// <summary>From the app Owner: sets a new password for the moderator <see cref="AccountLink.TargetStaffId"/>. Lives 24 hours.</summary>
+        StaffPasswordReset,
     }
 
     /// <summary>
@@ -137,6 +147,9 @@ namespace TwitchDownloaderWeb.Data
         /// <summary>The account whose password a <see cref="AccountLinkKind.PasswordReset"/> link sets.</summary>
         public int? TargetUserId { get; set; }
 
+        /// <summary>The staff account whose password a <see cref="AccountLinkKind.StaffPasswordReset"/> link sets.</summary>
+        public int? TargetStaffId { get; set; }
+
         /// <summary>A label for whoever made it (e.g. who it's for). Shown in link lists only.</summary>
         public string? Note { get; set; }
 
@@ -147,6 +160,9 @@ namespace TwitchDownloaderWeb.Data
 
         public DateTime? UsedAtUtc { get; set; }
         public int? UsedByUserId { get; set; }
+
+        /// <summary>Staff links: the staff account that used it.</summary>
+        public int? UsedByStaffId { get; set; }
         public DateTime? RevokedAtUtc { get; set; }
     }
 }

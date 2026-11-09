@@ -46,18 +46,6 @@ namespace TwitchDownloaderWeb.Endpoints
         private const int MaxRoleNameLength = 50;
         private const int MaxRolesPerTeam = 30;
 
-        /// <summary>Audit actions counted on the activity page, by kind.</summary>
-        private static readonly Dictionary<string, string> ActivityKinds = new()
-        {
-            [AuditActions.EntryAdded] = "added",
-            [AuditActions.EntryRenamed] = "edited",
-            [AuditActions.EntryRetrimmed] = "edited",
-            [AuditActions.EntryDeleted] = "deleted",
-            [AuditActions.FileServed] = "downloaded",
-            [AuditActions.GenerationRequested] = "generated",
-            [AuditActions.ShortformRequested] = "vertical",
-        };
-
         public static IEndpointRouteBuilder MapTeamEndpoints(this IEndpointRouteBuilder app)
         {
             var team = app.MapGroup("/api/team");
@@ -112,11 +100,11 @@ namespace TwitchDownloaderWeb.Endpoints
 
         /// <summary>Not the owner, not yourself, and their role gives nothing you don't have (the owner can manage everyone else).</summary>
         private static bool CanManage(TeamContext team, int userId, bool isOwner, TeamPermission theirPermissions) =>
-            !isOwner && userId != team.UserId && (team.IsOwner || TeamPermissions.IsWithin(theirPermissions, team.Permissions));
+            !team.IsSupport && !isOwner && userId != team.UserId && (team.IsOwner || TeamPermissions.IsWithin(theirPermissions, team.Permissions));
 
         /// <summary>Not your own role (you'd be changing your own access), and nothing in it you don't have.</summary>
         private static bool CanEditRole(TeamContext team, TeamRole role, int? myRoleId) =>
-            team.IsOwner || (role.Id != myRoleId && TeamPermissions.IsWithin(role.Permissions, team.Permissions));
+            !team.IsSupport && (team.IsOwner || (role.Id != myRoleId && TeamPermissions.IsWithin(role.Permissions, team.Permissions)));
 
         /// <summary>Loads a member of the current team with their role, and checks the caller may manage them.</summary>
         private static async Task<(TeamMember? Member, IResult? Error)> LoadManageableAsync(TeamContext team, int userId, LibraryDbContext db,
@@ -391,39 +379,12 @@ namespace TwitchDownloaderWeb.Endpoints
                 .Select(x => new { x.UserId, x.User!.Username, RoleName = x.Role == null ? null : x.Role.Name, x.JoinedAtUtc, x.User.LastActiveAtUtc })
                 .ToListAsync(cancellationToken);
 
-            var actions = ActivityKinds.Keys.ToList();
-            var counts = await db.AuditEvents.AsNoTracking()
-                .Where(x => x.TeamId == team.TeamId && x.UserId != null && x.TimestampUtc >= since && actions.Contains(x.Action))
-                .GroupBy(x => new { x.UserId, x.Action })
-                .Select(x => new { x.Key.UserId, x.Key.Action, Count = x.Count() })
-                .ToListAsync(cancellationToken);
-
-            // Files on disk now, by who added the entry (entries are already scoped to this team)
-            var now = DateTime.UtcNow;
-            var entries = await db.Entries.AsNoTracking()
-                .Select(x => new { x.Id, x.AddedByUserId, x.FileSizeBytes, x.GeneratedFileSizeBytes, x.GeneratedExpiresAtUtc })
-                .ToListAsync(cancellationToken);
-            var disk = new Dictionary<string, long>();
-            var added = new Dictionary<string, int>();
-            foreach (var entry in entries)
-            {
-                if (entry.AddedByUserId is not { } by)
-                    continue;
-                var bytes = (entry.FileSizeBytes ?? 0)
-                            + (entry.GeneratedExpiresAtUtc > now ? entry.GeneratedFileSizeBytes ?? 0 : 0)
-                            + shortform.ListRenders(entry.Id).Sum(x => x.SizeBytes);
-                disk[by] = disk.GetValueOrDefault(by) + bytes;
-                added[by] = added.GetValueOrDefault(by) + 1;
-            }
-
+            var activity = await ActivityReport.ComputeAsync(db, shortform, since, team.TeamId, null, cancellationToken);
             var result = members.Select(m =>
             {
-                var id = m.UserId.ToString();
-                var byKind = ActivityKinds.Values.Distinct().ToDictionary(k => k, _ => 0);
-                foreach (var c in counts.Where(x => x.UserId == id))
-                    byKind[ActivityKinds[c.Action]] += c.Count;
-                return new MemberActivityDto(m.UserId, m.Username, m.RoleName, m.UserId == row.OwnerUserId, m.JoinedAtUtc, m.LastActiveAtUtc, byKind,
-                    added.GetValueOrDefault(id), disk.GetValueOrDefault(id));
+                var a = activity.GetValueOrDefault((team.TeamId, m.UserId.ToString())) ?? UserActivity.Empty;
+                return new MemberActivityDto(m.UserId, m.Username, m.RoleName, m.UserId == row.OwnerUserId, m.JoinedAtUtc, m.LastActiveAtUtc, a.Counts,
+                    a.EntriesAdded, a.DiskBytes);
             }).ToList();
 
             return Results.Ok(new TeamActivityDto(period, since, result));
@@ -432,7 +393,8 @@ namespace TwitchDownloaderWeb.Endpoints
         /// <summary>The team's audit log, newest first; <paramref name="userId"/> narrows it to one member. Page with <paramref name="before"/> (an event ID).</summary>
         private static async Task<IResult> GetAudit(int? userId, long? before, int? limit, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
         {
-            var query = db.AuditEvents.AsNoTracking().Where(x => x.TeamId == team.TeamId);
+            // What the team's members did; app staff actions (support visits included) are only in the staff log
+            var query = db.AuditEvents.AsNoTracking().Where(x => x.TeamId == team.TeamId && x.StaffId == null);
             if (userId is { } uid)
             {
                 var text = uid.ToString();

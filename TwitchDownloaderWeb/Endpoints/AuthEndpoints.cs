@@ -14,7 +14,11 @@ namespace TwitchDownloaderWeb.Endpoints
     /// <param name="CurrentTeamId">The team library requests use (switcher cookie, else the first team). Null when not in any team.</param>
     /// <param name="Permissions">The caller's permissions in that team (all of them for its owner); the page hides what they can't do.</param>
     /// <param name="TimeZone">"local" or "pacific".</param>
-    public sealed record MeDto(int Id, string Username, IReadOnlyList<MeTeamDto> Teams, int? CurrentTeamId, IReadOnlyList<string> Permissions, string TimeZone);
+    /// <param name="Support">Set during a support visit (app staff viewing a team read-only); Id is then 0 and Username the staff account's.</param>
+    public sealed record MeDto(int Id, string Username, IReadOnlyList<MeTeamDto> Teams, int? CurrentTeamId, IReadOnlyList<string> Permissions, string TimeZone,
+        MeSupportDto? Support = null);
+
+    public sealed record MeSupportDto(string StaffUsername, int TeamId, string TeamName);
 
     public sealed record UserSettingsRequest(string? TimeZone);
 
@@ -89,6 +93,15 @@ namespace TwitchDownloaderWeb.Endpoints
 
         private static async Task<IResult> Me(HttpContext context, LibraryDbContext db, CancellationToken cancellationToken)
         {
+            if (SupportView.Requested(context))
+            {
+                if (await SupportView.ResolveAsync(context, db) is not { } support)
+                    return Results.Json(new { status = 403, code = "support-ended", detail = "This support view has ended. Open it again from the Admin page." },
+                        statusCode: StatusCodes.Status403Forbidden, contentType: "application/problem+json");
+                return Results.Ok(new MeDto(0, support.Staff.Username, [new MeTeamDto(support.TeamId, support.TeamName, false)], support.TeamId,
+                    TeamPermissions.ToKeys(SupportView.Permissions), "local", new MeSupportDto(support.Staff.Username, support.TeamId, support.TeamName)));
+            }
+
             if (AuthSetup.GetId(context.User) is not { } id)
                 return Results.Problem(detail: "Log in first.", statusCode: StatusCodes.Status401Unauthorized);
 
@@ -173,7 +186,9 @@ namespace TwitchDownloaderWeb.Endpoints
 
             var forUsername = link.TargetUserId is { } target
                 ? await db.Users.Where(x => x.Id == target).Select(x => x.Username).FirstOrDefaultAsync(cancellationToken)
-                : null;
+                : link.TargetStaffId is { } staffTarget
+                    ? await db.StaffAccounts.Where(x => x.Id == staffTarget).Select(x => x.Username).FirstOrDefaultAsync(cancellationToken)
+                    : null;
             return Results.Ok(new LinkInfoDto(link.Kind.ToString(), link.Team?.Name, link.ExpiresAtUtc,
                 AuthSetup.GetId(context.User) is not null ? context.User.Identity?.Name : null, forUsername));
         }
@@ -188,8 +203,15 @@ namespace TwitchDownloaderWeb.Endpoints
             if (link is null)
                 return LinkInvalid();
 
-            if (link.Kind == AccountLinkKind.PasswordReset)
-                return await ResetPasswordAsync(link, request, context, db, cancellationToken);
+            switch (link.Kind)
+            {
+                case AccountLinkKind.PasswordReset:
+                    return await ResetPasswordAsync(link, request, context, db, cancellationToken);
+                case AccountLinkKind.StaffInvite:
+                    return await AcceptStaffInviteAsync(link, request, context, db, cancellationToken);
+                case AccountLinkKind.StaffPasswordReset:
+                    return await ResetStaffPasswordAsync(link, request, context, db, cancellationToken);
+            }
 
             string? teamName = null;
             if (link.Kind == AccountLinkKind.TeamRegistration)
@@ -332,6 +354,84 @@ namespace TwitchDownloaderWeb.Endpoints
 
             await SignInAsync(context, user);
             return Results.Ok(new { teamId = link.TeamId, teamName = (string?)null });
+        }
+
+        /// <summary>A new app moderator: always a new staff account (staff and team users are separate), with no permissions until the Owner picks them.</summary>
+        private static async Task<IResult> AcceptStaffInviteAsync(AccountLink link, AcceptLinkRequest request, HttpContext context, LibraryDbContext db,
+            CancellationToken cancellationToken)
+        {
+            var username = request.Username?.Trim();
+            if (AccountRules.UsernameError(username) is { } usernameError)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["username"] = [usernameError] });
+            if (AccountRules.PasswordError(request.Password) is { } passwordError)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["password"] = [passwordError] });
+
+            var normalized = AccountRules.Normalize(username!);
+            if (await db.StaffAccounts.AnyAsync(x => x.NormalizedUsername == normalized, cancellationToken))
+                return UsernameTaken();
+
+            var now = DateTime.UtcNow;
+            var staff = new StaffAccount
+            {
+                Username = username!,
+                NormalizedUsername = normalized,
+                PasswordHash = AccountRules.HashPassword(request.Password!),
+                SecurityStamp = AccountRules.NewSecurityStamp(),
+                CreatedAtUtc = now,
+                LastLoginAtUtc = now,
+            };
+
+            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+            db.StaffAccounts.Add(staff);
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateException)
+            {
+                return UsernameTaken();
+            }
+
+            var claimed = await db.AccountLinks
+                .Where(x => x.Id == link.Id && x.UsedAtUtc == null && x.RevokedAtUtc == null && x.ExpiresAtUtc > now)
+                .ExecuteUpdateAsync(x => x.SetProperty(l => l.UsedAtUtc, now).SetProperty(l => l.UsedByStaffId, staff.Id), cancellationToken);
+            if (claimed == 0)
+                return LinkInvalid(); // the transaction rolls the new account back
+
+            db.Audit(AuditActions.StaffJoined, null, $"Moderator {staff.Username} (invite link {link.Id})", staffId: staff.Id);
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+
+            await AdminEndpoints.SignInAsync(context, staff);
+            return Results.Ok(new { staff = true });
+        }
+
+        private static async Task<IResult> ResetStaffPasswordAsync(AccountLink link, AcceptLinkRequest request, HttpContext context, LibraryDbContext db,
+            CancellationToken cancellationToken)
+        {
+            if (AccountRules.PasswordError(request.Password) is { } passwordError)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["password"] = [passwordError] });
+
+            var now = DateTime.UtcNow;
+            var staff = await db.StaffAccounts.FirstOrDefaultAsync(x => x.Id == link.TargetStaffId && !x.IsOwner, cancellationToken);
+            if (staff is null)
+                return LinkInvalid();
+
+            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+            var claimed = await db.AccountLinks
+                .Where(x => x.Id == link.Id && x.UsedAtUtc == null && x.RevokedAtUtc == null && x.ExpiresAtUtc > now)
+                .ExecuteUpdateAsync(x => x.SetProperty(l => l.UsedAtUtc, now).SetProperty(l => l.UsedByStaffId, staff.Id), cancellationToken);
+            if (claimed == 0)
+                return LinkInvalid();
+
+            AdminEndpoints.SetPassword(staff, request.Password!);
+            staff.LastLoginAtUtc = now;
+            db.Audit(AuditActions.StaffPasswordReset, null, $"{staff.Username} (reset link {link.Id})", staffId: staff.Id);
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+
+            await AdminEndpoints.SignInAsync(context, staff);
+            return Results.Ok(new { staff = true });
         }
 
         private static async Task<AccountLink?> FindUsableLinkAsync(LibraryDbContext db, string? token, CancellationToken cancellationToken)
