@@ -10,7 +10,7 @@ using TwitchDownloaderWeb.Services.Accounts;
 namespace TwitchDownloaderWeb.Tests
 {
     /// <summary>Logins, one-time links and team scoping, through the real HTTP pipeline (TestServer).</summary>
-    public sealed class AccountsTests : IDisposable
+    public sealed partial class AccountsTests : IDisposable
     {
         private const string StaffPassword = "staff-password-1";
         private const string Password = "user-password-1";

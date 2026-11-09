@@ -233,12 +233,13 @@ namespace TwitchDownloaderWeb.Endpoints
                 {
                     x.Id, x.Name, x.CreatedAtUtc, x.OwnerUserId, OwnerUsername = x.OwnerUser!.Username, MemberCount = x.Members.Count,
                     EntryCount = db.Entries.IgnoreQueryFilters().Count(e => e.TeamId == x.Id), x.DisabledAtUtc, x.AutoSaveAudio,
-                    LastActive = x.Members.Max(m => m.User!.LastActiveAtUtc),
                 })
                 .ToListAsync(cancellationToken);
+            var lastActive = (await db.TeamMembers.AsNoTracking().Select(x => new { x.TeamId, x.User!.LastActiveAtUtc }).ToListAsync(cancellationToken))
+                .GroupBy(x => x.TeamId).ToDictionary(x => x.Key, x => x.Max(m => m.LastActiveAtUtc));
             var disk = await ActivityReport.TeamDiskAsync(db, shortform, cancellationToken);
             return teams.Select(x => new AdminTeamDto(x.Id, x.Name, x.CreatedAtUtc, x.OwnerUserId, x.OwnerUsername, x.MemberCount, x.EntryCount,
-                x.DisabledAtUtc, x.AutoSaveAudio, disk.GetValueOrDefault(x.Id), x.LastActive)).ToList();
+                x.DisabledAtUtc, x.AutoSaveAudio, disk.GetValueOrDefault(x.Id), lastActive.GetValueOrDefault(x.Id))).ToList();
         }
 
         private static async Task<IResult> ListTeams(LibraryDbContext db, ShortformService shortform, CancellationToken cancellationToken) =>
@@ -300,13 +301,17 @@ namespace TwitchDownloaderWeb.Endpoints
             }
 
             var users = await query.OrderBy(x => x.NormalizedUsername).Take(200)
-                .Select(x => new
-                {
-                    x.Id, x.Username, x.CreatedAtUtc, x.LastLoginAtUtc, x.LastActiveAtUtc, x.DisabledAtUtc, x.LockedUntilUtc,
-                    Teams = x.Memberships.OrderBy(m => m.JoinedAtUtc).Select(m => new AdminUserTeamDto(m.TeamId, m.Team!.Name, m.Team.OwnerUserId == x.Id,
-                        m.Role == null ? null : m.Role.Name, m.JoinedAtUtc, m.Team.DisabledAtUtc != null)).ToList(),
-                })
                 .ToListAsync(cancellationToken);
+            var userIds = users.Select(x => x.Id).ToList();
+            var memberships = (await db.TeamMembers.AsNoTracking().Where(m => userIds.Contains(m.UserId)).OrderBy(m => m.JoinedAtUtc)
+                    .Select(m => new
+                    {
+                        m.UserId,
+                        Team = new AdminUserTeamDto(m.TeamId, m.Team!.Name, m.Team.OwnerUserId == m.UserId, m.Role == null ? null : m.Role.Name,
+                            m.JoinedAtUtc, m.Team.DisabledAtUtc != null),
+                    })
+                    .ToListAsync(cancellationToken))
+                .ToLookup(x => x.UserId, x => x.Team);
 
             var activity = await ActivityReport.ComputeAsync(db, shortform, DateTime.UtcNow.AddDays(-RecentActionDays), null, onlyUserId, cancellationToken);
             var byUser = activity.GroupBy(x => x.Key.UserId).ToDictionary(x => x.Key, x => (
@@ -316,7 +321,7 @@ namespace TwitchDownloaderWeb.Endpoints
             {
                 var a = byUser.GetValueOrDefault(x.Id.ToString());
                 return new AdminUserDto(x.Id, x.Username, x.CreatedAtUtc, x.LastLoginAtUtc, x.LastActiveAtUtc, x.DisabledAtUtc,
-                    x.LockedUntilUtc > DateTime.UtcNow ? x.LockedUntilUtc : null, x.Teams, a.Actions, a.Added, a.Disk);
+                    x.LockedUntilUtc > DateTime.UtcNow ? x.LockedUntilUtc : null, memberships[x.Id].ToList(), a.Actions, a.Added, a.Disk);
             }).ToList();
         }
 
