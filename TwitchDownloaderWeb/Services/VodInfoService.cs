@@ -6,10 +6,19 @@ using TwitchDownloaderWeb.Services.AudioRescue;
 
 namespace TwitchDownloaderWeb.Services
 {
-    public sealed record VodDetails(long VodId, string Title, string? ChannelName, int LengthSeconds, DateTime StreamDateUtc, string? ThumbnailUrl);
+    /// <param name="IsLive">Still recording (Twitch's video status "RECORDING"); LengthSeconds is then what has been streamed so far.</param>
+    public sealed record VodDetails(long VodId, string Title, string? ChannelName, int LengthSeconds, DateTime StreamDateUtc, string? ThumbnailUrl,
+        bool IsLive = false);
+
+    /// <summary>VOD details from Twitch. <see cref="VodInfoService"/> in the app; a fake in tests.</summary>
+    public interface IVodDetailsSource
+    {
+        /// <returns>The VOD's details, or null if it doesn't exist.</returns>
+        Task<VodDetails?> GetVodAsync(long vodId);
+    }
 
     /// <summary>Looks up VOD metadata and qualities from Twitch, and holds the request checks shared by the endpoints.</summary>
-    public sealed class VodInfoService : IVodLookup
+    public sealed class VodInfoService : IVodLookup, IVodDetailsSource
     {
         public static long? ParseVodId(string? text)
         {
@@ -33,7 +42,8 @@ namespace TwitchDownloaderWeb.Services
                 _ => DateTime.SpecifyKind(video.createdAt, DateTimeKind.Utc)
             };
 
-            return new VodDetails(vodId, video.title, video.owner?.displayName, video.lengthSeconds, streamDate, video.thumbnailURLs?.FirstOrDefault());
+            return new VodDetails(vodId, video.title, video.owner?.displayName, video.lengthSeconds, streamDate, video.thumbnailURLs?.FirstOrDefault(),
+                string.Equals(video.status, "RECORDING", StringComparison.OrdinalIgnoreCase));
         }
 
         /// <returns>The VOD's qualities, or null if the playlist is restricted (e.g. subscriber-only).</returns>

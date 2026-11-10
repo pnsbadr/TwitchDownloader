@@ -96,6 +96,12 @@ namespace TwitchDownloaderWeb.Data
         /// <summary>The <see cref="UserAccount"/> ID (as text) of whoever added it. Null for entries added before accounts existed.</summary>
         public string? AddedByUserId { get; set; }
 
+        /// <summary>
+        /// Made from the team's markers on a live VOD: its range is kept at 30 s before the first marker/segment to 30 s after the
+        /// last one (capped at what has been streamed) whenever the VOD's markers change. A manual re-trim turns this off.
+        /// </summary>
+        public bool FollowsMarkers { get; set; }
+
         /// <summary>The team whose library this is in. Requests only see their own team's entries (query filter in <see cref="LibraryDbContext"/>).</summary>
         public int TeamId { get; set; }
     }

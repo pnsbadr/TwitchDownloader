@@ -77,6 +77,12 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
 - `VodMarkers` (`VodMarker`): team markers on a VOD's player timeline: TeamId (team query filter, cascade), VodId, Seconds, `EndSeconds`
   (null = a moment; set = a **segment**, ≥ 0.5 s long), Label (≤ 200, may be blank), Color (`yellow`/`blue`/`pink`/`orange`), CreatedByUserId,
   CreatedAtUtc. Audited `marker.added` / `marker.deleted`.
+- `LibraryEntries.FollowsMarkers`: a **live markers entry** (`LiveMarkerEntryService`, badrfly 2026-11-10). The first marker/segment a team
+  adds on a VOD that is still live (GQL video `status == "RECORDING"`, `VodDetails.IsLive`) makes a reference-only entry (always reference,
+  whatever its length) from 30 s before the first marker to 30 s after the last, the end capped at the VOD's length so far but never before
+  the last marker. Every later marker add/delete on that VOD moves it (even after the stream ended; generated file dropped, audited
+  `entry.followed_markers`, not counted as a member edit) until someone saves a cut by hand (`PUT /trim` clears the flag). Deleting the last
+  marker leaves it as it is. `IVodDetailsSource` (VodInfoService; faked in `AccountsTests`) is where it reads the VOD.
 - A converter marks every `DateTime` as UTC when read back (SQLite has no date type) — keep all times UTC.
 - Migrations: `cd TwitchDownloaderWeb && dotnet tool restore && dotnet ef migrations add <Name> -o Data/Migrations`.
   They are applied automatically at startup.
@@ -207,13 +213,13 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 ### API
 | Endpoint | Notes |
 |---|---|
-| `GET /api/vods/info?vod=` | Title, length, stream date, thumbnail, qualities, `restricted`, `maxStoredClipSeconds` |
+| `GET /api/vods/info?vod=` | Title, length, stream date, thumbnail, qualities, `restricted`, `maxStoredClipSeconds`, `isLive` (the page shows "● LIVE" instead of date and length) |
 | `POST /api/entries` | `{ vodId, title?, quality?, trimMode?, startTime?, endTime? }` → 201. `vodId` may be a clip link (see Twitch clips). Validates VOD, times, quality (unknown → 400 listing available) |
 | `GET /api/entries?search=&sort=dateAdded\|streamDate&order=desc\|asc&limit=&from=&to=&dateField=dateAdded\|streamDate` | Search is a LIKE substring match (case-insensitive for ASCII only). `from` (inclusive) / `to` (exclusive) are ISO 8601 instants **with an offset** (bare dates/times → 400) and filter on `dateField` (default dateAdded) |
 | `GET /api/entries/{id}` | |
 | `PATCH /api/entries/{id}` | `{ title }` — audited as `entry.renamed` |
 | `GET /api/clips/info?clip=` | Clip title, channel, length, qualities, source VOD + `vodStart`/`vodEnd`, `audio: { mutedSeconds, restorableSeconds }` (null if the VOD has no audio rescue). VOD links → 400 |
-| `PUT /api/entries/{id}/trim` | `{ startTime, endTime }` (blank end = end of VOD) — re-cuts the entry: cancels a running job (waits up to 20 s, else 409), deletes its files, re-applies the stored-vs-reference rule and re-queues a stored download. VodUnavailable → 410. Audited `entry.retrimmed` |
+| `PUT /api/entries/{id}/trim` | `{ startTime, endTime }` (blank end = end of VOD; a time past the stored VOD length re-reads it from Twitch, for VODs that were live) — re-cuts the entry: cancels a running job (waits up to 20 s, else 409), deletes its files, re-applies the stored-vs-reference rule and re-queues a stored download. VodUnavailable → 410. Audited `entry.retrimmed` |
 | `DELETE /api/entries/{id}` | Removes entry + stored/generated files — audited. Phase 3: restrict who can delete |
 | `POST /api/entries/{id}/generate` | Reference-only: queue on-demand file (202) or 200 if ready. Failed stored entry: retry. VodUnavailable → 410 |
 | `GET /api/entries/{id}/file` | Streams the file (range requests supported); 409 if not ready; 410 if missing on disk (entry then becomes retryable). `?preview=true` (the vertical editor's player) isn't audited as a download |
@@ -235,7 +241,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/admin/users?search=` / `GET /api/admin/users/{id}?days=` / `PUT .../disabled` / `POST .../password-reset` | Users across teams |
 | `GET /api/admin/audit?teamId=&userId=&staffId=&before=&limit=` / `POST,DELETE /api/admin/support` | App log; view as support |
 | `GET /api/admin/staff` / `POST /api/admin/staff/invites` / `PUT /api/admin/staff/{id}/permissions` `{ permissions }` / `PUT .../disabled` / `POST .../password-reset` | Moderators (Owner only) |
-| `GET /api/vods/{id}/timeline` / `POST /api/vods/{id}/markers` `{ seconds, endSeconds?, label?, color? }` / `DELETE /api/markers/{id}` / `GET /api/markers?vodIds=1,2` | Player timeline: `{ clips: [{ id, title, kind, start, end }], markers: [{ id, vodId, seconds, endSeconds, label, color, createdBy, createdAtUtc, canDelete }] }` (team's own); `/api/markers` lists markers of up to 200 VODs (library and VOD cards). Entries carry `startSeconds`/`endSeconds` for placing them. Add 201 (`AddEntries`); delete own (`AddEntries`) or anyone's (`DeleteAnyEntries`), else 403 |
+| `GET /api/vods/{id}/timeline` / `POST /api/vods/{id}/markers` `{ seconds, endSeconds?, label?, color? }` / `DELETE /api/markers/{id}` / `GET /api/markers?vodIds=1,2` | Player timeline: `{ clips: [{ id, title, kind, start, end }], markers: [{ id, vodId, seconds, endSeconds, label, color, createdBy, createdAtUtc, canDelete }] }` (team's own); `/api/markers` lists markers of up to 200 VODs (library and VOD cards). Entries carry `startSeconds`/`endSeconds` for placing them (and `followsMarkers`). Add 201 (`AddEntries`; `liveEntry: { entryId, created }` when it made or moved the live markers entry, else null); delete own (`AddEntries`) or anyone's (`DeleteAnyEntries`), else 403 |
 | `POST /api/vods/download` | Phase 1 dev endpoint: synchronous, writes `<title>.mp4` straight into `downloads/`, not part of the library |
 
 `canDownload` in entry responses checks the generated file's expiry itself, since cleanup runs periodically.

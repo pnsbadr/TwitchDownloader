@@ -162,6 +162,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<long?>("FileSizeBytes")
                         .HasColumnType("INTEGER");
 
+                    b.Property<bool>("FollowsMarkers")
+                        .HasColumnType("INTEGER");
+
                     b.Property<DateTime?>("GeneratedExpiresAtUtc")
                         .HasColumnType("TEXT");
 

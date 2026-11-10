@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using TwitchDownloaderWeb.Data;
+using TwitchDownloaderWeb.Services;
 using TwitchDownloaderWeb.Services.Accounts;
 
 namespace TwitchDownloaderWeb.Endpoints
@@ -7,7 +8,11 @@ namespace TwitchDownloaderWeb.Endpoints
     public sealed record TimelineClipDto(int Id, string Title, string Kind, double Start, double? End);
 
     public sealed record MarkerDto(int Id, long VodId, double Seconds, double? EndSeconds, string Label, string Color, int CreatedByUserId, string? CreatedBy,
-        DateTime CreatedAtUtc, bool CanDelete);
+        DateTime CreatedAtUtc, bool CanDelete)
+    {
+        /// <summary>Set when saving the marker made or moved the VOD's live markers entry (see <see cref="LiveMarkerEntryService"/>).</summary>
+        public LiveEntryChange? LiveEntry { get; init; }
+    }
 
     public sealed record TimelineDto(IReadOnlyList<TimelineClipDto> Clips, IReadOnlyList<MarkerDto> Markers);
 
@@ -72,7 +77,8 @@ namespace TwitchDownloaderWeb.Endpoints
             return Results.Ok(markers.OrderBy(x => x.VodId).ThenBy(x => x.Seconds).Select(x => ToDto(x, names, team)).ToList());
         }
 
-        private static async Task<IResult> AddMarker(long vodId, AddMarkerRequest request, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
+        private static async Task<IResult> AddMarker(long vodId, AddMarkerRequest request, TeamContext team, LibraryDbContext db, LiveMarkerEntryService liveEntries,
+            CancellationToken cancellationToken)
         {
             var errors = new Dictionary<string, string[]>();
             if (request.Seconds is not { } seconds || !double.IsFinite(seconds) || seconds < 0 || seconds > 7 * 24 * 3600)
@@ -109,11 +115,15 @@ namespace TwitchDownloaderWeb.Endpoints
             db.Audit(AuditActions.MarkerAdded, null, $"VOD {vodId} {Describe(marker)}");
             await db.SaveChangesAsync(cancellationToken);
 
+            // A marker on a live stream makes (or moves) the team's reference entry around its markers
+            var liveEntry = await liveEntries.MarkersChangedAsync(db, vodId, cancellationToken);
+
             var names = await UserNamesAsync(db, [marker.CreatedByUserId], cancellationToken);
-            return Results.Created($"/api/markers/{marker.Id}", ToDto(marker, names, team));
+            return Results.Created($"/api/markers/{marker.Id}", ToDto(marker, names, team) with { LiveEntry = liveEntry });
         }
 
-        private static async Task<IResult> DeleteMarker(int id, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
+        private static async Task<IResult> DeleteMarker(int id, TeamContext team, LibraryDbContext db, LiveMarkerEntryService liveEntries,
+            CancellationToken cancellationToken)
         {
             var marker = await db.Markers.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
             if (marker is null)
@@ -126,6 +136,7 @@ namespace TwitchDownloaderWeb.Endpoints
             db.Audit(AuditActions.MarkerDeleted, null,
                 $"VOD {marker.VodId} {Describe(marker)}");
             await db.SaveChangesAsync(cancellationToken);
+            await liveEntries.MarkersChangedAsync(db, marker.VodId, cancellationToken);
             return Results.NoContent();
         }
 

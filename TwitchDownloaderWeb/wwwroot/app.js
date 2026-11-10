@@ -1128,8 +1128,16 @@ function renderVodInfo() {
   $("vod-info").hidden = false;
   $("vod-thumb").src = vodInfo.thumbnailUrl || "";
   $("vod-title").textContent = vodInfo.title;
-  $("vod-meta").textContent = [vodInfo.channelName, `streamed ${formatDate(vodInfo.streamDateUtc)}`, `length ${vodInfo.length}`]
-    .filter(Boolean).join(" · ");
+  // A live stream's date and length are only "so far", so it just says LIVE
+  const parts = vodInfo.isLive
+    ? [vodInfo.channelName, liveBadge()]
+    : [vodInfo.channelName, `streamed ${formatDate(vodInfo.streamDateUtc)}`, `length ${vodInfo.length}`];
+  $("vod-meta").replaceChildren(...parts.filter(Boolean).flatMap((part, i) => (i ? [" · ", part] : [part])));
+}
+
+function liveBadge() {
+  return el("span", { class: "live-badge", title: "Still streaming: the VOD grows as the stream goes on" },
+    el("span", { class: "live-dot", "aria-hidden": "true" }), "LIVE");
 }
 
 async function getClipInfo(text) {
@@ -1657,9 +1665,15 @@ async function loadMarkersFor(vodIds) {
   document.querySelectorAll(".seg-slot").forEach(fillSegmentSlot);
 }
 
-// Called by the player bar after a marker or segment is added or deleted
-function markersChanged() {
+// Called by the player bar after a marker or segment is added or deleted. Markers on a live stream make (or move) a
+// reference entry around them, so the library and the players' clip lanes are reloaded too.
+function markersChanged(vodId, change = {}) {
   loadMarkersFor([...document.querySelectorAll(".seg-slot")].map((slot) => slot.dataset.vod));
+  if (!change.liveEntry && !change.deleted) return;
+  loadEntries();
+  reloadPlayerTimelines();
+  if (change.liveEntry?.created)
+    showLibraryNote("Added a reference card for this live stream. It covers 30 s before your first marker to 30 s after your last one and updates as you add more.");
 }
 
 function renderEntry(entry) {
@@ -1697,6 +1711,9 @@ function renderEntry(entry) {
         // stored clips and Twitch clips are short, so chips (badrfly, 2026-11-10).
         entry.isReferenceOnly && entry.kind !== "Clip" ? "strip" : "chips"),
       el("div", { class: "entry-status" }, statusBadge(entry),
+        entry.followsMarkers
+          ? el("span", { class: "badge ref", title: "Made from markers on a live stream: it runs from 30 s before the first marker or segment to 30 s after the last one, and moves when they change. Saving a new cut in Review stops that." }, "Follows markers")
+          : null,
         entry.audioRestoredSeconds > 0
           ? el("span", { class: "badge ok", title: "Muted parts were replaced with saved clean audio" }, `Audio restored · ${formatDuration(entry.audioRestoredSeconds)}`)
           : null,
