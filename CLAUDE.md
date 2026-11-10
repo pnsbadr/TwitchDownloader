@@ -313,9 +313,13 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   **Editing** (badrfly, 2026-11-10): a vertical **tools bar** right of the video (`.vp-stage` wraps the frame and `.vp-tools`; hidden in compact
   mode): **Pointer** (V), **Cut** (C: click a segment to split it at that point into "Name 1"/"Name 2", or "Segment A1"/"A2" when the last
   word is one character; each part ≥ 0.5 s), **Zoom** (Z: click zooms in, right click out), **Undo/Redo**. With the pointer, clicking a
-  segment **selects** it and zooms to it (20 % margin, ≥ 2 s); then Play plays only it (stops at its end), −10s/−1s/+1s/+10s move its **end**
+  segment **selects** it and zooms to it (20 % margin, ≥ 2 s; selecting another one while playing jumps to its start and plays it to its end);
+  then Play plays only it (stops at its end, also after it was made longer), −10s/−1s/+1s/+10s move its **end**
   (presses within 0.6 s are one change), its edges can be dragged (only the selected one, against misclicks), × (placed 14 px past its end,
   away from the edge grip) or Del deletes it, and the row under the bar renames/recolors it. Clicking outside segments unselects; Esc too.
+  **Automatic zoom never cuts off the selected segment** (badrfly): every zoom the app makes by itself goes through `PlayerBar.zoomTo`, which
+  always shows the whole range, and while `autoView` is set (cleared by wheel, zoom tool, +/−/0, panning) `update()` widens the view
+  when the segment grows past it or the playhead leaves it, instead of panning. Only the user's own zooming may go deeper than a segment.
   Changes go through `PUT /api/markers/{id}` (whole marker). **Undo/redo** keeps the last 10 steps per VOD in this tab only (`markerHistory`,
   not shared or persisted): add, delete, change, split; steps hold refs so a marker re-made by undo (new ID) is still found. A step that
   fails (someone changed or deleted it) is dropped with a message. Undoing a delete re-adds it as the current user.

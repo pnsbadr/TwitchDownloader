@@ -192,6 +192,9 @@ class PlayerBar {
     this.markers = [];
     this.view = { from: 0, to: 0 };
     this.zoomed = false;
+    // True while the view comes from an automatic zoom (zoomTo: selecting a segment, opening a review), false once the user
+    // zooms or pans. An automatic view never cuts off the selected segment; only the user's own zooming may go deeper.
+    this.autoView = false;
     this.listDuration = 0; // playlist length (for live VODs, where video.duration is Infinity)
     this.dirty = true;
     this.frame = null;
@@ -444,6 +447,7 @@ class PlayerBar {
     this.clips = [];
     this.markers = [];
     this.zoomed = false;
+    this.autoView = false;
     this.compact = Boolean(this.options.compact);
     this.focus = this.options.focus ?? null;
     this.focusWindow = this.options.focusWindow ?? null;
@@ -590,6 +594,8 @@ class PlayerBar {
     this.dirty = true;
   }
 
+  // The automatic zoom: every zoom the app makes by itself goes through here. It always shows the whole range (never
+  // zooms in past it); a range shorter than the minimum span is centered.
   zoomTo(range) {
     if (!range) return;
     const d = this.duration();
@@ -597,12 +603,31 @@ class PlayerBar {
       this.pendingZoom = range;
       return;
     }
-    const span = Math.max(BAR_MIN_SPAN_SECONDS, range.to - range.from);
-    if (span >= d) return this.fit();
-    this.view = { from: range.from, to: range.from + span };
+    const length = range.to - range.from;
+    const span = Math.max(BAR_MIN_SPAN_SECONDS, length);
+    this.autoView = true;
+    if (span >= d) {
+      this.zoomed = false;
+      this.fitIfNeeded();
+      return;
+    }
+    const from = range.from - (span - length) / 2;
+    this.view = { from, to: from + span };
     this.zoomed = true;
     this.clampView();
     this.dirty = true;
+  }
+
+  // A segment with some room before and after (20 %, at least 2 s), optionally stretched to also show a time
+  segmentView(segment, alsoShow) {
+    const margin = Math.max(2, (segment.endSeconds - segment.seconds) * 0.2);
+    let from = segment.seconds - margin;
+    let to = segment.endSeconds + margin;
+    if (alsoShow != null) {
+      from = Math.min(from, alsoShow - margin);
+      to = Math.max(to, alsoShow + margin);
+    }
+    return { from: Math.max(0, from), to };
   }
 
   fitIfNeeded() {
@@ -691,6 +716,7 @@ class PlayerBar {
 
   fit() {
     this.zoomed = false;
+    this.autoView = false;
     this.fitIfNeeded();
   }
 
@@ -699,6 +725,7 @@ class PlayerBar {
     if (!d) return;
     const span = this.view.to - this.view.from;
     const next = Math.min(d, Math.max(BAR_MIN_SPAN_SECONDS, span * factor));
+    this.autoView = false;
     if (next >= d) return this.fit();
     // Keep the anchor at the same place on screen
     const ratio = span > 0 ? (anchor - this.view.from) / span : 0.5;
@@ -710,6 +737,7 @@ class PlayerBar {
 
   centerOn(seconds) {
     if (!this.zoomed) return;
+    this.autoView = false;
     const span = this.view.to - this.view.from;
     this.view = { from: seconds - span / 2, to: seconds + span / 2 };
     this.clampView();
@@ -856,14 +884,18 @@ class PlayerBar {
     return segment?.canEdit ? segment : null;
   }
 
-  // Selects a segment and zooms the timeline to it, with some room before and after
+  // Selects a segment and zooms the timeline to it, with some room before and after. While playing (another segment, or
+  // anything), playback jumps to the new segment's start and stops at its end.
   select(segment) {
     this.flushPendingEdit();
+    const playing = Boolean(this.video && !this.video.paused);
     this.selectedRef = markerRef(segment.id);
     this.playUntil = null;
-    const length = segment.endSeconds - segment.seconds;
-    const margin = Math.max(2, length * 0.2);
-    this.zoomTo({ from: Math.max(0, segment.seconds - margin), to: segment.endSeconds + margin });
+    this.zoomTo(this.segmentView(segment));
+    if (playing) {
+      this.seek(segment.seconds);
+      this.playUntil = segment.endSeconds;
+    }
     this.renderSelection();
     this.renderMarkers();
     this.dirty = true;
@@ -1377,6 +1409,7 @@ class PlayerBar {
       // Pan
       if (!this.zoomed) return;
       const delta = (event.shiftKey ? event.deltaY : event.deltaX) / (this.canvas.clientWidth || 1) * span;
+      this.autoView = false;
       this.view = { from: this.view.from + delta, to: this.view.to + delta };
       this.clampView();
     } else {
@@ -1442,12 +1475,22 @@ class PlayerBar {
     const video = this.video;
     if (!video) return;
     const now = video.currentTime;
+    const selected = this.selected();
+    // Playing a selected segment that was just made longer or shorter: stop at its new end
+    if (this.playUntil != null && selected) this.playUntil = selected.endSeconds;
     if (this.playUntil != null && !video.paused && now >= this.playUntil) {
       video.pause();
       this.video.currentTime = this.playUntil;
     }
-    // Follow the playhead while zoomed in
-    if (this.zoomed && !this.scrubbing && !video.paused) {
+    // An automatic view keeps the whole selected segment on screen, also after it was made longer (nudge, undo, someone
+    // else's change) and when the playhead leaves the view: it zooms out to show both instead of panning past the segment
+    const fitted = this.autoView && this.zoomed && !this.drag && !this.scrubbing ? selected : null;
+    if (fitted) {
+      const outside = !video.paused && (now > this.view.to || now < this.view.from);
+      if (outside || fitted.seconds < this.view.from || fitted.endSeconds > this.view.to)
+        this.zoomTo(this.segmentView(fitted, outside ? now : null));
+    } else if (this.zoomed && !this.scrubbing && !video.paused) {
+      // Follow the playhead while zoomed in
       const span = this.view.to - this.view.from;
       if (now > this.view.to - span * 0.02 || now < this.view.from) {
         this.view = { from: now - span * 0.1, to: now + span * 0.9 };
