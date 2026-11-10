@@ -141,5 +141,44 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal(1800, kept.GetProperty("endSeconds").GetDouble());
             Assert.Empty(await LiveEntriesAsync());
         }
-    }
+    
+        [Fact]
+        public async Task MarkersCanBeChangedByTheirMakerOrWithEditAny()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            var (owner, member, _, memberId) = await TeamWithMemberAsync("m4");
+            var adder = await CreateRoleAsync(owner, "Adder", "ViewLibrary", "AddEntries");
+            await AssignAsync(owner, memberId, adder);
+
+            async Task<int> AddAsync(HttpClient client, object body) =>
+                (await (await client.PostAsJsonAsync("/api/vods/40/markers", body, ct)).Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("id").GetInt32();
+            var mine = await AddAsync(member, new { seconds = 10, endSeconds = 20, label = "Intro" });
+            var theirs = await AddAsync(owner, new { seconds = 30, label = "Owner's" });
+
+            var flags = (await GetJsonAsync(member, "/api/vods/40/timeline")).GetProperty("markers").EnumerateArray()
+                .ToDictionary(x => x.GetProperty("id").GetInt32(), x => x.GetProperty("canEdit").GetBoolean());
+            Assert.True(flags[mine]);
+            Assert.False(flags[theirs]);
+
+            // Resize, retitle and recolor in one go (the body is the whole marker); the new colors are accepted
+            var changed = await member.PutAsJsonAsync($"/api/markers/{mine}", new { seconds = 12.346, endSeconds = 25, label = "Intro part 1", color = "teal" }, ct);
+            Assert.Equal(HttpStatusCode.OK, changed.StatusCode);
+            var json = await changed.Content.ReadFromJsonAsync<JsonElement>(ct);
+            Assert.Equal(12.35, json.GetProperty("seconds").GetDouble());
+            Assert.Equal(25, json.GetProperty("endSeconds").GetDouble());
+            Assert.Equal("Intro part 1", json.GetProperty("label").GetString());
+            Assert.Equal("teal", json.GetProperty("color").GetString());
+
+            Assert.Equal(HttpStatusCode.BadRequest, (await member.PutAsJsonAsync($"/api/markers/{mine}", new { seconds = 12, endSeconds = 12.2 }, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await member.PutAsJsonAsync($"/api/markers/{theirs}", new { seconds = 31 }, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, (await member.PutAsJsonAsync("/api/markers/999999", new { seconds = 31 }, ct)).StatusCode);
+
+            // EditAnyEntries lets a member change anyone's
+            var editor = await CreateRoleAsync(owner, "Editor", "ViewLibrary", "EditAnyEntries");
+            await AssignAsync(owner, memberId, editor);
+            Assert.Equal(HttpStatusCode.OK, (await member.PutAsJsonAsync($"/api/markers/{theirs}", new { seconds = 31, label = "Moved", color = "violet" }, ct)).StatusCode);
+            var log = await GetJsonAsync(owner, "/api/team/audit");
+            Assert.Contains(log.EnumerateArray(), x => x.GetProperty("action").GetString() == "marker.changed");
+        }
+}
 }

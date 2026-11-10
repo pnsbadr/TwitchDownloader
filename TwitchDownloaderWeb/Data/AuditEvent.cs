@@ -53,6 +53,7 @@ namespace TwitchDownloaderWeb.Data
         public const string ShortformDeleted = "shortform.deleted";
         public const string MarkerAdded = "marker.added";
         public const string MarkerDeleted = "marker.deleted";
+        public const string MarkerChanged = "marker.changed";
         /// <summary>A live-markers entry's range moved because the VOD's markers changed (not counted as a member's edit).</summary>
         public const string EntryFollowedMarkers = "entry.followed_markers";
         public const string StaffJoined = "staff.joined";
