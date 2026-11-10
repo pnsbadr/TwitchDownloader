@@ -10,6 +10,9 @@ namespace TwitchDownloaderWeb.Endpoints
     public sealed record MarkerDto(int Id, long VodId, double Seconds, double? EndSeconds, string Label, string Color, int CreatedByUserId, string? CreatedBy,
         DateTime CreatedAtUtc, bool CanDelete)
     {
+        /// <summary>Whether this user may move, resize, split, recolor or retitle it (own with AddEntries, anyone's with EditAnyEntries).</summary>
+        public bool CanEdit { get; init; }
+
         /// <summary>Set when saving the marker made or moved the VOD's live markers entry (see <see cref="LiveMarkerEntryService"/>).</summary>
         public LiveEntryChange? LiveEntry { get; init; }
     }
@@ -30,13 +33,17 @@ namespace TwitchDownloaderWeb.Endpoints
             // Markers and segments of several VODs at once, for the library and the VOD browser cards
             app.MapGet("/api/markers", ListMarkers).RequireTeam(TeamPermission.ViewLibrary);
             app.MapPost("/api/vods/{vodId:long}/markers", AddMarker).RequireTeam(TeamPermission.AddEntries);
-            // Own markers need AddEntries (as when they were made); anyone's need DeleteAnyEntries. Checked in the handler.
+            // Own markers need AddEntries (as when they were made); anyone's need EditAnyEntries / DeleteAnyEntries. Checked in the handler.
+            app.MapPut("/api/markers/{id:int}", UpdateMarker).RequireTeam(TeamPermission.AddEntries | TeamPermission.EditAnyEntries);
             app.MapDelete("/api/markers/{id:int}", DeleteMarker).RequireTeam(TeamPermission.AddEntries | TeamPermission.DeleteAnyEntries);
             return app;
         }
 
         private static bool CanDelete(TeamContext team, VodMarker marker) =>
             team.CanOnOwnOrAny(marker.CreatedByUserId.ToString(), TeamPermission.AddEntries, TeamPermission.DeleteAnyEntries);
+
+        private static bool CanEdit(TeamContext team, VodMarker marker) =>
+            team.CanOnOwnOrAny(marker.CreatedByUserId.ToString(), TeamPermission.AddEntries, TeamPermission.EditAnyEntries);
 
         private static async Task<IResult> GetTimeline(long vodId, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
         {
@@ -77,8 +84,8 @@ namespace TwitchDownloaderWeb.Endpoints
             return Results.Ok(markers.OrderBy(x => x.VodId).ThenBy(x => x.Seconds).Select(x => ToDto(x, names, team)).ToList());
         }
 
-        private static async Task<IResult> AddMarker(long vodId, AddMarkerRequest request, TeamContext team, LibraryDbContext db, LiveMarkerEntryService liveEntries,
-            CancellationToken cancellationToken)
+        /// <returns>Errors by field (empty if valid), and the cleaned label and color.</returns>
+        private static (Dictionary<string, string[]> Errors, string Label, string Color) Validate(AddMarkerRequest request)
         {
             var errors = new Dictionary<string, string[]>();
             if (request.Seconds is not { } seconds || !double.IsFinite(seconds) || seconds < 0 || seconds > 7 * 24 * 3600)
@@ -96,6 +103,13 @@ namespace TwitchDownloaderWeb.Endpoints
             if (!VodMarker.Colors.Contains(color))
                 errors["color"] = [$"Color must be one of {string.Join(", ", VodMarker.Colors)}."];
 
+            return (errors, label, color);
+        }
+
+        private static async Task<IResult> AddMarker(long vodId, AddMarkerRequest request, TeamContext team, LibraryDbContext db, LiveMarkerEntryService liveEntries,
+            CancellationToken cancellationToken)
+        {
+            var (errors, label, color) = Validate(request);
             if (vodId <= 0)
                 errors["vodId"] = ["Unknown VOD."];
 
@@ -122,6 +136,39 @@ namespace TwitchDownloaderWeb.Endpoints
             return Results.Created($"/api/markers/{marker.Id}", ToDto(marker, names, team) with { LiveEntry = liveEntry });
         }
 
+        /// <summary>Moves, resizes, recolors or retitles a marker: the body is the whole marker (seconds, endSeconds, label, color).</summary>
+        private static async Task<IResult> UpdateMarker(int id, AddMarkerRequest request, TeamContext team, LibraryDbContext db, LiveMarkerEntryService liveEntries,
+            CancellationToken cancellationToken)
+        {
+            var marker = await db.Markers.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+            if (marker is null)
+                return Results.Problem(detail: "That marker is gone.", statusCode: StatusCodes.Status404NotFound);
+
+            if (!CanEdit(team, marker))
+                return Results.Problem(detail: "Your role only lets you change markers you added.", statusCode: StatusCodes.Status403Forbidden);
+
+            var (errors, label, color) = Validate(request);
+            if (errors.Count > 0)
+                return Results.ValidationProblem(errors);
+
+            var before = $"{Describe(marker)} ({marker.Color})";
+            marker.Seconds = Math.Round(request.Seconds!.Value, 2);
+            marker.EndSeconds = request.EndSeconds is { } endSeconds ? Math.Round(endSeconds, 2) : null;
+            marker.Label = label;
+            marker.Color = color;
+            var after = $"{Describe(marker)} ({marker.Color})";
+            LiveEntryChange? liveEntry = null;
+            if (db.ChangeTracker.HasChanges())
+            {
+                db.Audit(AuditActions.MarkerChanged, null, $"VOD {marker.VodId} {before} -> {after}");
+                await db.SaveChangesAsync(cancellationToken);
+                liveEntry = await liveEntries.MarkersChangedAsync(db, marker.VodId, cancellationToken);
+            }
+
+            var names = await UserNamesAsync(db, [marker.CreatedByUserId], cancellationToken);
+            return Results.Ok(ToDto(marker, names, team) with { LiveEntry = liveEntry });
+        }
+
         private static async Task<IResult> DeleteMarker(int id, TeamContext team, LibraryDbContext db, LiveMarkerEntryService liveEntries,
             CancellationToken cancellationToken)
         {
@@ -142,7 +189,10 @@ namespace TwitchDownloaderWeb.Endpoints
 
         private static MarkerDto ToDto(VodMarker x, IReadOnlyDictionary<int, string> names, TeamContext team) =>
             new(x.Id, x.VodId, x.Seconds, x.EndSeconds, x.Label, x.Color, x.CreatedByUserId, names.GetValueOrDefault(x.CreatedByUserId), x.CreatedAtUtc,
-                !team.IsSupport && CanDelete(team, x));
+                !team.IsSupport && CanDelete(team, x))
+            {
+                CanEdit = !team.IsSupport && CanEdit(team, x),
+            };
 
         private static async Task<Dictionary<int, string>> UserNamesAsync(LibraryDbContext db, IEnumerable<int> userIds, CancellationToken cancellationToken)
         {

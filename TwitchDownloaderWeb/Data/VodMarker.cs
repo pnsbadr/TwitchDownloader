@@ -25,6 +25,7 @@ namespace TwitchDownloaderWeb.Data
         public DateTime CreatedAtUtc { get; set; }
 
         public const int MaxLabelLength = 200;
-        public static readonly IReadOnlyList<string> Colors = ["yellow", "blue", "pink", "orange"];
+        // New colors go at the end (the page lists them in this order); the first is the default
+        public static readonly IReadOnlyList<string> Colors = ["yellow", "blue", "pink", "orange", "red", "lime", "teal", "violet", "gray"];
     }
 }
