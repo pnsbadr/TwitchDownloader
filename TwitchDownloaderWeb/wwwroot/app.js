@@ -1585,17 +1585,19 @@ function titleNode(entry) {
 const vodMarkers = new Map(); // VOD ID (string) -> the team's markers and segments on it
 const MARKERS_PER_REQUEST = 200;
 
-// A placeholder filled with the VOD's markers/segments between from and to (VOD seconds) once they're loaded
-function segmentSlot(vodId, from, to) {
+// A placeholder filled with the VOD's markers/segments between from and to (VOD seconds) once they're loaded:
+// a strip for a whole VOD (its card), chips for a library entry (a short clip doesn't need a strip)
+function segmentSlot(vodId, from, to, kind = "strip") {
   if (!vodId || !(to > from)) return null;
-  const slot = el("div", { class: "seg-slot", "data-vod": String(vodId), "data-from": String(from), "data-to": String(to) });
+  const slot = el("div", { class: "seg-slot", "data-vod": String(vodId), "data-from": String(from), "data-to": String(to), "data-kind": kind });
   fillSegmentSlot(slot);
   return slot;
 }
 
 function fillSegmentSlot(slot) {
   const markers = vodMarkers.get(slot.dataset.vod);
-  const strip = markers ? segmentStrip(markers, Number(slot.dataset.from), Number(slot.dataset.to)) : null;
+  const show = slot.dataset.kind === "chips" ? markerChips : segmentStrip;
+  const strip = markers ? show(markers, Number(slot.dataset.from), Number(slot.dataset.to)) : null;
   slot.replaceChildren(...(strip ? [strip] : []));
 }
 
@@ -1649,7 +1651,7 @@ function renderEntry(entry) {
       titleNode(entry),
       el("div", { class: "entry-meta" }, dates),
       el("div", { class: "entry-meta" }, details),
-      segmentSlot(entry.vodId, entry.startSeconds ?? 0, entry.endSeconds ?? entry.vodLengthSeconds),
+      segmentSlot(entry.vodId, entry.startSeconds ?? 0, entry.endSeconds ?? entry.vodLengthSeconds, "chips"),
       el("div", { class: "entry-status" }, statusBadge(entry),
         entry.audioRestoredSeconds > 0
           ? el("span", { class: "badge ok", title: "Muted parts were replaced with saved clean audio" }, `Audio restored · ${formatDuration(entry.audioRestoredSeconds)}`)

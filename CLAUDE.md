@@ -299,8 +299,9 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   overview strip while zoomed; the view follows the playhead. `GET /api/vods/{id}/timeline` feeds clips and markers; it's reloaded
   after adding/re-trimming/deleting an entry. Keys (not while typing): Space/K play, J/L ±10 s, ←/→ ±5 s, `,`/`.` one frame,
   M marker, S segment start/end, F fullscreen, +/−/0 zoom.
-  **Library entries and VOD cards** show the VOD's markers and segments in a small strip (`segmentStrip`; an entry shows only its own
-  trim range, a segment running past it gets a dashed edge; hover = title and times), loaded with `GET /api/markers?vodIds=`. Markers need `AddEntries` to add (and delete own) and `DeleteAnyEntries` for anyone's;
+  **VOD cards** show the VOD's markers and segments in a small strip (`segmentStrip`; hover = title and times); **library entries** list
+  the ones inside their range as chips like the player's (`markerChips`; badrfly: a strip is too much for a short clip). Both load with
+  `GET /api/markers?vodIds=`. Markers need `AddEntries` to add (and delete own) and `DeleteAnyEntries` for anyone's;
   view as support sees them read-only.
   **Watch** next to Get Info / on VOD cards opens an inline player with **Set start here / Set end here** (fills the trim
   fields from the position below, hundredths of a second) and **Play clip** (seeks to start, pauses at end). The review dialog

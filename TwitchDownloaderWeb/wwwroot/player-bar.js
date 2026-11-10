@@ -79,6 +79,37 @@ function drawSegmentBox(ctx, a, b, top, height, color, dashed = false) {
   ctx.restore();
 }
 
+// Chips for a library entry (like the list under the player): the markers and segments between from and to. Null when none.
+function markerChips(markers, from, to) {
+  const inside = markers.filter((m) => (isSegment(m) ? m.endSeconds > from && m.seconds < to : m.seconds >= from && m.seconds <= to));
+  if (!inside.length) return null;
+  const list = document.createElement("div");
+  list.className = "vp-markers entry-markers";
+  list.setAttribute("aria-label", "Team markers and segments");
+  for (const marker of inside) {
+    const chip = document.createElement("span");
+    chip.className = "vp-chip";
+    chip.title = markerTitle(marker);
+    const body = document.createElement("span");
+    body.className = "vp-chip-go";
+    const dot = document.createElement("i");
+    dot.style.background = markerColor(marker);
+    if (isSegment(marker)) dot.className = "vp-chip-segment";
+    const time = document.createElement("strong");
+    time.textContent = isSegment(marker) ? `${formatTrimValue(marker.seconds)}–${formatTrimValue(marker.endSeconds)}` : formatTrimValue(marker.seconds);
+    body.append(dot, time, marker.label ? ` ${marker.label}` : "");
+    if (marker.createdBy) {
+      const by = document.createElement("span");
+      by.className = "muted";
+      by.textContent = ` · ${marker.createdBy}`;
+      body.append(by);
+    }
+    chip.append(body);
+    list.append(chip);
+  }
+  return list;
+}
+
 // A small strip for a library entry or VOD card: the markers and segments that fall between from and to (VOD seconds).
 // Null when there are none. Hovering one shows its title and times.
 function segmentStrip(markers, from, to) {

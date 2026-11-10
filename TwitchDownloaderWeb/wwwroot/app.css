@@ -987,3 +987,5 @@ table.activity td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .seg-mark { width: 3px; margin-left: -1px; background: var(--seg-color); border-radius: 1px; }
 .seg-box:hover, .seg-mark:hover { filter: brightness(1.2); outline: 1px solid var(--text); z-index: 1; }
 .vod-card .seg-strip { margin: 6px 0 0; }
+.entry-markers { margin-top: 6px; }
+.entry-markers .vp-chip-go { cursor: default; padding-right: 9px; }
