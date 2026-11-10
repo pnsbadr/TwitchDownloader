@@ -96,6 +96,13 @@ input, select {
   min-width: 0;
 }
 
+/* Sliders aren't text boxes: padding would make the thumb stop short of both ends of the track */
+input[type="range"] {
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
 input:focus-visible, select:focus-visible, button:focus-visible, a.button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
