@@ -612,6 +612,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<int>("CreatedByUserId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<double?>("EndSeconds")
+                        .HasColumnType("REAL");
+
                     b.Property<string>("Label")
                         .IsRequired()
                         .HasMaxLength(200)

@@ -85,7 +85,17 @@ namespace TwitchDownloaderWeb.Endpoints
             entry.Status == EntryStatus.Ready || HasUnexpiredGeneratedFile(entry),
             entry.AudioRestoredSeconds,
             entry.AudioMutedSeconds,
-            entry.AddedByUserId);
+            entry.AddedByUserId)
+        {
+            StartSeconds = entry.StartTime.TotalSeconds,
+            EndSeconds = entry.EndTime?.TotalSeconds,
+        };
+
+        /// <summary>The trim (or a clip's place in its VOD) in seconds, so the page can place the VOD's markers and segments on it.</summary>
+        public double StartSeconds { get; init; }
+
+        /// <summary>Null = end of the VOD.</summary>
+        public double? EndSeconds { get; init; }
 
         /// <summary>The cleanup service deletes expired files periodically, so check the expiry itself rather than the status.</summary>
         public static bool HasUnexpiredGeneratedFile(LibraryEntry entry) =>

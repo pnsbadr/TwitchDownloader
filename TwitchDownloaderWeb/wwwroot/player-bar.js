@@ -6,12 +6,13 @@
 //  - parts Twitch muted (red) and parts that play with saved clean audio instead (green), read from the playlist the
 //    player loaded (a muted segment's URL ends in "-muted.ts"; the server points ones with saved audio at ".../clean/")
 //  - the team's library entries cut from this VOD (purple lane above the track)
-//  - the team's markers (GET/POST /api/vods/{id}/timeline, /markers), shared with everyone in the team
+//  - the team's markers and segments (GET/POST /api/vods/{id}/timeline, /markers), shared with everyone in the team. A segment
+//    is a marker with an end ("intro", "Arky meets Sunny"): a hatched box with brackets at both ends
 // The timeline zooms (wheel, +/−, Fit) so a 24-hour VOD can still be scrubbed to the second; a strip above it shows the
 // whole VOD and the zoomed window. The Twitch embed fallback keeps Twitch's own controls; the bar is hidden then.
 //
 // Keys while the player has focus: Space/K play/pause, J/L ∓10 s, ←/→ ∓5 s, ,/. one frame back/forward, M add a marker,
-// +/− zoom, 0 fit, F fullscreen.
+// S start a segment here / end it here (Esc cancels), +/− zoom, 0 fit, F fullscreen.
 //
 // Uses the page's helpers from app.js ($, api, can, me, formatTrimValue, formatDuration), which load after this file but
 // before anything here runs.
@@ -21,6 +22,93 @@ const BAR_TRACK = { clipTop: 0, clipHeight: 7, top: 10, height: 22, labelTop: 34
 const BAR_TICK_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600];
 const MARKER_COLORS = { yellow: "#f2c230", blue: "#3d8bfd", pink: "#ff5fa2", orange: "#ff8a3d" };
 const MARKER_HIT_PX = 6;
+const MIN_SEGMENT_SECONDS = 0.5;
+
+function markerColor(marker) {
+  return MARKER_COLORS[marker.color] ?? MARKER_COLORS.yellow;
+}
+
+function isSegment(marker) {
+  return marker.endSeconds != null;
+}
+
+// "1:02:03 – 1:04:00 (1:57)" for a segment, "1:02:03" for a moment
+function markerTimeText(marker) {
+  if (!isSegment(marker)) return formatTrimValue(marker.seconds);
+  return `${formatTrimValue(marker.seconds)} – ${formatTrimValue(marker.endSeconds)} (${formatTrimValue(marker.endSeconds - marker.seconds)})`;
+}
+
+// Hover text for a marker or segment, wherever it's shown
+function markerTitle(marker) {
+  const name = marker.label || (isSegment(marker) ? "Segment" : "Marker");
+  return `${name}\n${markerTimeText(marker)}${marker.createdBy ? `\nAdded by ${marker.createdBy}` : ""}`;
+}
+
+// A segment on a canvas: light fill, diagonal hatching and brackets reaching past the track at both ends
+function drawSegmentBox(ctx, a, b, top, height, color, dashed = false) {
+  const w = Math.max(2, b - a);
+  ctx.save();
+  ctx.fillStyle = color;
+  ctx.globalAlpha = 0.16;
+  ctx.fillRect(a, top, w, height);
+  ctx.beginPath();
+  ctx.rect(a, top, w, height);
+  ctx.clip();
+  ctx.globalAlpha = 0.85;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let hx = a - height; hx < a + w; hx += 7) {
+    ctx.moveTo(hx, top + height);
+    ctx.lineTo(hx + height, top);
+  }
+  ctx.stroke();
+  ctx.restore();
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  if (dashed) ctx.setLineDash([4, 3]);
+  ctx.strokeRect(a + 1, top + 1, Math.max(0, w - 2), height - 2);
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.moveTo(a + 1, top - 4);
+  ctx.lineTo(a + 1, top + height + 4);
+  ctx.moveTo(a + w - 1, top - 4);
+  ctx.lineTo(a + w - 1, top + height + 4);
+  ctx.stroke();
+  ctx.restore();
+}
+
+// A small strip for a library entry or VOD card: the markers and segments that fall between from and to (VOD seconds).
+// Null when there are none. Hovering one shows its title and times.
+function segmentStrip(markers, from, to) {
+  const span = to - from;
+  if (!(span > 0)) return null;
+  const inside = markers.filter((m) => (isSegment(m) ? m.endSeconds > from && m.seconds < to : m.seconds >= from && m.seconds <= to));
+  if (!inside.length) return null;
+  const strip = document.createElement("div");
+  strip.className = "seg-strip";
+  strip.setAttribute("role", "list");
+  strip.setAttribute("aria-label", "Team markers and segments");
+  const pct = (t) => `${(Math.min(Math.max(t, from), to) - from) / span * 100}%`;
+  for (const marker of inside) {
+    const item = document.createElement("span");
+    item.setAttribute("role", "listitem");
+    item.style.setProperty("--seg-color", markerColor(marker));
+    item.title = markerTitle(marker);
+    item.setAttribute("aria-label", markerTitle(marker).replace(/\n/g, ", "));
+    item.style.left = pct(marker.seconds);
+    if (isSegment(marker)) {
+      // A segment that runs on past this clip's edge gets no bracket on that side
+      item.className = `seg-box${marker.seconds < from ? " seg-open-start" : ""}${marker.endSeconds > to ? " seg-open-end" : ""}`;
+      item.style.width = `calc(${pct(marker.endSeconds)} - ${pct(marker.seconds)})`;
+    } else {
+      item.className = "seg-mark";
+    }
+    strip.append(item);
+  }
+  return strip;
+}
 
 class PlayerBar {
   constructor(wrapId, barId) {
@@ -38,7 +126,8 @@ class PlayerBar {
     this.frame = null;
     this.scrubbing = false;
     this.hoverX = null;
-    this.pendingMarker = null; // seconds of the marker being added
+    this.pendingMarker = null; // true while the add form is open
+    this.segmentStart = null; // seconds where a segment being marked starts (S pressed once)
     this.build();
   }
 
@@ -68,11 +157,16 @@ class PlayerBar {
           <button type="button" class="vp-btn" data-act="fit" title="Show the whole VOD (0)">Fit</button>
         </span>
         <button type="button" class="vp-btn vp-add-marker" data-act="marker" title="Add a marker here (M)">+ Marker</button>
+        <button type="button" class="vp-btn vp-add-segment" data-act="segment" title="Mark a segment: press at its start, then at its end (S)">[ Segment</button>
         <button type="button" class="vp-btn" data-act="fullscreen" aria-label="Fullscreen" title="Fullscreen (F)">⛶</button>
       </div>
       <div class="vp-marker-form" hidden>
-        <span>Marker at <strong class="vp-marker-time"></strong></span>
-        <input class="vp-marker-label" maxlength="200" placeholder="What happens here? (optional)" autocomplete="off">
+        <strong class="vp-marker-kind">Marker</strong>
+        <label class="vp-time-field">Start <input class="vp-marker-start" autocomplete="off" spellcheck="false">
+          <button type="button" class="link small" data-act="startnow" title="Use the player's position">here</button></label>
+        <label class="vp-time-field">End <input class="vp-marker-end" placeholder="none" autocomplete="off" spellcheck="false">
+          <button type="button" class="link small" data-act="endnow" title="Use the player's position">here</button></label>
+        <input class="vp-marker-label" maxlength="200" placeholder="Title, e.g. intro (optional)" autocomplete="off">
         <span class="vp-swatches" role="radiogroup" aria-label="Marker color">
           ${Object.entries(MARKER_COLORS).map(([name, color], i) => `
             <label class="vp-swatch" title="${name}"><input type="radio" name="vp-color" value="${name}" ${i === 0 ? "checked" : ""}>
@@ -88,6 +182,7 @@ class PlayerBar {
         <span><i class="vp-key vp-key-clean"></i>Plays saved clean audio</span>
         <span><i class="vp-key vp-key-clip"></i>Library clips</span>
         <span><i class="vp-key vp-key-marker"></i>Team markers</span>
+        <span><i class="vp-key vp-key-segment"></i>Team segments</span>
       </div>`;
 
     this.overview = this.el.querySelector(".vp-overview");
@@ -106,6 +201,9 @@ class PlayerBar {
     });
     this.form.querySelector("[data-act=savemarker]").addEventListener("click", () => this.saveMarker());
     this.form.querySelector("[data-act=cancelmarker]").addEventListener("click", () => this.closeMarkerForm());
+    this.form.querySelector("[data-act=startnow]").addEventListener("click", () => this.setFormTime(".vp-marker-start"));
+    this.form.querySelector("[data-act=endnow]").addEventListener("click", () => this.setFormTime(".vp-marker-end"));
+    this.form.querySelector(".vp-marker-end").addEventListener("input", () => this.renderFormKind());
     // The player can sit inside the page's add form: Enter must save the marker, not submit that form
     this.form.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
@@ -155,9 +253,12 @@ class PlayerBar {
     this.markers = [];
     this.zoomed = false;
     this.closeMarkerForm();
+    this.cancelSegment();
     this.el.hidden = false;
     this.wrap.classList.add("has-bar");
-    this.el.querySelector(".vp-add-marker").hidden = !can("AddEntries") || Boolean(me?.support);
+    const canAdd = can("AddEntries") && !me?.support;
+    this.el.querySelector(".vp-add-marker").hidden = !canAdd;
+    this.el.querySelector(".vp-add-segment").hidden = !canAdd;
 
     backend.onDetails = (details) => this.readPlaylist(details);
     if (backend.details) this.readPlaylist(backend.details);
@@ -281,6 +382,7 @@ class PlayerBar {
       case "zoomout": return this.zoomBy(2, this.now());
       case "fit": return this.fit();
       case "marker": return this.openMarkerForm();
+      case "segment": return this.toggleSegment();
       case "fullscreen": return this.toggleFullscreen();
     }
   }
@@ -352,15 +454,61 @@ class PlayerBar {
 
   // ---- markers ----
 
-  openMarkerForm() {
-    if (!this.video || this.el.querySelector(".vp-add-marker").hidden) return;
+  canAdd() {
+    return Boolean(this.video) && !this.el.querySelector(".vp-add-marker").hidden;
+  }
+
+  // First press: the segment starts here. Second press: it ends here, and the form opens to name it.
+  toggleSegment() {
+    if (!this.canAdd()) return;
+    if (this.segmentStart == null) {
+      this.closeMarkerForm();
+      this.segmentStart = this.now();
+      this.renderSegmentButton();
+      this.dirty = true;
+      return;
+    }
+    const a = this.segmentStart;
+    const b = this.now();
+    this.cancelSegment();
+    this.openMarkerForm(Math.min(a, b), Math.max(a, b));
+  }
+
+  cancelSegment() {
+    this.segmentStart = null;
+    this.renderSegmentButton();
+    this.dirty = true;
+  }
+
+  renderSegmentButton() {
+    const button = this.el.querySelector(".vp-add-segment");
+    button.textContent = this.segmentStart == null ? "[ Segment" : `] End segment (from ${formatTrimValue(this.segmentStart)})`;
+    button.classList.toggle("vp-btn-active", this.segmentStart != null);
+  }
+
+  openMarkerForm(start = this.now(), end = null) {
+    if (!this.canAdd()) return;
+    this.cancelSegment();
     this.video.pause();
-    this.pendingMarker = this.now();
-    this.form.querySelector(".vp-marker-time").textContent = formatTrimValue(this.pendingMarker);
+    this.pendingMarker = true;
+    this.form.querySelector(".vp-marker-start").value = formatTrimValue(start);
+    this.form.querySelector(".vp-marker-end").value = end == null ? "" : formatTrimValue(end);
     this.form.querySelector(".vp-marker-message").textContent = "";
-    this.form.hidden = false;
     this.form.querySelector(".vp-marker-label").value = "";
+    this.renderFormKind();
+    this.form.hidden = false;
     this.form.querySelector(".vp-marker-label").focus();
+  }
+
+  renderFormKind() {
+    const segment = this.form.querySelector(".vp-marker-end").value.trim() !== "";
+    this.form.querySelector(".vp-marker-kind").textContent = segment ? "Segment" : "Marker";
+    this.form.querySelector("[data-act=savemarker]").textContent = segment ? "Save segment" : "Save marker";
+  }
+
+  setFormTime(selector) {
+    this.form.querySelector(selector).value = formatTrimValue(this.now());
+    this.renderFormKind();
   }
 
   closeMarkerForm() {
@@ -368,34 +516,59 @@ class PlayerBar {
     this.form.hidden = true;
   }
 
+  // The form's start/end, or an error message
+  formTimes() {
+    const start = parseTrim(this.form.querySelector(".vp-marker-start").value);
+    const end = parseTrim(this.form.querySelector(".vp-marker-end").value);
+    if (start == null || Number.isNaN(start)) return { error: "Give the start as h:mm:ss." };
+    if (Number.isNaN(end)) return { error: "Give the end as h:mm:ss, or leave it blank for a single moment." };
+    if (end != null && end < start + MIN_SEGMENT_SECONDS) return { error: `The end must be at least ${MIN_SEGMENT_SECONDS} s after the start.` };
+    return { start, end };
+  }
+
   async saveMarker() {
     if (this.pendingMarker == null) return;
     const label = this.form.querySelector(".vp-marker-label").value.trim();
     const color = this.form.querySelector("input[name=vp-color]:checked")?.value ?? "yellow";
     const message = this.form.querySelector(".vp-marker-message");
+    const times = this.formTimes();
+    if (times.error) {
+      message.textContent = times.error;
+      return;
+    }
     message.textContent = "Saving…";
     try {
-      const marker = await api("POST", `/api/vods/${encodeURIComponent(this.vodId)}/markers`, { seconds: this.pendingMarker, label, color });
+      const marker = await api("POST", `/api/vods/${encodeURIComponent(this.vodId)}/markers`,
+        { seconds: times.start, endSeconds: times.end, label, color });
       this.markers = [...this.markers, marker].sort((a, b) => a.seconds - b.seconds);
       this.closeMarkerForm();
       this.renderMarkers();
       this.dirty = true;
       this.wrap.focus({ preventScroll: true });
+      this.notifyChanged();
     } catch (error) {
       message.textContent = error.message;
     }
   }
 
   async deleteMarker(marker) {
-    if (!confirm(`Delete the marker at ${formatTrimValue(marker.seconds)}${marker.label ? ` ("${marker.label}")` : ""}?`)) return;
+    const what = isSegment(marker) ? "segment" : "marker";
+    if (!confirm(`Delete the ${what} ${isSegment(marker) ? "from" : "at"} ${isSegment(marker)
+      ? `${formatTrimValue(marker.seconds)} to ${formatTrimValue(marker.endSeconds)}` : formatTrimValue(marker.seconds)}${marker.label ? ` ("${marker.label}")` : ""}?`)) return;
     try {
       await api("DELETE", `/api/markers/${marker.id}`);
       this.markers = this.markers.filter((x) => x.id !== marker.id);
       this.renderMarkers();
       this.dirty = true;
+      this.notifyChanged();
     } catch (error) {
       alert(error.message);
     }
+  }
+
+  // The library and VOD cards show markers too
+  notifyChanged() {
+    if (typeof markersChanged === "function") markersChanged(this.vodId);
   }
 
   renderMarkers() {
@@ -407,11 +580,12 @@ class PlayerBar {
       const go = document.createElement("button");
       go.type = "button";
       go.className = "vp-chip-go";
-      go.title = `Go to this marker${marker.createdBy ? ` (added by ${marker.createdBy})` : ""}`;
+      go.title = markerTitle(marker);
       const dot = document.createElement("i");
-      dot.style.background = MARKER_COLORS[marker.color] ?? MARKER_COLORS.yellow;
+      dot.style.background = markerColor(marker);
+      if (isSegment(marker)) dot.className = "vp-chip-segment";
       const time = document.createElement("strong");
-      time.textContent = formatTrimValue(marker.seconds);
+      time.textContent = isSegment(marker) ? `${formatTrimValue(marker.seconds)}–${formatTrimValue(marker.endSeconds)}` : formatTrimValue(marker.seconds);
       go.append(dot, time, marker.label ? ` ${marker.label}` : "");
       if (marker.createdBy) {
         const by = document.createElement("span");
@@ -429,7 +603,7 @@ class PlayerBar {
         remove.type = "button";
         remove.className = "vp-chip-x";
         remove.textContent = "✕";
-        remove.setAttribute("aria-label", "Delete marker");
+        remove.setAttribute("aria-label", isSegment(marker) ? "Delete segment" : "Delete marker");
         remove.addEventListener("click", () => this.deleteMarker(marker));
         chip.append(remove);
       }
@@ -442,6 +616,11 @@ class PlayerBar {
   onKeyDown(event) {
     if (!this.backend || event.ctrlKey || event.metaKey || event.altKey) return;
     if (event.target.closest("input, select, textarea, .vp-marker-form")) return;
+    if (event.key === "Escape" && this.segmentStart != null) {
+      event.preventDefault();
+      this.cancelSegment();
+      return;
+    }
     const keys = {
       " ": () => this.togglePlay(), k: () => this.togglePlay(), K: () => this.togglePlay(),
       j: () => this.seek(this.now() - 10), J: () => this.seek(this.now() - 10),
@@ -449,6 +628,7 @@ class PlayerBar {
       ArrowLeft: () => this.seek(this.now() - 5), ArrowRight: () => this.seek(this.now() + 5),
       ",": () => this.step(-1), ".": () => this.step(1),
       m: () => this.openMarkerForm(), M: () => this.openMarkerForm(),
+      s: () => this.toggleSegment(), S: () => this.toggleSegment(),
       f: () => this.toggleFullscreen(), F: () => this.toggleFullscreen(),
       "+": () => this.act("zoomin"), "=": () => this.act("zoomin"), "-": () => this.act("zoomout"), "0": () => this.fit(),
     };
@@ -478,6 +658,7 @@ class PlayerBar {
     const width = this.canvas.clientWidth;
     let best = null;
     for (const marker of this.markers) {
+      if (isSegment(marker)) continue;
       const distance = Math.abs(this.timeToX(marker.seconds, width) - x);
       if (distance <= MARKER_HIT_PX && (!best || distance < best.distance)) best = { marker, distance };
     }
@@ -551,6 +732,11 @@ class PlayerBar {
     const lines = [formatTrimValue(Math.max(0, time))];
     const marker = this.markerAt(x);
     if (marker) lines.push(`Marker${marker.label ? `: ${marker.label}` : ""}${marker.createdBy ? ` (${marker.createdBy})` : ""}`);
+    for (const segment of this.markers) {
+      if (isSegment(segment) && time >= segment.seconds && time <= segment.endSeconds) {
+        lines.push(`${segment.label || "Segment"}: ${markerTimeText(segment)}${segment.createdBy ? ` (${segment.createdBy})` : ""}`);
+      }
+    }
     const range = this.ranges.find((r) => time >= r.start && time < r.end);
     if (range) lines.push(range.clean ? "Muted by Twitch: plays saved clean audio" : "Muted by Twitch");
     const clip = y < BAR_TRACK.top + BAR_TRACK.height ? this.clipAt(time) : null;
@@ -646,12 +832,28 @@ class PlayerBar {
     const playedTo = Math.min(width, Math.max(0, x(now)));
     ctx.fillRect(0, top + height - 4, playedTo, 4);
 
-    // Muted parts (bottom two thirds of the track, so the played line stays visible)
+    // Muted parts (bottom two thirds of the track, so the played line stays visible), half see-through
+    ctx.globalAlpha = 0.5;
     for (const range of this.ranges) {
       const [a, b] = span(range.start, range.end);
       if (b <= 0 || a >= width) continue;
       ctx.fillStyle = range.clean ? c.clean : c.muted;
       ctx.fillRect(a, top + 4, Math.max(1, b - a), height - 10);
+    }
+    ctx.globalAlpha = 1;
+
+    // Segments, and the one being marked (from where S was pressed to the playhead)
+    for (const segment of this.markers) {
+      if (!isSegment(segment)) continue;
+      const a = x(segment.seconds);
+      const b = x(segment.endSeconds);
+      if (b < -4 || a > width + 4) continue;
+      drawSegmentBox(ctx, a, b, top, height, markerColor(segment));
+    }
+    if (this.segmentStart != null) {
+      const a = x(Math.min(this.segmentStart, now));
+      const b = x(Math.max(this.segmentStart, now));
+      drawSegmentBox(ctx, a, b, top, height, c.text, true);
     }
 
     // Library clips
@@ -684,9 +886,10 @@ class PlayerBar {
 
     // Markers
     for (const marker of this.markers) {
+      if (isSegment(marker)) continue;
       const mx = Math.round(x(marker.seconds)) + 0.5;
       if (mx < -4 || mx > width + 4) continue;
-      const color = MARKER_COLORS[marker.color] ?? MARKER_COLORS.yellow;
+      const color = markerColor(marker);
       ctx.strokeStyle = color;
       ctx.lineWidth = 2;
       ctx.beginPath();
@@ -730,15 +933,23 @@ class PlayerBar {
     const x = (t) => (t / d) * width;
     ctx.fillStyle = c.track;
     ctx.fillRect(0, 2, width, 8);
+    ctx.globalAlpha = 0.5;
     for (const range of this.ranges) {
       ctx.fillStyle = range.clean ? c.clean : c.muted;
       ctx.fillRect(x(range.start), 2, Math.max(1, x(range.end) - x(range.start)), 8);
     }
+    ctx.globalAlpha = 1;
     ctx.fillStyle = c.clip;
     for (const clip of this.clips) ctx.fillRect(x(clip.start), 0, Math.max(1, x(clip.end ?? d) - x(clip.start)), 2);
     for (const marker of this.markers) {
-      ctx.fillStyle = MARKER_COLORS[marker.color] ?? MARKER_COLORS.yellow;
-      ctx.fillRect(Math.round(x(marker.seconds)), 0, 2, 12);
+      ctx.fillStyle = markerColor(marker);
+      if (isSegment(marker)) {
+        ctx.globalAlpha = 0.6;
+        ctx.fillRect(x(marker.seconds), 3, Math.max(2, x(marker.endSeconds) - x(marker.seconds)), 6);
+        ctx.globalAlpha = 1;
+      } else {
+        ctx.fillRect(Math.round(x(marker.seconds)), 0, 2, 12);
+      }
     }
     ctx.strokeStyle = c.window;
     ctx.lineWidth = 2;

@@ -1,6 +1,9 @@
 namespace TwitchDownloaderWeb.Data
 {
-    /// <summary>A team member's marker on a VOD's timeline (a moment or the start of a part worth clipping). Shared with the team.</summary>
+    /// <summary>
+    /// A team member's marker on a VOD's timeline: a moment, or a segment ("intro", "Arky meets Sunny") when it has an end.
+    /// Shared with the team.
+    /// </summary>
     public class VodMarker
     {
         public int Id { get; set; }
@@ -9,6 +12,9 @@ namespace TwitchDownloaderWeb.Data
 
         /// <summary>Offset from the start of the VOD.</summary>
         public double Seconds { get; set; }
+
+        /// <summary>End of a segment (offset from the start of the VOD, after <see cref="Seconds"/>); null for a single moment.</summary>
+        public double? EndSeconds { get; set; }
 
         public required string Label { get; set; }
 

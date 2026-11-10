@@ -52,5 +52,30 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal(HttpStatusCode.Forbidden, (await member.PostAsJsonAsync("/api/vods/1/markers", new { seconds = 1 }, ct)).StatusCode);
             Assert.Equal(HttpStatusCode.NoContent, (await owner.DeleteAsync($"/api/markers/{ownerMarker}", ct)).StatusCode);
         }
+
+        [Fact]
+        public async Task SegmentsHaveAnEndAndAreListedForSeveralVods()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            var (owner, _, _, _) = await TeamWithMemberAsync("m2");
+
+            var segment = await owner.PostAsJsonAsync("/api/vods/7/markers", new { seconds = 60, endSeconds = 95.555, label = "Intro", color = "yellow" }, ct);
+            Assert.Equal(HttpStatusCode.Created, segment.StatusCode);
+            Assert.Equal(95.56, (await segment.Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("endSeconds").GetDouble());
+            Assert.Equal(HttpStatusCode.Created, (await owner.PostAsJsonAsync("/api/vods/8/markers", new { seconds = 5, label = "Moment" }, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Created, (await owner.PostAsJsonAsync("/api/vods/9/markers", new { seconds = 5 }, ct)).StatusCode);
+
+            // The end must come after the start
+            Assert.Equal(HttpStatusCode.BadRequest, (await owner.PostAsJsonAsync("/api/vods/7/markers", new { seconds = 60, endSeconds = 60.2 }, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, (await owner.PostAsJsonAsync("/api/vods/7/markers", new { seconds = 60, endSeconds = 30 }, ct)).StatusCode);
+
+            var listed = (await GetJsonAsync(owner, "/api/markers?vodIds=7,8,10")).EnumerateArray().ToList();
+            Assert.Equal([7L, 8L], listed.Select(x => x.GetProperty("vodId").GetInt64()));
+            Assert.Equal(JsonValueKind.Null, listed[1].GetProperty("endSeconds").ValueKind);
+            Assert.Equal("Intro", listed[0].GetProperty("label").GetString());
+
+            Assert.Equal(0, (await GetJsonAsync(owner, "/api/markers")).GetArrayLength());
+            Assert.Equal(HttpStatusCode.BadRequest, (await owner.GetAsync("/api/markers?vodIds=7,abc", ct)).StatusCode);
+        }
     }
 }

@@ -530,6 +530,10 @@ button.small, a.button.small { padding: 3px 10px; font-size: 13px; }
 .vp-marker-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 6px 0; }
 .vp-marker-form[hidden] { display: none; }
 .vp-marker-label { flex: 1; min-width: 180px; }
+.vp-time-field { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); }
+.vp-time-field input { width: 8.5em; font-variant-numeric: tabular-nums; }
+.vp-btn-active { border-color: var(--accent); background: var(--accent); color: #fff; }
+.vp-chip-go i.vp-chip-segment { width: 16px; border-radius: 2px; }
 .vp-swatches { display: inline-flex; gap: 4px; }
 .vp-swatch input { position: absolute; opacity: 0; }
 .vp-swatch span { display: inline-block; width: 20px; height: 20px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; }
@@ -545,8 +549,9 @@ button.small, a.button.small { padding: 3px 10px; font-size: 13px; }
 .vp-chip-x:hover { color: var(--danger); }
 .vp-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; }
 .vp-key { display: inline-block; width: 12px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
-.vp-key-muted { background: var(--vp-muted); }
-.vp-key-clean { background: var(--vp-clean); }
+.vp-key-muted { background: var(--vp-muted); opacity: 0.5; }
+.vp-key-clean { background: var(--vp-clean); opacity: 0.5; }
+.vp-key-segment { width: 14px; border: 2px solid #f2c230; box-sizing: border-box; background: repeating-linear-gradient(-45deg, #f2c230 0 1.5px, transparent 1.5px 4px); }
 .vp-key-clip { background: var(--vp-clip); }
 .vp-key-marker { background: #f2c230; width: 3px; }
 .player-wrap:fullscreen { background: #000; display: flex; flex-direction: column; padding: 12px; box-sizing: border-box; }
@@ -964,3 +969,21 @@ table.activity td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .staff-perms { border: 1px solid var(--border); border-radius: 8px; margin: 0 0 8px; padding: 8px 12px; display: grid; gap: 6px;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
 .staff-perms legend { font-weight: 600; padding: 0 4px; }
+
+/* ---- markers and segments on library entries and VOD cards (segmentStrip in player-bar.js) ---- */
+.seg-strip {
+  position: relative; height: 14px; margin-top: 6px; border-radius: 3px;
+  background: var(--badge-bg); border: 1px solid var(--border);
+}
+.seg-box, .seg-mark { position: absolute; top: -3px; bottom: -3px; }
+.seg-box { min-width: 3px; box-sizing: border-box; border-left: 2px solid var(--seg-color); border-right: 2px solid var(--seg-color); }
+.seg-box::before {
+  content: ""; position: absolute; inset: 3px 0; box-sizing: border-box;
+  border-top: 2px solid var(--seg-color); border-bottom: 2px solid var(--seg-color);
+  background: repeating-linear-gradient(-45deg, var(--seg-color) 0 1.5px, transparent 1.5px 6px);
+}
+.seg-box.seg-open-start { border-left-style: dashed; border-left-width: 1px; }
+.seg-box.seg-open-end { border-right-style: dashed; border-right-width: 1px; }
+.seg-mark { width: 3px; margin-left: -1px; background: var(--seg-color); border-radius: 1px; }
+.seg-box:hover, .seg-mark:hover { filter: brightness(1.2); outline: 1px solid var(--text); z-index: 1; }
+.vod-card .seg-strip { margin: 6px 0 0; }
