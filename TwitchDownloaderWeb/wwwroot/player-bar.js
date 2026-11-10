@@ -593,7 +593,7 @@ class PlayerBar {
     }
     if (!this.dirty && video.paused) return;
     this.dirty = false;
-    this.el.querySelector(".vp-now").textContent = formatTrimValue(now);
+    this.el.querySelector(".vp-now").textContent = formatClock(now);
     const d = this.duration();
     const span = this.view.to - this.view.from;
     this.el.querySelector(".vp-zoom-label").textContent = !this.zoomed || !d ? "All" : span >= 3600 ? `${(span / 3600).toFixed(1)} h` : span >= 60 ? `${Math.round(span / 60)} min` : `${Math.round(span)} s`;
