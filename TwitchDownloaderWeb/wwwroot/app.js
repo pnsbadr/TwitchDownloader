@@ -1388,6 +1388,7 @@ function vodCard(vod) {
           : null,
         rescueBadge(vod.rescueStatus, vod.rescuePaused),
         lostAudioBadge(vod))),
+    segmentSlot(vod.vodId, 0, vod.lengthSeconds),
     el("div", { class: "vod-item-actions" },
       el("button", { type: "button", class: "small secondary", onclick: () => watchVod(vod) }, "Watch"),
       rescueButton));
@@ -1397,6 +1398,7 @@ function renderBrowseList() {
   const list = $("browse-list");
   list.hidden = browse.items.length === 0;
   list.replaceChildren(...browse.items.map(vodCard));
+  if (browse.items.length) loadMarkersFor(browse.items.map((vod) => vod.vodId));
   $("browse-more").hidden = !browse.nextCursor;
   $("browse-more").disabled = browse.loading;
   $("browse-hide").hidden = browse.items.length === 0;
@@ -1578,6 +1580,45 @@ function titleNode(entry) {
       el("button", { type: "button", class: "link", onclick: cancelRename }, "Cancel")));
 }
 
+// ---------- team markers and segments on library entries and VOD cards ----------
+
+const vodMarkers = new Map(); // VOD ID (string) -> the team's markers and segments on it
+const MARKERS_PER_REQUEST = 200;
+
+// A placeholder filled with the VOD's markers/segments between from and to (VOD seconds) once they're loaded
+function segmentSlot(vodId, from, to) {
+  if (!vodId || !(to > from)) return null;
+  const slot = el("div", { class: "seg-slot", "data-vod": String(vodId), "data-from": String(from), "data-to": String(to) });
+  fillSegmentSlot(slot);
+  return slot;
+}
+
+function fillSegmentSlot(slot) {
+  const markers = vodMarkers.get(slot.dataset.vod);
+  const strip = markers ? segmentStrip(markers, Number(slot.dataset.from), Number(slot.dataset.to)) : null;
+  slot.replaceChildren(...(strip ? [strip] : []));
+}
+
+async function loadMarkersFor(vodIds) {
+  const ids = [...new Set(vodIds.filter((id) => Number(id) > 0).map(String))];
+  for (let i = 0; i < ids.length; i += MARKERS_PER_REQUEST) {
+    const chunk = ids.slice(i, i + MARKERS_PER_REQUEST);
+    try {
+      const markers = await api("GET", `/api/markers?vodIds=${chunk.join(",")}`);
+      for (const id of chunk) vodMarkers.set(id, []);
+      for (const marker of markers) vodMarkers.get(String(marker.vodId))?.push(marker);
+    } catch (error) {
+      console.warn("Couldn't load markers:", error);
+    }
+  }
+  document.querySelectorAll(".seg-slot").forEach(fillSegmentSlot);
+}
+
+// Called by the player bar after a marker or segment is added or deleted
+function markersChanged() {
+  loadMarkersFor([...document.querySelectorAll(".seg-slot")].map((slot) => slot.dataset.vod));
+}
+
 function renderEntry(entry) {
   const trim = `${entry.startTime}–${entry.endTime ?? formatDuration(entry.vodLengthSeconds)}`;
   const details = entry.kind === "Clip"
@@ -1608,6 +1649,7 @@ function renderEntry(entry) {
       titleNode(entry),
       el("div", { class: "entry-meta" }, dates),
       el("div", { class: "entry-meta" }, details),
+      segmentSlot(entry.vodId, entry.startSeconds ?? 0, entry.endSeconds ?? entry.vodLengthSeconds),
       el("div", { class: "entry-status" }, statusBadge(entry),
         entry.audioRestoredSeconds > 0
           ? el("span", { class: "badge ok", title: "Muted parts were replaced with saved clean audio" }, `Audio restored · ${formatDuration(entry.audioRestoredSeconds)}`)
@@ -1944,6 +1986,7 @@ async function loadEntries() {
     if (sequence !== loadSequence) return; // a newer search/sort superseded this one
 
     $("entries").replaceChildren(...entries.map(renderEntry));
+    loadMarkersFor(entries.map((entry) => entry.vodId));
     $("empty").hidden = entries.length > 0;
     $("empty").textContent = recentOnly ? `No clips ${fieldVerb()} in the last 24 hours.`
       : selectedDay ? "No clips on that day."
