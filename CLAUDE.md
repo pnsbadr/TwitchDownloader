@@ -309,10 +309,12 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   (dashed preview meanwhile, Esc cancels), then the form names it; the form's Start/End can also be typed (blank End = a moment). Zoom (wheel, +/−, Fit; min 10 s) with an
   overview strip while zoomed; the view follows the playhead. `GET /api/vods/{id}/timeline` feeds clips and markers; it's reloaded
   after adding/re-trimming/deleting an entry. Keys (not while typing): Space/K play, J/L ±10 s, ←/→ ±5 s, `,`/`.` one frame,
-  M marker, S segment start/end, F fullscreen, +/−/0 zoom, V/C/Z tools, Ctrl+Z / Ctrl+Shift+Z (Ctrl+Y) undo/redo, Del (see keybinds.js).
+  M marker, S segment start/end, F fullscreen, +/−/0 zoom, V/C/Z/H tools, Ctrl+Z / Ctrl+Shift+Z (Ctrl+Y) undo/redo, Del (see keybinds.js).
   **Editing** (badrfly, 2026-11-10): a vertical **tools bar** right of the video (`.vp-stage` wraps the frame and `.vp-tools`; hidden in compact
   mode): **Pointer** (V), **Cut** (C: click a segment to split it at that point into "Name 1"/"Name 2", or "Segment A1"/"A2" when the last
-  word is one character; each part ≥ 0.5 s), **Zoom** (Z: click zooms in, right click out), **Undo/Redo**. With the pointer, clicking a
+  word is one character; each part ≥ 0.5 s), **Zoom** (Z: click zooms in, right click out),
+  **Hand** (H: drag the zoomed timeline to scroll it; only the view moves, no seek/select; after a hand or Shift+wheel scroll the view stops
+  following the playhead until it comes back into view or the user seeks), **Undo/Redo**. With the pointer, clicking a
   segment **selects** it and zooms to it (20 % margin, ≥ 2 s; selecting another one while playing jumps to its start and plays it to its end);
   then Play plays only it (stops at its end, also after it was made longer), −10s/−1s/+1s/+10s move its **end**
   (presses within 0.6 s are one change), its edges can be dragged (only the selected one, against misclicks), × (placed 14 px past its end,

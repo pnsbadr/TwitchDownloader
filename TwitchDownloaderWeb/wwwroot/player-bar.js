@@ -195,6 +195,8 @@ class PlayerBar {
     // True while the view comes from an automatic zoom (zoomTo: selecting a segment, opening a review), false once the user
     // zooms or pans. An automatic view never cuts off the selected segment; only the user's own zooming may go deeper.
     this.autoView = false;
+    this.pan = null; // { x, from, to } while dragging the view with the hand tool
+    this.manualPan = false; // the user scrolled the view away from the playhead (hand, Shift+wheel): don't follow it
     this.listDuration = 0; // playlist length (for live VODs, where video.duration is Infinity)
     this.dirty = true;
     this.frame = null;
@@ -333,6 +335,7 @@ class PlayerBar {
     this.canvas.addEventListener("pointerup", (event) => this.onPointerUp(event));
     this.canvas.addEventListener("pointercancel", () => {
       this.scrubbing = false;
+      this.pan = null;
       if (this.drag) {
         const drag = this.drag;
         this.drag = null;
@@ -378,6 +381,8 @@ class PlayerBar {
         <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="5.5" cy="14.5" r="2.6" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="14.5" cy="14.5" r="2.6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M7.3 12.6 15 2.5M12.7 12.6 5 2.5" stroke="currentColor" stroke-width="1.8" fill="none"/></svg></button>
       <button type="button" class="vp-tool" data-tool="zoom" title="Zoom (${keybindLabel("toolZoom")}): click the timeline to zoom in, right click to zoom out" aria-label="Zoom">
         <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12.5 12.5 18 18M6 8.5h5M8.5 6v5" stroke="currentColor" stroke-width="2"/></svg></button>
+      <button type="button" class="vp-tool" data-tool="hand" title="Hand (${keybindLabel("toolHand")}): drag the zoomed timeline to scroll it (only moves the view)" aria-label="Hand">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6.2 10.5V4.8a1.2 1.2 0 0 1 2.4 0v4.7M8.6 9.2V3.4a1.2 1.2 0 0 1 2.4 0v5.8M11 9.2V4.2a1.2 1.2 0 0 1 2.4 0v5.6M13.4 9.6V6.4a1.2 1.2 0 0 1 2.4 0v5.4c0 3.4-2.3 5.7-5.4 5.7-2.2 0-3.5-.9-4.7-2.6L3.6 11.7a1.2 1.2 0 0 1 1.9-1.4l.7.9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg></button>
       <span class="vp-tools-gap"></span>
       <button type="button" class="vp-tool" data-act="undo" title="Undo your last change (${keybindLabel("undo")})" aria-label="Undo" disabled>
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8 4 3.5 8.5 8 13" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4 8.5h7.5a4.5 4.5 0 0 1 0 9H9" fill="none" stroke="currentColor" stroke-width="2"/></svg></button>
@@ -448,6 +453,7 @@ class PlayerBar {
     this.markers = [];
     this.zoomed = false;
     this.autoView = false;
+    this.manualPan = false;
     this.compact = Boolean(this.options.compact);
     this.focus = this.options.focus ?? null;
     this.focusWindow = this.options.focusWindow ?? null;
@@ -606,6 +612,7 @@ class PlayerBar {
     const length = range.to - range.from;
     const span = Math.max(BAR_MIN_SPAN_SECONDS, length);
     this.autoView = true;
+    this.manualPan = false;
     if (span >= d) {
       this.zoomed = false;
       this.fitIfNeeded();
@@ -681,6 +688,7 @@ class PlayerBar {
   }
 
   seek(seconds) {
+    this.manualPan = false; // the view follows the playhead again
     const d = this.duration();
     this.video.currentTime = Math.max(0, d ? Math.min(seconds, d - 0.05) : seconds);
     this.dirty = true;
@@ -726,6 +734,7 @@ class PlayerBar {
     const span = this.view.to - this.view.from;
     const next = Math.min(d, Math.max(BAR_MIN_SPAN_SECONDS, span * factor));
     this.autoView = false;
+    this.manualPan = false;
     if (next >= d) return this.fit();
     // Keep the anchor at the same place on screen
     const ratio = span > 0 ? (anchor - this.view.from) / span : 0.5;
@@ -942,8 +951,12 @@ class PlayerBar {
     if (tool === "cut" && !this.canAdd()) return;
     this.tool = tool;
     this.renderTools();
-    this.canvas.style.cursor = tool === "zoom" ? "zoom-in" : tool === "cut" ? "crosshair" : "";
+    this.canvas.style.cursor = this.toolCursor();
     this.dirty = true;
+  }
+
+  toolCursor() {
+    return { zoom: "zoom-in", cut: "crosshair", hand: this.pan ? "grabbing" : "grab" }[this.tool] ?? "";
   }
 
   renderTools() {
@@ -1253,6 +1266,7 @@ class PlayerBar {
       toolPointer: () => this.setTool("pointer"),
       toolCut: () => this.setTool("cut"),
       toolZoom: () => this.setTool("zoom"),
+      toolHand: () => this.setTool("hand"),
       undo: () => this.undo(),
       redo: () => this.redo(),
       deleteSelected: () => this.deleteSelected(),
@@ -1332,6 +1346,14 @@ class PlayerBar {
     }
     if (event.button !== 0) return;
 
+    // Hand: drag the view (nothing else changes: no seek, no selection)
+    if (this.tool === "hand") {
+      this.pan = { x, from: this.view.from, to: this.view.to };
+      this.canvas.setPointerCapture(event.pointerId);
+      this.canvas.style.cursor = this.toolCursor();
+      return;
+    }
+
     if (this.tool === "cut") {
       const segment = this.segmentAt(time, y);
       if (segment) this.splitSegment(segment, time);
@@ -1377,18 +1399,32 @@ class PlayerBar {
     const x = this.localX(event, this.canvas);
     const y = event.clientY - this.canvas.getBoundingClientRect().top;
     this.hoverX = x;
-    if (this.drag) {
+    if (this.pan) {
+      if (this.zoomed) {
+        const span = this.pan.to - this.pan.from;
+        const delta = ((this.pan.x - x) / (this.canvas.clientWidth || 1)) * span;
+        this.autoView = false;
+        this.manualPan = true;
+        this.view = { from: this.pan.from + delta, to: this.pan.to + delta };
+        this.clampView();
+      }
+    } else if (this.drag) {
       this.dragEdgeTo(this.xToTime(x));
     } else if (this.scrubbing) {
       this.seek(this.xToTime(x));
     }
-    this.canvas.style.cursor = this.drag || this.edgeAt(x, y) ? "ew-resize"
-      : this.tool === "zoom" ? "zoom-in" : this.tool === "cut" ? "crosshair" : "";
+    this.canvas.style.cursor = this.drag || (this.tool === "pointer" && this.edgeAt(x, y)) ? "ew-resize" : this.toolCursor();
     this.renderTip(x, y);
     this.dirty = true;
   }
 
   onPointerUp(event) {
+    if (this.pan) {
+      this.pan = null;
+      this.canvas.releasePointerCapture?.(event.pointerId);
+      this.canvas.style.cursor = this.toolCursor();
+      return;
+    }
     if (this.drag) {
       const drag = this.drag;
       this.drag = null;
@@ -1410,6 +1446,7 @@ class PlayerBar {
       if (!this.zoomed) return;
       const delta = (event.shiftKey ? event.deltaY : event.deltaX) / (this.canvas.clientWidth || 1) * span;
       this.autoView = false;
+      this.manualPan = true;
       this.view = { from: this.view.from + delta, to: this.view.to + delta };
       this.clampView();
     } else {
@@ -1443,6 +1480,7 @@ class PlayerBar {
       }
     }
     if (this.tool === "cut" && this.segmentAt(time, y)) lines.push("Click to cut here");
+    if (this.tool === "hand") lines.push(this.zoomed ? "Drag to scroll the timeline" : "Zoom in to scroll the timeline");
     const range = this.ranges.find((r) => time >= r.start && time < r.end);
     if (range) lines.push(range.clean ? "Muted by Twitch: plays saved clean audio" : "Muted by Twitch");
     if (this.focus && time >= this.focus.start && time <= this.focus.end) lines.push("This clip");
@@ -1484,15 +1522,18 @@ class PlayerBar {
     }
     // An automatic view keeps the whole selected segment on screen, also after it was made longer (nudge, undo, someone
     // else's change) and when the playhead leaves the view: it zooms out to show both instead of panning past the segment
-    const fitted = this.autoView && this.zoomed && !this.drag && !this.scrubbing ? selected : null;
+    const fitted = this.autoView && this.zoomed && !this.drag && !this.scrubbing && !this.pan ? selected : null;
     if (fitted) {
       const outside = !video.paused && (now > this.view.to || now < this.view.from);
       if (outside || fitted.seconds < this.view.from || fitted.endSeconds > this.view.to)
         this.zoomTo(this.segmentView(fitted, outside ? now : null));
-    } else if (this.zoomed && !this.scrubbing && !video.paused) {
-      // Follow the playhead while zoomed in
+    } else if (this.zoomed && !this.scrubbing && !this.pan && !video.paused) {
+      // Follow the playhead while zoomed in. After the user scrolled the view away (hand, Shift+wheel) it stays put until the
+      // playhead comes back into it or the user seeks.
       const span = this.view.to - this.view.from;
-      if (now > this.view.to - span * 0.02 || now < this.view.from) {
+      if (this.manualPan) {
+        if (now >= this.view.from && now <= this.view.to - span * 0.02) this.manualPan = false;
+      } else if (now > this.view.to - span * 0.02 || now < this.view.from) {
         this.view = { from: now - span * 0.1, to: now + span * 0.9 };
         this.clampView();
         this.dirty = true;
