@@ -597,6 +597,7 @@ button.small, a.button.small { padding: 3px 10px; font-size: 13px; }
 
 /* Clip review: trim bar and nudges */
 .trim-bar-wrap { margin-top: 12px; }
+.trim-bar-wrap[hidden] { display: none; }
 
 .trim-bar {
   position: relative;
@@ -619,7 +620,14 @@ button.small, a.button.small { padding: 3px 10px; font-size: 13px; }
   pointer-events: none;
 }
 
+/* Team markers and segments on the trim bar (under the handles; clicks fall through to the bar's seek) */
+.trim-markers { position: absolute; inset: 0; }
+.trim-markers .seg-box, .trim-markers .seg-mark { top: 0; bottom: 0; }
+.trim-markers .seg-box::before { inset: 0; opacity: 0.55; }
+.trim-markers .seg-mark { width: 3px; }
+
 .trim-handle {
+  z-index: 1;
   position: absolute;
   top: -2px;
   bottom: -2px;

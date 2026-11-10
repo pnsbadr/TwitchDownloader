@@ -307,6 +307,11 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   fields from the position below, hundredths of a second) and **Play clip** (seeks to start, pauses at end). The review dialog
   starts at the clip start and pauses at its end (not shown for VodUnavailable). Closing a player
   removes the video/iframe so playback stops.
+  **Review modes** (badrfly, 2026-11-10): for a **stored** (short) entry the control bar is *compact* (controls and marker chips for
+  the trim bar's range, no VOD timeline) with a **Full VOD timeline** button that shows it zoomed in on the clip; the trim bar
+  shows the team's markers/segments. For a **reference** entry the trim bar is hidden and the VOD timeline starts zoomed in on the
+  entry, which is highlighted there (`PlayerBar.configure` / `setFocus` / `zoomTo`); Start/End fields and nudges stay. With the Twitch
+  embed (no bar) the trim bar is always shown.
   **Review** on a library entry (and automatically right after Add to library) opens the clip review dialog: the
   player plus a trim bar spanning the clip ± a margin (25% of its length, 5–60 s, widened when a handle leaves it), with
   draggable handles (arrow keys nudge 0.1 s, Shift 1 s), a playhead, click-to-seek, ±1 s / ±0.1 s buttons, Set to playhead,

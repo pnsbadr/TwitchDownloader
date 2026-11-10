@@ -790,6 +790,9 @@ $("watch-preview").addEventListener("click", () => {
 // Plays an entry's clip from Twitch with a trim bar around it. The bar shows the clip plus some VOD on each side so
 // the cut can be widened as well as narrowed; handles drag, ±1s/±0.1s buttons nudge, and Save re-cuts the entry on
 // the server (PUT /trim), which downloads it again.
+// Stored clips (short) use that trim bar, with the team's markers and segments on it; the player's VOD timeline stays
+// hidden until "Full VOD timeline" (then zoomed in on the clip). Reference entries (long) skip the trim bar and use the
+// VOD timeline instead, starting zoomed in on the entry, which is highlighted there (badrfly, 2026-11-10).
 
 const NUDGE_MIN_LENGTH = 0.1; // keep end after start
 
@@ -825,8 +828,31 @@ function barPercent(seconds) {
   return ((seconds - review.from) / (review.to - review.from)) * 100;
 }
 
+// Markers and segments on the trim bar (from the player bar, or the library's copy when the Twitch embed plays)
+function renderTrimMarkers() {
+  const layer = $("trim-markers");
+  if (!review) return layer.replaceChildren();
+  const bar = clipPlayer.bar;
+  const markers = bar?.vodId === String(review.entry.vodId) ? bar.markers : vodMarkers.get(String(review.entry.vodId)) ?? [];
+  const { from, to } = review;
+  const pct = (t) => `${(Math.min(Math.max(t, from), to) - from) / (to - from) * 100}%`;
+  const items = [];
+  for (const marker of markers) {
+    const inside = isSegment(marker) ? marker.endSeconds > from && marker.seconds < to : marker.seconds >= from && marker.seconds <= to;
+    if (!inside) continue;
+    const item = el("span", { class: isSegment(marker) ? "seg-box" : "seg-mark", title: markerTitle(marker) });
+    item.style.setProperty("--seg-color", markerColor(marker));
+    item.style.left = pct(marker.seconds);
+    if (isSegment(marker)) item.style.width = `calc(${pct(marker.endSeconds)} - ${pct(marker.seconds)})`;
+    items.push(item);
+  }
+  layer.replaceChildren(...items);
+}
+
 function renderReview() {
   if (!review) return;
+  clipPlayer.bar?.setFocus({ start: review.start, end: review.end }, { from: review.from, to: review.to });
+  renderTrimMarkers();
   const startPct = barPercent(review.start);
   const endPct = barPercent(review.end);
   $("trim-range").style.left = `${startPct}%`;
@@ -878,6 +904,7 @@ function updatePlayhead(position) {
 }
 
 clipPlayer.onTick = updatePlayhead;
+if (clipPlayer.bar) clipPlayer.bar.onMarkersChanged = renderTrimMarkers;
 
 function openReview(entry) {
   const { start, end } = entryRange(entry);
@@ -888,9 +915,23 @@ function openReview(entry) {
   $("trim-save").hidden = !canOnEntry(entry, "EditOwnEntries", "EditAnyEntries");
   $("trim-playhead").hidden = true;
   setMessage($("trim-message"), "");
+  // Long references: the VOD timeline (zoomed in on the entry) instead of the trim bar; short clips: the other way round
+  const reference = Boolean(entry.isReferenceOnly);
+  $("trim-bar-wrap").hidden = reference;
+  clipPlayer.bar?.configure({
+    compact: !reference,
+    focus: { start, end },
+    focusWindow: { from: review.from, to: review.to },
+    zoom: reference ? { from: review.from, to: review.to } : null,
+    expandZoom: () => review && { from: review.from, to: review.to },
+  });
   renderReview();
+  if (!vodMarkers.has(String(entry.vodId))) loadMarkersFor([entry.vodId]).then(renderTrimMarkers);
   if (!$("clip-dialog").open) $("clip-dialog").showModal();
-  clipPlayer.open(entry.vodId, start, end).catch((error) => {
+  clipPlayer.open(entry.vodId, start, end).then(() => {
+    // The Twitch embed has no timeline of ours: keep the trim bar then
+    if (review?.entry === entry && !clipPlayer.bar?.backend) $("trim-bar-wrap").hidden = false;
+  }).catch((error) => {
     review = null;
     $("clip-dialog").close();
     setMessage($("library-message"), error.message, "error");
