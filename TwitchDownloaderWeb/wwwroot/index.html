@@ -90,7 +90,10 @@
 
         <!-- Plays the VOD from Twitch (app player, or the official embed) so start/end can be picked while watching -->
         <div id="watch" class="watch" hidden>
-          <div class="player-frame"><div id="watch-player"></div></div>
+          <div id="watch-wrap" class="player-wrap" tabindex="-1">
+            <div class="player-frame"><div id="watch-player"></div></div>
+            <div id="watch-bar" class="vp-bar" hidden></div>
+          </div>
           <div id="watch-source" class="player-source muted"></div>
           <div class="row watch-controls">
             <span class="watch-time">At <strong id="watch-time">–</strong></span>
@@ -188,7 +191,10 @@
       <h3 id="clip-dialog-title"></h3>
       <button type="button" id="clip-close" class="link">Close</button>
     </div>
-    <div class="player-frame"><div id="clip-player"></div></div>
+    <div id="clip-wrap" class="player-wrap" tabindex="-1">
+      <div class="player-frame"><div id="clip-player"></div></div>
+      <div id="clip-bar" class="vp-bar" hidden></div>
+    </div>
     <div id="clip-source" class="player-source muted"></div>
 
     <div class="trim-bar-wrap">
@@ -314,6 +320,7 @@
     </div>
   </dialog>
 
+  <script src="player-bar.js"></script>
   <script src="app.js?v=vertical"></script>
 </body>
 </html>
