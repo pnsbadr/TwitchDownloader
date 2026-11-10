@@ -355,6 +355,8 @@ class PlayerBar {
     this.overview.addEventListener("pointerdown", (event) => {
       const time = this.overviewTime(event);
       if (time == null) return;
+      // Jumping somewhere on the whole-VOD strip leaves the selected segment
+      this.deselect();
       this.centerOn(time);
       this.seek(time);
     });
