@@ -554,14 +554,47 @@ button.small, a.button.small { padding: 3px 10px; font-size: 13px; }
 .vp-key-segment { width: 14px; border: 2px solid #f2c230; box-sizing: border-box; background: repeating-linear-gradient(-45deg, #f2c230 0 1.5px, transparent 1.5px 4px); }
 .vp-key-clip { background: var(--vp-clip); }
 .vp-key-marker { background: #f2c230; width: 3px; }
+/* Video with the tools bar on its right */
+.vp-stage { display: flex; gap: 6px; align-items: flex-start; }
+.vp-stage > .player-frame { flex: 1; min-width: 0; }
+.vp-tools { display: flex; flex-direction: column; gap: 4px; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+.vp-tools[hidden] { display: none; }
+.vp-tool {
+  width: 34px; height: 34px; padding: 0; display: grid; place-items: center; border-radius: 6px; cursor: pointer;
+  background: var(--badge-bg); color: var(--text); border: 1px solid var(--border);
+}
+.vp-tool[hidden] { display: none; }
+.vp-tool svg { width: 18px; height: 18px; }
+.vp-tool:hover:not(:disabled) { border-color: var(--accent); }
+.vp-tool:disabled { opacity: .4; cursor: default; }
+.vp-tool-active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.vp-tools-gap { height: 1px; background: var(--border); margin: 3px 2px; }
+/* The selected segment: its delete button on the timeline, the row to rename/recolor it, the length buttons */
+.vp-sel-x {
+  position: absolute; top: 12px; width: 18px; height: 18px; padding: 0; border-radius: 50%; z-index: 1;
+  display: grid; place-items: center; font-size: 11px; line-height: 1; cursor: pointer;
+  background: var(--danger); color: #fff; border: 2px solid var(--panel);
+}
+.vp-sel-x[hidden] { display: none; }
+.vp-selection { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 6px 8px; border: 1px dashed var(--border); border-radius: 8px; font-size: 13px; }
+.vp-selection[hidden] { display: none; }
+.vp-sel-time { font-variant-numeric: tabular-nums; }
+.vp-sel-label { flex: 1; min-width: 160px; }
+.vp-swatch input:disabled + span { cursor: default; opacity: .6; }
+.vp-seg-mode .vp-len { border-color: var(--accent); color: var(--accent); }
+.vp-chip-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .player-wrap:fullscreen { background: #000; display: flex; flex-direction: column; padding: 12px; box-sizing: border-box; }
+.player-wrap:fullscreen .vp-stage { flex: 1; min-height: 0; align-items: stretch; }
 .player-wrap:fullscreen .player-frame { flex: 1; aspect-ratio: auto; min-height: 0; }
+.player-wrap:fullscreen .vp-tools { background: #1d1d23; border-color: #3d3d48; align-self: flex-start; }
+.player-wrap:fullscreen .vp-tool { background: #2a2a32; color: #ececf1; border-color: #3d3d48; }
 .player-wrap:fullscreen .vp-bar { --vp-track: #2c2c35; --vp-buffered: #3d3d48; --vp-playhead: #fff; --vp-text: #c8c8d0; color: #ececf1; }
 .player-wrap:fullscreen .vp-btn { background: #2a2a32; color: #ececf1; border-color: #3d3d48; }
 .player-wrap:fullscreen .vp-chip { background: #1d1d23; }
 .player-wrap:fullscreen .vp-chip-go { color: #ececf1; }
 @media (max-width: 600px) {
   .vp-volume, .vp-legend { display: none; }
+  .vp-tool { width: 30px; height: 30px; }
   .vp-spacer { flex-basis: 100%; }
 }
 

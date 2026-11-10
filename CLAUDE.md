@@ -75,8 +75,9 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   user ID (null until phase 3), details. Write via `db.Audit(...)` so it commits with the change; **never
   put tokens in details**.
 - `VodMarkers` (`VodMarker`): team markers on a VOD's player timeline: TeamId (team query filter, cascade), VodId, Seconds, `EndSeconds`
-  (null = a moment; set = a **segment**, ≥ 0.5 s long), Label (≤ 200, may be blank), Color (`yellow`/`blue`/`pink`/`orange`), CreatedByUserId,
-  CreatedAtUtc. Audited `marker.added` / `marker.deleted`.
+  (null = a moment; set = a **segment**, ≥ 0.5 s long), Label (≤ 200, may be blank), Color (`VodMarker.Colors`: yellow, blue, pink, orange,
+  red, lime, teal, violet, gray; same order as `MARKER_COLORS` in player-bar.js, add new ones at the end), CreatedByUserId,
+  CreatedAtUtc. Audited `marker.added` / `marker.changed` / `marker.deleted`.
 - `LibraryEntries.FollowsMarkers`: a **live markers entry** (`LiveMarkerEntryService`, badrfly 2026-11-10). The first marker/segment a team
   adds on a VOD that is still live (GQL video `status == "RECORDING"`, `VodDetails.IsLive`) makes a reference-only entry (always reference,
   whatever its length) from 30 s before the first marker to 30 s after the last, the end capped at the VOD's length so far but never before
@@ -241,12 +242,16 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/admin/users?search=` / `GET /api/admin/users/{id}?days=` / `PUT .../disabled` / `POST .../password-reset` | Users across teams |
 | `GET /api/admin/audit?teamId=&userId=&staffId=&before=&limit=` / `POST,DELETE /api/admin/support` | App log; view as support |
 | `GET /api/admin/staff` / `POST /api/admin/staff/invites` / `PUT /api/admin/staff/{id}/permissions` `{ permissions }` / `PUT .../disabled` / `POST .../password-reset` | Moderators (Owner only) |
-| `GET /api/vods/{id}/timeline` / `POST /api/vods/{id}/markers` `{ seconds, endSeconds?, label?, color? }` / `DELETE /api/markers/{id}` / `GET /api/markers?vodIds=1,2` | Player timeline: `{ clips: [{ id, title, kind, start, end }], markers: [{ id, vodId, seconds, endSeconds, label, color, createdBy, createdAtUtc, canDelete }] }` (team's own); `/api/markers` lists markers of up to 200 VODs (library and VOD cards). Entries carry `startSeconds`/`endSeconds` for placing them (and `followsMarkers`). Add 201 (`AddEntries`; `liveEntry: { entryId, created }` when it made or moved the live markers entry, else null); delete own (`AddEntries`) or anyone's (`DeleteAnyEntries`), else 403 |
+| `GET /api/vods/{id}/timeline` / `POST /api/vods/{id}/markers` `{ seconds, endSeconds?, label?, color? }` / `PUT /api/markers/{id}` (same body, whole marker) / `DELETE /api/markers/{id}` / `GET /api/markers?vodIds=1,2` | Player timeline: `{ clips: [{ id, title, kind, start, end }], markers: [{ id, vodId, seconds, endSeconds, label, color, createdBy, createdAtUtc, canDelete, canEdit }] }` (team's own); `/api/markers` lists markers of up to 200 VODs (library and VOD cards). Entries carry `startSeconds`/`endSeconds` for placing them (and `followsMarkers`). Add 201 (`AddEntries`; `liveEntry: { entryId, created }` when it made or moved the live markers entry, else null); change own (`AddEntries`) or anyone's (`EditAnyEntries`); delete own (`AddEntries`) or anyone's (`DeleteAnyEntries`), else 403 |
 | `POST /api/vods/download` | Phase 1 dev endpoint: synchronous, writes `<title>.mp4` straight into `downloads/`, not part of the library |
 
 `canDownload` in entry responses checks the generated file's expiry itself, since cleanup runs periodically.
 
 ### Web page
+- **Keyboard shortcuts live in `wwwroot/keybinds.js`** (`KEYBINDS`: id, scope, keys, description; badrfly 2026-11-10). Check it before
+  adding a shortcut and add the new one there first: the page logs a console error when two bindings in one scope share a key, and the list
+  is meant to feed a shortcuts/help screen later. The player bar dispatches its keys through `keybindFor("player", event)`; other
+  handlers (trim handles, vertical editor, forms) still handle their own keys but are listed.
 - Not logged in → `login.html`; account bar (team switcher when in 2+ teams, Team page link for members with any Team permission,
   username → `account.html` (time zone, password), Log out). `team.html` = members/roles/activity/log/invites/audio setting,
   `join.html` = opening any link (staff links go to `admin.html` after), `admin.html` = staff (tabs Teams/Users/Links/Moderators/App log, shown by
@@ -304,7 +309,16 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   (dashed preview meanwhile, Esc cancels), then the form names it; the form's Start/End can also be typed (blank End = a moment). Zoom (wheel, +/−, Fit; min 10 s) with an
   overview strip while zoomed; the view follows the playhead. `GET /api/vods/{id}/timeline` feeds clips and markers; it's reloaded
   after adding/re-trimming/deleting an entry. Keys (not while typing): Space/K play, J/L ±10 s, ←/→ ±5 s, `,`/`.` one frame,
-  M marker, S segment start/end, F fullscreen, +/−/0 zoom.
+  M marker, S segment start/end, F fullscreen, +/−/0 zoom, V/C/Z tools, Ctrl+Z / Ctrl+Shift+Z (Ctrl+Y) undo/redo, Del (see keybinds.js).
+  **Editing** (badrfly, 2026-11-10): a vertical **tools bar** right of the video (`.vp-stage` wraps the frame and `.vp-tools`; hidden in compact
+  mode): **Pointer** (V), **Cut** (C: click a segment to split it at that point into "Name 1"/"Name 2", or "Segment A1"/"A2" when the last
+  word is one character; each part ≥ 0.5 s), **Zoom** (Z: click zooms in, right click out), **Undo/Redo**. With the pointer, clicking a
+  segment **selects** it and zooms to it (20 % margin, ≥ 2 s); then Play plays only it (stops at its end), −10s/−1s/+1s/+10s move its **end**
+  (presses within 0.6 s are one change), its edges can be dragged (only the selected one, against misclicks), × (placed 14 px past its end,
+  away from the edge grip) or Del deletes it, and the row under the bar renames/recolors it. Clicking outside segments unselects; Esc too.
+  Changes go through `PUT /api/markers/{id}` (whole marker). **Undo/redo** keeps the last 10 steps per VOD in this tab only (`markerHistory`,
+  not shared or persisted): add, delete, change, split; steps hold refs so a marker re-made by undo (new ID) is still found. A step that
+  fails (someone changed or deleted it) is dropped with a message. Undoing a delete re-adds it as the current user.
   **VOD cards** show the VOD's markers and segments in a small strip (`segmentStrip`; hover = title and times); **reference-only VOD
   entries** get the same strip over their range; **stored entries and Twitch clips** list the ones inside their range as chips like the
   player's (`markerChips`; badrfly: a strip is too much for a short clip). Both load with

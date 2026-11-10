@@ -11,8 +11,12 @@
 // The timeline zooms (wheel, +/−, Fit) so a 24-hour VOD can still be scrubbed to the second; a strip above it shows the
 // whole VOD and the zoomed window. The Twitch embed fallback keeps Twitch's own controls; the bar is hidden then.
 //
-// Keys while the player has focus: Space/K play/pause, J/L ∓10 s, ←/→ ∓5 s, ,/. one frame back/forward, M add a marker,
-// S start a segment here / end it here (Esc cancels), +/− zoom, 0 fit, F fullscreen.
+// Editing (tools bar to the right of the video): the pointer selects a segment (click it: the timeline zooms to it), then
+// play only plays it, ±10s/±1s change its end, its edges can be dragged, × or Del deletes it, and its title and color can be
+// changed. The cut tool splits a segment where it's clicked; the zoom tool zooms in on a click and out on a right click.
+// Undo/redo (last 10 changes) is per browser tab: it only replays this user's own changes.
+//
+// Keys: see keybinds.js (the list of every shortcut; add new ones there first).
 //
 // Uses the page's helpers from app.js ($, api, can, me, formatTrimValue, formatDuration), which load after this file but
 // before anything here runs.
@@ -20,9 +24,45 @@
 const BAR_MIN_SPAN_SECONDS = 10;
 const BAR_TRACK = { clipTop: 0, clipHeight: 7, top: 10, height: 22, labelTop: 34, height_total: 48 };
 const BAR_TICK_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600];
-const MARKER_COLORS = { yellow: "#f2c230", blue: "#3d8bfd", pink: "#ff5fa2", orange: "#ff8a3d" };
+// Same names and order as VodMarker.Colors on the server
+const MARKER_COLORS = {
+  yellow: "#f2c230", blue: "#3d8bfd", pink: "#ff5fa2", orange: "#ff8a3d",
+  red: "#ff4d4d", lime: "#9be15d", teal: "#2ec4b6", violet: "#a78bfa", gray: "#a1a1aa",
+};
 const MARKER_HIT_PX = 6;
+const EDGE_HIT_PX = 6;
 const MIN_SEGMENT_SECONDS = 0.5;
+const HISTORY_LIMIT = 10;
+
+// Undo/redo per VOD, kept in this tab only: each user undoes their own changes, nothing is shared with the team
+const markerHistory = new Map(); // VOD ID -> { undo: [steps], redo: [steps] }
+// History steps hold a ref ({ id }) instead of a marker ID: undoing a delete makes the marker again with a new ID, and every
+// step that points at it must follow
+const markerRefs = new Map();
+
+function markerRef(id) {
+  let ref = markerRefs.get(id);
+  if (!ref) {
+    ref = { id };
+    markerRefs.set(id, ref);
+  }
+  return ref;
+}
+
+function markerData(marker) {
+  return { seconds: marker.seconds, endSeconds: marker.endSeconds ?? null, label: marker.label ?? "", color: marker.color ?? "yellow" };
+}
+
+function sameMarkerData(a, b) {
+  return a.seconds === b.seconds && (a.endSeconds ?? null) === (b.endSeconds ?? null) && a.label === b.label && a.color === b.color;
+}
+
+// "Segment A" -> "Segment A1"/"Segment A2"; "Intro" -> "Intro 1"/"Intro 2"; blank stays blank
+function splitLabel(label, part) {
+  if (!label) return "";
+  const lastWord = label.split(/\s+/).pop();
+  return lastWord.length === 1 ? `${label}${part}` : `${label} ${part}`;
+}
 
 function markerColor(marker) {
   return MARKER_COLORS[marker.color] ?? MARKER_COLORS.yellow;
@@ -167,6 +207,14 @@ class PlayerBar {
     this.focusWindow = null; // { from, to } the review's trim bar shows; compact chips list only what's in it
     this.pendingZoom = null; // { from, to } to zoom to once the duration is known
     this.onMarkersChanged = null;
+    // Editing
+    this.tool = "pointer"; // pointer | cut | zoom
+    this.selectedRef = null; // ref ({ id }) of the selected segment
+    this.drag = null; // { ref, edge: "start"|"end", before } while an edge of the selected segment is dragged
+    this.pendingEdit = null; // { ref, before } while ±10s/±1s presses are collected into one change
+    this.pendingEditTimer = null;
+    this.playUntil = null; // pause here (playing the selected segment)
+    this.work = Promise.resolve(); // marker requests run one after another
     this.build();
   }
 
@@ -181,10 +229,12 @@ class PlayerBar {
       </div>
       <div class="vp-controls">
         <button type="button" class="vp-btn vp-play" data-act="play" aria-label="Play" title="Play / pause (Space, K)">▶</button>
-        <button type="button" class="vp-btn" data-act="back10" title="Back 10 s (J)">−10s</button>
+        <button type="button" class="vp-btn vp-len" data-act="back10" title="Back 10 s (J)">−10s</button>
+        <button type="button" class="vp-btn vp-len" data-act="back1" title="Back 1 s">−1s</button>
         <button type="button" class="vp-btn" data-act="frameback" title="One frame back (,)">‹</button>
         <button type="button" class="vp-btn" data-act="framefwd" title="One frame forward (.)">›</button>
-        <button type="button" class="vp-btn" data-act="fwd10" title="Forward 10 s (L)">+10s</button>
+        <button type="button" class="vp-btn vp-len" data-act="fwd1" title="Forward 1 s">+1s</button>
+        <button type="button" class="vp-btn vp-len" data-act="fwd10" title="Forward 10 s (L)">+10s</button>
         <span class="vp-time"><strong class="vp-now">0:00:00</strong> / <span class="vp-total">–</span></span>
         <button type="button" class="vp-btn vp-mute" data-act="mute" aria-label="Mute" title="Mute">🔊</button>
         <input type="range" class="vp-volume" min="0" max="100" step="1" aria-label="Volume">
@@ -216,6 +266,19 @@ class PlayerBar {
         <button type="button" class="link small" data-act="cancelmarker">Cancel</button>
         <span class="vp-marker-message message" role="status"></span>
       </div>
+      <div class="vp-selection" hidden>
+        <strong class="vp-sel-kind">Selected segment</strong>
+        <span class="vp-sel-time"></span>
+        <input class="vp-sel-label" maxlength="200" placeholder="Title" autocomplete="off" aria-label="Segment title">
+        <span class="vp-swatches vp-sel-swatches" role="radiogroup" aria-label="Segment color">
+          ${Object.entries(MARKER_COLORS).map(([name, color]) => `
+            <label class="vp-swatch" title="${name}"><input type="radio" name="vp-sel-color" value="${name}">
+              <span style="background:${color}"></span></label>`).join("")}
+        </span>
+        <span class="vp-sel-hint muted"></span>
+        <button type="button" class="link small" data-act="deselect">Done</button>
+        <span class="vp-sel-message message" role="status"></span>
+      </div>
       <div class="vp-markers"></div>
       <div class="vp-legend muted">
         <span><i class="vp-key vp-key-muted"></i>Muted by Twitch</span>
@@ -231,6 +294,9 @@ class PlayerBar {
     this.form = this.el.querySelector(".vp-marker-form");
     this.timelineWrap = this.el.querySelector(".vp-timeline-wrap");
     this.legend = this.el.querySelector(".vp-legend");
+    this.selection = this.el.querySelector(".vp-selection");
+    this.buildTools();
+    this.buildSelection();
 
     this.el.querySelector(".vp-controls").addEventListener("click", (event) => {
       const act = event.target.closest("[data-act]")?.dataset.act;
@@ -262,13 +328,24 @@ class PlayerBar {
     this.canvas.addEventListener("pointerdown", (event) => this.onPointerDown(event));
     this.canvas.addEventListener("pointermove", (event) => this.onPointerMove(event));
     this.canvas.addEventListener("pointerup", (event) => this.onPointerUp(event));
-    this.canvas.addEventListener("pointercancel", () => (this.scrubbing = false));
+    this.canvas.addEventListener("pointercancel", () => {
+      this.scrubbing = false;
+      if (this.drag) {
+        const drag = this.drag;
+        this.drag = null;
+        this.commitEdit(drag.ref, drag.before);
+      }
+    });
     this.canvas.addEventListener("pointerleave", () => {
       this.hoverX = null;
       this.tip.hidden = true;
       this.dirty = true;
     });
     this.canvas.addEventListener("wheel", (event) => this.onWheel(event), { passive: false });
+    // The zoom tool zooms out on a right click
+    this.canvas.addEventListener("contextmenu", (event) => {
+      if (this.tool === "zoom") event.preventDefault();
+    });
     this.overview.addEventListener("pointerdown", (event) => {
       const time = this.overviewTime(event);
       if (time == null) return;
@@ -281,6 +358,74 @@ class PlayerBar {
     this.onResize = () => (this.dirty = true);
     window.addEventListener("resize", this.onResize);
     this.wrap.addEventListener("fullscreenchange", () => (this.dirty = true));
+  }
+
+  // The vertical tools bar to the right of the video (pointer, cut, zoom, undo, redo)
+  buildTools() {
+    this.tools = document.createElement("div");
+    this.tools.className = "vp-tools";
+    this.tools.hidden = true;
+    this.tools.setAttribute("role", "toolbar");
+    this.tools.setAttribute("aria-label", "Timeline tools");
+    this.tools.setAttribute("aria-orientation", "vertical");
+    this.tools.innerHTML = `
+      <button type="button" class="vp-tool" data-tool="pointer" title="Pointer (${keybindLabel("toolPointer")}): click to seek, click a segment to select it" aria-label="Pointer">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 2.5v14l3.6-3.4 2.6 5.4 2.2-1-2.6-5.3H16z" fill="currentColor"/></svg></button>
+      <button type="button" class="vp-tool vp-tool-cut" data-tool="cut" title="Cut (${keybindLabel("toolCut")}): click a segment to split it in two" aria-label="Cut">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="5.5" cy="14.5" r="2.6" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="14.5" cy="14.5" r="2.6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M7.3 12.6 15 2.5M12.7 12.6 5 2.5" stroke="currentColor" stroke-width="1.8" fill="none"/></svg></button>
+      <button type="button" class="vp-tool" data-tool="zoom" title="Zoom (${keybindLabel("toolZoom")}): click the timeline to zoom in, right click to zoom out" aria-label="Zoom">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12.5 12.5 18 18M6 8.5h5M8.5 6v5" stroke="currentColor" stroke-width="2"/></svg></button>
+      <span class="vp-tools-gap"></span>
+      <button type="button" class="vp-tool" data-act="undo" title="Undo your last change (${keybindLabel("undo")})" aria-label="Undo" disabled>
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8 4 3.5 8.5 8 13" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4 8.5h7.5a4.5 4.5 0 0 1 0 9H9" fill="none" stroke="currentColor" stroke-width="2"/></svg></button>
+      <button type="button" class="vp-tool" data-act="redo" title="Redo (${keybindLabel("redo")})" aria-label="Redo" disabled>
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M12 4l4.5 4.5L12 13" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 8.5H8.5a4.5 4.5 0 0 0 0 9H11" fill="none" stroke="currentColor" stroke-width="2"/></svg></button>`;
+    this.tools.addEventListener("click", (event) => {
+      const button = event.target.closest("button");
+      if (!button) return;
+      if (button.dataset.tool) this.setTool(button.dataset.tool);
+      else if (button.dataset.act === "undo") this.undo();
+      else if (button.dataset.act === "redo") this.redo();
+      this.wrap.focus({ preventScroll: true });
+    });
+    // Next to the video: the frame moves into a row with the tools bar
+    const frame = this.wrap.querySelector(".player-frame");
+    const stage = document.createElement("div");
+    stage.className = "vp-stage";
+    frame.before(stage);
+    stage.append(frame, this.tools);
+
+    // The selected segment's delete button sits on the timeline, a little past the segment's end
+    this.selX = document.createElement("button");
+    this.selX.type = "button";
+    this.selX.className = "vp-sel-x";
+    this.selX.textContent = "✕";
+    this.selX.hidden = true;
+    this.selX.title = `Delete this segment (${keybindLabel("deleteSelected")})`;
+    this.selX.setAttribute("aria-label", "Delete the selected segment");
+    this.selX.addEventListener("click", () => this.deleteSelected());
+    this.timelineWrap.append(this.selX);
+  }
+
+  buildSelection() {
+    const label = this.selection.querySelector(".vp-sel-label");
+    label.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault(); // the player can sit inside the page's add form
+        event.stopPropagation();
+        label.blur();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        label.value = this.selected()?.label ?? "";
+        label.blur();
+      }
+    });
+    label.addEventListener("change", () => this.editSelected({ label: label.value.trim() }));
+    this.selection.querySelector(".vp-sel-swatches").addEventListener("change", (event) => {
+      if (event.target.name === "vp-sel-color") this.editSelected({ color: event.target.value });
+    });
+    this.selection.querySelector("[data-act=deselect]").addEventListener("click", () => this.deselect());
   }
 
   // Options for the next attach: { compact, focus: {start,end}, focusWindow: {from,to}, zoom: {from,to}, expandZoom: () => {from,to} }
@@ -303,7 +448,9 @@ class PlayerBar {
     this.focus = this.options.focus ?? null;
     this.focusWindow = this.options.focusWindow ?? null;
     this.pendingZoom = this.options.zoom ?? null;
-    this.applyLayout();
+    this.selectedRef = null;
+    this.drag = null;
+    this.playUntil = null;
     this.closeMarkerForm();
     this.cancelSegment();
     this.el.hidden = false;
@@ -311,6 +458,11 @@ class PlayerBar {
     const canAdd = can("AddEntries") && !me?.support;
     this.el.querySelector(".vp-add-marker").hidden = !canAdd;
     this.el.querySelector(".vp-add-segment").hidden = !canAdd;
+    this.tools.querySelector(".vp-tool-cut").hidden = !canAdd;
+    if (!canAdd && this.tool === "cut") this.tool = "pointer";
+    this.applyLayout();
+    this.renderTools();
+    this.renderSelection();
 
     backend.onDetails = (details) => this.readPlaylist(details);
     if (backend.details) this.readPlaylist(backend.details);
@@ -318,7 +470,10 @@ class PlayerBar {
     const video = this.video;
     this.videoListeners = {
       play: () => this.renderButtons(),
-      pause: () => this.renderButtons(),
+      pause: () => {
+        this.playUntil = null;
+        this.renderButtons();
+      },
       volumechange: () => this.renderButtons(),
       durationchange: () => this.fitIfNeeded(),
       progress: () => (this.dirty = true),
@@ -351,8 +506,11 @@ class PlayerBar {
     this.video = null;
     this.vodId = null;
     this.el.hidden = true;
+    this.tools.hidden = true;
+    this.selX.hidden = true;
     this.wrap.classList.remove("has-bar");
     this.tip.hidden = true;
+    this.flushPendingEdit();
   }
 
   // ---- data ----
@@ -387,6 +545,7 @@ class PlayerBar {
     } catch (error) {
       console.warn("Couldn't load the timeline's clips and markers:", error);
     }
+    this.renderSelection();
     this.renderMarkers();
     this.dirty = true;
     this.onMarkersChanged?.();
@@ -408,6 +567,9 @@ class PlayerBar {
     this.legend.hidden = this.compact;
     this.el.querySelector(".vp-zoom").hidden = this.compact;
     this.el.querySelector(".vp-expand").hidden = !this.compact;
+    // The tools work on the timeline, which a compact bar doesn't show
+    this.tools.hidden = this.compact || !this.backend;
+    if (this.compact) this.deselect();
     this.dirty = true;
   }
 
@@ -464,8 +626,11 @@ class PlayerBar {
     if (!video) return;
     switch (act) {
       case "play": return this.togglePlay();
-      case "back10": return this.seek(this.now() - 10);
-      case "fwd10": return this.seek(this.now() + 10);
+      // With a segment selected, these change its length (its end) instead of seeking
+      case "back10": return this.selectedEditable() ? this.nudgeSelected(-10) : this.seek(this.now() - 10);
+      case "fwd10": return this.selectedEditable() ? this.nudgeSelected(10) : this.seek(this.now() + 10);
+      case "back1": return this.selectedEditable() ? this.nudgeSelected(-1) : this.seek(this.now() - 1);
+      case "fwd1": return this.selectedEditable() ? this.nudgeSelected(1) : this.seek(this.now() + 1);
       case "frameback": return this.step(-1);
       case "framefwd": return this.step(1);
       case "mute":
@@ -498,8 +663,16 @@ class PlayerBar {
 
   togglePlay() {
     if (!this.video) return;
-    if (this.video.paused) this.video.play().catch(() => {});
-    else this.video.pause();
+    if (!this.video.paused) return this.video.pause();
+    // A selected segment plays from its start (unless the playhead is already inside it) and stops at its end
+    const segment = this.selected();
+    if (segment) {
+      const now = this.now();
+      if (now < segment.seconds || now >= segment.endSeconds - 0.05) this.seek(segment.seconds);
+      this.video.play().then(() => (this.playUntil = segment.endSeconds)).catch(() => {});
+      return;
+    }
+    this.video.play().catch(() => {});
   }
 
   // One frame at the playing rendition's frame rate
@@ -636,33 +809,338 @@ class PlayerBar {
       return;
     }
     message.textContent = "Saving…";
+    const data = { seconds: times.start, endSeconds: times.end, label, color };
     try {
-      const marker = await api("POST", `/api/vods/${encodeURIComponent(this.vodId)}/markers`,
-        { seconds: times.start, endSeconds: times.end, label, color });
-      this.markers = [...this.markers, marker].sort((a, b) => a.seconds - b.seconds);
+      await this.run(async () => {
+        const ref = { id: null };
+        await this.createMarker(ref, data);
+        this.record({ kind: "add", ref, after: data });
+      });
       this.closeMarkerForm();
-      this.renderMarkers();
-      this.dirty = true;
       this.wrap.focus({ preventScroll: true });
-      this.notifyChanged({ liveEntry: marker.liveEntry });
     } catch (error) {
       message.textContent = error.message;
     }
   }
 
+  // From a chip's ✕ (asks first; undo brings it back)
   async deleteMarker(marker) {
     const what = isSegment(marker) ? "segment" : "marker";
     if (!confirm(`Delete the ${what} ${isSegment(marker) ? "from" : "at"} ${isSegment(marker)
       ? `${formatTrimValue(marker.seconds)} to ${formatTrimValue(marker.endSeconds)}` : formatTrimValue(marker.seconds)}${marker.label ? ` ("${marker.label}")` : ""}?`)) return;
+    await this.removeWithHistory(marker);
+  }
+
+  async removeWithHistory(marker) {
+    const ref = markerRef(marker.id);
+    const before = markerData(marker);
     try {
-      await api("DELETE", `/api/markers/${marker.id}`);
-      this.markers = this.markers.filter((x) => x.id !== marker.id);
-      this.renderMarkers();
-      this.dirty = true;
-      this.notifyChanged({ deleted: true });
+      await this.run(async () => {
+        await this.removeMarker(ref);
+        this.record({ kind: "delete", ref, before });
+      });
     } catch (error) {
-      alert(error.message);
+      this.flash(error.message);
     }
+  }
+
+  // ---- editing: selection, tools, undo ----
+
+  selected() {
+    if (!this.selectedRef) return null;
+    return this.markers.find((m) => m.id === this.selectedRef.id && isSegment(m)) ?? null;
+  }
+
+  selectedEditable() {
+    const segment = this.selected();
+    return segment?.canEdit ? segment : null;
+  }
+
+  // Selects a segment and zooms the timeline to it, with some room before and after
+  select(segment) {
+    this.flushPendingEdit();
+    this.selectedRef = markerRef(segment.id);
+    this.playUntil = null;
+    const length = segment.endSeconds - segment.seconds;
+    const margin = Math.max(2, length * 0.2);
+    this.zoomTo({ from: Math.max(0, segment.seconds - margin), to: segment.endSeconds + margin });
+    this.renderSelection();
+    this.renderMarkers();
+    this.dirty = true;
+  }
+
+  deselect() {
+    if (!this.selectedRef) return;
+    this.flushPendingEdit();
+    this.selectedRef = null;
+    this.playUntil = null;
+    this.renderSelection();
+    this.renderMarkers();
+    this.dirty = true;
+  }
+
+  renderSelection() {
+    const segment = this.selected();
+    if (this.selectedRef && !segment && !this.pendingEdit) this.selectedRef = null; // deleted (here or by someone else)
+    this.selection.hidden = !segment;
+    this.el.querySelector(".vp-controls").classList.toggle("vp-seg-mode", Boolean(segment?.canEdit));
+    for (const [act, seconds] of [["back10", -10], ["back1", -1], ["fwd1", 1], ["fwd10", 10]]) {
+      this.el.querySelector(`[data-act=${act}]`).title = segment?.canEdit
+        ? `${seconds > 0 ? "Lengthen" : "Shorten"} the selected segment by ${Math.abs(seconds)} s (moves its end)`
+        : { back10: "Back 10 s (J)", back1: "Back 1 s", fwd1: "Forward 1 s", fwd10: "Forward 10 s (L)" }[act];
+    }
+    if (!segment) {
+      this.selX.hidden = true;
+      return;
+    }
+    this.selection.querySelector(".vp-sel-time").textContent = markerTimeText(segment);
+    const label = this.selection.querySelector(".vp-sel-label");
+    if (document.activeElement !== label) label.value = segment.label ?? "";
+    label.disabled = !segment.canEdit;
+    for (const radio of this.selection.querySelectorAll("input[name=vp-sel-color]")) {
+      radio.checked = radio.value === (segment.color ?? "yellow");
+      radio.disabled = !segment.canEdit;
+    }
+    this.selection.querySelector(".vp-sel-hint").textContent = segment.canEdit
+      ? "Play plays only this · ±10s/±1s change its end · drag its edges · Del deletes"
+      : `Added by ${segment.createdBy ?? "someone else"}: your role can't change it`;
+  }
+
+  setTool(tool) {
+    if (tool === "cut" && !this.canAdd()) return;
+    this.tool = tool;
+    this.renderTools();
+    this.canvas.style.cursor = tool === "zoom" ? "zoom-in" : tool === "cut" ? "crosshair" : "";
+    this.dirty = true;
+  }
+
+  renderTools() {
+    for (const button of this.tools.querySelectorAll("[data-tool]")) {
+      const active = button.dataset.tool === this.tool;
+      button.classList.toggle("vp-tool-active", active);
+      button.setAttribute("aria-pressed", String(active));
+    }
+    const history = this.history();
+    this.tools.querySelector("[data-act=undo]").disabled = !history?.undo.length;
+    this.tools.querySelector("[data-act=redo]").disabled = !history?.redo.length;
+  }
+
+  // A short note under the bar (errors, hints)
+  flash(text) {
+    const message = this.selection.hidden ? this.form.querySelector(".vp-marker-message") : this.selection.querySelector(".vp-sel-message");
+    if (this.selection.hidden && this.form.hidden) {
+      this.tip.textContent = text;
+      this.tip.hidden = false;
+      clearTimeout(this.flashTimer);
+      this.flashTimer = setTimeout(() => (this.tip.hidden = true), 2500);
+      return;
+    }
+    message.textContent = text;
+    clearTimeout(this.flashTimer);
+    this.flashTimer = setTimeout(() => (message.textContent = ""), 4000);
+  }
+
+  // ±10s / ±1s with a segment selected: move its end. Presses close together become one change (one undo step).
+  nudgeSelected(seconds) {
+    const segment = this.selectedEditable();
+    if (!segment) return;
+    if (!this.pendingEdit) this.pendingEdit = { ref: markerRef(segment.id), before: markerData(segment) };
+    const d = this.duration() || Infinity;
+    segment.endSeconds = roundHundredths(Math.min(d, Math.max(segment.seconds + MIN_SEGMENT_SECONDS, segment.endSeconds + seconds)));
+    this.afterLocalChange();
+    clearTimeout(this.pendingEditTimer);
+    this.pendingEditTimer = setTimeout(() => this.flushPendingEdit(), 600);
+  }
+
+  flushPendingEdit() {
+    clearTimeout(this.pendingEditTimer);
+    const pending = this.pendingEdit;
+    this.pendingEdit = null;
+    if (pending) this.commitEdit(pending.ref, pending.before);
+  }
+
+  dragEdgeTo(seconds) {
+    const segment = this.markers.find((m) => m.id === this.drag.ref.id);
+    if (!segment) return;
+    const d = this.duration() || Infinity;
+    const t = roundHundredths(Math.min(d, Math.max(0, seconds)));
+    if (this.drag.edge === "start") segment.seconds = Math.min(t, roundHundredths(segment.endSeconds - MIN_SEGMENT_SECONDS));
+    else segment.endSeconds = Math.max(t, roundHundredths(segment.seconds + MIN_SEGMENT_SECONDS));
+    this.afterLocalChange();
+  }
+
+  // Title or color from the selection row
+  editSelected(changes) {
+    const segment = this.selectedEditable();
+    if (!segment) return;
+    this.flushPendingEdit();
+    const before = markerData(segment);
+    Object.assign(segment, changes);
+    this.afterLocalChange();
+    this.commitEdit(markerRef(segment.id), before);
+  }
+
+  // Saves a segment changed on screen (resize, nudge, title, color) as one undo step; puts it back if saving fails
+  commitEdit(ref, before) {
+    const segment = this.markers.find((m) => m.id === ref.id);
+    if (!segment) return;
+    const after = markerData(segment);
+    if (sameMarkerData(before, after)) return;
+    this.run(async () => {
+      try {
+        await this.updateMarker(ref, after);
+        this.record({ kind: "update", ref, before, after });
+      } catch (error) {
+        const current = this.markers.find((m) => m.id === ref.id);
+        if (current) Object.assign(current, before);
+        this.afterLocalChange();
+        this.flash(error.message);
+      }
+    });
+  }
+
+  deleteSelected() {
+    const segment = this.selected();
+    if (!segment) return false;
+    if (!segment.canDelete) {
+      this.flash("Your role only lets you delete segments you added.");
+      return;
+    }
+    this.flushPendingEdit();
+    this.removeWithHistory(segment);
+  }
+
+  // The cut tool: [start, at] keeps the segment, [at, end] is a new one with the same color ("Segment A" -> A1 + A2)
+  async splitSegment(segment, at) {
+    if (!segment.canEdit || !this.canAdd()) {
+      this.flash("Your role can't cut this segment.");
+      return;
+    }
+    const t = roundHundredths(at);
+    if (t < segment.seconds + MIN_SEGMENT_SECONDS || t > segment.endSeconds - MIN_SEGMENT_SECONDS) {
+      this.flash(`Cut at least ${MIN_SEGMENT_SECONDS} s from either end.`);
+      return;
+    }
+    this.flushPendingEdit();
+    const ref = markerRef(segment.id);
+    const before = markerData(segment);
+    const after = { ...before, endSeconds: t, label: splitLabel(before.label, 1) };
+    const extra = { ...before, seconds: t, label: splitLabel(before.label, 2) };
+    const extraRef = { id: null };
+    try {
+      await this.run(async () => {
+        await this.updateMarker(ref, after);
+        try {
+          await this.createMarker(extraRef, extra);
+        } catch (error) {
+          await this.updateMarker(ref, before).catch(() => {});
+          throw error;
+        }
+        this.record({ kind: "split", ref, before, after, extraRef, extra });
+      });
+    } catch (error) {
+      this.flash(error.message);
+    }
+  }
+
+  history() {
+    if (!this.vodId) return null;
+    let history = markerHistory.get(this.vodId);
+    if (!history) {
+      history = { undo: [], redo: [] };
+      markerHistory.set(this.vodId, history);
+    }
+    return history;
+  }
+
+  record(step) {
+    const history = this.history();
+    history.undo.push(step);
+    if (history.undo.length > HISTORY_LIMIT) history.undo.shift();
+    history.redo = [];
+    this.renderTools();
+  }
+
+  undo() {
+    return this.replay("undo", "redo", true);
+  }
+
+  redo() {
+    return this.replay("redo", "undo", false);
+  }
+
+  replay(from, to, reverse) {
+    this.flushPendingEdit();
+    return this.run(async () => {
+      const history = this.history();
+      const step = history?.[from].pop();
+      if (!step) return;
+      try {
+        await this.applyStep(step, reverse);
+        history[to].push(step);
+      } catch (error) {
+        // Someone may have changed or deleted it meanwhile: this step can't be replayed, so it's dropped
+        this.flash(`Couldn't ${reverse ? "undo" : "redo"} that: ${error.message}`);
+      }
+      this.renderTools();
+    });
+  }
+
+  async applyStep(step, reverse) {
+    switch (step.kind) {
+      case "add": return reverse ? this.removeMarker(step.ref) : this.createMarker(step.ref, step.after);
+      case "delete": return reverse ? this.createMarker(step.ref, step.before) : this.removeMarker(step.ref);
+      case "update": return this.updateMarker(step.ref, reverse ? step.before : step.after);
+      case "split":
+        if (reverse) {
+          await this.removeMarker(step.extraRef);
+          return this.updateMarker(step.ref, step.before);
+        }
+        await this.updateMarker(step.ref, step.after);
+        return this.createMarker(step.extraRef, step.extra);
+    }
+  }
+
+  // Marker requests one at a time, in order (fast presses, undo right after a change)
+  run(task) {
+    const next = this.work.then(task);
+    this.work = next.catch(() => {});
+    return next;
+  }
+
+  async createMarker(ref, data) {
+    const marker = await api("POST", `/api/vods/${encodeURIComponent(this.vodId)}/markers`, data);
+    if (ref.id != null) markerRefs.delete(ref.id);
+    ref.id = marker.id;
+    markerRefs.set(marker.id, ref);
+    this.markers = [...this.markers, marker].sort((a, b) => a.seconds - b.seconds);
+    this.afterServerChange({ liveEntry: marker.liveEntry });
+    return marker;
+  }
+
+  async updateMarker(ref, data) {
+    const marker = await api("PUT", `/api/markers/${ref.id}`, data);
+    this.markers = this.markers.map((m) => (m.id === marker.id ? marker : m)).sort((a, b) => a.seconds - b.seconds);
+    this.afterServerChange({ liveEntry: marker.liveEntry });
+    return marker;
+  }
+
+  async removeMarker(ref) {
+    await api("DELETE", `/api/markers/${ref.id}`);
+    this.markers = this.markers.filter((m) => m.id !== ref.id);
+    if (this.selectedRef === ref) this.selectedRef = null;
+    this.afterServerChange({ deleted: true });
+  }
+
+  afterLocalChange() {
+    this.renderSelection();
+    this.renderMarkers();
+    this.dirty = true;
+  }
+
+  afterServerChange(change) {
+    this.afterLocalChange();
+    this.notifyChanged(change);
   }
 
   // The library, VOD cards and the review's trim bar show markers too
@@ -697,9 +1175,12 @@ class PlayerBar {
         go.append(by);
       }
       go.addEventListener("click", () => {
-        this.centerOn(marker.seconds);
+        // A segment's chip selects it (zooming to it); a marker's seeks to it
+        if (isSegment(marker) && !this.compact) this.select(marker);
+        else this.centerOn(marker.seconds);
         this.seek(marker.seconds);
       });
+      if (isSegment(marker) && marker.id === this.selectedRef?.id) chip.classList.add("vp-chip-selected");
       chip.append(go);
       if (marker.canDelete) {
         const remove = document.createElement("button");
@@ -717,30 +1198,43 @@ class PlayerBar {
   // ---- input ----
 
   onKeyDown(event) {
-    if (!this.backend || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (!this.backend) return;
     if (event.target.closest("input, select, textarea, .vp-marker-form")) return;
-    if (event.key === "Escape" && this.segmentStart != null) {
-      event.preventDefault();
-      this.cancelSegment();
-      return;
-    }
-    const keys = {
-      " ": () => this.togglePlay(), k: () => this.togglePlay(), K: () => this.togglePlay(),
-      j: () => this.seek(this.now() - 10), J: () => this.seek(this.now() - 10),
-      l: () => this.seek(this.now() + 10), L: () => this.seek(this.now() + 10),
-      ArrowLeft: () => this.seek(this.now() - 5), ArrowRight: () => this.seek(this.now() + 5),
-      ",": () => this.step(-1), ".": () => this.step(1),
-      m: () => this.openMarkerForm(), M: () => this.openMarkerForm(),
-      s: () => this.toggleSegment(), S: () => this.toggleSegment(),
-      f: () => this.toggleFullscreen(), F: () => this.toggleFullscreen(),
-      "+": () => this.act("zoomin"), "=": () => this.act("zoomin"), "-": () => this.act("zoomout"), "0": () => this.fit(),
-    };
-    const handler = keys[event.key];
-    if (!handler) return;
+    const id = keybindFor("player", event);
+    if (!id) return;
     // Buttons handle Space themselves
-    if (event.key === " " && event.target.closest("button")) return;
+    if (id === "playPause" && event.key === " " && event.target.closest("button")) return;
+    const actions = {
+      playPause: () => this.togglePlay(),
+      back10: () => this.seek(this.now() - 10),
+      fwd10: () => this.seek(this.now() + 10),
+      back5: () => this.seek(this.now() - 5),
+      fwd5: () => this.seek(this.now() + 5),
+      frameBack: () => this.step(-1),
+      frameFwd: () => this.step(1),
+      marker: () => this.openMarkerForm(),
+      segment: () => this.toggleSegment(),
+      fullscreen: () => this.toggleFullscreen(),
+      zoomIn: () => this.act("zoomin"),
+      zoomOut: () => this.act("zoomout"),
+      fit: () => this.fit(),
+      toolPointer: () => this.setTool("pointer"),
+      toolCut: () => this.setTool("cut"),
+      toolZoom: () => this.setTool("zoom"),
+      undo: () => this.undo(),
+      redo: () => this.redo(),
+      deleteSelected: () => this.deleteSelected(),
+      escape: () => {
+        if (this.segmentStart != null) this.cancelSegment();
+        else if (this.selected()) this.deselect();
+        else if (this.tool !== "pointer") this.setTool("pointer");
+        else return false;
+      },
+    };
+    const handler = actions[id];
+    if (!handler) return;
+    if (handler() === false) return; // nothing to do: let the key through (e.g. Escape closing a dialog)
     event.preventDefault();
-    handler();
   }
 
   xToTime(x) {
@@ -768,37 +1262,108 @@ class PlayerBar {
     return best?.marker ?? null;
   }
 
+  // The smallest segment under a time (segments can overlap), when the pointer is on the track
+  segmentAt(seconds, y) {
+    if (y < BAR_TRACK.top - 4 || y > BAR_TRACK.top + BAR_TRACK.height + 4) return null;
+    let best = null;
+    for (const marker of this.markers) {
+      if (!isSegment(marker) || seconds < marker.seconds || seconds > marker.endSeconds) continue;
+      if (!best || marker.endSeconds - marker.seconds < best.endSeconds - best.seconds) best = marker;
+    }
+    return best;
+  }
+
+  // "start"/"end" when x is on an edge of the selected segment (only it can be resized, so a stray click can't)
+  edgeAt(x, y) {
+    const segment = this.selectedEditable();
+    if (!segment || y < BAR_TRACK.top - 6 || y > BAR_TRACK.top + BAR_TRACK.height + 6) return null;
+    const width = this.canvas.clientWidth;
+    const a = this.timeToX(segment.seconds, width);
+    const b = this.timeToX(segment.endSeconds, width);
+    const da = Math.abs(x - a);
+    const db = Math.abs(x - b);
+    if (Math.min(da, db) > EDGE_HIT_PX) return null;
+    return da < db ? "start" : "end";
+  }
+
   onPointerDown(event) {
-    if (!this.video || event.button !== 0) return;
+    if (!this.video) return;
     this.wrap.focus({ preventScroll: true });
     const x = this.localX(event, this.canvas);
+    const y = event.clientY - this.canvas.getBoundingClientRect().top;
+    const time = this.xToTime(x);
+
+    if (this.tool === "zoom") {
+      if (event.button === 0) this.zoomBy(0.5, time);
+      else if (event.button === 2) this.zoomBy(2, time);
+      return;
+    }
+    if (event.button !== 0) return;
+
+    if (this.tool === "cut") {
+      const segment = this.segmentAt(time, y);
+      if (segment) this.splitSegment(segment, time);
+      else this.flash("Click on a segment to cut it there.");
+      return;
+    }
+
+    // Pointer: resize the selected segment by an edge
+    const edge = this.edgeAt(x, y);
+    if (edge) {
+      const segment = this.selected();
+      this.flushPendingEdit();
+      this.drag = { ref: markerRef(segment.id), edge, before: markerData(segment) };
+      this.canvas.setPointerCapture(event.pointerId);
+      return;
+    }
+
     const marker = this.markerAt(x);
     if (marker) {
       this.seek(marker.seconds);
       return;
     }
-    const y = event.clientY - this.canvas.getBoundingClientRect().top;
     if (y < BAR_TRACK.top) {
-      const clip = this.clipAt(this.xToTime(x));
+      const clip = this.clipAt(time);
       if (clip) {
         this.seek(clip.start);
         return;
       }
     }
+    // A click on a segment selects it (and zooms to it); inside the selected one it seeks; elsewhere it unselects
+    const segment = this.segmentAt(time, y);
+    if (segment && segment.id !== this.selectedRef?.id) {
+      this.select(segment);
+      return;
+    }
+    if (!segment && this.selectedRef) this.deselect();
     this.scrubbing = true;
     this.canvas.setPointerCapture(event.pointerId);
-    this.seek(this.xToTime(x));
+    this.seek(time);
   }
 
   onPointerMove(event) {
     const x = this.localX(event, this.canvas);
+    const y = event.clientY - this.canvas.getBoundingClientRect().top;
     this.hoverX = x;
-    if (this.scrubbing) this.seek(this.xToTime(x));
-    this.renderTip(x, event.clientY - this.canvas.getBoundingClientRect().top);
+    if (this.drag) {
+      this.dragEdgeTo(this.xToTime(x));
+    } else if (this.scrubbing) {
+      this.seek(this.xToTime(x));
+    }
+    this.canvas.style.cursor = this.drag || this.edgeAt(x, y) ? "ew-resize"
+      : this.tool === "zoom" ? "zoom-in" : this.tool === "cut" ? "crosshair" : "";
+    this.renderTip(x, y);
     this.dirty = true;
   }
 
   onPointerUp(event) {
+    if (this.drag) {
+      const drag = this.drag;
+      this.drag = null;
+      this.canvas.releasePointerCapture?.(event.pointerId);
+      this.commitEdit(drag.ref, drag.before);
+      return;
+    }
     if (!this.scrubbing) return;
     this.scrubbing = false;
     this.canvas.releasePointerCapture?.(event.pointerId);
@@ -834,12 +1399,17 @@ class PlayerBar {
     const time = this.xToTime(x);
     const lines = [formatTrimValue(Math.max(0, time))];
     const marker = this.markerAt(x);
-    if (marker) lines.push(`Marker${marker.label ? `: ${marker.label}` : ""}${marker.createdBy ? ` (${marker.createdBy})` : ""}`);
+    if (marker) {
+      lines.push(`Marker${marker.label ? `: ${marker.label}` : ""}`);
+      if (marker.createdBy) lines.push(`  added by ${marker.createdBy}`);
+    }
     for (const segment of this.markers) {
       if (isSegment(segment) && time >= segment.seconds && time <= segment.endSeconds) {
-        lines.push(`${segment.label || "Segment"}: ${markerTimeText(segment)}${segment.createdBy ? ` (${segment.createdBy})` : ""}`);
+        lines.push(`${segment.label || "Segment"}: ${markerTimeText(segment)}`);
+        if (segment.createdBy) lines.push(`  added by ${segment.createdBy}`);
       }
     }
+    if (this.tool === "cut" && this.segmentAt(time, y)) lines.push("Click to cut here");
     const range = this.ranges.find((r) => time >= r.start && time < r.end);
     if (range) lines.push(range.clean ? "Muted by Twitch: plays saved clean audio" : "Muted by Twitch");
     if (this.focus && time >= this.focus.start && time <= this.focus.end) lines.push("This clip");
@@ -872,6 +1442,10 @@ class PlayerBar {
     const video = this.video;
     if (!video) return;
     const now = video.currentTime;
+    if (this.playUntil != null && !video.paused && now >= this.playUntil) {
+      video.pause();
+      this.video.currentTime = this.playUntil;
+    }
     // Follow the playhead while zoomed in
     if (this.zoomed && !this.scrubbing && !video.paused) {
       const span = this.view.to - this.view.from;
@@ -963,13 +1537,38 @@ class PlayerBar {
     ctx.globalAlpha = 1;
 
     // Segments, and the one being marked (from where S was pressed to the playhead)
+    const selected = this.selected();
     for (const segment of this.markers) {
-      if (!isSegment(segment)) continue;
+      if (!isSegment(segment) || segment === selected) continue;
       const a = x(segment.seconds);
       const b = x(segment.endSeconds);
       if (b < -4 || a > width + 4) continue;
       drawSegmentBox(ctx, a, b, top, height, markerColor(segment));
     }
+    // The selected one on top, outlined, with grips on its edges when it can be resized
+    let deleteAt = null;
+    if (selected) {
+      const a = x(selected.seconds);
+      const b = x(selected.endSeconds);
+      if (b >= -4 && a <= width + 4) {
+        ctx.save();
+        ctx.strokeStyle = c.text;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 2]);
+        ctx.strokeRect(a - 2.5, top - 2.5, Math.max(2, b - a) + 5, height + 5);
+        ctx.restore();
+        drawSegmentBox(ctx, a, b, top, height, markerColor(selected));
+        if (selected.canEdit) {
+          ctx.fillStyle = c.playhead;
+          for (const edge of [a, b]) {
+            ctx.fillRect(Math.round(edge) - 2, top + height / 2 - 7, 4, 14);
+          }
+        }
+        if (selected.canDelete) deleteAt = b + 34 <= width ? b + 14 : a - 34 >= 0 ? a - 32 : null;
+      }
+    }
+    this.selX.hidden = deleteAt == null;
+    if (deleteAt != null) this.selX.style.left = `${deleteAt}px`;
     if (this.segmentStart != null) {
       const a = x(Math.min(this.segmentStart, now));
       const b = x(Math.max(this.segmentStart, now));
