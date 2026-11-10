@@ -79,6 +79,37 @@ function drawSegmentBox(ctx, a, b, top, height, color, dashed = false) {
   ctx.restore();
 }
 
+// Chips for a library entry (like the list under the player): the markers and segments between from and to. Null when none.
+function markerChips(markers, from, to) {
+  const inside = markers.filter((m) => (isSegment(m) ? m.endSeconds > from && m.seconds < to : m.seconds >= from && m.seconds <= to));
+  if (!inside.length) return null;
+  const list = document.createElement("div");
+  list.className = "vp-markers entry-markers";
+  list.setAttribute("aria-label", "Team markers and segments");
+  for (const marker of inside) {
+    const chip = document.createElement("span");
+    chip.className = "vp-chip";
+    chip.title = markerTitle(marker);
+    const body = document.createElement("span");
+    body.className = "vp-chip-go";
+    const dot = document.createElement("i");
+    dot.style.background = markerColor(marker);
+    if (isSegment(marker)) dot.className = "vp-chip-segment";
+    const time = document.createElement("strong");
+    time.textContent = isSegment(marker) ? `${formatTrimValue(marker.seconds)}–${formatTrimValue(marker.endSeconds)}` : formatTrimValue(marker.seconds);
+    body.append(dot, time, marker.label ? ` ${marker.label}` : "");
+    if (marker.createdBy) {
+      const by = document.createElement("span");
+      by.className = "muted";
+      by.textContent = ` · ${marker.createdBy}`;
+      body.append(by);
+    }
+    chip.append(body);
+    list.append(chip);
+  }
+  return list;
+}
+
 // A small strip for a library entry or VOD card: the markers and segments that fall between from and to (VOD seconds).
 // Null when there are none. Hovering one shows its title and times.
 function segmentStrip(markers, from, to) {
@@ -128,6 +159,14 @@ class PlayerBar {
     this.hoverX = null;
     this.pendingMarker = null; // true while the add form is open
     this.segmentStart = null; // seconds where a segment being marked starts (S pressed once)
+    // Set by the page before a player opens (see configure): the clip review shows the bar's controls without the VOD timeline
+    // for a short clip ("compact", with a Full VOD timeline button), or starts zoomed in on the entry for a long reference
+    this.options = {};
+    this.compact = false;
+    this.focus = null; // { start, end } of the entry being reviewed, highlighted on the timeline
+    this.focusWindow = null; // { from, to } the review's trim bar shows; compact chips list only what's in it
+    this.pendingZoom = null; // { from, to } to zoom to once the duration is known
+    this.onMarkersChanged = null;
     this.build();
   }
 
@@ -158,6 +197,7 @@ class PlayerBar {
         </span>
         <button type="button" class="vp-btn vp-add-marker" data-act="marker" title="Add a marker here (M)">+ Marker</button>
         <button type="button" class="vp-btn vp-add-segment" data-act="segment" title="Mark a segment: press at its start, then at its end (S)">[ Segment</button>
+        <button type="button" class="vp-btn vp-expand" data-act="expand" title="Show the whole VOD's timeline, zoomed in on this clip" hidden>Full VOD timeline</button>
         <button type="button" class="vp-btn" data-act="fullscreen" aria-label="Fullscreen" title="Fullscreen (F)">⛶</button>
       </div>
       <div class="vp-marker-form" hidden>
@@ -189,6 +229,8 @@ class PlayerBar {
     this.canvas = this.el.querySelector(".vp-timeline");
     this.tip = this.el.querySelector(".vp-tip");
     this.form = this.el.querySelector(".vp-marker-form");
+    this.timelineWrap = this.el.querySelector(".vp-timeline-wrap");
+    this.legend = this.el.querySelector(".vp-legend");
 
     this.el.querySelector(".vp-controls").addEventListener("click", (event) => {
       const act = event.target.closest("[data-act]")?.dataset.act;
@@ -241,6 +283,11 @@ class PlayerBar {
     this.wrap.addEventListener("fullscreenchange", () => (this.dirty = true));
   }
 
+  // Options for the next attach: { compact, focus: {start,end}, focusWindow: {from,to}, zoom: {from,to}, expandZoom: () => {from,to} }
+  configure(options) {
+    this.options = options ?? {};
+  }
+
   // Shows the bar for an app-player backend (HlsBackend) playing a VOD
   attach(backend, vodId) {
     this.detach();
@@ -252,6 +299,11 @@ class PlayerBar {
     this.clips = [];
     this.markers = [];
     this.zoomed = false;
+    this.compact = Boolean(this.options.compact);
+    this.focus = this.options.focus ?? null;
+    this.focusWindow = this.options.focusWindow ?? null;
+    this.pendingZoom = this.options.zoom ?? null;
+    this.applyLayout();
     this.closeMarkerForm();
     this.cancelSegment();
     this.el.hidden = false;
@@ -337,6 +389,7 @@ class PlayerBar {
     }
     this.renderMarkers();
     this.dirty = true;
+    this.onMarkersChanged?.();
   }
 
   // Called by the page after entries change (added, re-cut, deleted)
@@ -350,9 +403,54 @@ class PlayerBar {
     return this.listDuration || 0;
   }
 
+  applyLayout() {
+    this.timelineWrap.hidden = this.compact;
+    this.legend.hidden = this.compact;
+    this.el.querySelector(".vp-zoom").hidden = this.compact;
+    this.el.querySelector(".vp-expand").hidden = !this.compact;
+    this.dirty = true;
+  }
+
+  // The review dialog's short-clip mode: show the whole VOD's timeline, zoomed in on the clip
+  expand() {
+    this.compact = false;
+    this.applyLayout();
+    this.zoomTo(this.options.expandZoom?.() ?? this.focusWindow ?? this.focus);
+    this.renderMarkers();
+  }
+
+  // The entry being reviewed (highlighted on the timeline) and the part of the VOD the review's trim bar shows
+  setFocus(focus, focusWindow) {
+    this.focus = focus;
+    const windowChanged = this.focusWindow?.from !== focusWindow?.from || this.focusWindow?.to !== focusWindow?.to;
+    this.focusWindow = focusWindow;
+    if (windowChanged && this.compact) this.renderMarkers();
+    this.dirty = true;
+  }
+
+  zoomTo(range) {
+    if (!range) return;
+    const d = this.duration();
+    if (!d) {
+      this.pendingZoom = range;
+      return;
+    }
+    const span = Math.max(BAR_MIN_SPAN_SECONDS, range.to - range.from);
+    if (span >= d) return this.fit();
+    this.view = { from: range.from, to: range.from + span };
+    this.zoomed = true;
+    this.clampView();
+    this.dirty = true;
+  }
+
   fitIfNeeded() {
     const d = this.duration();
     if (!d) return;
+    if (this.pendingZoom) {
+      const range = this.pendingZoom;
+      this.pendingZoom = null;
+      this.zoomTo(range);
+    }
     if (!this.zoomed) this.view = { from: 0, to: d };
     else this.clampView();
     this.el.querySelector(".vp-total").textContent = formatDuration(d);
@@ -384,6 +482,7 @@ class PlayerBar {
       case "marker": return this.openMarkerForm();
       case "segment": return this.toggleSegment();
       case "fullscreen": return this.toggleFullscreen();
+      case "expand": return this.expand();
     }
   }
 
@@ -566,15 +665,19 @@ class PlayerBar {
     }
   }
 
-  // The library and VOD cards show markers too
+  // The library, VOD cards and the review's trim bar show markers too
   notifyChanged() {
+    this.onMarkersChanged?.();
     if (typeof markersChanged === "function") markersChanged(this.vodId);
   }
 
   renderMarkers() {
     const list = this.el.querySelector(".vp-markers");
     list.replaceChildren();
-    for (const marker of this.markers) {
+    // Short-clip review: only what's on the trim bar below
+    const w = this.compact ? this.focusWindow : null;
+    const shown = w ? this.markers.filter((m) => (isSegment(m) ? m.endSeconds > w.from && m.seconds < w.to : m.seconds >= w.from && m.seconds <= w.to)) : this.markers;
+    for (const marker of shown) {
       const chip = document.createElement("span");
       chip.className = "vp-chip";
       const go = document.createElement("button");
@@ -739,6 +842,7 @@ class PlayerBar {
     }
     const range = this.ranges.find((r) => time >= r.start && time < r.end);
     if (range) lines.push(range.clean ? "Muted by Twitch: plays saved clean audio" : "Muted by Twitch");
+    if (this.focus && time >= this.focus.start && time <= this.focus.end) lines.push("This clip");
     const clip = y < BAR_TRACK.top + BAR_TRACK.height ? this.clipAt(time) : null;
     if (clip) lines.push(`Clip: ${clip.title}`);
     this.tip.textContent = lines.join("\n");
@@ -783,7 +887,8 @@ class PlayerBar {
     const d = this.duration();
     const span = this.view.to - this.view.from;
     this.el.querySelector(".vp-zoom-label").textContent = !this.zoomed || !d ? "All" : span >= 3600 ? `${(span / 3600).toFixed(1)} h` : span >= 60 ? `${Math.round(span / 60)} min` : `${Math.round(span)} s`;
-    this.overview.hidden = !this.zoomed;
+    this.overview.hidden = !this.zoomed || this.compact;
+    if (this.compact) return;
     this.drawTimeline(now);
     if (this.zoomed) this.drawOverview(now);
   }
@@ -831,6 +936,21 @@ class PlayerBar {
     ctx.fillStyle = c.played;
     const playedTo = Math.min(width, Math.max(0, x(now)));
     ctx.fillRect(0, top + height - 4, playedTo, 4);
+
+    // The entry being reviewed
+    if (this.focus) {
+      const [a, b] = span(this.focus.start, this.focus.end);
+      if (b > 0 && a < width) {
+        ctx.save();
+        ctx.fillStyle = c.window;
+        ctx.globalAlpha = 0.22;
+        ctx.fillRect(a, top, Math.max(2, b - a), height);
+        ctx.globalAlpha = 1;
+        ctx.fillRect(Math.round(a) - 1, top - 3, 3, height + 6);
+        ctx.fillRect(Math.round(b) - 1, top - 3, 3, height + 6);
+        ctx.restore();
+      }
+    }
 
     // Muted parts (bottom two thirds of the track, so the played line stays visible), half see-through
     ctx.globalAlpha = 0.5;
