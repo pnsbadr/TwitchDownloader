@@ -242,7 +242,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/admin/users?search=` / `GET /api/admin/users/{id}?days=` / `PUT .../disabled` / `POST .../password-reset` | Users across teams |
 | `GET /api/admin/audit?teamId=&userId=&staffId=&before=&limit=` / `POST,DELETE /api/admin/support` | App log; view as support |
 | `GET /api/admin/staff` / `POST /api/admin/staff/invites` / `PUT /api/admin/staff/{id}/permissions` `{ permissions }` / `PUT .../disabled` / `POST .../password-reset` | Moderators (Owner only) |
-| `GET /api/vods/{id}/timeline` / `POST /api/vods/{id}/markers` `{ seconds, endSeconds?, label?, color? }` / `PUT /api/markers/{id}` (same body, whole marker) / `DELETE /api/markers/{id}` / `GET /api/markers?vodIds=1,2` | Player timeline: `{ clips: [{ id, title, kind, start, end }], markers: [{ id, vodId, seconds, endSeconds, label, color, createdBy, createdAtUtc, canDelete, canEdit }] }` (team's own); `/api/markers` lists markers of up to 200 VODs (library and VOD cards). Entries carry `startSeconds`/`endSeconds` for placing them (and `followsMarkers`). Add 201 (`AddEntries`; `liveEntry: { entryId, created }` when it made or moved the live markers entry, else null); change own (`AddEntries`) or anyone's (`EditAnyEntries`); delete own (`AddEntries`) or anyone's (`DeleteAnyEntries`), else 403 |
+| `GET /api/vods/{id}/timeline` / `POST /api/vods/{id}/markers` `{ seconds, endSeconds?, label?, color? }` / `PUT /api/markers/{id}` (same body, whole marker) / `DELETE /api/markers/{id}` / `GET /api/markers?vodIds=1,2` | Player timeline: `{ clips: [{ id, title, kind, start, end, referenceOnly, followsMarkers, canEdit }], markers: [{ id, vodId, seconds, endSeconds, label, color, createdBy, createdAtUtc, canDelete, canEdit }] }` (team's own); `/api/markers` lists markers of up to 200 VODs (library and VOD cards). Entries carry `startSeconds`/`endSeconds` for placing them (and `followsMarkers`). Add 201 (`AddEntries`; `liveEntry: { entryId, created }` when it made or moved the live markers entry, else null); change own (`AddEntries`) or anyone's (`EditAnyEntries`); delete own (`AddEntries`) or anyone's (`DeleteAnyEntries`), else 403 |
 | `POST /api/vods/download` | Phase 1 dev endpoint: synchronous, writes `<title>.mp4` straight into `downloads/`, not part of the library |
 
 `canDownload` in entry responses checks the generated file's expiry itself, since cleanup runs periodically.
@@ -320,6 +320,14 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   then Play plays only it (stops at its end, also after it was made longer), −10s/−1s/+1s/+10s move its **end**
   (presses within 0.6 s are one change), its edges can be dragged (only the selected one, against misclicks), × (placed 14 px past its end,
   away from the edge grip) or Del deletes it, and the row under the bar renames/recolors it. Clicking outside segments unselects; so do Esc and a click on the overview strip.
+  **Snapping** (badrfly, 2026-11-10; magnet button at the top of the tools bar, N; on by default, saved in `localStorage` key `clipLibrary.snap`):
+  a dragged edge sticks to any time within 8 px from `PlayerBar.snapPoints()` (markers, segment edges, library cards' start/end, the
+  reviewed clip, the playhead; dashed guide while stuck); dragging further passes it. **New kinds of timeline items must add their times
+  to `snapPoints()`.** **Reference cards on the timeline**: the start/end of reference-only VOD entries the member may edit (`canEdit` from
+  `/timeline`) can be dragged on the purple lane, and in Review the reviewed entry's edges anywhere on the track; it saves right away with
+  `PUT /trim` (one undo step; the review dialog follows, `onEntryTrimmed`; a live markers card then stops following). Stored entries keep
+  their trim bar. A segment changed (drag, nudge) so it reaches past a reference card it was on **stretches the card** to cover it
+  (`cardStretchesFor`; not live markers cards, which the server moves itself); undo reverts both in one step.
   **Automatic zoom never cuts off the selected segment** (badrfly): every zoom the app makes by itself goes through `PlayerBar.zoomTo`, which
   always shows the whole range, and while `autoView` is set (cleared by wheel, zoom tool, +/−/0, panning) `update()` widens the view
   when the segment grows past it or the playhead leaves it, instead of panning. Only the user's own zooming may go deeper than a segment.

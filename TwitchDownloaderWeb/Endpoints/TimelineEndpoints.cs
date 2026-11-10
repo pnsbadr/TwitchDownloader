@@ -5,7 +5,10 @@ using TwitchDownloaderWeb.Services.Accounts;
 
 namespace TwitchDownloaderWeb.Endpoints
 {
-    public sealed record TimelineClipDto(int Id, string Title, string Kind, double Start, double? End);
+    /// <param name="ReferenceOnly">Not stored: a range of the VOD (re-cutting it doesn't download anything unless it gets short).</param>
+    /// <param name="CanEdit">The player may move its start/end (PUT /trim): a VOD entry, still on Twitch, that this member may edit.</param>
+    public sealed record TimelineClipDto(int Id, string Title, string Kind, double Start, double? End,
+        bool ReferenceOnly = false, bool FollowsMarkers = false, bool CanEdit = false);
 
     public sealed record MarkerDto(int Id, long VodId, double Seconds, double? EndSeconds, string Label, string Color, int CreatedByUserId, string? CreatedBy,
         DateTime CreatedAtUtc, bool CanDelete)
@@ -50,14 +53,17 @@ namespace TwitchDownloaderWeb.Endpoints
             var clips = await db.Entries.AsNoTracking()
                 .Where(x => x.VodId == vodId)
                 .OrderBy(x => x.AddedAtUtc)
-                .Select(x => new { x.Id, x.Title, x.Kind, x.StartTime, x.EndTime })
+                .Select(x => new { x.Id, x.Title, x.Kind, x.StartTime, x.EndTime, x.Status, x.FollowsMarkers, x.AddedByUserId })
                 .ToListAsync(cancellationToken);
 
             var markers = await db.Markers.AsNoTracking().Where(x => x.VodId == vodId).ToListAsync(cancellationToken);
             var names = await UserNamesAsync(db, markers.Select(x => x.CreatedByUserId), cancellationToken);
 
             return Results.Ok(new TimelineDto(
-                clips.Select(x => new TimelineClipDto(x.Id, x.Title, x.Kind.ToString(), x.StartTime.TotalSeconds, x.EndTime?.TotalSeconds)).ToList(),
+                clips.Select(x => new TimelineClipDto(x.Id, x.Title, x.Kind.ToString(), x.StartTime.TotalSeconds, x.EndTime?.TotalSeconds,
+                    x.Status == EntryStatus.ReferenceOnly, x.FollowsMarkers,
+                    x.Kind == EntryKind.Vod && x.Status != EntryStatus.VodUnavailable
+                        && team.CanOnOwnOrAny(x.AddedByUserId, TeamPermission.EditOwnEntries, TeamPermission.EditAnyEntries))).ToList(),
                 markers.OrderBy(x => x.Seconds).Select(x => ToDto(x, names, team)).ToList()));
         }
 

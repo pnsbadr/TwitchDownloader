@@ -15,6 +15,10 @@
 // play only plays it, ±10s/±1s change its end, its edges can be dragged, × or Del deletes it, and its title and color can be
 // changed. The cut tool splits a segment where it's clicked; the zoom tool zooms in on a click and out on a right click.
 // Undo/redo (last 10 changes) is per browser tab: it only replays this user's own changes.
+// Snapping (magnet at the top of the tools bar, on by default): a dragged edge sticks to any other time on the timeline within
+// a few pixels (markers, segment edges, library cards' start/end, the reviewed clip, the playhead); keep dragging to pass it.
+// New kinds of timeline items must add their times in snapPoints(). Reference cards' start/end (the purple lane, and the
+// reviewed entry's edges) can be dragged too, and a segment dragged past a reference card's range stretches the card.
 //
 // Keys: see keybinds.js (the list of every shortcut; add new ones there first).
 //
@@ -32,6 +36,9 @@ const MARKER_COLORS = {
 const MARKER_HIT_PX = 6;
 const EDGE_HIT_PX = 6;
 const MIN_SEGMENT_SECONDS = 0.5;
+const MIN_CLIP_SECONDS = 1;
+const SNAP_PX = 8;
+const SNAP_KEY = "clipLibrary.snap";
 const HISTORY_LIMIT = 10;
 
 // Undo/redo per VOD, kept in this tab only: each user undoes their own changes, nothing is shared with the team
@@ -41,6 +48,15 @@ const markerHistory = new Map(); // VOD ID -> { undo: [steps], redo: [steps] }
 const markerRefs = new Map();
 
 // True while the user is typing in a field (so the player doesn't take the focus away)
+// Snapping is a per-browser choice, on unless turned off
+function loadSnap() {
+  try {
+    return localStorage.getItem(SNAP_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
 function isTyping(element) {
   if (!element) return false;
   if (element.isContentEditable || element.tagName === "TEXTAREA") return true;
@@ -203,6 +219,8 @@ class PlayerBar {
     // zooms or pans. An automatic view never cuts off the selected segment; only the user's own zooming may go deeper.
     this.autoView = false;
     this.pan = null; // { x, from, to } while dragging the view with the hand tool
+    this.snap = loadSnap(); // dragged edges stick to other times on the timeline
+    this.snapAt = null; // the time a dragged edge is stuck to right now (drawn as a guide)
     this.manualPan = false; // the user scrolled the view away from the playhead (hand, Shift+wheel): don't follow it
     this.listDuration = 0; // playlist length (for live VODs, where video.duration is Infinity)
     this.dirty = true;
@@ -343,11 +361,7 @@ class PlayerBar {
     this.canvas.addEventListener("pointercancel", () => {
       this.scrubbing = false;
       this.pan = null;
-      if (this.drag) {
-        const drag = this.drag;
-        this.drag = null;
-        this.commitEdit(drag.ref, drag.before);
-      }
+      if (this.drag) this.endDrag();
     });
     this.canvas.addEventListener("pointerleave", () => {
       this.hoverX = null;
@@ -384,6 +398,9 @@ class PlayerBar {
     this.tools.setAttribute("aria-label", "Timeline tools");
     this.tools.setAttribute("aria-orientation", "vertical");
     this.tools.innerHTML = `
+      <button type="button" class="vp-tool vp-tool-snap" data-act="snap" title="Snapping (${keybindLabel("toggleSnap")}): dragged edges stick to markers, segments, cards and the playhead; keep dragging to pass" aria-label="Snapping">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 3h4v7a2 2 0 0 0 4 0V3h4v7a6 6 0 0 1-12 0z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M4 6.5h4M12 6.5h4" stroke="currentColor" stroke-width="1.8"/></svg></button>
+      <span class="vp-tools-gap"></span>
       <button type="button" class="vp-tool" data-tool="pointer" title="Pointer (${keybindLabel("toolPointer")}): click to seek, click a segment to select it" aria-label="Pointer">
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 2.5v14l3.6-3.4 2.6 5.4 2.2-1-2.6-5.3H16z" fill="currentColor"/></svg></button>
       <button type="button" class="vp-tool vp-tool-cut" data-tool="cut" title="Cut (${keybindLabel("toolCut")}): click a segment to split it in two" aria-label="Cut">
@@ -401,6 +418,7 @@ class PlayerBar {
       const button = event.target.closest("button");
       if (!button) return;
       if (button.dataset.tool) this.setTool(button.dataset.tool);
+      else if (button.dataset.act === "snap") this.toggleSnap();
       else if (button.dataset.act === "undo") this.undo();
       else if (button.dataset.act === "redo") this.redo();
       this.wrap.focus({ preventScroll: true });
@@ -466,6 +484,7 @@ class PlayerBar {
     this.compact = Boolean(this.options.compact);
     this.focus = this.options.focus ?? null;
     this.focusWindow = this.options.focusWindow ?? null;
+    this.focusEntryId = this.options.focusEntryId ?? null; // the entry being reviewed (its edges are this.focus)
     this.pendingZoom = this.options.zoom ?? null;
     this.selectedRef = null;
     this.drag = null;
@@ -969,6 +988,15 @@ class PlayerBar {
     this.dirty = true;
   }
 
+  toggleSnap() {
+    this.snap = !this.snap;
+    try {
+      localStorage.setItem(SNAP_KEY, this.snap ? "on" : "off");
+    } catch {}
+    this.renderTools();
+    this.flash(this.snap ? "Snapping on" : "Snapping off");
+  }
+
   toolCursor() {
     return { zoom: "zoom-in", cut: "crosshair", hand: this.pan ? "grabbing" : "grab" }[this.tool] ?? "";
   }
@@ -979,6 +1007,9 @@ class PlayerBar {
       button.classList.toggle("vp-tool-active", active);
       button.setAttribute("aria-pressed", String(active));
     }
+    const snap = this.tools.querySelector("[data-act=snap]");
+    snap.classList.toggle("vp-tool-active", this.snap);
+    snap.setAttribute("aria-pressed", String(this.snap));
     const history = this.history();
     this.tools.querySelector("[data-act=undo]").disabled = !history?.undo.length;
     this.tools.querySelector("[data-act=redo]").disabled = !history?.redo.length;
@@ -1019,10 +1050,11 @@ class PlayerBar {
   }
 
   dragEdgeTo(seconds) {
+    if (this.drag.clip) return this.dragClipEdgeTo(seconds);
     const segment = this.markers.find((m) => m.id === this.drag.ref.id);
     if (!segment) return;
     const d = this.duration() || Infinity;
-    const t = roundHundredths(Math.min(d, Math.max(0, seconds)));
+    const t = roundHundredths(Math.min(d, Math.max(0, this.snapTime(seconds, { markerId: segment.id }))));
     if (this.drag.edge === "start") segment.seconds = Math.min(t, roundHundredths(segment.endSeconds - MIN_SEGMENT_SECONDS));
     else segment.endSeconds = Math.max(t, roundHundredths(segment.seconds + MIN_SEGMENT_SECONDS));
     this.afterLocalChange();
@@ -1045,10 +1077,20 @@ class PlayerBar {
     if (!segment) return;
     const after = markerData(segment);
     if (sameMarkerData(before, after)) return;
+    // A segment that now reaches past a reference card it was on stretches the card to cover it (one undo step with it)
+    const trims = this.cardStretchesFor(before, after);
     this.run(async () => {
       try {
         await this.updateMarker(ref, after);
-        this.record({ kind: "update", ref, before, after });
+        for (const trim of trims) {
+          try {
+            await this.trimClip(trim.clipId, trim.after);
+          } catch (error) {
+            trims.splice(trims.indexOf(trim), 1);
+            this.flash(`Couldn't stretch the card: ${error.message}`);
+          }
+        }
+        this.record({ kind: "update", ref, before, after, trims });
       } catch (error) {
         const current = this.markers.find((m) => m.id === ref.id);
         if (current) Object.assign(current, before);
@@ -1102,6 +1144,136 @@ class PlayerBar {
     }
   }
 
+  // ---- snapping ----
+
+  // Every time on the timeline a dragged edge can stick to. Add new kinds of timeline items here.
+  snapPoints(skip = {}) {
+    const points = [];
+    for (const marker of this.markers) {
+      if (marker.id === skip.markerId) continue;
+      points.push(marker.seconds);
+      if (isSegment(marker)) points.push(marker.endSeconds);
+    }
+    for (const clip of this.clips) {
+      if (clip.id === skip.clipId) continue;
+      points.push(clip.start);
+      if (clip.end != null) points.push(clip.end);
+    }
+    if (this.focus && skip.clipId !== this.focusEntryId) points.push(this.focus.start, this.focus.end);
+    points.push(this.now());
+    return points;
+  }
+
+  // The time a dragged edge lands on: the nearest snap point within a few pixels, else where the pointer is
+  snapTime(seconds, skip) {
+    this.snapAt = null;
+    if (!this.snap) return seconds;
+    const pxPerSecond = (this.canvas.clientWidth || 1) / (this.view.to - this.view.from || 1);
+    let best = null;
+    for (const point of this.snapPoints(skip)) {
+      const distance = Math.abs(point - seconds) * pxPerSecond;
+      if (distance <= SNAP_PX && (!best || distance < best.distance)) best = { point, distance };
+    }
+    if (!best) return seconds;
+    this.snapAt = best.point;
+    return best.point;
+  }
+
+  // ---- library cards (reference entries) on the timeline ----
+
+  clipEnd(clip) {
+    return clip.end ?? this.duration();
+  }
+
+  // Reference VOD cards this member may re-cut by dragging (stored ones re-download, so they keep the review dialog)
+  draggableClip(clip) {
+    return clip.canEdit && clip.referenceOnly && clip.kind === "Vod";
+  }
+
+  // { clip, edge } when x is on an edge of a draggable card: on the purple lane, or anywhere on the track for the reviewed one
+  clipEdgeAt(x, y) {
+    if (this.tool !== "pointer" || y > BAR_TRACK.top + BAR_TRACK.height + 3) return null;
+    const width = this.canvas.clientWidth;
+    let best = null;
+    for (const clip of this.clips) {
+      if (!this.draggableClip(clip)) continue;
+      if (y >= BAR_TRACK.top - 1 && clip.id !== this.focusEntryId) continue;
+      for (const [edge, t] of [["start", clip.start], ["end", this.clipEnd(clip)]]) {
+        const distance = Math.abs(this.timeToX(t, width) - x);
+        if (distance <= EDGE_HIT_PX && (!best || distance < best.distance)) best = { clip, edge, distance };
+      }
+    }
+    return best;
+  }
+
+  dragClipEdgeTo(seconds) {
+    const clip = this.clips.find((c) => c.id === this.drag.clip.id);
+    if (!clip) return;
+    const d = this.duration() || Infinity;
+    const t = roundHundredths(Math.min(d, Math.max(0, this.snapTime(seconds, { clipId: clip.id }))));
+    if (this.drag.edge === "start") clip.start = Math.min(t, roundHundredths(this.clipEnd(clip) - MIN_CLIP_SECONDS));
+    else clip.end = Math.max(t, roundHundredths(clip.start + MIN_CLIP_SECONDS));
+    if (clip.id === this.focusEntryId && this.focus) this.focus = { ...this.focus, start: clip.start, end: this.clipEnd(clip) };
+    this.dirty = true;
+  }
+
+  endDrag() {
+    const drag = this.drag;
+    this.drag = null;
+    this.snapAt = null;
+    this.dirty = true;
+    if (!drag.clip) return this.commitEdit(drag.ref, drag.before);
+    const clip = this.clips.find((c) => c.id === drag.clip.id);
+    if (!clip) return;
+    const after = { start: clip.start, end: clip.end };
+    if (after.start === drag.before.start && after.end === drag.before.end) return;
+    this.run(async () => {
+      try {
+        await this.trimClip(clip.id, after);
+        this.record({ kind: "trim", clipId: clip.id, before: drag.before, after });
+      } catch (error) {
+        Object.assign(clip, drag.before);
+        if (clip.id === this.focusEntryId && this.focus) this.focus = { ...this.focus, start: clip.start, end: this.clipEnd(clip) };
+        this.dirty = true;
+        this.flash(error.message);
+      }
+    });
+  }
+
+  // Reference cards the segment was on (before the change) that no longer cover all of it, and their stretched range
+  cardStretchesFor(before, after) {
+    if (before.endSeconds == null || after.endSeconds == null) return [];
+    const trims = [];
+    for (const clip of this.clips) {
+      if (!this.draggableClip(clip) || clip.followsMarkers) continue; // a live markers card already follows its markers
+      const end = clip.end ?? Infinity;
+      const wasOn = before.seconds < end && before.endSeconds > clip.start;
+      if (!wasOn || (after.seconds >= clip.start && after.endSeconds <= end)) continue;
+      trims.push({
+        clipId: clip.id,
+        before: { start: clip.start, end: clip.end },
+        after: { start: Math.min(clip.start, after.seconds), end: clip.end == null ? null : Math.max(clip.end, after.endSeconds) },
+      });
+    }
+    return trims;
+  }
+
+  // Re-cuts a library entry (PUT /trim, as the review dialog's Save new cut does)
+  async trimClip(id, range) {
+    const entry = await api("PUT", `/api/entries/${id}/trim`, {
+      startTime: formatTrimValue(range.start),
+      endTime: range.end == null ? "" : formatTrimValue(range.end),
+    });
+    this.clips = this.clips.map((c) => (c.id === id
+      ? { ...c, start: range.start, end: range.end, referenceOnly: Boolean(entry.isReferenceOnly), followsMarkers: false }
+      : c));
+    if (id === this.focusEntryId && this.focus) this.focus = { ...this.focus, start: range.start, end: range.end ?? this.duration() };
+    this.dirty = true;
+    this.options.onEntryTrimmed?.(entry);
+    this.notifyChanged({ entries: true });
+    return entry;
+  }
+
   history() {
     if (!this.vodId) return null;
     let history = markerHistory.get(this.vodId);
@@ -1149,7 +1321,11 @@ class PlayerBar {
     switch (step.kind) {
       case "add": return reverse ? this.removeMarker(step.ref) : this.createMarker(step.ref, step.after);
       case "delete": return reverse ? this.createMarker(step.ref, step.before) : this.removeMarker(step.ref);
-      case "update": return this.updateMarker(step.ref, reverse ? step.before : step.after);
+      case "update":
+        await this.updateMarker(step.ref, reverse ? step.before : step.after);
+        for (const trim of step.trims ?? []) await this.trimClip(trim.clipId, reverse ? trim.before : trim.after);
+        return;
+      case "trim": return this.trimClip(step.clipId, reverse ? step.before : step.after);
       case "split":
         if (reverse) {
           await this.removeMarker(step.extraRef);
@@ -1281,6 +1457,7 @@ class PlayerBar {
       toolCut: () => this.setTool("cut"),
       toolZoom: () => this.setTool("zoom"),
       toolHand: () => this.setTool("hand"),
+      toggleSnap: () => this.toggleSnap(),
       undo: () => this.undo(),
       redo: () => this.redo(),
       deleteSelected: () => this.deleteSelected(),
@@ -1384,6 +1561,14 @@ class PlayerBar {
       this.canvas.setPointerCapture(event.pointerId);
       return;
     }
+    // A reference card's start/end (purple lane, or the reviewed entry's edges)
+    const clipEdge = this.clipEdgeAt(x, y);
+    if (clipEdge) {
+      this.flushPendingEdit();
+      this.drag = { clip: { id: clipEdge.clip.id }, edge: clipEdge.edge, before: { start: clipEdge.clip.start, end: clipEdge.clip.end } };
+      this.canvas.setPointerCapture(event.pointerId);
+      return;
+    }
 
     const marker = this.markerAt(x);
     if (marker) {
@@ -1427,7 +1612,7 @@ class PlayerBar {
     } else if (this.scrubbing) {
       this.seek(this.xToTime(x));
     }
-    this.canvas.style.cursor = this.drag || (this.tool === "pointer" && this.edgeAt(x, y)) ? "ew-resize" : this.toolCursor();
+    this.canvas.style.cursor = this.drag || (this.tool === "pointer" && (this.edgeAt(x, y) || this.clipEdgeAt(x, y))) ? "ew-resize" : this.toolCursor();
     this.renderTip(x, y);
     this.dirty = true;
   }
@@ -1440,10 +1625,8 @@ class PlayerBar {
       return;
     }
     if (this.drag) {
-      const drag = this.drag;
-      this.drag = null;
       this.canvas.releasePointerCapture?.(event.pointerId);
-      this.commitEdit(drag.ref, drag.before);
+      this.endDrag();
       return;
     }
     if (!this.scrubbing) return;
@@ -1494,6 +1677,8 @@ class PlayerBar {
       }
     }
     if (this.tool === "cut" && this.segmentAt(time, y)) lines.push("Click to cut here");
+    const clipEdge = this.drag ? null : this.clipEdgeAt(x, y);
+    if (clipEdge) lines.push(`Drag to move the card's ${clipEdge.edge}: ${clipEdge.clip.title}`);
     if (this.tool === "hand") lines.push(this.zoomed ? "Drag to scroll the timeline" : "Zoom in to scroll the timeline");
     const range = this.ranges.find((r) => time >= r.start && time < r.end);
     if (range) lines.push(range.clean ? "Muted by Twitch: plays saved clean audio" : "Muted by Twitch");
@@ -1739,6 +1924,20 @@ class PlayerBar {
       ctx.beginPath();
       ctx.arc(px, top + height / 2, 5, 0, Math.PI * 2);
       ctx.fill();
+    }
+
+    // Where a dragged edge is stuck (snapping)
+    if (this.drag && this.snapAt != null) {
+      const sx = Math.round(x(this.snapAt)) + 0.5;
+      ctx.save();
+      ctx.strokeStyle = c.text;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 2]);
+      ctx.beginPath();
+      ctx.moveTo(sx, 0);
+      ctx.lineTo(sx, top + height + 4);
+      ctx.stroke();
+      ctx.restore();
     }
   }
 

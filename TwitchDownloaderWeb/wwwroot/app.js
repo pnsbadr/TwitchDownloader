@@ -921,6 +921,16 @@ function openReview(entry) {
   clipPlayer.bar?.configure({
     compact: !reference,
     focus: { start, end },
+    focusEntryId: entry.id,
+    // The entry's edges were dragged on the timeline (or a segment stretched it): saved already, so the dialog follows
+    onEntryTrimmed: (updated) => {
+      if (!review || review.entry.id !== updated.id) return;
+      review.entry = { ...review.entry, ...updated };
+      review.vodLength = updated.vodLengthSeconds ?? review.vodLength;
+      Object.assign(review, entryRange(review.entry));
+      fitReviewWindow(false);
+      renderReview();
+    },
     focusWindow: { from: review.from, to: review.to },
     zoom: reference ? { from: review.from, to: review.to } : null,
     expandZoom: () => review && { from: review.from, to: review.to },
@@ -1669,7 +1679,7 @@ async function loadMarkersFor(vodIds) {
 // reference entry around them, so the library and the players' clip lanes are reloaded too.
 function markersChanged(vodId, change = {}) {
   loadMarkersFor([...document.querySelectorAll(".seg-slot")].map((slot) => slot.dataset.vod));
-  if (!change.liveEntry && !change.deleted) return;
+  if (!change.liveEntry && !change.deleted && !change.entries) return;
   loadEntries();
   reloadPlayerTimelines();
   if (change.liveEntry?.created)

@@ -33,6 +33,7 @@ const KEYBINDS = [
   { id: "toolPointer", scope: "player", keys: ["V"], description: "Pointer tool: click to seek, click a segment to select it" },
   { id: "toolCut", scope: "player", keys: ["C"], description: "Cut tool: click a segment to split it in two" },
   { id: "toolZoom", scope: "player", keys: ["Z"], description: "Zoom tool: click the timeline to zoom in, right click to zoom out" },
+  { id: "toggleSnap", scope: "player", keys: ["N"], description: "Snapping on/off: dragged edges stick to markers, segments, cards and the playhead" },
   { id: "toolHand", scope: "player", keys: ["H"], description: "Hand tool: drag the zoomed timeline to scroll it (only moves the view)" },
   { id: "undo", scope: "player", keys: ["Ctrl+Z"], description: "Undo your last marker/segment change (up to 10)" },
   { id: "redo", scope: "player", keys: ["Ctrl+Shift+Z", "Ctrl+Y"], description: "Redo" },
@@ -44,6 +45,7 @@ const KEYBINDS = [
   { id: "clickSeek", scope: "player-mouse", keys: ["Click"], description: "Seek (pointer tool); select a segment; cut (cut tool); zoom in (zoom tool)" },
   { id: "rightClickZoomOut", scope: "player-mouse", keys: ["Right click"], description: "Zoom out (zoom tool)" },
   { id: "dragEdge", scope: "player-mouse", keys: ["Drag"], description: "Drag a selected segment's edge to change its start or end" },
+  { id: "dragCardEdge", scope: "player-mouse", keys: ["Drag card edge"], description: "Drag a reference card's start or end (purple lane, or the reviewed clip's edges)" },
   { id: "handDrag", scope: "player-mouse", keys: ["Hand drag"], description: "Scroll the zoomed timeline (hand tool)" },
 
   { id: "trimNudge", scope: "trim", keys: ["ArrowLeft", "ArrowRight"], description: "Move the focused handle 0.1 s" },
