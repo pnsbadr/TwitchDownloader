@@ -40,6 +40,13 @@ const markerHistory = new Map(); // VOD ID -> { undo: [steps], redo: [steps] }
 // step that points at it must follow
 const markerRefs = new Map();
 
+// True while the user is typing in a field (so the player doesn't take the focus away)
+function isTyping(element) {
+  if (!element) return false;
+  if (element.isContentEditable || element.tagName === "TEXTAREA") return true;
+  return element.tagName === "INPUT" && !["button", "checkbox", "radio", "range", "color", "submit", "reset"].includes(element.type);
+}
+
 function markerRef(id) {
   let ref = markerRefs.get(id);
   if (!ref) {
@@ -471,10 +478,15 @@ class PlayerBar {
     this.el.querySelector(".vp-add-marker").hidden = !canAdd;
     this.el.querySelector(".vp-add-segment").hidden = !canAdd;
     this.tools.querySelector(".vp-tool-cut").hidden = !canAdd;
-    if (!canAdd && this.tool === "cut") this.tool = "pointer";
+    // Every opening starts with the pointer tool (badrfly)
+    this.tool = "pointer";
+    this.pan = null;
+    this.canvas.style.cursor = "";
     this.applyLayout();
     this.renderTools();
     this.renderSelection();
+    // Keys work right away after Watch / Review, without clicking the player first (unless the user is typing somewhere)
+    if (!isTyping(document.activeElement)) this.wrap.focus({ preventScroll: true });
 
     backend.onDetails = (details) => this.readPlaylist(details);
     if (backend.details) this.readPlaylist(backend.details);

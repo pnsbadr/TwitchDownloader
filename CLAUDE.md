@@ -314,7 +314,8 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   mode): **Pointer** (V), **Cut** (C: click a segment to split it at that point into "Name 1"/"Name 2", or "Segment A1"/"A2" when the last
   word is one character; each part ≥ 0.5 s), **Zoom** (Z: click zooms in, right click out),
   **Hand** (H: drag the zoomed timeline to scroll it; only the view moves, no seek/select; after a hand or Shift+wheel scroll the view stops
-  following the playhead until it comes back into view or the user seeks), **Undo/Redo**. With the pointer, clicking a
+  following the playhead until it comes back into view or the user seeks), **Undo/Redo**. Every opening of Watch/Review starts with the
+  pointer tool, and the player takes the keyboard focus when it attaches (unless the user is typing in a field), so keys work at once. With the pointer, clicking a
   segment **selects** it and zooms to it (20 % margin, ≥ 2 s; selecting another one while playing jumps to its start and plays it to its end);
   then Play plays only it (stops at its end, also after it was made longer), −10s/−1s/+1s/+10s move its **end**
   (presses within 0.6 s are one change), its edges can be dragged (only the selected one, against misclicks), × (placed 14 px past its end,
