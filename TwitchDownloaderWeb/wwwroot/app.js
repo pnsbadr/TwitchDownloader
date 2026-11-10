@@ -1627,7 +1627,7 @@ const vodMarkers = new Map(); // VOD ID (string) -> the team's markers and segme
 const MARKERS_PER_REQUEST = 200;
 
 // A placeholder filled with the VOD's markers/segments between from and to (VOD seconds) once they're loaded:
-// a strip for a whole VOD (its card), chips for a library entry (a short clip doesn't need a strip)
+// a strip for a VOD card or a reference-only entry, chips for a stored entry or a Twitch clip (too short for a strip)
 function segmentSlot(vodId, from, to, kind = "strip") {
   if (!vodId || !(to > from)) return null;
   const slot = el("div", { class: "seg-slot", "data-vod": String(vodId), "data-from": String(from), "data-to": String(to), "data-kind": kind });
@@ -1692,7 +1692,10 @@ function renderEntry(entry) {
       titleNode(entry),
       el("div", { class: "entry-meta" }, dates),
       el("div", { class: "entry-meta" }, details),
-      segmentSlot(entry.vodId, entry.startSeconds ?? 0, entry.endSeconds ?? entry.vodLengthSeconds, "chips"),
+      segmentSlot(entry.vodId, entry.startSeconds ?? 0, entry.endSeconds ?? entry.vodLengthSeconds,
+        // Reference-only VOD entries span a long part of the VOD, so they get the strip like VOD cards;
+        // stored clips and Twitch clips are short, so chips (badrfly, 2026-11-10).
+        entry.isReferenceOnly && entry.kind !== "Clip" ? "strip" : "chips"),
       el("div", { class: "entry-status" }, statusBadge(entry),
         entry.audioRestoredSeconds > 0
           ? el("span", { class: "badge ok", title: "Muted parts were replaced with saved clean audio" }, `Audio restored · ${formatDuration(entry.audioRestoredSeconds)}`)
