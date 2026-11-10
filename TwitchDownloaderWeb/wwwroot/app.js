@@ -261,6 +261,12 @@ function formatTrimValue(seconds) {
   return `${text}.${String(fraction).padStart(2, "0").replace(/0$/, "")}`;
 }
 
+// Running clock: always two decimals, so the text keeps its width while playing (no jumping controls)
+function formatClock(seconds) {
+  const hundredths = Math.max(0, Math.floor(seconds * 100));
+  return `${formatDuration(Math.floor(hundredths / 100))}.${String(hundredths % 100).padStart(2, "0")}`;
+}
+
 // The embed's "time" option: "1h2m3s"
 function embedTime(seconds) {
   const s = Math.max(0, Math.floor(seconds));
@@ -710,7 +716,7 @@ class VodPlayer {
   tick() {
     const position = this.position();
     if (position == null) return;
-    $(this.timeId).textContent = formatTrimValue(position);
+    $(this.timeId).textContent = formatClock(position);
     this.onTick?.(position);
     if (this.stopAt != null && position >= this.stopAt) {
       this.stopAt = null;
