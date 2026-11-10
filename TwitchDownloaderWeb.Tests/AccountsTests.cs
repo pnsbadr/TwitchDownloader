@@ -2,9 +2,11 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using TwitchDownloaderWeb.Data;
+using TwitchDownloaderWeb.Services;
 using TwitchDownloaderWeb.Services.Accounts;
 
 namespace TwitchDownloaderWeb.Tests
@@ -19,6 +21,9 @@ namespace TwitchDownloaderWeb.Tests
         private readonly WebApplicationFactory<Program> _factory;
         private readonly int _mainTeamEntryId;
 
+        /// <summary>Twitch's VOD details as the app sees them; VODs not in here don't exist.</summary>
+        private readonly FakeVodDetails _vods = new();
+
         public AccountsTests()
         {
             Directory.CreateDirectory(_dir);
@@ -28,6 +33,7 @@ namespace TwitchDownloaderWeb.Tests
                 builder.UseSetting("Downloads:OutputFolder", Path.Combine(_dir, "downloads"));
                 builder.UseSetting("Auth:LoginAttemptsPerMinute", "100000");
                 builder.UseSetting("AudioRescue:Enabled", "false");
+                builder.ConfigureTestServices(services => services.AddSingleton<IVodDetailsSource>(_vods));
             });
 
             // Starts the app (runs the migrations), then adds the staff Owner and an old entry in the migrated "Main team"
@@ -42,6 +48,13 @@ namespace TwitchDownloaderWeb.Tests
             db.Entries.Add(entry);
             db.SaveChanges();
             _mainTeamEntryId = entry.Id;
+        }
+
+        private sealed class FakeVodDetails : IVodDetailsSource
+        {
+            public readonly System.Collections.Concurrent.ConcurrentDictionary<long, VodDetails> Vods = new();
+
+            public Task<VodDetails?> GetVodAsync(long vodId) => Task.FromResult(Vods.GetValueOrDefault(vodId));
         }
 
         public void Dispose()

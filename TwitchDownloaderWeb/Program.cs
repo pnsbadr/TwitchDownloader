@@ -20,6 +20,8 @@ Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
 builder.Services.AddDbContext<LibraryDbContext>(options => options.UseSqlite($"Data Source={databasePath}"));
 
 builder.Services.AddSingleton<VodInfoService>();
+builder.Services.AddSingleton<IVodDetailsSource>(sp => sp.GetRequiredService<VodInfoService>());
+builder.Services.AddSingleton<LiveMarkerEntryService>();
 builder.Services.AddSingleton<ClipInfoService>();
 builder.Services.AddSingleton<IVodLookup>(sp => sp.GetRequiredService<VodInfoService>());
 builder.Services.AddSingleton<ChannelService>();

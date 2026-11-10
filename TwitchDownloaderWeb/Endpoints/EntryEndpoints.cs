@@ -89,6 +89,7 @@ namespace TwitchDownloaderWeb.Endpoints
         {
             StartSeconds = entry.StartTime.TotalSeconds,
             EndSeconds = entry.EndTime?.TotalSeconds,
+            FollowsMarkers = entry.FollowsMarkers,
         };
 
         /// <summary>The trim (or a clip's place in its VOD) in seconds, so the page can place the VOD's markers and segments on it.</summary>
@@ -97,6 +98,9 @@ namespace TwitchDownloaderWeb.Endpoints
         /// <summary>Null = end of the VOD.</summary>
         public double? EndSeconds { get; init; }
 
+        /// <summary>Made from markers on a live stream; its range follows the VOD's markers (see <see cref="LiveMarkerEntryService"/>).</summary>
+        public bool FollowsMarkers { get; init; }
+
         /// <summary>The cleanup service deletes expired files periodically, so check the expiry itself rather than the status.</summary>
         public static bool HasUnexpiredGeneratedFile(LibraryEntry entry) =>
             entry.Status == EntryStatus.ReferenceOnly
@@ -104,8 +108,9 @@ namespace TwitchDownloaderWeb.Endpoints
             && entry.GeneratedExpiresAtUtc > DateTime.UtcNow;
     }
 
+    /// <param name="IsLive">Still streaming: LengthSeconds is only what has been streamed so far.</param>
     public sealed record VodInfoDto(long VodId, string Title, string? ChannelName, int LengthSeconds, string Length, DateTime StreamDateUtc,
-        string? ThumbnailUrl, string[] Qualities, bool Restricted, int MaxStoredClipSeconds);
+        string? ThumbnailUrl, string[] Qualities, bool Restricted, int MaxStoredClipSeconds, bool IsLive);
 
     /// <summary>How much of a clip is muted, from its VOD's playlist. Only known when the VOD has an audio rescue.</summary>
     public sealed record ClipAudioDto(double MutedSeconds, double RestorableSeconds);
@@ -152,7 +157,7 @@ namespace TwitchDownloaderWeb.Endpoints
             return Results.Ok(new VodInfoDto(vodId, details.Title, details.ChannelName, details.LengthSeconds,
                 TrimTime.Format(TimeSpan.FromSeconds(details.LengthSeconds)), details.StreamDateUtc, details.ThumbnailUrl,
                 qualities is null ? [] : VodInfoService.GetVideoQualityNames(qualities), qualities is null,
-                settings.Value.MaxStoredClipSeconds));
+                settings.Value.MaxStoredClipSeconds, details.IsLive));
         }
 
         private static async Task<IResult> GetClipInfo(string? clip, LibraryDbContext db, ClipInfoService clipInfo, VodInfoService vodInfo,
@@ -491,7 +496,7 @@ namespace TwitchDownloaderWeb.Endpoints
         /// applied again to the new length, so a stored clip is downloaded again (or becomes reference-only if it got too long).
         /// </summary>
         private static async Task<IResult> RetrimEntry(int id, RetrimEntryRequest request, TeamContext team, LibraryDbContext db, DownloadQueue queue,
-            LibraryStorage storage, IOptions<DownloadSettings> settings, CancellationToken cancellationToken)
+            LibraryStorage storage, IVodDetailsSource vods, IOptions<DownloadSettings> settings, ILoggerFactory loggerFactory, CancellationToken cancellationToken)
         {
             if (!TrimTime.TryParse(request.StartTime, out var parsedStart))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["startTime"] = ["Use h:mm:ss, m:ss or seconds."] });
@@ -514,10 +519,26 @@ namespace TwitchDownloaderWeb.Endpoints
 
             var startTime = parsedStart ?? TimeSpan.Zero;
             if (VodInfoService.ValidateTrim(startTime, endTime, entry.VodLengthSeconds) is { } trimErrors)
-                return Results.ValidationProblem(trimErrors);
+            {
+                // A VOD that was live when the entry was made has grown since: check its length now
+                var latest = await LatestVodLengthAsync(entry.VodId, vods, loggerFactory);
+                if (latest is not { } length || length <= entry.VodLengthSeconds)
+                    return Results.ValidationProblem(trimErrors);
+                entry.VodLengthSeconds = length;
+                if (VodInfoService.ValidateTrim(startTime, endTime, length) is { } stillWrong)
+                    return Results.ValidationProblem(stillWrong);
+            }
 
             if (startTime == entry.StartTime && endTime == entry.EndTime)
+            {
+                if (entry.FollowsMarkers)
+                {
+                    // Saving the same cut by hand still means "keep this cut"
+                    entry.FollowsMarkers = false;
+                    await db.SaveChangesAsync(cancellationToken);
+                }
                 return Results.Ok(EntryDto.From(entry));
+            }
 
             // A running job would keep writing the old cut to the same file. Stop it and wait until it has cleaned up.
             if (queue.IsRunning(id))
@@ -545,6 +566,7 @@ namespace TwitchDownloaderWeb.Endpoints
             entry.StartTime = startTime;
             entry.EndTime = endTime;
             entry.ClipLengthSeconds = clipLength.TotalSeconds;
+            entry.FollowsMarkers = false; // a cut picked by hand stays put
             entry.Status = isStored ? EntryStatus.Queued : EntryStatus.ReferenceOnly;
             entry.Error = null;
             entry.FilePath = null;
@@ -564,6 +586,19 @@ namespace TwitchDownloaderWeb.Endpoints
                 queue.Enqueue(id, DownloadJobKind.Store);
 
             return Results.Ok(EntryDto.From(entry));
+        }
+
+        private static async Task<int?> LatestVodLengthAsync(long vodId, IVodDetailsSource vods, ILoggerFactory loggerFactory)
+        {
+            try
+            {
+                return (await vods.GetVodAsync(vodId))?.LengthSeconds;
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
+            {
+                loggerFactory.CreateLogger("TwitchDownloaderWeb.Entries").LogWarning("Couldn't look up VOD {VodId}: {Message}", vodId, ex.Message);
+                return null;
+            }
         }
 
         private static async Task<IResult> DeleteEntry(int id, TeamContext team, LibraryDbContext db, DownloadQueue queue, LibraryStorage storage, ShortformService shortform,

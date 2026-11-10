@@ -644,7 +644,7 @@ class PlayerBar {
       this.renderMarkers();
       this.dirty = true;
       this.wrap.focus({ preventScroll: true });
-      this.notifyChanged();
+      this.notifyChanged({ liveEntry: marker.liveEntry });
     } catch (error) {
       message.textContent = error.message;
     }
@@ -659,16 +659,16 @@ class PlayerBar {
       this.markers = this.markers.filter((x) => x.id !== marker.id);
       this.renderMarkers();
       this.dirty = true;
-      this.notifyChanged();
+      this.notifyChanged({ deleted: true });
     } catch (error) {
       alert(error.message);
     }
   }
 
   // The library, VOD cards and the review's trim bar show markers too
-  notifyChanged() {
+  notifyChanged(change = {}) {
     this.onMarkersChanged?.();
-    if (typeof markersChanged === "function") markersChanged(this.vodId);
+    if (typeof markersChanged === "function") markersChanged(this.vodId, change);
   }
 
   renderMarkers() {
