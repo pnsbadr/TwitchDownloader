@@ -787,12 +787,11 @@ $("watch-preview").addEventListener("click", () => {
 
 // ---------- clip review (library entries) ----------
 //
-// Plays an entry's clip from Twitch with a trim bar around it. The bar shows the clip plus some VOD on each side so
-// the cut can be widened as well as narrowed; handles drag, ±1s/±0.1s buttons nudge, and Save re-cuts the entry on
-// the server (PUT /trim), which downloads it again.
-// Stored clips (short) use that trim bar, with the team's markers and segments on it; the player's VOD timeline stays
-// hidden until "Full VOD timeline" (then zoomed in on the clip). Reference entries (long) skip the trim bar and use the
-// VOD timeline instead, starting zoomed in on the entry, which is highlighted there (badrfly, 2026-11-10).
+// Plays an entry's clip. With the app player the clip is edited on the player's VOD timeline (badrfly, 2026-11-11): it opens
+// zoomed in on the entry, which is selected there like a segment (selection row: start/end, title; ±1s/I/O; drag its edges),
+// and changes save by themselves (PUT /trim; a stored clip a few seconds after the last change, or on close, since it downloads
+// again). With the Twitch embed (no timeline of ours) the old controls below the player do it instead (#review-classic): a
+// trim bar with the clip plus some VOD on each side, ±1s/±0.1s nudges, Set to playhead, and Save new cut.
 
 const NUDGE_MIN_LENGTH = 0.1; // keep end after start
 
@@ -851,7 +850,7 @@ function renderTrimMarkers() {
 
 function renderReview() {
   if (!review) return;
-  clipPlayer.bar?.setFocus({ start: review.start, end: review.end }, { from: review.from, to: review.to });
+  clipPlayer.bar?.setFocus({ start: review.start, end: review.end });
   renderTrimMarkers();
   const startPct = barPercent(review.start);
   const endPct = barPercent(review.end);
@@ -906,11 +905,12 @@ function updatePlayhead(position) {
 clipPlayer.onTick = updatePlayhead;
 if (clipPlayer.bar) clipPlayer.bar.onMarkersChanged = renderTrimMarkers;
 
-// The reviewed entry was re-cut outside the dialog (dragged on the timeline, stretched by a segment, or moved by the server as a
-// live markers card): show the saved cut
+// The reviewed entry was saved outside the old controls (changed on the timeline, stretched by a segment, renamed, or moved by the
+// server as a live markers card): show the saved cut
 function syncReviewEntry(updated) {
   if (!review || review.entry.id !== updated.id) return;
   review.entry = { ...review.entry, ...updated };
+  $("clip-dialog-title").textContent = review.entry.title;
   review.vodLength = updated.vodLengthSeconds ?? review.vodLength;
   Object.assign(review, entryRange(review.entry));
   fitReviewWindow(false);
@@ -926,25 +926,35 @@ function openReview(entry) {
   $("trim-save").hidden = !canOnEntry(entry, "EditOwnEntries", "EditAnyEntries");
   $("trim-playhead").hidden = true;
   setMessage($("trim-message"), "");
-  // Long references: the VOD timeline (zoomed in on the entry) instead of the trim bar; short clips: the other way round
-  const reference = Boolean(entry.isReferenceOnly);
-  $("trim-bar-wrap").hidden = reference;
+  // The old controls only show with the Twitch player (see onAttached)
+  $("review-classic").hidden = true;
   clipPlayer.bar?.configure({
-    compact: !reference,
     focus: { start, end },
     focusEntryId: entry.id,
-    // The entry's edges were dragged on the timeline (or a segment stretched it): saved already, so the dialog follows
-    onEntryTrimmed: syncReviewEntry,
-    focusWindow: { from: review.from, to: review.to },
-    zoom: reference ? { from: review.from, to: review.to } : null,
-    expandZoom: () => review && { from: review.from, to: review.to },
+    selectFocus: true,
+    zoom: { from: review.from, to: review.to },
+    // Saved on the timeline (or stretched, renamed): the dialog follows
+    onEntryChanged: syncReviewEntry,
+    // Changed on the timeline, not saved yet: the dialog keeps up (the Twitch player's controls start from it, previews stop at its end)
+    onFocusEdited: (range) => {
+      if (!review) return;
+      review.start = range.start;
+      review.end = range.end;
+      fitReviewWindow(false);
+      if (clipPlayer.stopAt != null) clipPlayer.stopAt = range.end;
+    },
+    onAttached: (attached) => {
+      if (!review) return;
+      $("review-classic").hidden = attached;
+      if (!attached) renderReview();
+    },
   });
   renderReview();
   if (!vodMarkers.has(String(entry.vodId))) loadMarkersFor([entry.vodId]).then(renderTrimMarkers);
   if (!$("clip-dialog").open) $("clip-dialog").showModal();
   clipPlayer.open(entry.vodId, start, end).then(() => {
-    // The Twitch embed has no timeline of ours: keep the trim bar then
-    if (review?.entry === entry && !clipPlayer.bar?.backend) $("trim-bar-wrap").hidden = false;
+    // The Twitch embed has no timeline of ours: the old controls then
+    if (review?.entry === entry) $("review-classic").hidden = Boolean(clipPlayer.bar?.backend);
   }).catch((error) => {
     review = null;
     $("clip-dialog").close();
@@ -992,8 +1002,13 @@ function showLibraryNote(text) {
   }, 10000);
 }
 
+// Unsaved changes in the old controls (Twitch player). The app player's timeline saves its own when the window closes.
+function reviewNeedsConfirm() {
+  return !clipPlayer.bar?.backend && reviewDirty();
+}
+
 function closeReview() {
-  if (reviewDirty() && !confirm("Discard the changes to this clip's start and end?")) return false;
+  if (reviewNeedsConfirm() && !confirm("Discard the changes to this clip's start and end?")) return false;
   $("clip-dialog").close();
   return true;
 }
@@ -1081,7 +1096,7 @@ $("trim-revert").addEventListener("click", () => {
 $("clip-close").addEventListener("click", closeReview);
 // Escape fires "cancel" first; ask before throwing away unsaved changes
 $("clip-dialog").addEventListener("cancel", (event) => {
-  if (reviewDirty() && !confirm("Discard the changes to this clip's start and end?")) event.preventDefault();
+  if (reviewNeedsConfirm() && !confirm("Discard the changes to this clip's start and end?")) event.preventDefault();
 });
 // Either way stop playback
 $("clip-dialog").addEventListener("close", () => {

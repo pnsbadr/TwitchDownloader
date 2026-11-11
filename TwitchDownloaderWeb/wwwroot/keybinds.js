@@ -12,12 +12,15 @@
 // scope: where it works. Two bindings may share keys only in different scopes.
 //   player        the Watch / Review player while it (or its control bar) has focus
 //   player-mouse  mouse on the player's timeline
-//   trim          a focused handle of the review dialog's trim bar
+//   trim          a focused handle of the review dialog's trim bar (only with the Twitch player, which has no timeline of ours)
 //   vertical      a focused handle in the vertical (9:16) editor
 //   form          a text field in a small form (marker form, rename)
 
 const KEYBINDS = [
-  { id: "playPause", scope: "player", keys: ["Space", "K"], description: "Play / pause (a selected segment plays from its start to its end)" },
+  { id: "playPause", scope: "player", keys: ["Space", "K"], description: "Play / pause (a selected segment or card plays from its start to its end)" },
+  { id: "playEnd", scope: "player", keys: ["Shift+Space"], description: "Play the last 3 s of the selected segment or card (in a review: of the clip)" },
+  { id: "setStart", scope: "player", keys: ["I"], description: "Set the selected segment's or card's start to the playhead (in a review with nothing selected: the clip's)" },
+  { id: "setEnd", scope: "player", keys: ["O"], description: "Set the selected segment's or card's end to the playhead (in a review with nothing selected: the clip's)" },
   { id: "back10", scope: "player", keys: ["J"], description: "Back 10 s" },
   { id: "fwd10", scope: "player", keys: ["L"], description: "Forward 10 s" },
   { id: "back5", scope: "player", keys: ["ArrowLeft"], description: "Back 5 s" },
@@ -38,14 +41,15 @@ const KEYBINDS = [
   { id: "undo", scope: "player", keys: ["Ctrl+Z"], description: "Undo your last marker/segment change (up to 10)" },
   { id: "redo", scope: "player", keys: ["Ctrl+Shift+Z", "Ctrl+Y"], description: "Redo" },
   { id: "deleteSelected", scope: "player", keys: ["Delete", "Backspace"], description: "Delete the selected segment" },
-  { id: "escape", scope: "player", keys: ["Escape"], description: "Cancel marking a segment, or unselect the selected segment" },
+  { id: "escape", scope: "player", keys: ["Escape"], description: "Cancel marking a segment, or unselect the selected segment or card" },
 
   { id: "wheelZoom", scope: "player-mouse", keys: ["Wheel"], description: "Zoom the timeline around the mouse" },
   { id: "wheelPan", scope: "player-mouse", keys: ["Shift+Wheel"], description: "Scroll the zoomed timeline" },
-  { id: "clickSeek", scope: "player-mouse", keys: ["Click"], description: "Seek (pointer tool); select a segment; cut (cut tool); zoom in (zoom tool)" },
+  { id: "clickSeek", scope: "player-mouse", keys: ["Click"], description: "Seek (pointer tool); select a segment, or a card on the purple lane; cut (cut tool); zoom in (zoom tool)" },
+  { id: "nudgeStart", scope: "player-mouse", keys: ["Shift+Click ±10s/±1s"], description: "With a segment or card selected: move its start (without Shift: its end)" },
   { id: "rightClickZoomOut", scope: "player-mouse", keys: ["Right click"], description: "Zoom out (zoom tool)" },
   { id: "dragEdge", scope: "player-mouse", keys: ["Drag"], description: "Drag a selected segment's edge to change its start or end" },
-  { id: "dragCardEdge", scope: "player-mouse", keys: ["Drag card edge"], description: "Drag a reference card's start or end (purple lane, or the reviewed clip's edges)" },
+  { id: "dragCardEdge", scope: "player-mouse", keys: ["Drag card edge"], description: "Drag a reference card's start or end (purple lane, or the reviewed/selected card's edges on the track)" },
   { id: "handDrag", scope: "player-mouse", keys: ["Hand drag"], description: "Scroll the zoomed timeline (hand tool)" },
 
   { id: "trimNudge", scope: "trim", keys: ["ArrowLeft", "ArrowRight"], description: "Move the focused handle 0.1 s" },
