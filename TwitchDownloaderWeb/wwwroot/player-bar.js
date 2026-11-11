@@ -1718,8 +1718,11 @@ class PlayerBar {
     for (const clip of this.clips) {
       if (!this.editableClip(clip)) continue;
       if (y >= BAR_TRACK.top - 1 && clip.id !== this.focusEntryId && clip.id !== this.selectedCardId) continue;
+      // A short clip's review is about that clip: other cards' edges (which can sit right on its own) can't be dragged there
+      if (this.options.capFocus && clip.id !== this.focusEntryId) continue;
       for (const [edge, t] of [["start", clip.start], ["end", this.clipEnd(clip)]]) {
-        const distance = Math.abs(this.timeToX(t, width) - x);
+        // The reviewed card wins a tie with another card's edge at the same place
+        const distance = Math.abs(this.timeToX(t, width) - x) - (clip.id === this.focusEntryId ? 0.5 : 0);
         if (distance <= EDGE_HIT_PX && (!best || distance < best.distance)) best = { clip, edge, distance };
       }
     }
@@ -1883,8 +1886,14 @@ class PlayerBar {
     return next;
   }
 
+  // In a Review the markers are about the reviewed card, so they never make a live markers card (badrfly, 2026-11-11: segments made in
+  // a clip's Review made a second, longer card); one that exists still follows them
+  liveEntryQuery() {
+    return this.focusEntryId != null ? "?makeLiveEntry=false" : "";
+  }
+
   async createMarker(ref, data) {
-    const marker = await api("POST", `/api/vods/${encodeURIComponent(this.vodId)}/markers`, data);
+    const marker = await api("POST", `/api/vods/${encodeURIComponent(this.vodId)}/markers${this.liveEntryQuery()}`, data);
     if (ref.id != null) markerRefs.delete(ref.id);
     ref.id = marker.id;
     markerRefs.set(marker.id, ref);
@@ -1894,14 +1903,14 @@ class PlayerBar {
   }
 
   async updateMarker(ref, data) {
-    const marker = await api("PUT", `/api/markers/${ref.id}`, data);
+    const marker = await api("PUT", `/api/markers/${ref.id}${this.liveEntryQuery()}`, data);
     this.markers = this.markers.map((m) => (m.id === marker.id ? marker : m)).sort((a, b) => a.seconds - b.seconds);
     this.afterServerChange({ liveEntry: marker.liveEntry });
     return marker;
   }
 
   async removeMarker(ref) {
-    await api("DELETE", `/api/markers/${ref.id}`);
+    await api("DELETE", `/api/markers/${ref.id}${this.liveEntryQuery()}`);
     this.markers = this.markers.filter((m) => m.id !== ref.id);
     if (this.selectedRef === ref) this.selectedRef = null;
     this.afterServerChange({ deleted: true });
@@ -2464,13 +2473,17 @@ class PlayerBar {
       drawSegmentBox(ctx, a, b, top, height, markerColor(draft));
     }
 
-    // Library clips
+    // Library clips. In a Review the reviewed card is drawn on top and the others faded, so a card under it (same color) doesn't
+    // look like the reviewed card's bar staying behind when its edges move (badrfly, 2026-11-11); same for the selected card.
     ctx.fillStyle = c.clip;
-    for (const clip of this.clips) {
+    const front = this.clips.find((clip) => clip.id === this.focusEntryId) ?? this.selectedCard();
+    for (const clip of [...this.clips.filter((clip) => clip !== front), ...(front ? [front] : [])]) {
       const [a, b] = span(clip.start, clip.end ?? this.duration());
       if (b <= 0 || a >= width) continue;
+      ctx.globalAlpha = front && clip !== front ? 0.35 : 1;
       ctx.fillRect(a, BAR_TRACK.clipTop, Math.max(2, b - a), BAR_TRACK.clipHeight);
     }
+    ctx.globalAlpha = 1;
     // The clip being marked (X pressed once, up to the limit) or in the clip form: a dashed card from the lane down
     const newClip = this.clipStart != null ? this.clipMarkRange(now) : draft?.kind === "clip" ? { start: draft.seconds, end: draft.endSeconds } : null;
     if (newClip) {

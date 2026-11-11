@@ -24,13 +24,15 @@ namespace TwitchDownloaderWeb.Services
         private readonly SemaphoreSlim _lock = new(1, 1);
 
         /// <summary>Call after the team's markers on a VOD were saved. Never throws for Twitch being unreachable.</summary>
+        /// <param name="mayCreate">False when the markers were changed in a library card's Review: the change is about that card, so no
+        /// live markers entry is made (badrfly, 2026-11-11: segments made in a clip's Review made a second, longer card). One that exists still moves.</param>
         /// <returns>The entry made or moved, or null if nothing changed.</returns>
-        public async Task<LiveEntryChange?> MarkersChangedAsync(LibraryDbContext db, long vodId, CancellationToken cancellationToken)
+        public async Task<LiveEntryChange?> MarkersChangedAsync(LibraryDbContext db, long vodId, CancellationToken cancellationToken, bool mayCreate = true)
         {
             await _lock.WaitAsync(cancellationToken);
             try
             {
-                return await UpdateAsync(db, vodId, cancellationToken);
+                return await UpdateAsync(db, vodId, mayCreate, cancellationToken);
             }
             finally
             {
@@ -50,7 +52,7 @@ namespace TwitchDownloaderWeb.Services
             return (TimeSpan.FromSeconds(Math.Round(start, 2)), TimeSpan.FromSeconds(Math.Round(end, 2)));
         }
 
-        private async Task<LiveEntryChange?> UpdateAsync(LibraryDbContext db, long vodId, CancellationToken cancellationToken)
+        private async Task<LiveEntryChange?> UpdateAsync(LibraryDbContext db, long vodId, bool mayCreate, CancellationToken cancellationToken)
         {
             // Query filter: only the requesting team's entries and markers. One live markers entry per VOD: once it was re-cut by
             // hand (no longer following) the markers don't make a new one, which looked like the card duplicating itself.
@@ -59,7 +61,7 @@ namespace TwitchDownloaderWeb.Services
                 .OrderByDescending(x => x.FollowsMarkers)
                 .ThenBy(x => x.Id)
                 .FirstOrDefaultAsync(cancellationToken);
-            if (entry is { Status: EntryStatus.VodUnavailable } or { FollowsMarkers: false })
+            if (entry is { Status: EntryStatus.VodUnavailable } or { FollowsMarkers: false } || (entry is null && !mayCreate))
                 return null;
 
             var markers = (await db.Markers.AsNoTracking()
