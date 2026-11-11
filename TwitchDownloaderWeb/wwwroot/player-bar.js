@@ -12,8 +12,9 @@
 // whole VOD and the zoomed window. The Twitch embed fallback keeps Twitch's own controls; the bar is hidden then.
 //
 // Editing (tools bar to the right of the video): the pointer selects a segment (click it: the timeline zooms to it), then
-// play only plays it, ±10s/±1s change its end, its edges can be dragged, × or Del deletes it, and its title and color can be
-// changed. The cut tool splits a segment where it's clicked; the zoom tool zooms in on a click and out on a right click.
+// play only plays it, ±10s/±1s change its end (Shift: its start), I/O set its start/end at the playhead, its edges can be
+// dragged, × or Del deletes it, and its title and color can be changed. Library cards (the purple lane) are selected the same
+// way and edited the same way (re-cut with PUT /trim, saved right away; in a review the reviewed card starts selected). The cut tool splits a segment where it's clicked; the zoom tool zooms in on a click and out on a right click.
 // Undo/redo (last 10 changes) is per browser tab: it only replays this user's own changes.
 // Snapping (magnet at the top of the tools bar, on by default): a dragged edge sticks to any other time on the timeline within
 // a few pixels (markers, segment edges, library cards' start/end, the reviewed clip, the playhead); keep dragging to pass it.
@@ -38,6 +39,9 @@ const EDGE_HIT_PX = 6;
 const MIN_SEGMENT_SECONDS = 0.5;
 const MIN_CLIP_SECONDS = 1;
 const SNAP_PX = 8;
+// The reviewed stored clip downloads again on every save: its changes are saved this long after the last one (or on close)
+const STORED_SAVE_DELAY_MS = 3000;
+const PLAY_END_SECONDS = 3;
 const SNAP_KEY = "clipLibrary.snap";
 const HISTORY_LIMIT = 10;
 
@@ -229,17 +233,18 @@ class PlayerBar {
     this.hoverX = null;
     this.pendingMarker = null; // true while the add form is open
     this.segmentStart = null; // seconds where a segment being marked starts (S pressed once)
-    // Set by the page before a player opens (see configure): the clip review shows the bar's controls without the VOD timeline
-    // for a short clip ("compact", with a Full VOD timeline button), or starts zoomed in on the entry for a long reference
+    // Set by the page before a player opens (see configure): the clip review starts zoomed in on the reviewed entry, selected
     this.options = {};
-    this.compact = false;
     this.focus = null; // { start, end } of the entry being reviewed, highlighted on the timeline
-    this.focusWindow = null; // { from, to } the review's trim bar shows; compact chips list only what's in it
     this.pendingZoom = null; // { from, to } to zoom to once the duration is known
     this.onMarkersChanged = null;
     // Editing
     this.tool = "pointer"; // pointer | cut | zoom
     this.selectedRef = null; // ref ({ id }) of the selected segment
+    this.selectedCardId = null; // the selected library card (purple lane), instead of a segment
+    this.cardEdit = null; // { id, before } while a card's change on screen waits to be saved
+    this.cardEditTimer = null;
+    this.timelineLoaded = false;
     this.drag = null; // { ref, edge: "start"|"end", before } while an edge of the selected segment is dragged
     this.pendingEdit = null; // { ref, before } while ±10s/±1s presses are collected into one change
     this.pendingEditTimer = null;
@@ -277,7 +282,6 @@ class PlayerBar {
         </span>
         <button type="button" class="vp-btn vp-add-marker" data-act="marker" title="Add a marker here (M)">+ Marker</button>
         <button type="button" class="vp-btn vp-add-segment" data-act="segment" title="Mark a segment: press at its start, then at its end (S)">[ Segment</button>
-        <button type="button" class="vp-btn vp-expand" data-act="expand" title="Show the whole VOD's timeline, zoomed in on this clip" hidden>Full VOD timeline</button>
         <button type="button" class="vp-btn" data-act="fullscreen" aria-label="Fullscreen" title="Fullscreen (F)">⛶</button>
       </div>
       <div class="vp-marker-form" hidden>
@@ -298,12 +302,19 @@ class PlayerBar {
       </div>
       <div class="vp-selection" hidden>
         <strong class="vp-sel-kind">Selected segment</strong>
-        <span class="vp-sel-time"></span>
-        <input class="vp-sel-label" maxlength="200" placeholder="Title" autocomplete="off" aria-label="Segment title">
+        <label class="vp-time-field">Start <input class="vp-sel-start" autocomplete="off" spellcheck="false" aria-label="Start"></label>
+        <label class="vp-time-field">End <input class="vp-sel-end" autocomplete="off" spellcheck="false" aria-label="End"></label>
+        <span class="vp-sel-len muted"></span>
+        <input class="vp-sel-label" maxlength="200" placeholder="Title" autocomplete="off" aria-label="Title">
         <span class="vp-swatches vp-sel-swatches" role="radiogroup" aria-label="Segment color">
           ${Object.entries(MARKER_COLORS).map(([name, color]) => `
             <label class="vp-swatch" title="${name}"><input type="radio" name="vp-sel-color" value="${name}">
               <span style="background:${color}"></span></label>`).join("")}
+        </span>
+        <span class="vp-sel-buttons">
+          <button type="button" class="vp-btn small" data-act="sethere-start" title="Set the start to the playhead (${keybindLabel("setStart")})">Start here</button>
+          <button type="button" class="vp-btn small" data-act="sethere-end" title="Set the end to the playhead (${keybindLabel("setEnd")})">End here</button>
+          <button type="button" class="vp-btn small" data-act="playend" title="Play the last ${PLAY_END_SECONDS} s (${keybindLabel("playEnd")})">Last ${PLAY_END_SECONDS}s</button>
         </span>
         <span class="vp-sel-hint muted"></span>
         <button type="button" class="link small" data-act="deselect">Done</button>
@@ -325,13 +336,16 @@ class PlayerBar {
     this.timelineWrap = this.el.querySelector(".vp-timeline-wrap");
     this.legend = this.el.querySelector(".vp-legend");
     this.selection = this.el.querySelector(".vp-selection");
-    // Clicking anywhere else in the Watch / Review window unselects the segment (the timeline has its own rules; the parts that
-    // work on the selection keep it)
+    // Clicking anywhere else in the Watch / Review window unselects the segment or card (the timeline has its own rules; the parts
+    // that work on the selection keep it). On click, not pointerdown: the selection row going away moves what's under the pointer
+    // (the review dialog is centered), and a button like Close would then miss its click.
     const area = this.wrap.closest("dialog") ?? this.wrap.closest(".watch") ?? this.wrap;
-    area.addEventListener("pointerdown", (event) => {
-      if (!this.selectedRef || !(event.target instanceof Element)) return;
-      if (event.target.closest(".vp-timeline, .vp-overview, .vp-selection, .vp-markers, .vp-tools, .vp-sel-x, .vp-marker-form, " +
-        "[data-act=play], [data-act=back10], [data-act=back1], [data-act=fwd1], [data-act=fwd10]")) return;
+    area.addEventListener("click", (event) => {
+      if (!this.selectedRef && this.selectedCardId == null) return;
+      // The path as it was when clicked: a chip that selected a segment has already been redrawn (detached) by now
+      const keep = ".vp-timeline, .vp-overview, .vp-selection, .vp-markers, .vp-tools, .vp-sel-x, .vp-marker-form, " +
+        "[data-act=play], [data-act=back10], [data-act=back1], [data-act=fwd1], [data-act=fwd10]";
+      if (event.composedPath().some((node) => node instanceof Element && node.matches(keep))) return;
       this.deselect();
     });
     this.buildTools();
@@ -339,7 +353,9 @@ class PlayerBar {
 
     this.el.querySelector(".vp-controls").addEventListener("click", (event) => {
       const act = event.target.closest("[data-act]")?.dataset.act;
-      if (act) this.act(act);
+      if (act) this.act(act, event);
+      // After a mouse click the keys go to the player again (Space plays instead of pressing the button again)
+      if (act && event.detail > 0 && !["marker", "segment"].includes(act)) this.wrap.focus({ preventScroll: true });
     });
     this.el.querySelector(".vp-volume").addEventListener("input", (event) => {
       if (!this.video) return;
@@ -458,21 +474,63 @@ class PlayerBar {
         event.preventDefault(); // the player can sit inside the page's add form
         event.stopPropagation();
         label.blur();
+        this.wrap.focus({ preventScroll: true });
       } else if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
-        label.value = this.selected()?.label ?? "";
+        label.value = this.selected()?.label ?? this.selectedCard()?.title ?? "";
         label.blur();
+        this.wrap.focus({ preventScroll: true });
       }
     });
-    label.addEventListener("change", () => this.editSelected({ label: label.value.trim() }));
+    label.addEventListener("change", () => {
+      if (this.selectedCard()) this.renameCard(this.selectedCard(), label.value.trim());
+      else this.editSelected({ label: label.value.trim() });
+    });
+    for (const edge of ["start", "end"]) {
+      const input = this.selection.querySelector(`.vp-sel-${edge}`);
+      const apply = () => {
+        const range = this.selectedRange();
+        const value = parseTrim(input.value);
+        if (value == null || Number.isNaN(value)) {
+          if (range) input.value = formatTrimValue(range[edge]);
+          return this.flash("Times use h:mm:ss, m:ss or seconds.");
+        }
+        this.setSelectedEdge(edge, value);
+      };
+      input.addEventListener("change", apply);
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          event.stopPropagation();
+          input.blur();
+          this.wrap.focus({ preventScroll: true });
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          const range = this.selectedRange();
+          if (range) input.value = formatTrimValue(range[edge]);
+          input.blur();
+          this.wrap.focus({ preventScroll: true });
+        }
+      });
+    }
+    this.selection.querySelector(".vp-sel-buttons").addEventListener("click", (event) => {
+      const act = event.target.closest("[data-act]")?.dataset.act;
+      if (act === "sethere-start") this.setEdgeHere("start");
+      else if (act === "sethere-end") this.setEdgeHere("end");
+      else if (act === "playend") this.playEnd();
+      if (act && event.detail > 0) this.wrap.focus({ preventScroll: true });
+    });
     this.selection.querySelector(".vp-sel-swatches").addEventListener("change", (event) => {
       if (event.target.name === "vp-sel-color") this.editSelected({ color: event.target.value });
     });
     this.selection.querySelector("[data-act=deselect]").addEventListener("click", () => this.deselect());
   }
 
-  // Options for the next attach: { compact, focus: {start,end}, focusWindow: {from,to}, zoom: {from,to}, expandZoom: () => {from,to} }
+  // Options for the next attach: { focus: {start,end}, focusEntryId, selectFocus, zoom: {from,to},
+  //   onEntryChanged(entry) (an entry was re-cut or renamed here), onFocusEdited({start,end}) (the reviewed card changed on screen,
+  //   not saved yet), onAttached(bool) (the bar is shown / hidden: the Twitch embed has none) }
   configure(options) {
     this.options = options ?? {};
   }
@@ -490,12 +548,13 @@ class PlayerBar {
     this.zoomed = false;
     this.autoView = false;
     this.manualPan = false;
-    this.compact = Boolean(this.options.compact);
     this.focus = this.options.focus ?? null;
-    this.focusWindow = this.options.focusWindow ?? null;
     this.focusEntryId = this.options.focusEntryId ?? null; // the entry being reviewed (its edges are this.focus)
     this.pendingZoom = this.options.zoom ?? null;
     this.selectedRef = null;
+    // A review starts with its card selected: Play plays it, ±1s/I/O change it
+    this.selectedCardId = this.options.selectFocus ? this.focusEntryId : null;
+    this.timelineLoaded = false;
     this.drag = null;
     this.playUntil = null;
     this.closeMarkerForm();
@@ -538,6 +597,7 @@ class PlayerBar {
     this.renderButtons();
     this.fitIfNeeded();
     this.loadTimeline();
+    this.options.onAttached?.(true);
     const loop = () => {
       if (!this.backend) return;
       this.update();
@@ -547,6 +607,9 @@ class PlayerBar {
   }
 
   detach() {
+    // Changes waiting to be saved are saved now (closing the window, switching players)
+    this.flushPendingEdit();
+    const wasAttached = Boolean(this.backend);
     if (this.frame) cancelAnimationFrame(this.frame);
     this.frame = null;
     if (this.video && this.videoListeners) {
@@ -562,7 +625,7 @@ class PlayerBar {
     this.selX.hidden = true;
     this.wrap.classList.remove("has-bar");
     this.tip.hidden = true;
-    this.flushPendingEdit();
+    if (wasAttached) this.options.onAttached?.(false);
   }
 
   // ---- data ----
@@ -592,8 +655,11 @@ class PlayerBar {
     try {
       const timeline = await api("GET", `/api/vods/${encodeURIComponent(vodId)}/timeline`);
       if (vodId !== this.vodId) return;
-      this.clips = timeline.clips;
+      // A card being changed on screen keeps its unsaved range
+      const local = this.cardEdit && this.clips.find((c) => c.id === this.cardEdit.id);
       this.markers = timeline.markers;
+      this.timelineLoaded = true;
+      this.clips = timeline.clips.map((c) => (local && c.id === local.id ? { ...c, start: local.start, end: local.end } : c));
       this.syncFocusClip();
     } catch (error) {
       console.warn("Couldn't load the timeline's clips and markers:", error);
@@ -616,31 +682,16 @@ class PlayerBar {
   }
 
   applyLayout() {
-    this.timelineWrap.hidden = this.compact;
-    this.legend.hidden = this.compact;
-    this.el.querySelector(".vp-zoom").hidden = this.compact;
-    this.el.querySelector(".vp-expand").hidden = !this.compact;
-    // The tools work on the timeline, which a compact bar doesn't show
-    this.tools.hidden = this.compact || !this.backend;
-    if (this.compact) this.deselect();
+    this.tools.hidden = !this.backend;
     this.dirty = true;
   }
 
-  // The review dialog's short-clip mode: show the whole VOD's timeline, zoomed in on the clip
-  expand() {
-    this.compact = false;
-    this.applyLayout();
-    this.zoomTo(this.options.expandZoom?.() ?? this.focusWindow ?? this.focus);
-    this.renderMarkers();
-  }
-
-  // The entry being reviewed (highlighted on the timeline) and the part of the VOD the review's trim bar shows
-  setFocus(focus, focusWindow) {
+  // The entry being reviewed (highlighted on the timeline), from the page. Ignored while its card is being changed here.
+  setFocus(focus) {
+    if (this.focusEntryId != null && (this.cardEdit?.id === this.focusEntryId || this.drag?.clip?.id === this.focusEntryId)) return;
     this.focus = focus;
     this.syncFocusClip();
-    const windowChanged = this.focusWindow?.from !== focusWindow?.from || this.focusWindow?.to !== focusWindow?.to;
-    this.focusWindow = focusWindow;
-    if (windowChanged && this.compact) this.renderMarkers();
+    this.renderSelection();
     this.dirty = true;
   }
 
@@ -669,11 +720,11 @@ class PlayerBar {
     this.dirty = true;
   }
 
-  // A segment with some room before and after (20 %, at least 2 s), optionally stretched to also show a time
-  segmentView(segment, alsoShow) {
-    const margin = Math.max(2, (segment.endSeconds - segment.seconds) * 0.2);
-    let from = segment.seconds - margin;
-    let to = segment.endSeconds + margin;
+  // A segment or card with some room before and after (20 %, at least 2 s), optionally stretched to also show a time
+  rangeView(start, end, alsoShow) {
+    const margin = Math.max(2, (end - start) * 0.2);
+    let from = start - margin;
+    let to = end + margin;
     if (alsoShow != null) {
       from = Math.min(from, alsoShow - margin);
       to = Math.max(to, alsoShow + margin);
@@ -697,16 +748,17 @@ class PlayerBar {
 
   // ---- actions ----
 
-  act(act) {
+  act(act, event) {
     const video = this.video;
     if (!video) return;
+    const nudges = { back10: -10, fwd10: 10, back1: -1, fwd1: 1 };
+    if (act in nudges) {
+      // With a segment or card selected, these move its end (with Shift its start) instead of seeking
+      if (this.selectedRange()?.editable) return this.nudgeSelected(nudges[act], event?.shiftKey ? "start" : "end");
+      return this.seek(this.now() + nudges[act]);
+    }
     switch (act) {
       case "play": return this.togglePlay();
-      // With a segment selected, these change its length (its end) instead of seeking
-      case "back10": return this.selectedEditable() ? this.nudgeSelected(-10) : this.seek(this.now() - 10);
-      case "fwd10": return this.selectedEditable() ? this.nudgeSelected(10) : this.seek(this.now() + 10);
-      case "back1": return this.selectedEditable() ? this.nudgeSelected(-1) : this.seek(this.now() - 1);
-      case "fwd1": return this.selectedEditable() ? this.nudgeSelected(1) : this.seek(this.now() + 1);
       case "frameback": return this.step(-1);
       case "framefwd": return this.step(1);
       case "mute":
@@ -723,7 +775,6 @@ class PlayerBar {
       case "marker": return this.openMarkerForm();
       case "segment": return this.toggleSegment();
       case "fullscreen": return this.toggleFullscreen();
-      case "expand": return this.expand();
     }
   }
 
@@ -741,15 +792,24 @@ class PlayerBar {
   togglePlay() {
     if (!this.video) return;
     if (!this.video.paused) return this.video.pause();
-    // A selected segment plays from its start (unless the playhead is already inside it) and stops at its end
-    const segment = this.selected();
-    if (segment) {
+    // A selected segment or card plays from its start (unless the playhead is already inside it) and stops at its end
+    const range = this.selectedRange();
+    if (range) {
       const now = this.now();
-      if (now < segment.seconds || now >= segment.endSeconds - 0.05) this.seek(segment.seconds);
-      this.video.play().then(() => (this.playUntil = segment.endSeconds)).catch(() => {});
+      if (now < range.start || now >= range.end - 0.05) this.seek(range.start);
+      this.video.play().then(() => (this.playUntil = range.end)).catch(() => {});
       return;
     }
     this.video.play().catch(() => {});
+  }
+
+  // The last few seconds of the selected segment or card (in a review, the reviewed clip when nothing is selected)
+  playEnd() {
+    if (!this.video) return;
+    const range = this.selectedRange() ?? this.focusRange();
+    if (!range) return this.flash("Select a segment or a card first.");
+    this.seek(Math.max(range.start, range.end - PLAY_END_SECONDS));
+    this.video.play().then(() => (this.playUntil = range.end)).catch(() => {});
   }
 
   // One frame at the playing rendition's frame rate
@@ -937,14 +997,35 @@ class PlayerBar {
     return segment?.canEdit ? segment : null;
   }
 
+  // The selected library card (purple lane), when a card is selected instead of a segment
+  selectedCard() {
+    if (this.selectedCardId == null) return null;
+    return this.clips.find((c) => c.id === this.selectedCardId) ?? null;
+  }
+
+  // What's selected, as a range: { kind: "segment" | "card", start, end, editable, item }
+  selectedRange() {
+    const segment = this.selected();
+    if (segment) return { kind: "segment", start: segment.seconds, end: segment.endSeconds, editable: Boolean(segment.canEdit), item: segment };
+    const card = this.selectedCard();
+    if (card) return { kind: "card", start: card.start, end: this.clipEnd(card), editable: this.editableClip(card), item: card };
+    return null;
+  }
+
+  // The reviewed entry's range (for keys that work on it when nothing is selected)
+  focusRange() {
+    return this.focus ? { start: this.focus.start, end: this.focus.end } : null;
+  }
+
   // Selects a segment and zooms the timeline to it, with some room before and after. While playing (another segment, or
   // anything), playback jumps to the new segment's start and stops at its end.
   select(segment) {
     this.flushPendingEdit();
     const playing = Boolean(this.video && !this.video.paused);
     this.selectedRef = markerRef(segment.id);
+    this.selectedCardId = null;
     this.playUntil = null;
-    this.zoomTo(this.segmentView(segment));
+    this.zoomTo(this.rangeView(segment.seconds, segment.endSeconds));
     if (playing) {
       this.seek(segment.seconds);
       this.playUntil = segment.endSeconds;
@@ -954,10 +1035,31 @@ class PlayerBar {
     this.dirty = true;
   }
 
+  // Selects a library card like a segment. quiet: no zoom and no jump (the card under a click, I/O with nothing selected).
+  selectCard(clip, { quiet = false } = {}) {
+    if (this.selectedCardId === clip.id && !this.selectedRef) return;
+    this.flushPendingEdit();
+    const playing = Boolean(this.video && !this.video.paused);
+    this.selectedRef = null;
+    this.selectedCardId = clip.id;
+    this.playUntil = null;
+    if (!quiet) {
+      this.zoomTo(this.rangeView(clip.start, this.clipEnd(clip)));
+      if (playing) {
+        this.seek(clip.start);
+        this.playUntil = this.clipEnd(clip);
+      }
+    }
+    this.renderSelection();
+    this.renderMarkers();
+    this.dirty = true;
+  }
+
   deselect() {
-    if (!this.selectedRef) return;
+    if (!this.selectedRef && this.selectedCardId == null) return;
     this.flushPendingEdit();
     this.selectedRef = null;
+    this.selectedCardId = null;
     this.playUntil = null;
     this.renderSelection();
     this.renderMarkers();
@@ -965,30 +1067,57 @@ class PlayerBar {
   }
 
   renderSelection() {
-    const segment = this.selected();
-    if (this.selectedRef && !segment && !this.pendingEdit) this.selectedRef = null; // deleted (here or by someone else)
-    this.selection.hidden = !segment;
-    this.el.querySelector(".vp-controls").classList.toggle("vp-seg-mode", Boolean(segment?.canEdit));
+    // Gone (deleted here or by someone else; a card only once the timeline has loaded)
+    if (this.selectedRef && !this.selected() && !this.pendingEdit) this.selectedRef = null;
+    if (this.selectedCardId != null && this.timelineLoaded && !this.selectedCard()) this.selectedCardId = null;
+    const range = this.selectedRange();
+    const segment = range?.kind === "segment" ? range.item : null;
+    const card = range?.kind === "card" ? range.item : null;
+    this.selection.hidden = !range;
+    this.el.querySelector(".vp-controls").classList.toggle("vp-seg-mode", Boolean(range?.editable));
+    const what = card ? "card" : "segment";
     for (const [act, seconds] of [["back10", -10], ["back1", -1], ["fwd1", 1], ["fwd10", 10]]) {
-      this.el.querySelector(`[data-act=${act}]`).title = segment?.canEdit
-        ? `${seconds > 0 ? "Lengthen" : "Shorten"} the selected segment by ${Math.abs(seconds)} s (moves its end)`
+      this.el.querySelector(`[data-act=${act}]`).title = range?.editable
+        ? `Move the selected ${what}'s end ${Math.abs(seconds)} s ${seconds > 0 ? "later" : "earlier"} (Shift-click: its start)`
         : { back10: "Back 10 s (J)", back1: "Back 1 s", fwd1: "Forward 1 s", fwd10: "Forward 10 s (L)" }[act];
     }
-    if (!segment) {
+    if (!range) {
       this.selX.hidden = true;
       return;
     }
-    this.selection.querySelector(".vp-sel-time").textContent = markerTimeText(segment);
-    const label = this.selection.querySelector(".vp-sel-label");
-    if (document.activeElement !== label) label.value = segment.label ?? "";
-    label.disabled = !segment.canEdit;
-    for (const radio of this.selection.querySelectorAll("input[name=vp-sel-color]")) {
-      radio.checked = radio.value === (segment.color ?? "yellow");
-      radio.disabled = !segment.canEdit;
+    this.selection.classList.toggle("vp-selection-card", Boolean(card));
+    this.selection.querySelector(".vp-sel-kind").textContent = card
+      ? (card.id === this.focusEntryId ? "This clip" : card.kind === "Clip" ? "Twitch clip" : "Library card")
+      : "Selected segment";
+    for (const edge of ["start", "end"]) {
+      const input = this.selection.querySelector(`.vp-sel-${edge}`);
+      if (document.activeElement !== input) input.value = formatTrimValue(range[edge]);
+      input.disabled = !range.editable;
     }
-    this.selection.querySelector(".vp-sel-hint").textContent = segment.canEdit
-      ? "Play plays only this · ±10s/±1s change its end · drag its edges · Del deletes"
-      : `Added by ${segment.createdBy ?? "someone else"}: your role can't change it`;
+    this.selection.querySelector(".vp-sel-len").textContent = `(${formatTrimValue(range.end - range.start)})`;
+    const label = this.selection.querySelector(".vp-sel-label");
+    if (document.activeElement !== label) label.value = (card ? card.title : segment.label) ?? "";
+    label.disabled = card ? !card.canEdit : !segment.canEdit;
+    label.setAttribute("aria-label", card ? "Card title" : "Segment title");
+    this.selection.querySelector(".vp-sel-swatches").hidden = Boolean(card);
+    for (const radio of this.selection.querySelectorAll("input[name=vp-sel-color]")) {
+      radio.checked = !card && radio.value === (segment.color ?? "yellow");
+      radio.disabled = !segment?.canEdit;
+    }
+    for (const button of this.selection.querySelectorAll("[data-act^=sethere]")) button.disabled = !range.editable;
+    let hint;
+    if (segment) {
+      hint = segment.canEdit
+        ? "Play plays only this · ±10s/±1s move its end (Shift: start) · drag its edges · Del deletes"
+        : `Added by ${segment.createdBy ?? "someone else"}: your role can't change it`;
+    } else if (!range.editable) {
+      hint = card.kind === "Clip" ? "Twitch clips keep Twitch's cut" : card.canEdit ? "Stored clip: re-cut it in its Review" : "Your role can't change this card";
+    } else {
+      hint = card.referenceOnly
+        ? "Play plays only this · ±10s/±1s move its end (Shift: start) · drag its edges · changes save right away (Ctrl+Z undoes)"
+        : `Play plays only this · ±10s/±1s move its end (Shift: start) · saves ${STORED_SAVE_DELAY_MS / 1000} s after your last change (the clip downloads again)`;
+    }
+    this.selection.querySelector(".vp-sel-hint").textContent = hint;
   }
 
   setTool(tool) {
@@ -1041,23 +1170,144 @@ class PlayerBar {
     this.flashTimer = setTimeout(() => (message.textContent = ""), 4000);
   }
 
-  // ±10s / ±1s with a segment selected: move its end. Presses close together become one change (one undo step).
-  nudgeSelected(seconds) {
-    const segment = this.selectedEditable();
-    if (!segment) return;
-    if (!this.pendingEdit) this.pendingEdit = { ref: markerRef(segment.id), before: markerData(segment) };
+  // ±10s / ±1s with a segment or card selected: move its end (or its start). Presses close together become one change (one
+  // undo step).
+  nudgeSelected(seconds, edge = "end") {
+    const range = this.selectedRange();
+    if (!range?.editable) return;
     const d = this.duration() || Infinity;
-    segment.endSeconds = roundHundredths(Math.min(d, Math.max(segment.seconds + MIN_SEGMENT_SECONDS, segment.endSeconds + seconds)));
+    if (range.kind === "card") {
+      const card = range.item;
+      const min = MIN_CLIP_SECONDS;
+      const next = edge === "start"
+        ? { start: roundHundredths(Math.max(0, Math.min(range.end - min, range.start + seconds))), end: card.end }
+        : { start: card.start, end: roundHundredths(Math.min(d, Math.max(range.start + min, range.end + seconds))) };
+      return this.editCard(card, next);
+    }
+    const segment = range.item;
+    if (!this.pendingEdit) this.pendingEdit = { ref: markerRef(segment.id), before: markerData(segment) };
+    if (edge === "start") segment.seconds = roundHundredths(Math.max(0, Math.min(segment.endSeconds - MIN_SEGMENT_SECONDS, segment.seconds + seconds)));
+    else segment.endSeconds = roundHundredths(Math.min(d, Math.max(segment.seconds + MIN_SEGMENT_SECONDS, segment.endSeconds + seconds)));
     this.afterLocalChange();
     clearTimeout(this.pendingEditTimer);
     this.pendingEditTimer = setTimeout(() => this.flushPendingEdit(), 600);
   }
 
+  // Saves what's waiting: a segment's nudges, a card's change
   flushPendingEdit() {
     clearTimeout(this.pendingEditTimer);
     const pending = this.pendingEdit;
     this.pendingEdit = null;
     if (pending) this.commitEdit(pending.ref, pending.before);
+    clearTimeout(this.cardEditTimer);
+    const card = this.cardEdit;
+    this.cardEdit = null;
+    if (card) this.commitCard(card.id, card.before);
+  }
+
+  // I / O and the selection row's Start here / End here: the selected segment's or card's start/end at the playhead. In a review
+  // with nothing selected they work on the reviewed card (which gets selected).
+  setEdgeHere(edge) {
+    if (!this.video) return;
+    if (!this.selectedRange()) {
+      const reviewed = this.clips.find((c) => c.id === this.focusEntryId);
+      if (reviewed) this.selectCard(reviewed, { quiet: true });
+    }
+    const range = this.selectedRange();
+    if (!range) return this.flash("Select a segment or a card first (click it on the timeline).");
+    if (!range.editable) return this.flash("Your role can't change this.");
+    this.setSelectedEdge(edge, this.now());
+  }
+
+  // A new start or end for the selected segment or card (typed, or at the playhead)
+  setSelectedEdge(edge, seconds) {
+    const range = this.selectedRange();
+    if (!range?.editable) return;
+    const t = roundHundredths(Math.max(0, Math.min(this.duration() || Infinity, seconds)));
+    const start = edge === "start" ? t : range.start;
+    const end = edge === "end" ? t : range.end;
+    const min = range.kind === "card" ? MIN_CLIP_SECONDS : MIN_SEGMENT_SECONDS;
+    if (end - start < min) {
+      this.renderSelection();
+      return this.flash(edge === "start" ? `The start must be at least ${min} s before the end.` : `The end must be at least ${min} s after the start.`);
+    }
+    if (range.kind === "card") {
+      const card = range.item;
+      return this.editCard(card, { start, end: edge === "end" ? end : card.end });
+    }
+    this.flushPendingEdit();
+    const segment = range.item;
+    const before = markerData(segment);
+    segment.seconds = start;
+    segment.endSeconds = end;
+    this.afterLocalChange();
+    this.commitEdit(markerRef(segment.id), before);
+  }
+
+  // A card changed on screen ({ start, end }, end null = end of the VOD). It's saved shortly after (presses close together are
+  // one change); the reviewed stored clip waits longer since saving downloads it again. Closing or unselecting saves at once.
+  editCard(card, range) {
+    if (this.cardEdit && this.cardEdit.id !== card.id) this.flushPendingEdit();
+    if (this.pendingEdit) this.flushPendingEdit();
+    if (!this.cardEdit) this.cardEdit = { id: card.id, before: { start: card.start, end: card.end, followsMarkers: Boolean(card.followsMarkers) } };
+    card.start = range.start;
+    card.end = range.end;
+    this.cardMoved(card);
+    this.afterLocalChange();
+    clearTimeout(this.cardEditTimer);
+    this.cardEditTimer = setTimeout(() => this.flushPendingEdit(), card.referenceOnly ? 600 : STORED_SAVE_DELAY_MS);
+  }
+
+  // The reviewed card is one object with the review's range (this.focus): keep them together, and tell the page
+  cardMoved(card) {
+    if (card.id === this.focusEntryId && this.focus) {
+      this.focus = { ...this.focus, start: card.start, end: this.clipEnd(card) };
+      this.options.onFocusEdited?.({ start: card.start, end: this.clipEnd(card) });
+    }
+    this.dirty = true;
+  }
+
+  // Saves a card changed on screen (PUT /trim) as one undo step; puts it back if saving fails
+  commitCard(id, before) {
+    const card = this.clips.find((c) => c.id === id);
+    if (!card) return;
+    const after = { start: card.start, end: card.end };
+    if (after.start === before.start && after.end === before.end) return;
+    const vodId = this.vodId;
+    this.run(async () => {
+      try {
+        const entry = await this.trimClip(id, after);
+        this.record({ kind: "trim", clipId: id, before, after }, vodId);
+        if (entry.status === "Queued") this.flash("Saved. The clip is downloading again.");
+        else if (entry.isReferenceOnly && card.referenceOnly === false) this.flash("Saved. It's now over the stored-clip limit, so it's kept as a reference.");
+      } catch (error) {
+        const current = this.clips.find((c) => c.id === id);
+        if (current && this.cardEdit?.id !== id) {
+          Object.assign(current, { start: before.start, end: before.end });
+          this.cardMoved(current);
+        }
+        this.afterLocalChange();
+        this.flash(error.message);
+      }
+    });
+  }
+
+  // The card's title from the selection row (PATCH; not an undo step)
+  async renameCard(card, title) {
+    if (!card.canEdit || !title || title === card.title) {
+      this.renderSelection();
+      return;
+    }
+    try {
+      const entry = await api("PATCH", `/api/entries/${card.id}`, { title });
+      this.clips = this.clips.map((c) => (c.id === card.id ? { ...c, title: entry.title } : c));
+      this.renderSelection();
+      this.options.onEntryChanged?.(entry);
+      this.notifyChanged({ entries: true });
+    } catch (error) {
+      this.renderSelection();
+      this.flash(error.message);
+    }
   }
 
   dragEdgeTo(seconds) {
@@ -1091,6 +1341,7 @@ class PlayerBar {
     if (sameMarkerData(before, after)) return;
     // A segment that now reaches past a reference card it was on stretches the card to cover it (one undo step with it)
     const trims = this.cardStretchesFor(before, after);
+    const vodId = this.vodId;
     this.run(async () => {
       try {
         await this.updateMarker(ref, after);
@@ -1102,7 +1353,7 @@ class PlayerBar {
             this.flash(`Couldn't stretch the card: ${error.message}`);
           }
         }
-        this.record({ kind: "update", ref, before, after, trims });
+        this.record({ kind: "update", ref, before, after, trims }, vodId);
       } catch (error) {
         const current = this.markers.find((m) => m.id === ref.id);
         if (current) Object.assign(current, before);
@@ -1114,7 +1365,10 @@ class PlayerBar {
 
   deleteSelected() {
     const segment = this.selected();
-    if (!segment) return false;
+    if (!segment) {
+      if (this.selectedCard()) this.flash("Cards are deleted from the library list.");
+      return false;
+    }
     if (!segment.canDelete) {
       this.flash("Your role only lets you delete segments you added.");
       return;
@@ -1206,19 +1460,26 @@ class PlayerBar {
     clip.end = clip.end == null && this.focus.end >= this.duration() - 0.01 ? null : this.focus.end;
   }
 
-  // Reference VOD cards this member may re-cut by dragging (stored ones re-download, so they keep the review dialog)
+  // Reference VOD cards this member may re-cut on the timeline (a segment stretches these too)
   draggableClip(clip) {
-    return clip.canEdit && clip.referenceOnly && clip.kind === "Vod";
+    return Boolean(clip.canEdit && clip.referenceOnly && clip.kind === "Vod");
   }
 
-  // { clip, edge } when x is on an edge of a draggable card: on the purple lane, or anywhere on the track for the reviewed one
+  // Cards this member may change here: reference cards, and the clip being reviewed even when it's stored (outside its review a
+  // stored clip isn't changed by a stray drag, since every change downloads it again)
+  editableClip(clip) {
+    return this.draggableClip(clip) || Boolean(clip.canEdit && clip.kind === "Vod" && clip.id === this.focusEntryId);
+  }
+
+  // { clip, edge } when x is on an edge of a card that can be changed: on the purple lane, or anywhere on the track for the
+  // reviewed or selected one
   clipEdgeAt(x, y) {
     if (this.tool !== "pointer" || y > BAR_TRACK.top + BAR_TRACK.height + 3) return null;
     const width = this.canvas.clientWidth;
     let best = null;
     for (const clip of this.clips) {
-      if (!this.draggableClip(clip)) continue;
-      if (y >= BAR_TRACK.top - 1 && clip.id !== this.focusEntryId) continue;
+      if (!this.editableClip(clip)) continue;
+      if (y >= BAR_TRACK.top - 1 && clip.id !== this.focusEntryId && clip.id !== this.selectedCardId) continue;
       for (const [edge, t] of [["start", clip.start], ["end", this.clipEnd(clip)]]) {
         const distance = Math.abs(this.timeToX(t, width) - x);
         if (distance <= EDGE_HIT_PX && (!best || distance < best.distance)) best = { clip, edge, distance };
@@ -1234,8 +1495,7 @@ class PlayerBar {
     const t = roundHundredths(Math.min(d, Math.max(0, this.snapTime(seconds, { clipId: clip.id }))));
     if (this.drag.edge === "start") clip.start = Math.min(t, roundHundredths(this.clipEnd(clip) - MIN_CLIP_SECONDS));
     else clip.end = Math.max(t, roundHundredths(clip.start + MIN_CLIP_SECONDS));
-    if (clip.id === this.focusEntryId && this.focus) this.focus = { ...this.focus, start: clip.start, end: this.clipEnd(clip) };
-    this.dirty = true;
+    this.cardMoved(clip);
   }
 
   // The time of the edge being dragged (segment or card)
@@ -1261,19 +1521,14 @@ class PlayerBar {
     }
     const clip = this.clips.find((c) => c.id === drag.clip.id);
     if (!clip) return;
-    const after = { start: clip.start, end: clip.end };
-    if (after.start === drag.before.start && after.end === drag.before.end) return;
-    this.run(async () => {
-      try {
-        await this.trimClip(clip.id, after);
-        this.record({ kind: "trim", clipId: clip.id, before: drag.before, after });
-      } catch (error) {
-        Object.assign(clip, drag.before);
-        if (clip.id === this.focusEntryId && this.focus) this.focus = { ...this.focus, start: clip.start, end: this.clipEnd(clip) };
-        this.dirty = true;
-        this.flash(error.message);
-      }
-    });
+    // Pressed on an edge without moving it: a click on the card, which selects it
+    if (clip.start === drag.before.start && clip.end === drag.before.end) return this.selectCard(clip);
+    // A reference card is saved at once; the reviewed stored clip a few seconds later (saving downloads it again)
+    this.cardEdit = { id: clip.id, before: drag.before };
+    this.afterLocalChange();
+    if (clip.referenceOnly) return this.flushPendingEdit();
+    clearTimeout(this.cardEditTimer);
+    this.cardEditTimer = setTimeout(() => this.flushPendingEdit(), STORED_SAVE_DELAY_MS);
   }
 
   // Reference cards the segment was on (before the change) that no longer cover all of it, and their stretched range
@@ -1297,6 +1552,7 @@ class PlayerBar {
   // Re-cuts a library entry (PUT /trim, as the review dialog's Save new cut does). range.followsMarkers (undoing a hand re-cut
   // of a live markers card) makes it follow its markers again, so the server may move it: its answer is what's shown.
   async trimClip(id, range) {
+    const vodId = this.vodId;
     const entry = await api("PUT", `/api/entries/${id}/trim`, {
       startTime: formatTrimValue(range.start),
       endTime: range.end == null ? "" : formatTrimValue(range.end),
@@ -1304,28 +1560,33 @@ class PlayerBar {
     });
     const start = entry.startSeconds ?? range.start;
     const end = entry.endSeconds === undefined ? range.end : entry.endSeconds;
+    // A newer change of this card on screen (made while this one was saving) keeps its range
+    const newer = this.cardEdit?.id === id || this.drag?.clip?.id === id;
     this.clips = this.clips.map((c) => (c.id === id
-      ? { ...c, start, end, referenceOnly: Boolean(entry.isReferenceOnly), followsMarkers: Boolean(entry.followsMarkers) }
+      ? { ...c, ...(newer ? {} : { start, end }), referenceOnly: Boolean(entry.isReferenceOnly), followsMarkers: Boolean(entry.followsMarkers) }
       : c));
-    if (id === this.focusEntryId && this.focus) this.focus = { ...this.focus, start, end: end ?? this.duration() };
+    if (!newer && id === this.focusEntryId && this.focus) this.focus = { ...this.focus, start, end: end ?? this.duration() };
     this.dirty = true;
-    this.options.onEntryTrimmed?.(entry);
-    this.notifyChanged({ entries: true });
+    this.renderSelection();
+    if (!newer) this.options.onEntryChanged?.(entry);
+    this.notifyChanged({ entries: true }, vodId);
     return entry;
   }
 
-  history() {
-    if (!this.vodId) return null;
-    let history = markerHistory.get(this.vodId);
+  history(vodId = this.vodId) {
+    if (!vodId) return null;
+    let history = markerHistory.get(vodId);
     if (!history) {
       history = { undo: [], redo: [] };
-      markerHistory.set(this.vodId, history);
+      markerHistory.set(vodId, history);
     }
     return history;
   }
 
-  record(step) {
-    const history = this.history();
+  // vodId: the VOD the change was made on (a change saved while the player closes is still recorded for it)
+  record(step, vodId = this.vodId) {
+    const history = this.history(vodId);
+    if (!history) return;
     history.undo.push(step);
     if (history.undo.length > HISTORY_LIMIT) history.undo.shift();
     history.redo = [];
@@ -1419,18 +1680,15 @@ class PlayerBar {
   }
 
   // The library, VOD cards and the review's trim bar show markers too
-  notifyChanged(change = {}) {
+  notifyChanged(change = {}, vodId = this.vodId) {
     this.onMarkersChanged?.();
-    if (typeof markersChanged === "function") markersChanged(this.vodId, change);
+    if (typeof markersChanged === "function") markersChanged(vodId, change);
   }
 
   renderMarkers() {
     const list = this.el.querySelector(".vp-markers");
     list.replaceChildren();
-    // Short-clip review: only what's on the trim bar below
-    const w = this.compact ? this.focusWindow : null;
-    const shown = w ? this.markers.filter((m) => (isSegment(m) ? m.endSeconds > w.from && m.seconds < w.to : m.seconds >= w.from && m.seconds <= w.to)) : this.markers;
-    for (const marker of shown) {
+    for (const marker of this.markers) {
       const chip = document.createElement("span");
       chip.className = "vp-chip";
       const go = document.createElement("button");
@@ -1451,7 +1709,7 @@ class PlayerBar {
       }
       go.addEventListener("click", () => {
         // A segment's chip selects it (zooming to it); a marker's seeks to it
-        if (isSegment(marker) && !this.compact) this.select(marker);
+        if (isSegment(marker)) this.select(marker);
         else this.centerOn(marker.seconds);
         this.seek(marker.seconds);
       });
@@ -1478,7 +1736,7 @@ class PlayerBar {
     const id = keybindFor("player", event);
     if (!id) return;
     // Buttons handle Space themselves
-    if (id === "playPause" && event.key === " " && event.target.closest("button")) return;
+    if ((id === "playPause" || id === "playEnd") && event.key === " " && event.target.closest("button")) return;
     const actions = {
       playPause: () => this.togglePlay(),
       back10: () => this.seek(this.now() - 10),
@@ -1501,9 +1759,12 @@ class PlayerBar {
       undo: () => this.undo(),
       redo: () => this.redo(),
       deleteSelected: () => this.deleteSelected(),
+      setStart: () => this.setEdgeHere("start"),
+      setEnd: () => this.setEdgeHere("end"),
+      playEnd: () => this.playEnd(),
       escape: () => {
         if (this.segmentStart != null) this.cancelSegment();
-        else if (this.selected()) this.deselect();
+        else if (this.selectedRange()) this.deselect();
         else if (this.tool !== "pointer") this.setTool("pointer");
         else return false;
       },
@@ -1616,20 +1877,34 @@ class PlayerBar {
       this.seek(marker.seconds);
       return;
     }
-    if (y < BAR_TRACK.top) {
+    // A card on the purple lane: selects it (zooming to it; paused, the playhead goes to its start). On the selected one it seeks.
+    if (y < BAR_TRACK.top - 1) {
       const clip = this.clipAt(time);
-      if (clip) {
-        this.seek(clip.start);
+      if (clip && clip.id !== this.selectedCardId) {
+        const playing = !this.video.paused;
+        this.selectCard(clip);
+        if (!playing) this.seek(clip.start);
         return;
       }
     }
-    // A click on a segment selects it (and zooms to it); inside the selected one it seeks; elsewhere it unselects
+    // A click on a segment selects it (and zooms to it); inside the selected one it seeks. Elsewhere it unselects, except inside the
+    // selected card, and inside the reviewed card, which it selects (in a review the card is what's being worked on).
     const segment = this.segmentAt(time, y);
     if (segment && segment.id !== this.selectedRef?.id) {
       this.select(segment);
       return;
     }
-    if (!segment && this.selectedRef) this.deselect();
+    if (!segment) {
+      const inside = (clip) => clip && time >= clip.start && time <= this.clipEnd(clip);
+      const reviewed = this.clips.find((c) => c.id === this.focusEntryId);
+      if (inside(this.selectedCard())) {
+        // stays selected
+      } else if (inside(reviewed) && y >= BAR_TRACK.top - 1) {
+        this.selectCard(reviewed, { quiet: true });
+      } else {
+        this.deselect();
+      }
+    }
     this.scrubbing = true;
     this.canvas.setPointerCapture(event.pointerId);
     this.seek(time);
@@ -1699,8 +1974,15 @@ class PlayerBar {
     return (this.localX(event, this.overview) / (this.overview.clientWidth || 1)) * d;
   }
 
+  // The shortest card under a time (cards can overlap)
   clipAt(seconds) {
-    return this.clips.find((clip) => seconds >= clip.start && seconds <= (clip.end ?? this.duration())) ?? null;
+    let best = null;
+    for (const clip of this.clips) {
+      const end = this.clipEnd(clip);
+      if (seconds < clip.start || seconds > end) continue;
+      if (!best || end - clip.start < this.clipEnd(best) - best.start) best = clip;
+    }
+    return best;
   }
 
   renderTip(x, y) {
@@ -1761,9 +2043,9 @@ class PlayerBar {
     const video = this.video;
     if (!video) return;
     const now = video.currentTime;
-    const selected = this.selected();
-    // Playing a selected segment that was just made longer or shorter: stop at its new end
-    if (this.playUntil != null && selected) this.playUntil = selected.endSeconds;
+    const selected = this.selectedRange();
+    // Playing a selected segment or card that was just made longer or shorter: stop at its new end
+    if (this.playUntil != null && selected) this.playUntil = selected.end;
     if (this.playUntil != null && !video.paused && now >= this.playUntil) {
       video.pause();
       this.video.currentTime = this.playUntil;
@@ -1773,8 +2055,8 @@ class PlayerBar {
     const fitted = this.autoView && this.zoomed && !this.drag && !this.scrubbing && !this.pan ? selected : null;
     if (fitted) {
       const outside = !video.paused && (now > this.view.to || now < this.view.from);
-      if (outside || fitted.seconds < this.view.from || fitted.endSeconds > this.view.to)
-        this.zoomTo(this.segmentView(fitted, outside ? now : null));
+      if (outside || fitted.start < this.view.from || fitted.end > this.view.to)
+        this.zoomTo(this.rangeView(fitted.start, fitted.end, outside ? now : null));
     } else if (this.zoomed && !this.scrubbing && !this.pan && !video.paused) {
       // Follow the playhead while zoomed in. After the user scrolled the view away (hand, Shift+wheel) it stays put until the
       // playhead comes back into it or the user seeks.
@@ -1793,8 +2075,7 @@ class PlayerBar {
     const d = this.duration();
     const span = this.view.to - this.view.from;
     this.el.querySelector(".vp-zoom-label").textContent = !this.zoomed || !d ? "All" : span >= 3600 ? `${(span / 3600).toFixed(1)} h` : span >= 60 ? `${Math.round(span / 60)} min` : `${Math.round(span)} s`;
-    this.overview.hidden = !this.zoomed || this.compact;
-    if (this.compact) return;
+    this.overview.hidden = !this.zoomed;
     this.drawTimeline(now);
     if (this.zoomed) this.drawOverview(now);
   }
@@ -1901,6 +2182,30 @@ class PlayerBar {
     }
     this.selX.hidden = deleteAt == null;
     if (deleteAt != null) this.selX.style.left = `${deleteAt}px`;
+    // The selected card: its range on the track (the reviewed one already has its band), outlined from the lane down, with grips
+    const card = this.selectedCard();
+    if (card) {
+      const a = x(card.start);
+      const b = x(this.clipEnd(card));
+      if (b >= -4 && a <= width + 4) {
+        ctx.save();
+        if (card.id !== this.focusEntryId) {
+          ctx.fillStyle = c.window;
+          ctx.globalAlpha = 0.16;
+          ctx.fillRect(a, top, Math.max(2, b - a), height);
+          ctx.globalAlpha = 1;
+        }
+        ctx.strokeStyle = c.text;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 2]);
+        ctx.strokeRect(a - 2.5, BAR_TRACK.clipTop + 0.5, Math.max(2, b - a) + 5, top + height + 2);
+        ctx.restore();
+        if (this.editableClip(card)) {
+          ctx.fillStyle = c.playhead;
+          for (const edge of [a, b]) ctx.fillRect(Math.round(edge) - 2, top + height / 2 - 7, 4, 14);
+        }
+      }
+    }
     if (this.segmentStart != null) {
       const a = x(Math.min(this.segmentStart, now));
       const b = x(Math.max(this.segmentStart, now));

@@ -530,7 +530,7 @@ button.small, a.button.small { padding: 3px 10px; font-size: 13px; }
 .vp-marker-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 6px 0; }
 .vp-marker-form[hidden] { display: none; }
 .vp-marker-label { flex: 1; min-width: 180px; }
-.vp-time-field { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); }
+.vp-time-field { display: inline-flex; flex-direction: row; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); }
 .vp-time-field input { width: 8.5em; font-variant-numeric: tabular-nums; }
 .vp-btn-active { border-color: var(--accent); background: var(--accent); color: #fff; }
 .vp-chip-go i.vp-chip-segment { width: 16px; border-radius: 2px; }
@@ -578,8 +578,13 @@ button.small, a.button.small { padding: 3px 10px; font-size: 13px; }
 .vp-sel-x[hidden] { display: none; }
 .vp-selection { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 6px 8px; border: 1px dashed var(--border); border-radius: 8px; font-size: 13px; }
 .vp-selection[hidden] { display: none; }
-.vp-sel-time { font-variant-numeric: tabular-nums; }
+.vp-sel-start, .vp-sel-end { width: 7.5em; font-variant-numeric: tabular-nums; }
+.vp-sel-len { font-variant-numeric: tabular-nums; }
 .vp-sel-label { flex: 1; min-width: 160px; }
+.vp-sel-buttons { display: inline-flex; gap: 4px; }
+.vp-sel-buttons .vp-btn { padding: 2px 8px; font-size: 12px; }
+.vp-selection-card { border-color: var(--vp-clip, var(--accent)); }
+#review-classic[hidden] { display: none; }
 .vp-swatch input:disabled + span { cursor: default; opacity: .6; }
 .vp-seg-mode .vp-len { border-color: var(--accent); color: var(--accent); }
 .vp-chip-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }

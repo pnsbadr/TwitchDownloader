@@ -311,24 +311,32 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   (dashed preview meanwhile, Esc cancels), then the form names it; the form's Start/End can also be typed (blank End = a moment). Zoom (wheel, +/−, Fit; min 10 s) with an
   overview strip while zoomed; the view follows the playhead. `GET /api/vods/{id}/timeline` feeds clips and markers; it's reloaded
   after adding/re-trimming/deleting an entry. Keys (not while typing): Space/K play, J/L ±10 s, ←/→ ±5 s, `,`/`.` one frame,
-  M marker, S segment start/end, F fullscreen, +/−/0 zoom, V/C/Z/H tools, Ctrl+Z / Ctrl+Shift+Z (Ctrl+Y) undo/redo, Del (see keybinds.js).
-  **Editing** (badrfly, 2026-11-10): a vertical **tools bar** right of the video (`.vp-stage` wraps the frame and `.vp-tools`; hidden in compact
-  mode): **Pointer** (V), **Cut** (C: click a segment to split it at that point into "Name 1"/"Name 2", or "Segment A1"/"A2" when the last
+  M marker, S segment start/end, I/O set the selection's start/end at the playhead, Shift+Space play its last 3 s, F fullscreen, +/−/0 zoom,
+  V/C/Z/H tools, Ctrl+Z / Ctrl+Shift+Z (Ctrl+Y) undo/redo, Del (see keybinds.js).
+  **Editing** (badrfly, 2026-11-10): a vertical **tools bar** right of the video (`.vp-stage` wraps the frame and `.vp-tools`; shown only
+  with the app player): **Pointer** (V), **Cut** (C: click a segment to split it at that point into "Name 1"/"Name 2", or "Segment A1"/"A2" when the last
   word is one character; each part ≥ 0.5 s), **Zoom** (Z: click zooms in, right click out),
   **Hand** (H: drag the zoomed timeline to scroll it; only the view moves, no seek/select; after a hand or Shift+wheel scroll the view stops
   following the playhead until it comes back into view or the user seeks), **Undo/Redo**. Every opening of Watch/Review starts with the
   pointer tool, and the player takes the keyboard focus when it attaches (unless the user is typing in a field), so keys work at once. With the pointer, clicking a
   segment **selects** it and zooms to it (20 % margin, ≥ 2 s; selecting another one while playing jumps to its start and plays it to its end);
-  then Play plays only it (stops at its end, also after it was made longer), −10s/−1s/+1s/+10s move its **end**
-  (presses within 0.6 s are one change), its edges can be dragged (only the selected one, against misclicks; while dragging only the timeline redraws and the tip shows just the edge's time, chips and the selection row update on release), × (placed 14 px past its end,
+  then Play plays only it (stops at its end, also after it was made longer), −10s/−1s/+1s/+10s move its **end** (Shift-click: its start;
+  presses within 0.6 s are one change), the selection row's Start/End can be typed, Start here / End here (I/O) and Last 3s (Shift+Space), its edges can be dragged (only the selected one, against misclicks; while dragging only the timeline redraws and the tip shows just the edge's time, chips and the selection row update on release), × (placed 14 px past its end,
   away from the edge grip) or Del deletes it, and the row under the bar renames/recolors it. Clicking outside segments unselects; so do Esc, the overview strip and a click anywhere else in the Watch/Review window (except the parts that work on the selection: its row, chips, tools, play and ±10s/±1s).
   **Snapping** (badrfly, 2026-11-10; magnet button at the top of the tools bar, N; on by default, saved in `localStorage` key `clipLibrary.snap`):
   a dragged edge sticks to any time within 8 px from `PlayerBar.snapPoints()` (markers, segment edges, library cards' start/end, the
   reviewed clip, the playhead; dashed guide while stuck); dragging further passes it. **New kinds of timeline items must add their times
   to `snapPoints()`.** **Reference cards on the timeline**: the start/end of reference-only VOD entries the member may edit (`canEdit` from
   `/timeline`) can be dragged on the purple lane, and in Review the reviewed entry's edges anywhere on the track; it saves right away with
-  `PUT /trim` (one undo step; the review dialog follows, `onEntryTrimmed`/`syncReviewEntry`, also when the server moves a reviewed live markers card; a live markers card dragged by hand stops following). Stored entries keep
-  their trim bar. In Review the reviewed entry's card on the purple lane and its vertical lines on the track are **one object**
+  `PUT /trim` (one undo step; the review dialog follows, `onEntryChanged`/`syncReviewEntry`, also when the server moves a reviewed live markers card; a live markers card dragged by hand stops following). Stored entries keep
+  their trim bar outside Review. **Cards are selectable like segments** (badrfly, 2026-11-11; `selectedCardId`, `selectedRange()` = the
+  selected segment or card): click one on the purple lane (or press on its edge without dragging); then Play, ±10s/±1s (Shift: start),
+  I/O, typed Start/End, Last 3s and title (PATCH rename) work on it, and its edges can be dragged on the track too. Edits go through
+  `editCard` → `cardEdit` → `commitCard` (PUT /trim, one undo step `trim`): reference cards 0.6 s after the last change (drag: at once),
+  the reviewed **stored** clip `STORED_SAVE_DELAY_MS` (3 s) after, since it downloads again; unselecting, closing or switching players
+  (`detach`) saves what's waiting. Stored cards are only editable in their own Review (`editableClip`). The page-wide deselect listener
+  runs on `click` with `composedPath()` (a pointerdown deselect shifted the centered dialog, so Close missed its click).
+  In Review the reviewed entry's card on the purple lane and its vertical lines on the track are **one object**
   (`syncFocusClip`: the card always has `focus`'s range, also unsaved field edits), so either drags and snaps both. A segment changed (drag, nudge) so it reaches past a reference card it was on **stretches the card** to cover it
   (`cardStretchesFor`; not live markers cards, which the server moves itself); undo reverts both in one step.
   **Automatic zoom never cuts off the selected segment** (badrfly): every zoom the app makes by itself goes through `PlayerBar.zoomTo`, which
@@ -346,15 +354,14 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   fields from the position below, hundredths of a second) and **Play clip** (seeks to start, pauses at end). The review dialog
   starts at the clip start and pauses at its end (not shown for VodUnavailable). Closing a player
   removes the video/iframe so playback stops.
-  **Review modes** (badrfly, 2026-11-10): for a **stored** (short) entry the control bar is *compact* (controls and marker chips for
-  the trim bar's range, no VOD timeline) with a **Full VOD timeline** button that shows it zoomed in on the clip; the trim bar
-  shows the team's markers/segments. For a **reference** entry the trim bar is hidden and the VOD timeline starts zoomed in on the
-  entry, which is highlighted there (`PlayerBar.configure` / `setFocus` / `zoomTo`); Start/End fields and nudges stay. With the Twitch
-  embed (no bar) the trim bar is always shown.
-  **Review** on a library entry (and automatically right after Add to library) opens the clip review dialog: the
-  player plus a trim bar spanning the clip ± a margin (25% of its length, 5–60 s, widened when a handle leaves it), with
-  draggable handles (arrow keys nudge 0.1 s, Shift 1 s), a playhead, click-to-seek, ±1 s / ±0.1 s buttons, Set to playhead,
-  Play clip / Play last 3s, and **Save new cut** (`PUT /trim`; closes the dialog on success, result shown above the library). Unsaved changes ask before closing.
+  **Review** (badrfly, 2026-11-11: the timeline does the work) on a library entry (and automatically right after Add to library) opens the
+  clip review dialog: the player with the full VOD timeline zoomed in on the entry (stored or reference; no compact mode any more), the
+  entry's card **selected** (`configure({ focus, focusEntryId, selectFocus, zoom, onEntryChanged, onFocusEdited, onAttached })`), edited
+  as above and saved by itself; the dialog follows saves (`syncReviewEntry`, also renames). **Only with the Twitch embed** (no bar;
+  `onAttached(false)`) the old controls show (`#review-classic`): a trim bar spanning the clip ± a margin (25% of its length, 5–60 s,
+  widened when a handle leaves it) with draggable handles (arrow keys nudge 0.1 s, Shift 1 s), a playhead, click-to-seek, ±1 s / ±0.1 s
+  buttons, Set to playhead, Play clip / Play last 3s, and **Save new cut** (`PUT /trim`; closes the dialog on success, result shown above
+  the library). Unsaved changes there ask before closing (`reviewNeedsConfirm`).
   With the Twitch embed, `getCurrentTime()` is a cache refreshed about once a second (and stale right after a seek), so `EmbedBackend.position()`
   estimates the live offset (last refresh or seek target + time played since, via PLAYING/PAUSE/SEEK events; refreshes are caught on the iframe's `message` events) and a 40 ms tick
   pauses previews at the end. Using the raw value made Set end land up to ~1 s early and previews stop up to ~1 s late.

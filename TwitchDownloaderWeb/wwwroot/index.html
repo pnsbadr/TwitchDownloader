@@ -197,6 +197,8 @@
     </div>
     <div id="clip-source" class="player-source muted"></div>
 
+    <!-- Only with the Twitch player (no timeline of ours); the app player edits the clip on its timeline -->
+    <div id="review-classic">
     <div id="trim-bar-wrap" class="trim-bar-wrap">
       <div id="trim-bar" class="trim-bar" aria-label="Clip range. Drag the handles to adjust; click to seek.">
         <div id="trim-range" class="trim-range"></div>
@@ -245,6 +247,7 @@
       <span id="trim-message" class="message" role="status"></span>
     </div>
     <p class="muted">Plays from Twitch and pauses at the end. Saving re-downloads the clip with the new start and end.</p>
+    </div>
   </dialog>
 
   <!-- Vertical (9:16) editor: drag/resize boxes on the landscape video, like Twitch's portrait clip editor -->
