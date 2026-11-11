@@ -1066,7 +1066,8 @@ class PlayerBar {
     const t = roundHundredths(Math.min(d, Math.max(0, this.snapTime(seconds, { markerId: segment.id }))));
     if (this.drag.edge === "start") segment.seconds = Math.min(t, roundHundredths(segment.endSeconds - MIN_SEGMENT_SECONDS));
     else segment.endSeconds = Math.max(t, roundHundredths(segment.seconds + MIN_SEGMENT_SECONDS));
-    this.afterLocalChange();
+    // Only the timeline is redrawn while dragging; the chips and the selection row update on release (no flicker)
+    this.dirty = true;
   }
 
   // Title or color from the selection row
@@ -1226,12 +1227,27 @@ class PlayerBar {
     this.dirty = true;
   }
 
+  // The time of the edge being dragged (segment or card)
+  draggedEdgeTime() {
+    const drag = this.drag;
+    if (!drag) return null;
+    if (drag.clip) {
+      const clip = this.clips.find((c) => c.id === drag.clip.id);
+      return clip ? (drag.edge === "start" ? clip.start : this.clipEnd(clip)) : null;
+    }
+    const segment = this.markers.find((m) => m.id === drag.ref.id);
+    return segment ? (drag.edge === "start" ? segment.seconds : segment.endSeconds) : null;
+  }
+
   endDrag() {
     const drag = this.drag;
     this.drag = null;
     this.snapAt = null;
     this.dirty = true;
-    if (!drag.clip) return this.commitEdit(drag.ref, drag.before);
+    if (!drag.clip) {
+      this.afterLocalChange();
+      return this.commitEdit(drag.ref, drag.before);
+    }
     const clip = this.clips.find((c) => c.id === drag.clip.id);
     if (!clip) return;
     const after = { start: clip.start, end: clip.end };
@@ -1673,6 +1689,14 @@ class PlayerBar {
 
   renderTip(x, y) {
     const time = this.xToTime(x);
+    if (this.drag) {
+      // While dragging: just where the edge is, so the tip doesn't jump in size
+      this.tip.textContent = `${this.drag.edge === "start" ? "Start" : "End"} ${formatTrimValue(this.draggedEdgeTime() ?? time)}${this.snapAt != null ? " (snapped)" : ""}`;
+      this.tip.hidden = false;
+      const tipWidth = this.tip.offsetWidth;
+      this.tip.style.left = `${Math.min(Math.max(0, x - tipWidth / 2), Math.max(0, this.canvas.clientWidth - tipWidth))}px`;
+      return;
+    }
     const lines = [formatTrimValue(Math.max(0, time))];
     const marker = this.markerAt(x);
     if (marker) {
