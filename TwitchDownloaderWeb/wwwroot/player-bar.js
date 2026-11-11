@@ -339,13 +339,20 @@ class PlayerBar {
     // Clicking anywhere else in the Watch / Review window unselects the segment or card (the timeline has its own rules; the parts
     // that work on the selection keep it). On click, not pointerdown: the selection row going away moves what's under the pointer
     // (the review dialog is centered), and a button like Close would then miss its click.
+    // Where the press started counts too: selecting something on pointerdown shows the selection row, which moves the centered
+    // dialog, so the release (and the click's target) can land outside the timeline and would unselect it again.
     const area = this.wrap.closest("dialog") ?? this.wrap.closest(".watch") ?? this.wrap;
+    const keep = ".vp-timeline, .vp-overview, .vp-selection, .vp-markers, .vp-tools, .vp-sel-x, .vp-marker-form, " +
+      "[data-act=play], [data-act=back10], [data-act=back1], [data-act=fwd1], [data-act=fwd10]";
+    const kept = (event) => event.composedPath().some((node) => node instanceof Element && node.matches(keep));
+    let pressKept = false;
+    area.addEventListener("pointerdown", (event) => { pressKept = kept(event); }, true);
     area.addEventListener("click", (event) => {
+      const pressed = pressKept;
+      pressKept = false;
       if (!this.selectedRef && this.selectedCardId == null) return;
       // The path as it was when clicked: a chip that selected a segment has already been redrawn (detached) by now
-      const keep = ".vp-timeline, .vp-overview, .vp-selection, .vp-markers, .vp-tools, .vp-sel-x, .vp-marker-form, " +
-        "[data-act=play], [data-act=back10], [data-act=back1], [data-act=fwd1], [data-act=fwd10]";
-      if (event.composedPath().some((node) => node instanceof Element && node.matches(keep))) return;
+      if (pressed || kept(event)) return;
       this.deselect();
     });
     this.buildTools();
