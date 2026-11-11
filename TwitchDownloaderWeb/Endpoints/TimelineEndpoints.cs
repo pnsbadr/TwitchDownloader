@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using TwitchDownloaderWeb.Data;
 using TwitchDownloaderWeb.Services;
 using TwitchDownloaderWeb.Services.Accounts;
@@ -20,7 +21,12 @@ namespace TwitchDownloaderWeb.Endpoints
         public LiveEntryChange? LiveEntry { get; init; }
     }
 
-    public sealed record TimelineDto(IReadOnlyList<TimelineClipDto> Clips, IReadOnlyList<MarkerDto> Markers);
+    /// <param name="MaxStoredClipSeconds">The stored-clip limit (Downloads:MaxStoredClipSeconds): the player's clip tool and a clip's
+    /// review never make a clip longer than this.</param>
+    public sealed record TimelineDto(IReadOnlyList<TimelineClipDto> Clips, IReadOnlyList<MarkerDto> Markers, int MaxStoredClipSeconds);
+
+    /// <summary>A library entry's place on its VOD, for the strips on library and VOD cards.</summary>
+    public sealed record EntryRangeDto(int Id, long VodId, string Title, string Kind, double Start, double? End, bool ReferenceOnly);
 
     public sealed record AddMarkerRequest(double? Seconds, double? EndSeconds, string? Label, string? Color);
 
@@ -35,6 +41,8 @@ namespace TwitchDownloaderWeb.Endpoints
             app.MapGet("/api/vods/{vodId:long}/timeline", GetTimeline).RequireTeam(TeamPermission.ViewLibrary);
             // Markers and segments of several VODs at once, for the library and the VOD browser cards
             app.MapGet("/api/markers", ListMarkers).RequireTeam(TeamPermission.ViewLibrary);
+            // The team's library entries on several VODs at once (where they sit), for the same cards
+            app.MapGet("/api/timeline/entries", ListEntryRanges).RequireTeam(TeamPermission.ViewLibrary);
             app.MapPost("/api/vods/{vodId:long}/markers", AddMarker).RequireTeam(TeamPermission.AddEntries);
             // Own markers need AddEntries (as when they were made); anyone's need EditAnyEntries / DeleteAnyEntries. Checked in the handler.
             app.MapPut("/api/markers/{id:int}", UpdateMarker).RequireTeam(TeamPermission.AddEntries | TeamPermission.EditAnyEntries);
@@ -48,7 +56,8 @@ namespace TwitchDownloaderWeb.Endpoints
         private static bool CanEdit(TeamContext team, VodMarker marker) =>
             team.CanOnOwnOrAny(marker.CreatedByUserId.ToString(), TeamPermission.AddEntries, TeamPermission.EditAnyEntries);
 
-        private static async Task<IResult> GetTimeline(long vodId, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
+        private static async Task<IResult> GetTimeline(long vodId, TeamContext team, LibraryDbContext db, IOptions<DownloadSettings> settings,
+            CancellationToken cancellationToken)
         {
             var clips = await db.Entries.AsNoTracking()
                 .Where(x => x.VodId == vodId)
@@ -64,23 +73,52 @@ namespace TwitchDownloaderWeb.Endpoints
                     x.Status == EntryStatus.ReferenceOnly, x.FollowsMarkers,
                     x.Kind == EntryKind.Vod && x.Status != EntryStatus.VodUnavailable
                         && team.CanOnOwnOrAny(x.AddedByUserId, TeamPermission.EditOwnEntries, TeamPermission.EditAnyEntries))).ToList(),
-                markers.OrderBy(x => x.Seconds).Select(x => ToDto(x, names, team)).ToList()));
+                markers.OrderBy(x => x.Seconds).Select(x => ToDto(x, names, team)).ToList(),
+                settings.Value.MaxStoredClipSeconds));
         }
 
         public const int MaxVodIdsPerRequest = 200;
 
-        private static async Task<IResult> ListMarkers(string? vodIds, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
+        /// <returns>The VOD IDs, or the validation problem to return.</returns>
+        private static (HashSet<long> Ids, IResult? Problem) ParseVodIds(string? vodIds)
         {
             var ids = new HashSet<long>();
             foreach (var part in (vodIds ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
                 if (!long.TryParse(part, out var id) || id <= 0)
-                    return Results.ValidationProblem(new Dictionary<string, string[]> { ["vodIds"] = ["Give VOD IDs separated by commas."] });
+                    return (ids, Results.ValidationProblem(new Dictionary<string, string[]> { ["vodIds"] = ["Give VOD IDs separated by commas."] }));
                 ids.Add(id);
             }
 
             if (ids.Count > MaxVodIdsPerRequest)
-                return Results.ValidationProblem(new Dictionary<string, string[]> { ["vodIds"] = [$"Ask for at most {MaxVodIdsPerRequest} VODs at once."] });
+                return (ids, Results.ValidationProblem(new Dictionary<string, string[]> { ["vodIds"] = [$"Ask for at most {MaxVodIdsPerRequest} VODs at once."] }));
+
+            return (ids, null);
+        }
+
+        private static async Task<IResult> ListEntryRanges(string? vodIds, LibraryDbContext db, CancellationToken cancellationToken)
+        {
+            var (ids, problem) = ParseVodIds(vodIds);
+            if (problem is not null)
+                return problem;
+
+            if (ids.Count == 0)
+                return Results.Ok(Array.Empty<EntryRangeDto>());
+
+            var entries = await db.Entries.AsNoTracking()
+                .Where(x => ids.Contains(x.VodId))
+                .OrderBy(x => x.VodId).ThenBy(x => x.AddedAtUtc)
+                .Select(x => new { x.Id, x.VodId, x.Title, x.Kind, x.StartTime, x.EndTime, x.Status })
+                .ToListAsync(cancellationToken);
+            return Results.Ok(entries.Select(x => new EntryRangeDto(x.Id, x.VodId, x.Title, x.Kind.ToString(), x.StartTime.TotalSeconds,
+                x.EndTime?.TotalSeconds, x.Status == EntryStatus.ReferenceOnly)).ToList());
+        }
+
+        private static async Task<IResult> ListMarkers(string? vodIds, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
+        {
+            var (ids, problem) = ParseVodIds(vodIds);
+            if (problem is not null)
+                return problem;
 
             if (ids.Count == 0)
                 return Results.Ok(Array.Empty<MarkerDto>());

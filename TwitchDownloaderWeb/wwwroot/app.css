@@ -1047,6 +1047,15 @@ table.activity td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .seg-mark { width: 3px; margin-left: -1px; background: var(--seg-color); border-radius: 1px; }
 .seg-box:hover, .seg-mark:hover { filter: brightness(1.2); outline: 1px solid var(--text); z-index: 1; }
 .vod-card .seg-strip { margin: 6px 0 0; }
+/* The team's clips on a strip (purple line above it, like the player's lane), and a stored clip's own range on its 5-minute strip */
+.seg-strip { --strip-clip: #8e4ec6; }
+@media (prefers-color-scheme: dark) { .seg-strip { --strip-clip: #b58ef0; } }
+.seg-clip { position: absolute; top: -8px; height: 4px; min-width: 3px; border-radius: 1px; background: var(--strip-clip); opacity: .85; }
+.seg-self { position: absolute; top: 0; bottom: 0; min-width: 3px; background: color-mix(in srgb, var(--strip-clip) 28%, transparent);
+  box-shadow: inset 0 0 0 1px var(--strip-clip); }
+.seg-self::before { content: ""; position: absolute; left: 0; right: 0; top: -8px; height: 4px; border-radius: 1px; background: var(--strip-clip); }
+.seg-clip:hover, .seg-self:hover { filter: brightness(1.2); outline: 1px solid var(--text); z-index: 1; }
+.seg-slot .seg-strip { margin-top: 12px; }
 .entry-markers { margin-top: 6px; }
 .entry-markers .vp-chip-go { cursor: default; padding-right: 9px; }
 

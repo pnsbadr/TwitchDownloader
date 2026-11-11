@@ -38,6 +38,22 @@ const MARKER_HIT_PX = 6;
 const EDGE_HIT_PX = 6;
 const MIN_SEGMENT_SECONDS = 0.5;
 const MIN_CLIP_SECONDS = 1;
+// A short clip's review shows a 5-minute window of the VOD around it (at least 1 minute before and after), and so does its card's
+// strip when it has segments (badrfly, 2026-11-11)
+const CLIP_WINDOW_SECONDS = 300;
+const CLIP_WINDOW_MIN_PAD = 60;
+
+// The window shown around a clip: CLIP_WINDOW_SECONDS long (longer for a clip that wouldn't fit with its padding), the clip in the
+// middle, kept inside the VOD
+function clipWindow(start, end, vodLength) {
+  const length = Math.max(0, end - start);
+  const total = Math.max(CLIP_WINDOW_SECONDS, length + 2 * CLIP_WINDOW_MIN_PAD);
+  let from = start - (total - length) / 2;
+  if (vodLength > 0 && from + total > vodLength) from = vodLength - total;
+  from = Math.max(0, from);
+  const to = vodLength > 0 ? Math.min(vodLength, from + total) : from + total;
+  return { from, to };
+}
 const SNAP_PX = 8;
 // The reviewed stored clip downloads again on every save: its changes are saved this long after the last one (or on close)
 const STORED_SAVE_DELAY_MS = 3000;
@@ -177,18 +193,43 @@ function markerChips(markers, from, to) {
   return list;
 }
 
-// A small strip for a library entry or VOD card: the markers and segments that fall between from and to (VOD seconds).
-// Null when there are none. Hovering one shows its title and times.
-function segmentStrip(markers, from, to) {
+// A small strip for a library entry or VOD card: the markers and segments that fall between from and to (VOD seconds), and the
+// team's clips there (a purple line on top, like the player's lane). self: the range of the clip the strip belongs to (a stored
+// clip's 5-minute window), highlighted. Null when there's nothing to show. Hovering one shows its title and times.
+function segmentStrip(markers, from, to, { clips = [], self = null } = {}) {
   const span = to - from;
   if (!(span > 0)) return null;
   const inside = markers.filter((m) => (isSegment(m) ? m.endSeconds > from && m.seconds < to : m.seconds >= from && m.seconds <= to));
-  if (!inside.length) return null;
+  const clipsInside = clips.filter((c) => (c.end ?? Infinity) > from && c.start < to);
+  if (!inside.length && !clipsInside.length && !self) return null;
   const strip = document.createElement("div");
   strip.className = "seg-strip";
   strip.setAttribute("role", "list");
-  strip.setAttribute("aria-label", "Team markers and segments");
+  strip.setAttribute("aria-label", "Team markers, segments and clips");
   const pct = (t) => `${(Math.min(Math.max(t, from), to) - from) / span * 100}%`;
+  const range = (item, start, end) => {
+    item.style.left = pct(start);
+    item.style.width = `calc(${pct(end)} - ${pct(start)})`;
+  };
+  if (self) {
+    const item = document.createElement("span");
+    item.className = "seg-self";
+    item.setAttribute("role", "listitem");
+    item.title = `This clip\n${formatTrimValue(self.start)} – ${formatTrimValue(self.end)}`;
+    item.setAttribute("aria-label", item.title.replace(/\n/g, ", "));
+    range(item, self.start, self.end);
+    strip.append(item);
+  }
+  for (const clip of clipsInside) {
+    const end = clip.end ?? to;
+    const item = document.createElement("span");
+    item.className = "seg-clip";
+    item.setAttribute("role", "listitem");
+    item.title = `${clip.kind === "Clip" ? "Twitch clip" : "Clip"}: ${clip.title}\n${formatTrimValue(clip.start)} – ${formatTrimValue(end)}`;
+    item.setAttribute("aria-label", item.title.replace(/\n/g, ", "));
+    range(item, clip.start, end);
+    strip.append(item);
+  }
   for (const marker of inside) {
     const item = document.createElement("span");
     item.setAttribute("role", "listitem");
@@ -233,6 +274,8 @@ class PlayerBar {
     this.hoverX = null;
     this.pendingMarker = null; // true while the add form is open
     this.segmentStart = null; // seconds where a segment being marked starts (S pressed once)
+    this.clipStart = null; // seconds where a clip being marked starts (X pressed once)
+    this.maxClipSeconds = 180; // the stored-clip limit, from the timeline
     // Set by the page before a player opens (see configure): the clip review starts zoomed in on the reviewed entry, selected
     this.options = {};
     this.focus = null; // { start, end } of the entry being reviewed, highlighted on the timeline
@@ -283,6 +326,7 @@ class PlayerBar {
         </span>
         <button type="button" class="vp-btn vp-add-marker" data-act="marker" title="Add a marker here (M)">+ Marker</button>
         <button type="button" class="vp-btn vp-add-segment" data-act="segment" title="Mark a segment: press at its start, then at its end (S)">[ Segment</button>
+        <button type="button" class="vp-btn vp-add-clip" data-act="clip" title="Mark a clip (up to the stored-clip limit, 3 min): press at its start, then at its end (${keybindLabel("clip")}). It becomes a library card.">[ Clip</button>
         <button type="button" class="vp-btn" data-act="fullscreen" aria-label="Fullscreen" title="Fullscreen (F)">⛶</button>
       </div>
       <div class="vp-marker-form" hidden>
@@ -292,7 +336,7 @@ class PlayerBar {
         <label class="vp-time-field vp-marker-end-field">End <span class="vp-time-box"><input class="vp-marker-end" autocomplete="off" spellcheck="false">
           <button type="button" class="vp-here" data-act="endnow" title="Use the playhead's position" aria-label="Use the playhead's position">👆</button></span></label>
         <input class="vp-marker-label" maxlength="200" placeholder="Title, e.g. intro (optional)" autocomplete="off">
-        <span class="vp-swatches" role="radiogroup" aria-label="Marker color">
+        <span class="vp-swatches vp-form-swatches" role="radiogroup" aria-label="Marker color">
           ${Object.entries(MARKER_COLORS).map(([name, color], i) => `
             <label class="vp-swatch" title="${name}"><input type="radio" name="vp-color" value="${name}" ${i === 0 ? "checked" : ""}>
               <span style="background:${color}"></span></label>`).join("")}
@@ -575,11 +619,16 @@ class PlayerBar {
     this.playUntil = null;
     this.closeMarkerForm();
     this.cancelSegment();
+    this.cancelClip();
+    // A short clip's review: the timeline only shows this part of the VOD (playing stops at its end), and the clip can't get longer
+    // than the stored-clip limit (options.capFocus)
+    this.bounds = this.options.bounds ?? null;
     this.el.hidden = false;
     this.wrap.classList.add("has-bar");
     const canAdd = can("AddEntries") && !me?.support;
     this.el.querySelector(".vp-add-marker").hidden = !canAdd;
     this.el.querySelector(".vp-add-segment").hidden = !canAdd;
+    this.el.querySelector(".vp-add-clip").hidden = !canAdd;
     this.tools.querySelector(".vp-tool-cut").hidden = !canAdd;
     // Every opening starts with the pointer tool (badrfly)
     this.tool = "pointer";
@@ -680,6 +729,7 @@ class PlayerBar {
       // A card being changed on screen keeps its unsaved range
       const local = this.cardEdit && this.clips.find((c) => c.id === this.cardEdit.id);
       this.markers = timeline.markers;
+      if (timeline.maxStoredClipSeconds > 0) this.maxClipSeconds = timeline.maxStoredClipSeconds;
       this.timelineLoaded = true;
       this.clips = timeline.clips.map((c) => (local && c.id === local.id ? { ...c, start: local.start, end: local.end } : c));
       this.syncFocusClip();
@@ -701,6 +751,14 @@ class PlayerBar {
     const d = this.video?.duration;
     if (Number.isFinite(d) && d > 0) return d;
     return this.listDuration || 0;
+  }
+
+  // The part of the VOD the timeline may show and play: all of it, or the window of a short clip's review (bounds)
+  extent() {
+    const d = this.duration();
+    if (!this.bounds || !d) return { from: 0, to: d };
+    const from = Math.min(Math.max(0, this.bounds.from), d);
+    return { from, to: Math.max(from, Math.min(d, this.bounds.to)) };
   }
 
   applyLayout() {
@@ -726,11 +784,12 @@ class PlayerBar {
       this.pendingZoom = range;
       return;
     }
+    const ext = this.extent();
     const length = range.to - range.from;
     const span = Math.max(BAR_MIN_SPAN_SECONDS, length);
     this.autoView = true;
     this.manualPan = false;
-    if (span >= d) {
+    if (span >= ext.to - ext.from) {
       this.zoomed = false;
       this.fitIfNeeded();
       return;
@@ -762,7 +821,7 @@ class PlayerBar {
       this.pendingZoom = null;
       this.zoomTo(range);
     }
-    if (!this.zoomed) this.view = { from: 0, to: d };
+    if (!this.zoomed) this.view = this.extent();
     else this.clampView();
     this.el.querySelector(".vp-total").textContent = formatDuration(d);
     this.dirty = true;
@@ -796,6 +855,7 @@ class PlayerBar {
       case "fit": return this.fit();
       case "marker": return this.openMarkerForm();
       case "segment": return this.toggleSegment();
+      case "clip": return this.toggleClip();
       case "fullscreen": return this.toggleFullscreen();
     }
   }
@@ -845,7 +905,8 @@ class PlayerBar {
   seek(seconds) {
     this.manualPan = false; // the view follows the playhead again
     const d = this.duration();
-    this.video.currentTime = Math.max(0, d ? Math.min(seconds, d - 0.05) : seconds);
+    const ext = this.extent();
+    this.video.currentTime = Math.max(ext.from, d ? Math.min(seconds, ext.to - 0.05) : seconds);
     this.dirty = true;
   }
 
@@ -896,10 +957,12 @@ class PlayerBar {
     const d = this.duration();
     if (!d) return;
     const span = this.view.to - this.view.from;
-    const next = Math.min(d, Math.max(BAR_MIN_SPAN_SECONDS, span * factor));
+    const ext = this.extent();
+    const total = ext.to - ext.from;
+    const next = Math.min(total, Math.max(BAR_MIN_SPAN_SECONDS, span * factor));
     this.autoView = false;
     this.manualPan = false;
-    if (next >= d) return this.fit();
+    if (next >= total) return this.fit();
     // Keep the anchor at the same place on screen
     const ratio = span > 0 ? (anchor - this.view.from) / span : 0.5;
     this.view = { from: anchor - next * ratio, to: anchor - next * ratio + next };
@@ -917,11 +980,11 @@ class PlayerBar {
   }
 
   clampView() {
-    const d = this.duration();
+    const ext = this.extent();
     let { from, to } = this.view;
-    const span = Math.min(to - from, d);
-    if (from < 0) from = 0;
-    if (from + span > d) from = d - span;
+    const span = Math.min(to - from, ext.to - ext.from);
+    if (from < ext.from) from = ext.from;
+    if (from + span > ext.to) from = ext.to - span;
     this.view = { from, to: from + span };
   }
 
@@ -936,6 +999,7 @@ class PlayerBar {
     if (!this.canAdd()) return;
     if (this.segmentStart == null) {
       this.closeMarkerForm();
+      this.cancelClip();
       this.segmentStart = this.now();
       this.renderSegmentButton();
       this.dirty = true;
@@ -959,13 +1023,63 @@ class PlayerBar {
     button.classList.toggle("vp-btn-active", this.segmentStart != null);
   }
 
-  // + Marker / M: one time. A segment (S twice): start and end.
-  openMarkerForm(start = this.now(), end = null) {
+  // ---- the clip tool: marked like a segment (X twice), makes a library card of at most the stored-clip limit ----
+
+  // Where a clip being marked would be now: to the playhead, but never longer than the limit
+  clipMarkRange(now = this.now()) {
+    const a = this.clipStart;
+    const max = this.maxClipSeconds;
+    const b = now >= a ? Math.min(now, a + max) : Math.max(now, a - max);
+    return { start: Math.min(a, b), end: Math.max(a, b), capped: Math.abs(now - a) > max };
+  }
+
+  // "3 min" (the stored-clip limit, for messages)
+  clipLimitText() {
+    const max = this.maxClipSeconds;
+    return max % 60 === 0 ? `${max / 60} min` : formatDuration(max);
+  }
+
+  toggleClip() {
+    if (!this.canAdd()) return;
+    if (this.clipStart == null) {
+      this.closeMarkerForm();
+      this.cancelSegment();
+      this.clipStart = this.now();
+      this.renderClipButton();
+      this.dirty = true;
+      return;
+    }
+    const range = this.clipMarkRange();
+    this.cancelClip();
+    if (range.end - range.start < MIN_CLIP_SECONDS) return this.flash(`A clip must be at least ${MIN_CLIP_SECONDS} s long.`);
+    this.openMarkerForm(range.start, range.end, "clip");
+  }
+
+  cancelClip() {
+    this.clipStart = null;
+    this.renderClipButton();
+    this.dirty = true;
+  }
+
+  renderClipButton() {
+    const button = this.el.querySelector(".vp-add-clip");
+    const text = this.clipStart == null
+      ? "[ Clip"
+      : this.clipMarkRange().capped
+        ? `] End clip (${this.clipLimitText()} max)`
+        : `] End clip (from ${formatTrimValue(this.clipStart)})`;
+    if (button.textContent !== text) button.textContent = text;
+    button.classList.toggle("vp-btn-active", this.clipStart != null);
+  }
+
+  // + Marker / M: one time. A segment (S twice) or a clip (X twice): start and end.
+  openMarkerForm(start = this.now(), end = null, kind = end == null ? "marker" : "segment") {
     if (!this.canAdd()) return;
     this.cancelSegment();
+    this.cancelClip();
     this.video.pause();
     this.pendingMarker = true;
-    this.formSegment = end != null;
+    this.formKind = kind;
     this.form.querySelector(".vp-marker-start").value = formatTrimValue(start);
     this.form.querySelector(".vp-marker-end").value = end == null ? "" : formatTrimValue(end);
     this.form.querySelector(".vp-marker-message").textContent = "";
@@ -976,11 +1090,13 @@ class PlayerBar {
   }
 
   renderFormKind() {
-    const segment = this.formSegment;
-    this.form.querySelector(".vp-marker-kind").textContent = segment ? "Segment" : "Marker";
-    this.form.querySelector(".vp-marker-start-label").textContent = segment ? "Start" : "At";
-    this.form.querySelector(".vp-marker-end-field").hidden = !segment;
-    this.form.querySelector("[data-act=savemarker]").textContent = segment ? "Save segment" : "Save marker";
+    const kind = this.formKind;
+    this.form.querySelector(".vp-marker-kind").textContent = { marker: "Marker", segment: "Segment", clip: "Clip" }[kind];
+    this.form.querySelector(".vp-marker-start-label").textContent = kind === "marker" ? "At" : "Start";
+    this.form.querySelector(".vp-marker-end-field").hidden = kind === "marker";
+    this.form.querySelector(".vp-form-swatches").hidden = kind === "clip";
+    this.form.querySelector(".vp-marker-label").placeholder = kind === "clip" ? "Title (blank = the VOD's title)" : "Title, e.g. intro (optional)";
+    this.form.querySelector("[data-act=savemarker]").textContent = { marker: "Save marker", segment: "Save segment", clip: "Make clip" }[kind];
   }
 
   setFormTime(selector) {
@@ -1000,20 +1116,25 @@ class PlayerBar {
     const start = parseTrim(this.form.querySelector(".vp-marker-start").value);
     if (start == null || Number.isNaN(start)) return null;
     const color = this.form.querySelector("input[name=vp-color]:checked")?.value ?? "yellow";
-    if (!this.formSegment) return { seconds: start, endSeconds: null, color };
+    const kind = this.formKind;
+    if (kind === "marker") return { kind, seconds: start, endSeconds: null, color };
     const end = parseTrim(this.form.querySelector(".vp-marker-end").value);
     if (end == null || Number.isNaN(end) || end <= start) return null;
-    return { seconds: start, endSeconds: end, color };
+    return { kind, seconds: start, endSeconds: end, color };
   }
 
   // The form's start/end, or an error message
   formTimes() {
     const start = parseTrim(this.form.querySelector(".vp-marker-start").value);
-    if (start == null || Number.isNaN(start)) return { error: `Give the ${this.formSegment ? "start" : "time"} as h:mm:ss.` };
-    if (!this.formSegment) return { start, end: null };
+    const kind = this.formKind;
+    if (start == null || Number.isNaN(start)) return { error: `Give the ${kind === "marker" ? "time" : "start"} as h:mm:ss.` };
+    if (kind === "marker") return { start, end: null };
     const end = parseTrim(this.form.querySelector(".vp-marker-end").value);
     if (end == null || Number.isNaN(end)) return { error: "Give the end as h:mm:ss." };
-    if (end != null && end < start + MIN_SEGMENT_SECONDS) return { error: `The end must be at least ${MIN_SEGMENT_SECONDS} s after the start.` };
+    const min = kind === "clip" ? MIN_CLIP_SECONDS : MIN_SEGMENT_SECONDS;
+    if (end < start + min) return { error: `The end must be at least ${min} s after the start.` };
+    if (kind === "clip" && end - start > this.maxClipSeconds + 0.001)
+      return { error: `A clip can be at most ${this.clipLimitText()} long (the stored-clip limit).` };
     return { start, end };
   }
 
@@ -1027,6 +1148,7 @@ class PlayerBar {
       message.textContent = times.error;
       return;
     }
+    if (this.formKind === "clip") return this.saveClip(times, label, message);
     message.textContent = "Saving…";
     const data = { seconds: times.start, endSeconds: times.end, label, color };
     try {
@@ -1037,6 +1159,24 @@ class PlayerBar {
       });
       this.closeMarkerForm();
       this.wrap.focus({ preventScroll: true });
+    } catch (error) {
+      message.textContent = error.message;
+    }
+  }
+
+  // The clip tool's form: a new library entry for that part of the VOD (stored, since it's within the limit; cut exactly)
+  async saveClip(times, title, message) {
+    message.textContent = "Making the clip…";
+    try {
+      const entry = await api("POST", "/api/entries", {
+        vodId: String(this.vodId), title: title || null, trimMode: "Exact",
+        startTime: formatTrimValue(times.start), endTime: formatTrimValue(times.end),
+      });
+      this.closeMarkerForm();
+      this.wrap.focus({ preventScroll: true });
+      await this.loadTimeline();
+      this.notifyChanged({ entries: true });
+      this.flash(`Made the clip "${entry.title}". ${entry.isReferenceOnly ? "" : "It's downloading."}`);
     } catch (error) {
       message.textContent = error.message;
     }
@@ -1327,12 +1467,31 @@ class PlayerBar {
     if (this.cardEdit && this.cardEdit.id !== card.id) this.flushPendingEdit();
     if (this.pendingEdit) this.flushPendingEdit();
     if (!this.cardEdit) this.cardEdit = { id: card.id, before: { start: card.start, end: card.end, followsMarkers: Boolean(card.followsMarkers) } };
+    const edge = range.start !== card.start ? "start" : "end";
     card.start = range.start;
     card.end = range.end;
+    if (this.limitCard(card, edge)) this.flash(`A clip stops at ${this.clipLimitText()} (the stored-clip limit) and inside this window.`);
     this.cardMoved(card);
     this.afterLocalChange();
     clearTimeout(this.cardEditTimer);
     this.cardEditTimer = setTimeout(() => this.flushPendingEdit(), card.referenceOnly ? 600 : STORED_SAVE_DELAY_MS);
+  }
+
+  // In a short clip's review (options.capFocus) its card never gets longer than the stored-clip limit or leaves the review's window:
+  // the edge that moved stops there (badrfly, 2026-11-11). True when it had to stop.
+  limitCard(card, edge) {
+    if (!this.options.capFocus || card.id !== this.focusEntryId) return false;
+    const ext = this.extent();
+    const max = this.maxClipSeconds;
+    const start = card.start;
+    const end = this.clipEnd(card);
+    let nextStart = start;
+    let nextEnd = end;
+    if (edge === "start") nextStart = roundHundredths(Math.max(start, ext.from, end - max));
+    else nextEnd = roundHundredths(Math.min(end, ext.to, start + max));
+    card.start = nextStart;
+    card.end = nextEnd;
+    return nextStart !== start || nextEnd !== end;
   }
 
   // The reviewed card is one object with the review's range (this.focus): keep them together, and tell the page
@@ -1574,6 +1733,7 @@ class PlayerBar {
     const t = roundHundredths(Math.min(d, Math.max(0, this.snapTime(seconds, { clipId: clip.id }))));
     if (this.drag.edge === "start") clip.start = Math.min(t, roundHundredths(this.clipEnd(clip) - MIN_CLIP_SECONDS));
     else clip.end = Math.max(t, roundHundredths(clip.start + MIN_CLIP_SECONDS));
+    this.drag.limited = this.limitCard(clip, this.drag.edge);
     this.cardMoved(clip);
   }
 
@@ -1838,11 +1998,13 @@ class PlayerBar {
       undo: () => this.undo(),
       redo: () => this.redo(),
       deleteSelected: () => this.deleteSelected(),
+      clip: () => this.toggleClip(),
       setStart: () => this.setEdgeHere("start"),
       setEnd: () => this.setEdgeHere("end"),
       playEnd: () => this.playEnd(),
       escape: () => {
         if (this.segmentStart != null) this.cancelSegment();
+        else if (this.clipStart != null) this.cancelClip();
         else if (this.selectedRange()) this.deselect();
         else if (this.tool !== "pointer") this.setTool("pointer");
         else return false;
@@ -2041,9 +2203,9 @@ class PlayerBar {
   }
 
   overviewTime(event) {
-    const d = this.duration();
-    if (!d) return null;
-    return (this.localX(event, this.overview) / (this.overview.clientWidth || 1)) * d;
+    const ext = this.extent();
+    if (!ext.to) return null;
+    return ext.from + (this.localX(event, this.overview) / (this.overview.clientWidth || 1)) * (ext.to - ext.from);
   }
 
   // The shortest card under a time (cards can overlap)
@@ -2061,7 +2223,7 @@ class PlayerBar {
     const time = this.xToTime(x);
     if (this.drag) {
       // While dragging: just where the edge is, so the tip doesn't jump in size
-      this.tip.textContent = `${this.drag.edge === "start" ? "Start" : "End"} ${formatTrimValue(this.draggedEdgeTime() ?? time)}${this.snapAt != null ? " (snapped)" : ""}`;
+      this.tip.textContent = `${this.drag.edge === "start" ? "Start" : "End"} ${formatTrimValue(this.draggedEdgeTime() ?? time)}${this.snapAt != null ? " (snapped)" : ""}${this.drag.limited ? ` (${this.clipLimitText()} max)` : ""}`;
       this.tip.hidden = false;
       const tipWidth = this.tip.offsetWidth;
       this.tip.style.left = `${Math.min(Math.max(0, x - tipWidth / 2), Math.max(0, this.canvas.clientWidth - tipWidth))}px`;
@@ -2116,6 +2278,8 @@ class PlayerBar {
     if (!video) return;
     const now = video.currentTime;
     if (this.live) this.renderLive();
+    if (this.bounds && !video.paused && now >= this.extent().to - 0.05) video.pause();
+    if (this.clipStart != null) this.renderClipButton();
     const selected = this.selectedRange();
     // Playing a selected segment or card that was just made longer or shorter: stop at its new end
     if (this.playUntil != null && selected) this.playUntil = selected.end;
@@ -2147,7 +2311,9 @@ class PlayerBar {
     this.el.querySelector(".vp-now").textContent = formatClock(now);
     const d = this.duration();
     const span = this.view.to - this.view.from;
-    this.el.querySelector(".vp-zoom-label").textContent = !this.zoomed || !d ? "All" : span >= 3600 ? `${(span / 3600).toFixed(1)} h` : span >= 60 ? `${Math.round(span / 60)} min` : `${Math.round(span)} s`;
+    // "All" = the whole VOD; a short clip's review shows its window's length instead
+    this.el.querySelector(".vp-zoom-label").textContent = !d || (!this.zoomed && !this.bounds) ? "All"
+      : span >= 3600 ? `${(span / 3600).toFixed(1)} h` : span >= 60 ? `${Math.round(span / 60)} min` : `${Math.round(span)} s`;
     this.overview.hidden = !this.zoomed;
     this.drawTimeline(now);
     if (this.zoomed) this.drawOverview(now);
@@ -2286,7 +2452,7 @@ class PlayerBar {
     }
     // The segment in the form, not saved yet: in the picked color, outlined like a selection
     const draft = this.formDraft();
-    if (draft?.endSeconds != null) {
+    if (draft?.kind === "segment") {
       const a = x(draft.seconds);
       const b = x(draft.endSeconds);
       ctx.save();
@@ -2304,6 +2470,24 @@ class PlayerBar {
       const [a, b] = span(clip.start, clip.end ?? this.duration());
       if (b <= 0 || a >= width) continue;
       ctx.fillRect(a, BAR_TRACK.clipTop, Math.max(2, b - a), BAR_TRACK.clipHeight);
+    }
+    // The clip being marked (X pressed once, up to the limit) or in the clip form: a dashed card from the lane down
+    const newClip = this.clipStart != null ? this.clipMarkRange(now) : draft?.kind === "clip" ? { start: draft.seconds, end: draft.endSeconds } : null;
+    if (newClip) {
+      const a = x(newClip.start);
+      const b = x(newClip.end);
+      ctx.save();
+      ctx.fillStyle = c.clip;
+      ctx.globalAlpha = 0.22;
+      ctx.fillRect(a, top, Math.max(2, b - a), height);
+      ctx.globalAlpha = 0.6;
+      ctx.fillRect(a, BAR_TRACK.clipTop, Math.max(2, b - a), BAR_TRACK.clipHeight);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = c.clip;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(a - 0.5, BAR_TRACK.clipTop + 0.5, Math.max(2, b - a) + 1, top + height - BAR_TRACK.clipTop);
+      ctx.restore();
     }
 
     // Time ticks
@@ -2327,7 +2511,7 @@ class PlayerBar {
     ctx.globalAlpha = 1;
 
     // Markers (and the one in the form, not saved yet)
-    const draftMarker = draft && draft.endSeconds == null ? [draft] : [];
+    const draftMarker = draft?.kind === "marker" ? [draft] : [];
     for (const marker of [...this.markers, ...draftMarker]) {
       if (isSegment(marker)) continue;
       const mx = Math.round(x(marker.seconds)) + 0.5;
@@ -2387,7 +2571,8 @@ class PlayerBar {
     const d = this.duration();
     if (!width || !d) return;
     const c = this.colors();
-    const x = (t) => (t / d) * width;
+    const ext = this.extent();
+    const x = (t) => ((t - ext.from) / (ext.to - ext.from || 1)) * width;
     ctx.fillStyle = c.track;
     ctx.fillRect(0, 2, width, 8);
     ctx.globalAlpha = 0.5;
