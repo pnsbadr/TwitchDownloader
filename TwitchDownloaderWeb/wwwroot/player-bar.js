@@ -260,6 +260,7 @@ class PlayerBar {
       <canvas class="vp-overview" height="12" aria-hidden="true"></canvas>
       <div class="vp-timeline-wrap">
         <canvas class="vp-timeline" aria-label="Timeline: click or drag to seek, wheel to zoom"></canvas>
+        <button type="button" class="vp-live" hidden title="The stream is still live: jump to now">LIVE</button>
         <div class="vp-tip" hidden></div>
       </div>
       <div class="vp-controls">
@@ -336,6 +337,11 @@ class PlayerBar {
     this.timelineWrap = this.el.querySelector(".vp-timeline-wrap");
     this.legend = this.el.querySelector(".vp-legend");
     this.selection = this.el.querySelector(".vp-selection");
+    this.liveButton = this.el.querySelector(".vp-live");
+    this.liveButton.addEventListener("click", () => {
+      this.goLive();
+      this.wrap.focus({ preventScroll: true });
+    });
     // Clicking anywhere else in the Watch / Review window unselects the segment or card (the timeline has its own rules; the parts
     // that work on the selection keep it). On click, not pointerdown: the selection row going away moves what's under the pointer
     // (the review dialog is centered), and a button like Close would then miss its click.
@@ -370,9 +376,13 @@ class PlayerBar {
       this.video.muted = this.video.volume === 0;
     });
     this.form.querySelector("[data-act=savemarker]").addEventListener("click", () => this.saveMarker());
-    this.form.querySelector("[data-act=cancelmarker]").addEventListener("click", () => this.closeMarkerForm());
+    this.form.querySelector("[data-act=cancelmarker]").addEventListener("click", () => {
+      this.closeMarkerForm();
+      this.wrap.focus({ preventScroll: true });
+    });
     this.form.querySelector("[data-act=startnow]").addEventListener("click", () => this.setFormTime(".vp-marker-start"));
     this.form.querySelector("[data-act=endnow]").addEventListener("click", () => this.setFormTime(".vp-marker-end"));
+    for (const type of ["input", "change"]) this.form.addEventListener(type, () => { this.dirty = true; });
     // The player can sit inside the page's add form: Enter must save the marker, not submit that form
     this.form.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
@@ -629,6 +639,8 @@ class PlayerBar {
     this.el.hidden = true;
     this.tools.hidden = true;
     this.selX.hidden = true;
+    this.live = false;
+    this.liveButton.hidden = true;
     this.wrap.classList.remove("has-bar");
     this.tip.hidden = true;
     if (wasAttached) this.options.onAttached?.(false);
@@ -652,6 +664,10 @@ class PlayerBar {
     const fragments = details?.fragments ?? [];
     const lastFrag = fragments[fragments.length - 1];
     this.listDuration = lastFrag ? lastFrag.start + lastFrag.duration : 0;
+    // Still live (no #EXT-X-ENDLIST yet): hls.js keeps reloading the playlist, and the LIVE button shows
+    this.live = Boolean(details?.live);
+    this.liveTarget = details?.targetduration || 2;
+    this.renderLive();
     this.fitIfNeeded();
     this.dirty = true;
   }
@@ -786,6 +802,44 @@ class PlayerBar {
 
   now() {
     return this.video?.currentTime ?? 0;
+  }
+
+  // ---- live ----
+
+  // How far behind the newest part the player still counts as "at live" (hls.js plays about 3 parts behind)
+  liveMargin() {
+    return Math.max(8, (this.liveTarget || 2) * 4);
+  }
+
+  atLive() {
+    return this.live && this.duration() - this.now() <= this.liveMargin();
+  }
+
+  renderLive() {
+    const show = Boolean(this.live && this.video);
+    if (this.liveButton.hidden === show) this.liveButton.hidden = !show;
+    const at = show && this.atLive();
+    if (this.liveButton.classList.contains("vp-live-at") !== at) {
+      this.liveButton.classList.toggle("vp-live-at", at);
+      this.liveButton.title = at ? "Watching live" : "The stream is still live: jump to now";
+    }
+  }
+
+  // Jumps to the newest part of a VOD that is still live and plays it (unselects, so Play doesn't stop at a selection's end)
+  goLive() {
+    if (!this.live || !this.video) return;
+    this.deselect();
+    this.playUntil = null;
+    const sync = this.backend?.hls?.liveSyncPosition;
+    const d = this.duration();
+    this.seek(Number.isFinite(sync) && sync > 0 ? sync : Math.max(0, d - (this.liveTarget || 2) * 3));
+    if (this.zoomed) {
+      const span = this.view.to - this.view.from;
+      this.view = { from: d - span * 0.9, to: d + span * 0.1 };
+      this.clampView();
+    }
+    this.video.play().catch(() => {});
+    this.renderLive();
   }
 
   seek(seconds) {
@@ -931,11 +985,25 @@ class PlayerBar {
 
   setFormTime(selector) {
     this.form.querySelector(selector).value = formatTrimValue(this.now());
+    this.dirty = true;
   }
 
   closeMarkerForm() {
     this.pendingMarker = null;
     this.form.hidden = true;
+    this.dirty = true;
+  }
+
+  // What the open form would save, drawn on the timeline as a preview (its color and times as they are typed or picked)
+  formDraft() {
+    if (this.pendingMarker == null || this.form.hidden) return null;
+    const start = parseTrim(this.form.querySelector(".vp-marker-start").value);
+    if (start == null || Number.isNaN(start)) return null;
+    const color = this.form.querySelector("input[name=vp-color]:checked")?.value ?? "yellow";
+    if (!this.formSegment) return { seconds: start, endSeconds: null, color };
+    const end = parseTrim(this.form.querySelector(".vp-marker-end").value);
+    if (end == null || Number.isNaN(end) || end <= start) return null;
+    return { seconds: start, endSeconds: end, color };
   }
 
   // The form's start/end, or an error message
@@ -1435,6 +1503,8 @@ class PlayerBar {
       if (clip.end != null) points.push(clip.end);
     }
     if (this.focus && skip.clipId !== this.focusEntryId) points.push(this.focus.start, this.focus.end);
+    const draft = this.formDraft();
+    if (draft) points.push(draft.seconds, ...(draft.endSeconds != null ? [draft.endSeconds] : []));
     points.push(this.now());
     return points;
   }
@@ -1897,22 +1967,15 @@ class PlayerBar {
       }
     }
     // A click on a segment selects it (and zooms to it); inside the selected one it seeks. Elsewhere it unselects, except inside the
-    // selected card, and inside the reviewed card, which it selects (in a review the card is what's being worked on).
+    // selected card. A card is only selected from the purple lane or its edges (badrfly: not by a click inside it on the track).
     const segment = this.segmentAt(time, y);
     if (segment && segment.id !== this.selectedRef?.id) {
       this.select(segment);
       return;
     }
     if (!segment) {
-      const inside = (clip) => clip && time >= clip.start && time <= this.clipEnd(clip);
-      const reviewed = this.clips.find((c) => c.id === this.focusEntryId);
-      if (inside(this.selectedCard())) {
-        // stays selected
-      } else if (inside(reviewed) && y >= BAR_TRACK.top - 1) {
-        this.selectCard(reviewed, { quiet: true });
-      } else {
-        this.deselect();
-      }
+      const card = this.selectedCard();
+      if (!(card && time >= card.start && time <= this.clipEnd(card))) this.deselect();
     }
     this.scrubbing = true;
     this.canvas.setPointerCapture(event.pointerId);
@@ -2052,6 +2115,7 @@ class PlayerBar {
     const video = this.video;
     if (!video) return;
     const now = video.currentTime;
+    if (this.live) this.renderLive();
     const selected = this.selectedRange();
     // Playing a selected segment or card that was just made longer or shorter: stop at its new end
     if (this.playUntil != null && selected) this.playUntil = selected.end;
@@ -2220,6 +2284,19 @@ class PlayerBar {
       const b = x(Math.max(this.segmentStart, now));
       drawSegmentBox(ctx, a, b, top, height, c.text, true);
     }
+    // The segment in the form, not saved yet: in the picked color, outlined like a selection
+    const draft = this.formDraft();
+    if (draft?.endSeconds != null) {
+      const a = x(draft.seconds);
+      const b = x(draft.endSeconds);
+      ctx.save();
+      ctx.strokeStyle = c.text;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 2]);
+      ctx.strokeRect(a - 2.5, top - 2.5, Math.max(2, b - a) + 5, height + 5);
+      ctx.restore();
+      drawSegmentBox(ctx, a, b, top, height, markerColor(draft));
+    }
 
     // Library clips
     ctx.fillStyle = c.clip;
@@ -2249,8 +2326,9 @@ class PlayerBar {
     }
     ctx.globalAlpha = 1;
 
-    // Markers
-    for (const marker of this.markers) {
+    // Markers (and the one in the form, not saved yet)
+    const draftMarker = draft && draft.endSeconds == null ? [draft] : [];
+    for (const marker of [...this.markers, ...draftMarker]) {
       if (isSegment(marker)) continue;
       const mx = Math.round(x(marker.seconds)) + 0.5;
       if (mx < -4 || mx > width + 4) continue;
