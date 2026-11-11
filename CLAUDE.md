@@ -308,7 +308,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   live VOD updates as it grows; both drawn at 50 % opacity), the team's library clips from the VOD (purple lane on top), team markers
   (colored lines with a triangle) and **segments** (hatched boxes with brackets at both ends; chips under the bar seek, × deletes).
   Hover shows time + what's there (segment title and range). **[ Segment** / S marks a segment's start, pressing again its end
-  (dashed preview meanwhile, Esc cancels), then the form names it; its Start/End can also be typed. **+ Marker** (M) opens the form with one time ("At") and no End. The 👆 button inside a time box puts the playhead's time in it. Zoom (wheel, +/−, Fit; min 10 s) with an
+  (dashed preview meanwhile, Esc cancels), then the form names it; its Start/End can also be typed. **+ Marker** (M) opens the form with one time ("At") and no End. The 👆 button inside a time box puts the playhead's time in it. While the form is open, what it would save is drawn on the timeline in the picked color (`formDraft()`, also a snap point) and follows typed times. Zoom (wheel, +/−, Fit; min 10 s) with an
   overview strip while zoomed; the view follows the playhead. `GET /api/vods/{id}/timeline` feeds clips and markers; it's reloaded
   after adding/re-trimming/deleting an entry. Keys (not while typing): Space/K play, J/L ±10 s, ←/→ ±5 s, `,`/`.` one frame,
   M marker, S segment start/end, I/O set the selection's start/end at the playhead, Shift+Space play its last 3 s, F fullscreen, +/−/0 zoom,
@@ -330,7 +330,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   `/timeline`) can be dragged on the purple lane, and in Review the reviewed entry's edges anywhere on the track; it saves right away with
   `PUT /trim` (one undo step; the review dialog follows, `onEntryChanged`/`syncReviewEntry`, also when the server moves a reviewed live markers card; a live markers card dragged by hand stops following). Stored entries keep
   their trim bar outside Review. **Cards are selectable like segments** (badrfly, 2026-11-11; `selectedCardId`, `selectedRange()` = the
-  selected segment or card): click one on the purple lane (or press on its edge without dragging); then Play, ±10s/±1s (Shift: start),
+  selected segment or card): click one on the purple lane (or press on its edge without dragging; a click inside it on the track never selects it, badrfly; it only keeps an already selected card selected); then Play, ±10s/±1s (Shift: start),
   I/O, typed Start/End, Last 3s and title (PATCH rename) work on it, and its edges can be dragged on the track too. Edits go through
   `editCard` → `cardEdit` → `commitCard` (PUT /trim, one undo step `trim`): reference cards 0.6 s after the last change (drag: at once),
   the reviewed **stored** clip `STORED_SAVE_DELAY_MS` (3 s) after, since it downloads again; unselecting, closing or switching players

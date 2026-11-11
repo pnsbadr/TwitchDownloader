@@ -370,9 +370,13 @@ class PlayerBar {
       this.video.muted = this.video.volume === 0;
     });
     this.form.querySelector("[data-act=savemarker]").addEventListener("click", () => this.saveMarker());
-    this.form.querySelector("[data-act=cancelmarker]").addEventListener("click", () => this.closeMarkerForm());
+    this.form.querySelector("[data-act=cancelmarker]").addEventListener("click", () => {
+      this.closeMarkerForm();
+      this.wrap.focus({ preventScroll: true });
+    });
     this.form.querySelector("[data-act=startnow]").addEventListener("click", () => this.setFormTime(".vp-marker-start"));
     this.form.querySelector("[data-act=endnow]").addEventListener("click", () => this.setFormTime(".vp-marker-end"));
+    for (const type of ["input", "change"]) this.form.addEventListener(type, () => { this.dirty = true; });
     // The player can sit inside the page's add form: Enter must save the marker, not submit that form
     this.form.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
@@ -931,11 +935,25 @@ class PlayerBar {
 
   setFormTime(selector) {
     this.form.querySelector(selector).value = formatTrimValue(this.now());
+    this.dirty = true;
   }
 
   closeMarkerForm() {
     this.pendingMarker = null;
     this.form.hidden = true;
+    this.dirty = true;
+  }
+
+  // What the open form would save, drawn on the timeline as a preview (its color and times as they are typed or picked)
+  formDraft() {
+    if (this.pendingMarker == null || this.form.hidden) return null;
+    const start = parseTrim(this.form.querySelector(".vp-marker-start").value);
+    if (start == null || Number.isNaN(start)) return null;
+    const color = this.form.querySelector("input[name=vp-color]:checked")?.value ?? "yellow";
+    if (!this.formSegment) return { seconds: start, endSeconds: null, color };
+    const end = parseTrim(this.form.querySelector(".vp-marker-end").value);
+    if (end == null || Number.isNaN(end) || end <= start) return null;
+    return { seconds: start, endSeconds: end, color };
   }
 
   // The form's start/end, or an error message
@@ -1435,6 +1453,8 @@ class PlayerBar {
       if (clip.end != null) points.push(clip.end);
     }
     if (this.focus && skip.clipId !== this.focusEntryId) points.push(this.focus.start, this.focus.end);
+    const draft = this.formDraft();
+    if (draft) points.push(draft.seconds, ...(draft.endSeconds != null ? [draft.endSeconds] : []));
     points.push(this.now());
     return points;
   }
@@ -1897,22 +1917,15 @@ class PlayerBar {
       }
     }
     // A click on a segment selects it (and zooms to it); inside the selected one it seeks. Elsewhere it unselects, except inside the
-    // selected card, and inside the reviewed card, which it selects (in a review the card is what's being worked on).
+    // selected card. A card is only selected from the purple lane or its edges (badrfly: not by a click inside it on the track).
     const segment = this.segmentAt(time, y);
     if (segment && segment.id !== this.selectedRef?.id) {
       this.select(segment);
       return;
     }
     if (!segment) {
-      const inside = (clip) => clip && time >= clip.start && time <= this.clipEnd(clip);
-      const reviewed = this.clips.find((c) => c.id === this.focusEntryId);
-      if (inside(this.selectedCard())) {
-        // stays selected
-      } else if (inside(reviewed) && y >= BAR_TRACK.top - 1) {
-        this.selectCard(reviewed, { quiet: true });
-      } else {
-        this.deselect();
-      }
+      const card = this.selectedCard();
+      if (!(card && time >= card.start && time <= this.clipEnd(card))) this.deselect();
     }
     this.scrubbing = true;
     this.canvas.setPointerCapture(event.pointerId);
@@ -2220,6 +2233,19 @@ class PlayerBar {
       const b = x(Math.max(this.segmentStart, now));
       drawSegmentBox(ctx, a, b, top, height, c.text, true);
     }
+    // The segment in the form, not saved yet: in the picked color, outlined like a selection
+    const draft = this.formDraft();
+    if (draft?.endSeconds != null) {
+      const a = x(draft.seconds);
+      const b = x(draft.endSeconds);
+      ctx.save();
+      ctx.strokeStyle = c.text;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 2]);
+      ctx.strokeRect(a - 2.5, top - 2.5, Math.max(2, b - a) + 5, height + 5);
+      ctx.restore();
+      drawSegmentBox(ctx, a, b, top, height, markerColor(draft));
+    }
 
     // Library clips
     ctx.fillStyle = c.clip;
@@ -2249,8 +2275,9 @@ class PlayerBar {
     }
     ctx.globalAlpha = 1;
 
-    // Markers
-    for (const marker of this.markers) {
+    // Markers (and the one in the form, not saved yet)
+    const draftMarker = draft && draft.endSeconds == null ? [draft] : [];
+    for (const marker of [...this.markers, ...draftMarker]) {
       if (isSegment(marker)) continue;
       const mx = Math.round(x(marker.seconds)) + 0.5;
       if (mx < -4 || mx > width + 4) continue;
