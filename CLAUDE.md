@@ -80,7 +80,7 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   CreatedAtUtc. Audited `marker.added` / `marker.changed` / `marker.deleted`.
 - `LibraryEntries.FollowsMarkers`: a **live markers entry** (`LiveMarkerEntryService`, badrfly 2026-11-10). The first marker/segment a team
   adds on a VOD that is still live (GQL video `status == "RECORDING"`, `VodDetails.IsLive`) makes a reference-only entry (always reference,
-  whatever its length) from 30 s before the first marker to 30 s after the last, the end capped at the VOD's length so far but never before
+  whatever its length; **not from a Review**: the player sends `?makeLiveEntry=false` on marker POST/PUT/DELETE while reviewing a card, badrfly 2026-11-11) from 30 s before the first marker to 30 s after the last, the end capped at the VOD's length so far but never before
   the last marker. Every later marker add/delete on that VOD moves it (even after the stream ended; generated file dropped, audited
   `entry.followed_markers`, not counted as a member edit) until someone saves a cut by hand (`PUT /trim` clears the flag). Deleting the last
   marker leaves it as it is. **One per VOD per team**: `MadeFromMarkers` stays set after it stops following, so later markers don't make a
@@ -361,7 +361,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   **Short clip review** (badrfly, 2026-11-11): Review of a stored VOD entry passes `bounds: clipWindow(...)` (a 5-minute window, the clip in
   the middle, ≥ 1 min each side; `CLIP_WINDOW_SECONDS`) and `capFocus`: the timeline, Fit, zoom, seeks, the overview and playback stay
   inside it (`PlayerBar.extent()`), segments can be made there, and `limitCard` stops the clip's moved edge at the stored-clip limit or
-  the window's edge (message / drag tip "max"). Reference entries still get the whole VOD.
+  the window's edge (message / drag tip "max"). Only the reviewed clip's edges can be dragged there. In any Review the reviewed card is drawn on top of the purple lane and other cards faded (same for a selected card), so an overlapping card doesn't look like the clip's bar staying behind. Reference entries still get the whole VOD.
   **Card strips**: `segmentStrip(markers, from, to, { clips, self })` also draws the team's clips (stored entries and Twitch clips, from
   `GET /api/timeline/entries?vodIds=`, loaded with the markers) as a purple line above the strip, on VOD cards and reference cards. A stored
   clip's card shows the strip of its 5-minute window (its own range highlighted) when segments are in that window, else chips.

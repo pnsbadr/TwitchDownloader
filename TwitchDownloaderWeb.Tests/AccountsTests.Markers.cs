@@ -113,6 +113,17 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal(JsonValueKind.Null, (await AddAsync(501, new { seconds = 100 })).GetProperty("liveEntry").ValueKind);
             Assert.Empty(await LiveEntriesAsync());
 
+            // Markers added, changed or deleted in a library card's Review (makeLiveEntry=false) make no card, even on the live VOD
+            var inReview = await owner.PostAsJsonAsync("/api/vods/500/markers?makeLiveEntry=false", new { seconds = 620, endSeconds = 640 }, ct);
+            Assert.Equal(HttpStatusCode.Created, inReview.StatusCode);
+            var reviewMarker = await inReview.Content.ReadFromJsonAsync<JsonElement>(ct);
+            Assert.Equal(JsonValueKind.Null, reviewMarker.GetProperty("liveEntry").ValueKind);
+            var reviewMarkerId = reviewMarker.GetProperty("id").GetInt32();
+            Assert.Equal(HttpStatusCode.OK, (await owner.PutAsJsonAsync($"/api/markers/{reviewMarkerId}?makeLiveEntry=false", new { seconds = 625, endSeconds = 640 }, ct)).StatusCode);
+            Assert.Empty(await LiveEntriesAsync());
+            Assert.Equal(HttpStatusCode.NoContent, (await owner.DeleteAsync($"/api/markers/{reviewMarkerId}?makeLiveEntry=false", ct)).StatusCode);
+            Assert.Empty(await LiveEntriesAsync());
+
             // The first marker on the live VOD makes a reference entry 30 s either side of it
             var first = await AddAsync(500, new { seconds = 600, label = "round 9" });
             var change = first.GetProperty("liveEntry");
