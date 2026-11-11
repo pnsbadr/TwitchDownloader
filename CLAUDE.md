@@ -244,7 +244,8 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/admin/users?search=` / `GET /api/admin/users/{id}?days=` / `PUT .../disabled` / `POST .../password-reset` | Users across teams |
 | `GET /api/admin/audit?teamId=&userId=&staffId=&before=&limit=` / `POST,DELETE /api/admin/support` | App log; view as support |
 | `GET /api/admin/staff` / `POST /api/admin/staff/invites` / `PUT /api/admin/staff/{id}/permissions` `{ permissions }` / `PUT .../disabled` / `POST .../password-reset` | Moderators (Owner only) |
-| `GET /api/vods/{id}/timeline` / `POST /api/vods/{id}/markers` `{ seconds, endSeconds?, label?, color? }` / `PUT /api/markers/{id}` (same body, whole marker) / `DELETE /api/markers/{id}` / `GET /api/markers?vodIds=1,2` | Player timeline: `{ clips: [{ id, title, kind, start, end, referenceOnly, followsMarkers, canEdit }], markers: [{ id, vodId, seconds, endSeconds, label, color, createdBy, createdAtUtc, canDelete, canEdit }] }` (team's own); `/api/markers` lists markers of up to 200 VODs (library and VOD cards). Entries carry `startSeconds`/`endSeconds` for placing them (and `followsMarkers`). Add 201 (`AddEntries`; `liveEntry: { entryId, created }` when it made or moved the live markers entry, else null); change own (`AddEntries`) or anyone's (`EditAnyEntries`); delete own (`AddEntries`) or anyone's (`DeleteAnyEntries`), else 403 |
+| `GET /api/timeline/entries?vodIds=1,2` | The team's library entries on up to 200 VODs: `[{ id, vodId, title, kind, start, end, referenceOnly }]` (card strips) |
+| `GET /api/vods/{id}/timeline` / `POST /api/vods/{id}/markers` `{ seconds, endSeconds?, label?, color? }` / `PUT /api/markers/{id}` (same body, whole marker) / `DELETE /api/markers/{id}` / `GET /api/markers?vodIds=1,2` | Player timeline: `{ clips: [{ id, title, kind, start, end, referenceOnly, followsMarkers, canEdit }], maxStoredClipSeconds, markers: [{ id, vodId, seconds, endSeconds, label, color, createdBy, createdAtUtc, canDelete, canEdit }] }` (team's own); `/api/markers` lists markers of up to 200 VODs (library and VOD cards). Entries carry `startSeconds`/`endSeconds` for placing them (and `followsMarkers`). Add 201 (`AddEntries`; `liveEntry: { entryId, created }` when it made or moved the live markers entry, else null); change own (`AddEntries`) or anyone's (`EditAnyEntries`); delete own (`AddEntries`) or anyone's (`DeleteAnyEntries`), else 403 |
 | `POST /api/vods/download` | Phase 1 dev endpoint: synchronous, writes `<title>.mp4` straight into `downloads/`, not part of the library |
 
 `canDownload` in entry responses checks the generated file's expiry itself, since cleanup runs periodically.
@@ -309,10 +310,12 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   (colored lines with a triangle) and **segments** (hatched boxes with brackets at both ends; chips under the bar seek, × deletes).
   Hover shows time + what's there (segment title and range). **[ Segment** / S marks a segment's start, pressing again its end
   (dashed preview meanwhile, Esc cancels), then the form names it; its Start/End can also be typed. **+ Marker** (M) opens the form with one time ("At") and no End. The 👆 button inside a time box puts the playhead's time in it. While the form is open, what it would save is drawn on the timeline in the picked color (`formDraft()`, also a snap point) and follows typed times. **LIVE** button (badrfly, 2026-11-11) right of the timeline while the VOD is still live (hls.js `details.live`, no `#EXT-X-ENDLIST`): jumps to the newest part (`liveSyncPosition`) and plays; solid red while within `liveMargin()` of the end, outlined (»)
-  when behind; gone once the stream ends. Zoom (wheel, +/−, Fit; min 10 s) with an
+  when behind; gone once the stream ends. **[ Clip** / X (badrfly, 2026-11-11) marks a clip like a segment (start, then end; dashed purple preview
+  that stops at the stored-clip limit, `maxStoredClipSeconds` from `/timeline`, 180 s), then the form (kind `clip`: Start/End, title, no colors,
+  **Make clip**) posts `POST /api/entries` (Exact) so it becomes a stored library card on the purple lane. Zoom (wheel, +/−, Fit; min 10 s) with an
   overview strip while zoomed; the view follows the playhead. `GET /api/vods/{id}/timeline` feeds clips and markers; it's reloaded
   after adding/re-trimming/deleting an entry. Keys (not while typing): Space/K play, J/L ±10 s, ←/→ ±5 s, `,`/`.` one frame,
-  M marker, S segment start/end, I/O set the selection's start/end at the playhead, Shift+Space play its last 3 s, F fullscreen, +/−/0 zoom,
+  M marker, S segment start/end, X clip start/end, I/O set the selection's start/end at the playhead, Shift+Space play its last 3 s, F fullscreen, +/−/0 zoom,
   V/C/Z/H tools, Ctrl+Z / Ctrl+Shift+Z (Ctrl+Y) undo/redo, Del (see keybinds.js).
   **Editing** (badrfly, 2026-11-10): a vertical **tools bar** right of the video (`.vp-stage` wraps the frame and `.vp-tools`; shown only
   with the app player): **Pointer** (V), **Cut** (C: click a segment to split it at that point into "Name 1"/"Name 2", or "Segment A1"/"A2" when the last
@@ -355,6 +358,13 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   fields from the position below, hundredths of a second) and **Play clip** (seeks to start, pauses at end). The review dialog
   starts at the clip start and pauses at its end (not shown for VodUnavailable). Closing a player
   removes the video/iframe so playback stops.
+  **Short clip review** (badrfly, 2026-11-11): Review of a stored VOD entry passes `bounds: clipWindow(...)` (a 5-minute window, the clip in
+  the middle, ≥ 1 min each side; `CLIP_WINDOW_SECONDS`) and `capFocus`: the timeline, Fit, zoom, seeks, the overview and playback stay
+  inside it (`PlayerBar.extent()`), segments can be made there, and `limitCard` stops the clip's moved edge at the stored-clip limit or
+  the window's edge (message / drag tip "max"). Reference entries still get the whole VOD.
+  **Card strips**: `segmentStrip(markers, from, to, { clips, self })` also draws the team's clips (stored entries and Twitch clips, from
+  `GET /api/timeline/entries?vodIds=`, loaded with the markers) as a purple line above the strip, on VOD cards and reference cards. A stored
+  clip's card shows the strip of its 5-minute window (its own range highlighted) when segments are in that window, else chips.
   **Review** (badrfly, 2026-11-11: the timeline does the work) on a library entry (and automatically right after Add to library) opens the
   clip review dialog: the player with the full VOD timeline zoomed in on the entry (stored or reference; no compact mode any more), the
   entry's card **selected** (`configure({ focus, focusEntryId, selectFocus, zoom, onEntryChanged, onFocusEdited, onAttached })`), edited

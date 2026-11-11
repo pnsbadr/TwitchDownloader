@@ -928,11 +928,16 @@ function openReview(entry) {
   setMessage($("trim-message"), "");
   // The old controls only show with the Twitch player (see onAttached)
   $("review-classic").hidden = true;
+  // A stored clip (at most the stored-clip limit) is reviewed in a 5-minute window of its VOD, and can't be made longer than the
+  // limit there (badrfly, 2026-11-11). Reference entries get the whole VOD.
+  const short = entry.kind === "Vod" && !entry.isReferenceOnly;
   clipPlayer.bar?.configure({
     focus: { start, end },
     focusEntryId: entry.id,
     selectFocus: true,
-    zoom: { from: review.from, to: review.to },
+    zoom: short ? null : { from: review.from, to: review.to },
+    bounds: short ? clipWindow(start, end, entry.vodLengthSeconds) : null,
+    capFocus: short,
     // Saved on the timeline (or stretched, renamed): the dialog follows
     onEntryChanged: syncReviewEntry,
     // Changed on the timeline, not saved yet: the dialog keeps up (the Twitch player's controls start from it, previews stop at its end)
@@ -1661,21 +1666,44 @@ function titleNode(entry) {
 // ---------- team markers and segments on library entries and VOD cards ----------
 
 const vodMarkers = new Map(); // VOD ID (string) -> the team's markers and segments on it
+const vodEntries = new Map(); // VOD ID (string) -> where the team's library entries sit on it (the cards' strips show the clips)
 const MARKERS_PER_REQUEST = 200;
 
 // A placeholder filled with the VOD's markers/segments between from and to (VOD seconds) once they're loaded:
-// a strip for a VOD card or a reference-only entry, chips for a stored entry or a Twitch clip (too short for a strip)
-function segmentSlot(vodId, from, to, kind = "strip") {
+// a strip for a VOD card or a reference-only entry (with the team's clips on it), chips for a Twitch clip (too short for a strip).
+// A stored clip ("clip": from/to are its own range) gets the strip of the 5-minute window around it when segments are in that
+// window (as in its review), else chips.
+function segmentSlot(vodId, from, to, kind = "strip", entry = null) {
   if (!vodId || !(to > from)) return null;
   const slot = el("div", { class: "seg-slot", "data-vod": String(vodId), "data-from": String(from), "data-to": String(to), "data-kind": kind });
+  if (entry) {
+    slot.dataset.self = String(entry.id);
+    slot.dataset.vodLength = String(entry.vodLengthSeconds ?? 0);
+  }
   fillSegmentSlot(slot);
   return slot;
 }
 
+// The cards on a VOD that the strips show: clips (stored entries and Twitch clips), not the long reference ranges
+function stripClips(vodId, exceptId) {
+  return (vodEntries.get(String(vodId)) ?? []).filter((e) => (e.kind === "Clip" || !e.referenceOnly) && String(e.id) !== exceptId);
+}
+
 function fillSegmentSlot(slot) {
   const markers = vodMarkers.get(slot.dataset.vod);
-  const show = slot.dataset.kind === "chips" ? markerChips : segmentStrip;
-  const strip = markers ? show(markers, Number(slot.dataset.from), Number(slot.dataset.to)) : null;
+  const from = Number(slot.dataset.from);
+  const to = Number(slot.dataset.to);
+  const clips = stripClips(slot.dataset.vod, slot.dataset.self);
+  let strip = null;
+  if (markers && slot.dataset.kind === "clip") {
+    const window = clipWindow(from, to, Number(slot.dataset.vodLength));
+    const hasSegments = markers.some((m) => isSegment(m) && m.endSeconds > window.from && m.seconds < window.to);
+    strip = hasSegments
+      ? segmentStrip(markers, window.from, window.to, { clips, self: { start: from, end: to } })
+      : markerChips(markers, from, to);
+  } else if (markers) {
+    strip = slot.dataset.kind === "chips" ? markerChips(markers, from, to) : segmentStrip(markers, from, to, { clips });
+  }
   slot.replaceChildren(...(strip ? [strip] : []));
 }
 
@@ -1684,9 +1712,16 @@ async function loadMarkersFor(vodIds) {
   for (let i = 0; i < ids.length; i += MARKERS_PER_REQUEST) {
     const chunk = ids.slice(i, i + MARKERS_PER_REQUEST);
     try {
-      const markers = await api("GET", `/api/markers?vodIds=${chunk.join(",")}`);
-      for (const id of chunk) vodMarkers.set(id, []);
+      const [markers, entries] = await Promise.all([
+        api("GET", `/api/markers?vodIds=${chunk.join(",")}`),
+        api("GET", `/api/timeline/entries?vodIds=${chunk.join(",")}`),
+      ]);
+      for (const id of chunk) {
+        vodMarkers.set(id, []);
+        vodEntries.set(id, []);
+      }
       for (const marker of markers) vodMarkers.get(String(marker.vodId))?.push(marker);
+      for (const entry of entries) vodEntries.get(String(entry.vodId))?.push(entry);
     } catch (error) {
       console.warn("Couldn't load markers:", error);
     }
@@ -1740,9 +1775,9 @@ function renderEntry(entry) {
       el("div", { class: "entry-meta" }, dates),
       el("div", { class: "entry-meta" }, details),
       segmentSlot(entry.vodId, entry.startSeconds ?? 0, entry.endSeconds ?? entry.vodLengthSeconds,
-        // Reference-only VOD entries span a long part of the VOD, so they get the strip like VOD cards;
-        // stored clips and Twitch clips are short, so chips (badrfly, 2026-11-10).
-        entry.isReferenceOnly && entry.kind !== "Clip" ? "strip" : "chips"),
+        // Reference-only VOD entries span a long part of the VOD, so they get the strip like VOD cards; Twitch clips are short,
+        // so chips (badrfly, 2026-11-10); stored clips get the strip of their 5-minute window once it has segments (2026-11-11).
+        entry.kind === "Clip" ? "chips" : entry.isReferenceOnly ? "strip" : "clip", entry),
       el("div", { class: "entry-status" }, statusBadge(entry),
         entry.followsMarkers
           ? el("span", { class: "badge ref", title: "Made from markers on a live stream: it runs from 30 s before the first marker or segment to 30 s after the last one, and moves when they change. Saving a new cut in Review stops that." }, "Follows markers")

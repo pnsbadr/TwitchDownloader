@@ -35,6 +35,13 @@ namespace TwitchDownloaderWeb.Tests
             // Moving a clip's edges on the player needs EditOwn/AnyEntries (the role has neither); the owner may
             Assert.False(timeline.GetProperty("clips")[0].GetProperty("canEdit").GetBoolean());
             Assert.True((await GetJsonAsync(owner, "/api/vods/1/timeline")).GetProperty("clips")[0].GetProperty("canEdit").GetBoolean());
+            // The clip tool's limit comes with the timeline
+            Assert.Equal(180, timeline.GetProperty("maxStoredClipSeconds").GetInt32());
+            // The cards' strips list the team's entries on each VOD
+            var ranges = await GetJsonAsync(member, "/api/timeline/entries?vodIds=1,2");
+            Assert.Equal(["Clip on VOD 1"], ranges.EnumerateArray().Select(x => x.GetProperty("title").GetString()));
+            Assert.Equal(1, ranges[0].GetProperty("vodId").GetInt64());
+            Assert.Equal(HttpStatusCode.BadRequest, (await member.GetAsync("/api/timeline/entries?vodIds=x", ct)).StatusCode);
 
             // Another team sees none of it (the Main team has its own entry on VOD 1)
             var staff = await StaffClientAsync();
@@ -44,6 +51,7 @@ namespace TwitchDownloaderWeb.Tests
             var otherTimeline = await GetJsonAsync(other, "/api/vods/1/timeline");
             Assert.Equal(0, otherTimeline.GetProperty("markers").GetArrayLength());
             Assert.Equal(0, otherTimeline.GetProperty("clips").GetArrayLength());
+            Assert.Equal(0, (await GetJsonAsync(other, "/api/timeline/entries?vodIds=1")).GetArrayLength());
             Assert.Equal(HttpStatusCode.NotFound, (await other.DeleteAsync($"/api/markers/{mine}", ct)).StatusCode);
 
             // Own markers yes, others' no
