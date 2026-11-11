@@ -52,12 +52,14 @@ namespace TwitchDownloaderWeb.Services
 
         private async Task<LiveEntryChange?> UpdateAsync(LibraryDbContext db, long vodId, CancellationToken cancellationToken)
         {
-            // Query filter: only the requesting team's entries and markers
+            // Query filter: only the requesting team's entries and markers. One live markers entry per VOD: once it was re-cut by
+            // hand (no longer following) the markers don't make a new one, which looked like the card duplicating itself.
             var entry = await db.Entries
-                .Where(x => x.VodId == vodId && x.FollowsMarkers && x.Kind == EntryKind.Vod)
-                .OrderBy(x => x.Id)
+                .Where(x => x.VodId == vodId && (x.MadeFromMarkers || x.FollowsMarkers) && x.Kind == EntryKind.Vod)
+                .OrderByDescending(x => x.FollowsMarkers)
+                .ThenBy(x => x.Id)
                 .FirstOrDefaultAsync(cancellationToken);
-            if (entry is { Status: EntryStatus.VodUnavailable })
+            if (entry is { Status: EntryStatus.VodUnavailable } or { FollowsMarkers: false })
                 return null;
 
             var markers = (await db.Markers.AsNoTracking()
@@ -106,6 +108,7 @@ namespace TwitchDownloaderWeb.Services
                     // Always a reference, whatever its length: it moves with every marker, so a stored file would be re-downloaded each time
                     Status = EntryStatus.ReferenceOnly,
                     FollowsMarkers = true,
+                    MadeFromMarkers = true,
                 };
 
                 await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);

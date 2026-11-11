@@ -83,7 +83,9 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   whatever its length) from 30 s before the first marker to 30 s after the last, the end capped at the VOD's length so far but never before
   the last marker. Every later marker add/delete on that VOD moves it (even after the stream ended; generated file dropped, audited
   `entry.followed_markers`, not counted as a member edit) until someone saves a cut by hand (`PUT /trim` clears the flag). Deleting the last
-  marker leaves it as it is. `IVodDetailsSource` (VodInfoService; faked in `AccountsTests`) is where it reads the VOD.
+  marker leaves it as it is. **One per VOD per team**: `MadeFromMarkers` stays set after it stops following, so later markers don't make a
+  second card (they used to, which looked like cards duplicating; the migration backfilled it from the `entry.added` audit text).
+  `PUT /trim` with `followMarkers: true` (the player's undo of a hand re-cut) makes it follow again and moves it to the markers. `IVodDetailsSource` (VodInfoService; faked in `AccountsTests`) is where it reads the VOD.
 - A converter marks every `DateTime` as UTC when read back (SQLite has no date type) — keep all times UTC.
 - Migrations: `cd TwitchDownloaderWeb && dotnet tool restore && dotnet ef migrations add <Name> -o Data/Migrations`.
   They are applied automatically at startup.
@@ -326,7 +328,8 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   to `snapPoints()`.** **Reference cards on the timeline**: the start/end of reference-only VOD entries the member may edit (`canEdit` from
   `/timeline`) can be dragged on the purple lane, and in Review the reviewed entry's edges anywhere on the track; it saves right away with
   `PUT /trim` (one undo step; the review dialog follows, `onEntryTrimmed`/`syncReviewEntry`, also when the server moves a reviewed live markers card; a live markers card dragged by hand stops following). Stored entries keep
-  their trim bar. A segment changed (drag, nudge) so it reaches past a reference card it was on **stretches the card** to cover it
+  their trim bar. In Review the reviewed entry's card on the purple lane and its vertical lines on the track are **one object**
+  (`syncFocusClip`: the card always has `focus`'s range, also unsaved field edits), so either drags and snaps both. A segment changed (drag, nudge) so it reaches past a reference card it was on **stretches the card** to cover it
   (`cardStretchesFor`; not live markers cards, which the server moves itself); undo reverts both in one step.
   **Automatic zoom never cuts off the selected segment** (badrfly): every zoom the app makes by itself goes through `PlayerBar.zoomTo`, which
   always shows the whole range, and while `autoView` is set (cleared by wheel, zoom tool, +/−/0, panning) `update()` widens the view

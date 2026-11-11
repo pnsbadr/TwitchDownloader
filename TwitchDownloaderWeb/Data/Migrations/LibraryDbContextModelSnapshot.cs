@@ -184,6 +184,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .HasMaxLength(16)
                         .HasColumnType("TEXT");
 
+                    b.Property<bool>("MadeFromMarkers")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("Quality")
                         .HasColumnType("TEXT");
 

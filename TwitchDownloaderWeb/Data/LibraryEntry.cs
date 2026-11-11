@@ -102,6 +102,12 @@ namespace TwitchDownloaderWeb.Data
         /// </summary>
         public bool FollowsMarkers { get; set; }
 
+        /// <summary>
+        /// Made by <see cref="Services.LiveMarkerEntryService"/> (stays set after it stops following). A team gets one such entry per
+        /// VOD: once it stops following, later markers don't make another one.
+        /// </summary>
+        public bool MadeFromMarkers { get; set; }
+
         /// <summary>The team whose library this is in. Requests only see their own team's entries (query filter in <see cref="LibraryDbContext"/>).</summary>
         public int TeamId { get; set; }
     }
