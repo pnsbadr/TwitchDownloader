@@ -32,6 +32,9 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal("m1member", markers[1].GetProperty("createdBy").GetString());
             Assert.Equal([false, true], markers.Select(x => x.GetProperty("canDelete").GetBoolean()));
             Assert.Equal(["Clip on VOD 1"], timeline.GetProperty("clips").EnumerateArray().Select(x => x.GetProperty("title").GetString()));
+            // Moving a clip's edges on the player needs EditOwn/AnyEntries (the role has neither); the owner may
+            Assert.False(timeline.GetProperty("clips")[0].GetProperty("canEdit").GetBoolean());
+            Assert.True((await GetJsonAsync(owner, "/api/vods/1/timeline")).GetProperty("clips")[0].GetProperty("canEdit").GetBoolean());
 
             // Another team sees none of it (the Main team has its own entry on VOD 1)
             var staff = await StaffClientAsync();
