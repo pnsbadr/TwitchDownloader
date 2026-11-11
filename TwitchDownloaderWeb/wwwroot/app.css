@@ -508,8 +508,17 @@ button.small, a.button.small { padding: 3px 10px; font-size: 13px; }
   .vp-bar { --vp-track: #2c2c35; --vp-buffered: #3d3d48; --vp-playhead: #ffffff; --vp-muted: #f2555a; --vp-clean: #3dd68c; --vp-clip: #b58ef0; }
 }
 .vp-overview { width: 100%; height: 12px; display: block; cursor: pointer; }
-.vp-timeline-wrap { position: relative; }
-.vp-timeline { width: 100%; height: 48px; display: block; cursor: pointer; touch-action: none; }
+.vp-timeline-wrap { position: relative; display: flex; align-items: center; gap: 6px; }
+.vp-timeline { flex: 1; min-width: 0; width: 100%; height: 48px; display: block; cursor: pointer; touch-action: none; }
+/* Still-live VOD: jump to now. Red when watching live, outlined when behind. */
+.vp-live { flex: none; display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border: 1px solid #e5484d; border-radius: 4px;
+  background: transparent; color: #e5484d; font-size: 12px; font-weight: 700; letter-spacing: .04em; cursor: pointer; }
+.vp-live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.vp-live::after { content: "»"; font-size: 14px; line-height: 1; }
+.vp-live:hover { background: rgba(229, 72, 77, .15); }
+.vp-live.vp-live-at { background: #e5484d; color: #fff; cursor: default; }
+.vp-live.vp-live-at::after { visibility: hidden; } /* same width in both states, so the timeline doesn't shift */
+.vp-live[hidden] { display: none; }
 .vp-tip {
   position: absolute; bottom: calc(100% + 4px); white-space: pre; pointer-events: none; z-index: 2;
   background: var(--text); color: var(--panel); font-size: 12px; padding: 4px 7px; border-radius: 6px;

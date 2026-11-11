@@ -260,6 +260,7 @@ class PlayerBar {
       <canvas class="vp-overview" height="12" aria-hidden="true"></canvas>
       <div class="vp-timeline-wrap">
         <canvas class="vp-timeline" aria-label="Timeline: click or drag to seek, wheel to zoom"></canvas>
+        <button type="button" class="vp-live" hidden title="The stream is still live: jump to now">LIVE</button>
         <div class="vp-tip" hidden></div>
       </div>
       <div class="vp-controls">
@@ -336,6 +337,11 @@ class PlayerBar {
     this.timelineWrap = this.el.querySelector(".vp-timeline-wrap");
     this.legend = this.el.querySelector(".vp-legend");
     this.selection = this.el.querySelector(".vp-selection");
+    this.liveButton = this.el.querySelector(".vp-live");
+    this.liveButton.addEventListener("click", () => {
+      this.goLive();
+      this.wrap.focus({ preventScroll: true });
+    });
     // Clicking anywhere else in the Watch / Review window unselects the segment or card (the timeline has its own rules; the parts
     // that work on the selection keep it). On click, not pointerdown: the selection row going away moves what's under the pointer
     // (the review dialog is centered), and a button like Close would then miss its click.
@@ -633,6 +639,8 @@ class PlayerBar {
     this.el.hidden = true;
     this.tools.hidden = true;
     this.selX.hidden = true;
+    this.live = false;
+    this.liveButton.hidden = true;
     this.wrap.classList.remove("has-bar");
     this.tip.hidden = true;
     if (wasAttached) this.options.onAttached?.(false);
@@ -656,6 +664,10 @@ class PlayerBar {
     const fragments = details?.fragments ?? [];
     const lastFrag = fragments[fragments.length - 1];
     this.listDuration = lastFrag ? lastFrag.start + lastFrag.duration : 0;
+    // Still live (no #EXT-X-ENDLIST yet): hls.js keeps reloading the playlist, and the LIVE button shows
+    this.live = Boolean(details?.live);
+    this.liveTarget = details?.targetduration || 2;
+    this.renderLive();
     this.fitIfNeeded();
     this.dirty = true;
   }
@@ -790,6 +802,44 @@ class PlayerBar {
 
   now() {
     return this.video?.currentTime ?? 0;
+  }
+
+  // ---- live ----
+
+  // How far behind the newest part the player still counts as "at live" (hls.js plays about 3 parts behind)
+  liveMargin() {
+    return Math.max(8, (this.liveTarget || 2) * 4);
+  }
+
+  atLive() {
+    return this.live && this.duration() - this.now() <= this.liveMargin();
+  }
+
+  renderLive() {
+    const show = Boolean(this.live && this.video);
+    if (this.liveButton.hidden === show) this.liveButton.hidden = !show;
+    const at = show && this.atLive();
+    if (this.liveButton.classList.contains("vp-live-at") !== at) {
+      this.liveButton.classList.toggle("vp-live-at", at);
+      this.liveButton.title = at ? "Watching live" : "The stream is still live: jump to now";
+    }
+  }
+
+  // Jumps to the newest part of a VOD that is still live and plays it (unselects, so Play doesn't stop at a selection's end)
+  goLive() {
+    if (!this.live || !this.video) return;
+    this.deselect();
+    this.playUntil = null;
+    const sync = this.backend?.hls?.liveSyncPosition;
+    const d = this.duration();
+    this.seek(Number.isFinite(sync) && sync > 0 ? sync : Math.max(0, d - (this.liveTarget || 2) * 3));
+    if (this.zoomed) {
+      const span = this.view.to - this.view.from;
+      this.view = { from: d - span * 0.9, to: d + span * 0.1 };
+      this.clampView();
+    }
+    this.video.play().catch(() => {});
+    this.renderLive();
   }
 
   seek(seconds) {
@@ -2065,6 +2115,7 @@ class PlayerBar {
     const video = this.video;
     if (!video) return;
     const now = video.currentTime;
+    if (this.live) this.renderLive();
     const selected = this.selectedRange();
     // Playing a selected segment or card that was just made longer or shorter: stop at its new end
     if (this.playUntil != null && selected) this.playUntil = selected.end;
