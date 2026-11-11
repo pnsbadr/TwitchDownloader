@@ -906,6 +906,17 @@ function updatePlayhead(position) {
 clipPlayer.onTick = updatePlayhead;
 if (clipPlayer.bar) clipPlayer.bar.onMarkersChanged = renderTrimMarkers;
 
+// The reviewed entry was re-cut outside the dialog (dragged on the timeline, stretched by a segment, or moved by the server as a
+// live markers card): show the saved cut
+function syncReviewEntry(updated) {
+  if (!review || review.entry.id !== updated.id) return;
+  review.entry = { ...review.entry, ...updated };
+  review.vodLength = updated.vodLengthSeconds ?? review.vodLength;
+  Object.assign(review, entryRange(review.entry));
+  fitReviewWindow(false);
+  renderReview();
+}
+
 function openReview(entry) {
   const { start, end } = entryRange(entry);
   review = { entry, start, end, vodLength: entry.vodLengthSeconds, from: 0, to: 0, saving: false };
@@ -923,14 +934,7 @@ function openReview(entry) {
     focus: { start, end },
     focusEntryId: entry.id,
     // The entry's edges were dragged on the timeline (or a segment stretched it): saved already, so the dialog follows
-    onEntryTrimmed: (updated) => {
-      if (!review || review.entry.id !== updated.id) return;
-      review.entry = { ...review.entry, ...updated };
-      review.vodLength = updated.vodLengthSeconds ?? review.vodLength;
-      Object.assign(review, entryRange(review.entry));
-      fitReviewWindow(false);
-      renderReview();
-    },
+    onEntryTrimmed: syncReviewEntry,
     focusWindow: { from: review.from, to: review.to },
     zoom: reference ? { from: review.from, to: review.to } : null,
     expandZoom: () => review && { from: review.from, to: review.to },
@@ -1681,6 +1685,10 @@ function markersChanged(vodId, change = {}) {
   loadMarkersFor([...document.querySelectorAll(".seg-slot")].map((slot) => slot.dataset.vod));
   if (!change.liveEntry && !change.deleted && !change.entries) return;
   loadEntries();
+  // A live markers card moved by the server while it's being reviewed: the dialog shows its new cut (unless the user is editing it)
+  const moved = change.liveEntry?.entryId;
+  if (review && moved === review.entry.id && !reviewDirty())
+    api("GET", `/api/entries/${moved}`).then(syncReviewEntry).catch(() => {});
   reloadPlayerTimelines();
   if (change.liveEntry?.created)
     showLibraryNote("Added a reference card for this live stream. It covers 30 s before your first marker to 30 s after your last one and updates as you add more.");

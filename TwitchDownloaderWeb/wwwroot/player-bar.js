@@ -325,6 +325,15 @@ class PlayerBar {
     this.timelineWrap = this.el.querySelector(".vp-timeline-wrap");
     this.legend = this.el.querySelector(".vp-legend");
     this.selection = this.el.querySelector(".vp-selection");
+    // Clicking anywhere else in the Watch / Review window unselects the segment (the timeline has its own rules; the parts that
+    // work on the selection keep it)
+    const area = this.wrap.closest("dialog") ?? this.wrap.closest(".watch") ?? this.wrap;
+    area.addEventListener("pointerdown", (event) => {
+      if (!this.selectedRef || !(event.target instanceof Element)) return;
+      if (event.target.closest(".vp-timeline, .vp-overview, .vp-selection, .vp-markers, .vp-tools, .vp-sel-x, .vp-marker-form, " +
+        "[data-act=play], [data-act=back10], [data-act=back1], [data-act=fwd1], [data-act=fwd10]")) return;
+      this.deselect();
+    });
     this.buildTools();
     this.buildSelection();
 

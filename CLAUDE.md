@@ -319,13 +319,13 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   segment **selects** it and zooms to it (20 % margin, ≥ 2 s; selecting another one while playing jumps to its start and plays it to its end);
   then Play plays only it (stops at its end, also after it was made longer), −10s/−1s/+1s/+10s move its **end**
   (presses within 0.6 s are one change), its edges can be dragged (only the selected one, against misclicks), × (placed 14 px past its end,
-  away from the edge grip) or Del deletes it, and the row under the bar renames/recolors it. Clicking outside segments unselects; so do Esc and a click on the overview strip.
+  away from the edge grip) or Del deletes it, and the row under the bar renames/recolors it. Clicking outside segments unselects; so do Esc, the overview strip and a click anywhere else in the Watch/Review window (except the parts that work on the selection: its row, chips, tools, play and ±10s/±1s).
   **Snapping** (badrfly, 2026-11-10; magnet button at the top of the tools bar, N; on by default, saved in `localStorage` key `clipLibrary.snap`):
   a dragged edge sticks to any time within 8 px from `PlayerBar.snapPoints()` (markers, segment edges, library cards' start/end, the
   reviewed clip, the playhead; dashed guide while stuck); dragging further passes it. **New kinds of timeline items must add their times
   to `snapPoints()`.** **Reference cards on the timeline**: the start/end of reference-only VOD entries the member may edit (`canEdit` from
   `/timeline`) can be dragged on the purple lane, and in Review the reviewed entry's edges anywhere on the track; it saves right away with
-  `PUT /trim` (one undo step; the review dialog follows, `onEntryTrimmed`; a live markers card then stops following). Stored entries keep
+  `PUT /trim` (one undo step; the review dialog follows, `onEntryTrimmed`/`syncReviewEntry`, also when the server moves a reviewed live markers card; a live markers card dragged by hand stops following). Stored entries keep
   their trim bar. A segment changed (drag, nudge) so it reaches past a reference card it was on **stretches the card** to cover it
   (`cardStretchesFor`; not live markers cards, which the server moves itself); undo reverts both in one step.
   **Automatic zoom never cuts off the selected segment** (badrfly): every zoom the app makes by itself goes through `PlayerBar.zoomTo`, which
