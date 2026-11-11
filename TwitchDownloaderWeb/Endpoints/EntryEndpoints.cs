@@ -26,7 +26,8 @@ namespace TwitchDownloaderWeb.Endpoints
 
     /// <param name="StartTime">"h:mm:ss" offset from the start of the VOD. Blank is the start.</param>
     /// <param name="EndTime">"h:mm:ss" offset from the start of the VOD, not a duration. Blank is the end.</param>
-    public sealed record RetrimEntryRequest(string? StartTime, string? EndTime);
+    /// <param name="FollowMarkers">True = the live markers entry follows its markers again (undo of a hand re-cut). Ignored for other entries.</param>
+    public sealed record RetrimEntryRequest(string? StartTime, string? EndTime, bool? FollowMarkers = null);
 
     public sealed record EntryDto(
         int Id,
@@ -496,7 +497,8 @@ namespace TwitchDownloaderWeb.Endpoints
         /// applied again to the new length, so a stored clip is downloaded again (or becomes reference-only if it got too long).
         /// </summary>
         private static async Task<IResult> RetrimEntry(int id, RetrimEntryRequest request, TeamContext team, LibraryDbContext db, DownloadQueue queue,
-            LibraryStorage storage, IVodDetailsSource vods, IOptions<DownloadSettings> settings, ILoggerFactory loggerFactory, CancellationToken cancellationToken)
+            LibraryStorage storage, IVodDetailsSource vods, LiveMarkerEntryService liveEntries, IOptions<DownloadSettings> settings, ILoggerFactory loggerFactory,
+            CancellationToken cancellationToken)
         {
             if (!TrimTime.TryParse(request.StartTime, out var parsedStart))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["startTime"] = ["Use h:mm:ss, m:ss or seconds."] });
@@ -529,13 +531,16 @@ namespace TwitchDownloaderWeb.Endpoints
                     return Results.ValidationProblem(stillWrong);
             }
 
+            // Saving a cut by hand (even the same one) means "keep this cut"; undoing that makes a live markers entry follow again
+            var follow = request.FollowMarkers == true && entry.MadeFromMarkers;
             if (startTime == entry.StartTime && endTime == entry.EndTime)
             {
-                if (entry.FollowsMarkers)
+                if (entry.FollowsMarkers != follow)
                 {
-                    // Saving the same cut by hand still means "keep this cut"
-                    entry.FollowsMarkers = false;
+                    entry.FollowsMarkers = follow;
                     await db.SaveChangesAsync(cancellationToken);
+                    if (follow)
+                        return Results.Ok(EntryDto.From(await FollowMarkersAgainAsync(entry, db, liveEntries, cancellationToken)));
                 }
                 return Results.Ok(EntryDto.From(entry));
             }
@@ -558,7 +563,8 @@ namespace TwitchDownloaderWeb.Endpoints
 
             var oldRange = $"{TrimTime.Format(entry.StartTime)}-{TrimTime.Format(entry.EndTime) ?? "end"}";
             var clipLength = (endTime ?? TimeSpan.FromSeconds(entry.VodLengthSeconds)) - startTime;
-            var isStored = clipLength.TotalSeconds <= settings.Value.MaxStoredClipSeconds;
+            // A live markers entry is always a reference while it follows (it would be re-downloaded on every marker change)
+            var isStored = !follow && clipLength.TotalSeconds <= settings.Value.MaxStoredClipSeconds;
 
             storage.TryDelete(entry.FilePath);
             storage.TryDelete(entry.GeneratedFilePath);
@@ -566,7 +572,7 @@ namespace TwitchDownloaderWeb.Endpoints
             entry.StartTime = startTime;
             entry.EndTime = endTime;
             entry.ClipLengthSeconds = clipLength.TotalSeconds;
-            entry.FollowsMarkers = false; // a cut picked by hand stays put
+            entry.FollowsMarkers = follow; // a cut picked by hand stays put
             entry.Status = isStored ? EntryStatus.Queued : EntryStatus.ReferenceOnly;
             entry.Error = null;
             entry.FilePath = null;
@@ -579,13 +585,23 @@ namespace TwitchDownloaderWeb.Endpoints
             entry.AudioMutedSeconds = null;
             entry.UpdatedAtUtc = DateTime.UtcNow;
             db.Audit(AuditActions.EntryRetrimmed, id,
-                $"{oldRange} -> {TrimTime.Format(startTime)}-{TrimTime.Format(endTime) ?? "end"}, {clipLength.TotalSeconds:0.###}s, {(isStored ? "stored" : "reference-only")}");
+                $"{oldRange} -> {TrimTime.Format(startTime)}-{TrimTime.Format(endTime) ?? "end"}, {clipLength.TotalSeconds:0.###}s, {(isStored ? "stored" : "reference-only")}"
+                + (follow ? ", follows markers again" : ""));
             await db.SaveChangesAsync(cancellationToken);
 
             if (isStored)
                 queue.Enqueue(id, DownloadJobKind.Store);
 
-            return Results.Ok(EntryDto.From(entry));
+            return Results.Ok(EntryDto.From(follow ? await FollowMarkersAgainAsync(entry, db, liveEntries, cancellationToken) : entry));
+        }
+
+        /// <summary>Moves a live markers entry that follows its markers again to where the markers put it now.</summary>
+        private static async Task<LibraryEntry> FollowMarkersAgainAsync(LibraryEntry entry, LibraryDbContext db, LiveMarkerEntryService liveEntries,
+            CancellationToken cancellationToken)
+        {
+            await liveEntries.MarkersChangedAsync(db, entry.VodId, cancellationToken);
+            await db.Entry(entry).ReloadAsync(cancellationToken);
+            return entry;
         }
 
         private static async Task<int?> LatestVodLengthAsync(long vodId, IVodDetailsSource vods, ILoggerFactory loggerFactory)

@@ -143,6 +143,20 @@ namespace TwitchDownloaderWeb.Tests
             Assert.False(kept.GetProperty("followsMarkers").GetBoolean());
             Assert.Equal(1800, kept.GetProperty("endSeconds").GetDouble());
             Assert.Empty(await LiveEntriesAsync());
+
+            // ...and markers on the VOD while it's live don't make a second card (one live markers card per VOD)
+            _vods.Vods[500] = _vods.Vods[500] with { IsLive = true };
+            Assert.Equal(JsonValueKind.Null, (await AddAsync(500, new { seconds = 3100 })).GetProperty("liveEntry").ValueKind);
+            Assert.Single((await GetJsonAsync(owner, "/api/entries")).EnumerateArray().Where(x => x.GetProperty("vodId").GetInt64() == 500));
+
+            // Undoing the hand cut makes it follow again, moved to where the markers are now
+            var undone = await owner.PutAsJsonAsync($"/api/entries/{id}/trim", new { startTime = "0:01:10", endTime = "0:27:00", followMarkers = true }, ct);
+            Assert.Equal(HttpStatusCode.OK, undone.StatusCode);
+            var following = await undone.Content.ReadFromJsonAsync<JsonElement>(ct);
+            Assert.True(following.GetProperty("followsMarkers").GetBoolean());
+            Assert.Equal("ReferenceOnly", following.GetProperty("status").GetString());
+            Assert.Equal(70, following.GetProperty("startSeconds").GetDouble());
+            Assert.Equal(3130, following.GetProperty("endSeconds").GetDouble());
         }
     
         [Fact]

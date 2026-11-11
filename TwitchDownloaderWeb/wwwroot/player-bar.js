@@ -594,6 +594,7 @@ class PlayerBar {
       if (vodId !== this.vodId) return;
       this.clips = timeline.clips;
       this.markers = timeline.markers;
+      this.syncFocusClip();
     } catch (error) {
       console.warn("Couldn't load the timeline's clips and markers:", error);
     }
@@ -636,6 +637,7 @@ class PlayerBar {
   // The entry being reviewed (highlighted on the timeline) and the part of the VOD the review's trim bar shows
   setFocus(focus, focusWindow) {
     this.focus = focus;
+    this.syncFocusClip();
     const windowChanged = this.focusWindow?.from !== focusWindow?.from || this.focusWindow?.to !== focusWindow?.to;
     this.focusWindow = focusWindow;
     if (windowChanged && this.compact) this.renderMarkers();
@@ -1195,6 +1197,15 @@ class PlayerBar {
     return clip.end ?? this.duration();
   }
 
+  // The reviewed entry is one object on the timeline: its card on the purple lane always has the review's range (this.focus,
+  // the vertical lines), so both move and snap together. Dragging either edge goes through the card (dragClipEdgeTo).
+  syncFocusClip() {
+    const clip = this.focus && this.clips.find((c) => c.id === this.focusEntryId);
+    if (!clip) return;
+    clip.start = this.focus.start;
+    clip.end = clip.end == null && this.focus.end >= this.duration() - 0.01 ? null : this.focus.end;
+  }
+
   // Reference VOD cards this member may re-cut by dragging (stored ones re-download, so they keep the review dialog)
   draggableClip(clip) {
     return clip.canEdit && clip.referenceOnly && clip.kind === "Vod";
@@ -1283,16 +1294,20 @@ class PlayerBar {
     return trims;
   }
 
-  // Re-cuts a library entry (PUT /trim, as the review dialog's Save new cut does)
+  // Re-cuts a library entry (PUT /trim, as the review dialog's Save new cut does). range.followsMarkers (undoing a hand re-cut
+  // of a live markers card) makes it follow its markers again, so the server may move it: its answer is what's shown.
   async trimClip(id, range) {
     const entry = await api("PUT", `/api/entries/${id}/trim`, {
       startTime: formatTrimValue(range.start),
       endTime: range.end == null ? "" : formatTrimValue(range.end),
+      followMarkers: Boolean(range.followsMarkers),
     });
+    const start = entry.startSeconds ?? range.start;
+    const end = entry.endSeconds === undefined ? range.end : entry.endSeconds;
     this.clips = this.clips.map((c) => (c.id === id
-      ? { ...c, start: range.start, end: range.end, referenceOnly: Boolean(entry.isReferenceOnly), followsMarkers: false }
+      ? { ...c, start, end, referenceOnly: Boolean(entry.isReferenceOnly), followsMarkers: Boolean(entry.followsMarkers) }
       : c));
-    if (id === this.focusEntryId && this.focus) this.focus = { ...this.focus, start: range.start, end: range.end ?? this.duration() };
+    if (id === this.focusEntryId && this.focus) this.focus = { ...this.focus, start, end: end ?? this.duration() };
     this.dirty = true;
     this.options.onEntryTrimmed?.(entry);
     this.notifyChanged({ entries: true });
@@ -1590,7 +1605,8 @@ class PlayerBar {
     const clipEdge = this.clipEdgeAt(x, y);
     if (clipEdge) {
       this.flushPendingEdit();
-      this.drag = { clip: { id: clipEdge.clip.id }, edge: clipEdge.edge, before: { start: clipEdge.clip.start, end: clipEdge.clip.end } };
+      const { start, end, followsMarkers } = clipEdge.clip;
+      this.drag = { clip: { id: clipEdge.clip.id }, edge: clipEdge.edge, before: { start, end, followsMarkers: Boolean(followsMarkers) } };
       this.canvas.setPointerCapture(event.pointerId);
       return;
     }
