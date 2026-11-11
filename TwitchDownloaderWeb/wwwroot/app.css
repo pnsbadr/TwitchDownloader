@@ -532,6 +532,12 @@ button.small, a.button.small { padding: 3px 10px; font-size: 13px; }
 .vp-marker-label { flex: 1; min-width: 180px; }
 .vp-time-field { display: inline-flex; flex-direction: row; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); }
 .vp-time-field input { width: 8.5em; font-variant-numeric: tabular-nums; }
+.vp-time-field[hidden] { display: none; }
+.vp-marker-form button.link.small { align-self: center; }
+.vp-time-box { position: relative; display: inline-flex; align-items: center; }
+.vp-time-box input { padding-right: 28px; }
+.vp-here { position: absolute; right: 3px; padding: 0 3px; border: 0; background: none; font-size: 14px; line-height: 1; cursor: pointer; opacity: .75; }
+.vp-here:hover, .vp-here:focus-visible { opacity: 1; }
 .vp-btn-active { border-color: var(--accent); background: var(--accent); color: #fff; }
 .vp-chip-go i.vp-chip-segment { width: 16px; border-radius: 2px; }
 .vp-swatches { display: inline-flex; gap: 4px; }
@@ -586,7 +592,6 @@ button.small, a.button.small { padding: 3px 10px; font-size: 13px; }
 .vp-selection-card { border-color: var(--vp-clip, var(--accent)); }
 #review-classic[hidden] { display: none; }
 .vp-swatch input:disabled + span { cursor: default; opacity: .6; }
-.vp-seg-mode .vp-len { border-color: var(--accent); color: var(--accent); }
 .vp-chip-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .player-wrap:fullscreen { background: #000; display: flex; flex-direction: column; padding: 12px; box-sizing: border-box; }
 .player-wrap:fullscreen .vp-stage { flex: 1; min-height: 0; align-items: stretch; }

@@ -308,7 +308,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   live VOD updates as it grows; both drawn at 50 % opacity), the team's library clips from the VOD (purple lane on top), team markers
   (colored lines with a triangle) and **segments** (hatched boxes with brackets at both ends; chips under the bar seek, × deletes).
   Hover shows time + what's there (segment title and range). **[ Segment** / S marks a segment's start, pressing again its end
-  (dashed preview meanwhile, Esc cancels), then the form names it; the form's Start/End can also be typed (blank End = a moment). Zoom (wheel, +/−, Fit; min 10 s) with an
+  (dashed preview meanwhile, Esc cancels), then the form names it; its Start/End can also be typed. **+ Marker** (M) opens the form with one time ("At") and no End. The 👆 button inside a time box puts the playhead's time in it. Zoom (wheel, +/−, Fit; min 10 s) with an
   overview strip while zoomed; the view follows the playhead. `GET /api/vods/{id}/timeline` feeds clips and markers; it's reloaded
   after adding/re-trimming/deleting an entry. Keys (not while typing): Space/K play, J/L ±10 s, ←/→ ±5 s, `,`/`.` one frame,
   M marker, S segment start/end, I/O set the selection's start/end at the playhead, Shift+Space play its last 3 s, F fullscreen, +/−/0 zoom,

@@ -286,10 +286,10 @@ class PlayerBar {
       </div>
       <div class="vp-marker-form" hidden>
         <strong class="vp-marker-kind">Marker</strong>
-        <label class="vp-time-field">Start <input class="vp-marker-start" autocomplete="off" spellcheck="false">
-          <button type="button" class="link small" data-act="startnow" title="Use the player's position">here</button></label>
-        <label class="vp-time-field">End <input class="vp-marker-end" placeholder="none" autocomplete="off" spellcheck="false">
-          <button type="button" class="link small" data-act="endnow" title="Use the player's position">here</button></label>
+        <label class="vp-time-field"><span class="vp-marker-start-label">At</span> <span class="vp-time-box"><input class="vp-marker-start" autocomplete="off" spellcheck="false">
+          <button type="button" class="vp-here" data-act="startnow" title="Use the playhead's position" aria-label="Use the playhead's position">👆</button></span></label>
+        <label class="vp-time-field vp-marker-end-field">End <span class="vp-time-box"><input class="vp-marker-end" autocomplete="off" spellcheck="false">
+          <button type="button" class="vp-here" data-act="endnow" title="Use the playhead's position" aria-label="Use the playhead's position">👆</button></span></label>
         <input class="vp-marker-label" maxlength="200" placeholder="Title, e.g. intro (optional)" autocomplete="off">
         <span class="vp-swatches" role="radiogroup" aria-label="Marker color">
           ${Object.entries(MARKER_COLORS).map(([name, color], i) => `
@@ -373,7 +373,6 @@ class PlayerBar {
     this.form.querySelector("[data-act=cancelmarker]").addEventListener("click", () => this.closeMarkerForm());
     this.form.querySelector("[data-act=startnow]").addEventListener("click", () => this.setFormTime(".vp-marker-start"));
     this.form.querySelector("[data-act=endnow]").addEventListener("click", () => this.setFormTime(".vp-marker-end"));
-    this.form.querySelector(".vp-marker-end").addEventListener("input", () => this.renderFormKind());
     // The player can sit inside the page's add form: Enter must save the marker, not submit that form
     this.form.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
@@ -906,11 +905,13 @@ class PlayerBar {
     button.classList.toggle("vp-btn-active", this.segmentStart != null);
   }
 
+  // + Marker / M: one time. A segment (S twice): start and end.
   openMarkerForm(start = this.now(), end = null) {
     if (!this.canAdd()) return;
     this.cancelSegment();
     this.video.pause();
     this.pendingMarker = true;
+    this.formSegment = end != null;
     this.form.querySelector(".vp-marker-start").value = formatTrimValue(start);
     this.form.querySelector(".vp-marker-end").value = end == null ? "" : formatTrimValue(end);
     this.form.querySelector(".vp-marker-message").textContent = "";
@@ -921,14 +922,15 @@ class PlayerBar {
   }
 
   renderFormKind() {
-    const segment = this.form.querySelector(".vp-marker-end").value.trim() !== "";
+    const segment = this.formSegment;
     this.form.querySelector(".vp-marker-kind").textContent = segment ? "Segment" : "Marker";
+    this.form.querySelector(".vp-marker-start-label").textContent = segment ? "Start" : "At";
+    this.form.querySelector(".vp-marker-end-field").hidden = !segment;
     this.form.querySelector("[data-act=savemarker]").textContent = segment ? "Save segment" : "Save marker";
   }
 
   setFormTime(selector) {
     this.form.querySelector(selector).value = formatTrimValue(this.now());
-    this.renderFormKind();
   }
 
   closeMarkerForm() {
@@ -939,9 +941,10 @@ class PlayerBar {
   // The form's start/end, or an error message
   formTimes() {
     const start = parseTrim(this.form.querySelector(".vp-marker-start").value);
+    if (start == null || Number.isNaN(start)) return { error: `Give the ${this.formSegment ? "start" : "time"} as h:mm:ss.` };
+    if (!this.formSegment) return { start, end: null };
     const end = parseTrim(this.form.querySelector(".vp-marker-end").value);
-    if (start == null || Number.isNaN(start)) return { error: "Give the start as h:mm:ss." };
-    if (Number.isNaN(end)) return { error: "Give the end as h:mm:ss, or leave it blank for a single moment." };
+    if (end == null || Number.isNaN(end)) return { error: "Give the end as h:mm:ss." };
     if (end != null && end < start + MIN_SEGMENT_SECONDS) return { error: `The end must be at least ${MIN_SEGMENT_SECONDS} s after the start.` };
     return { start, end };
   }
@@ -1081,7 +1084,6 @@ class PlayerBar {
     const segment = range?.kind === "segment" ? range.item : null;
     const card = range?.kind === "card" ? range.item : null;
     this.selection.hidden = !range;
-    this.el.querySelector(".vp-controls").classList.toggle("vp-seg-mode", Boolean(range?.editable));
     const what = card ? "card" : "segment";
     for (const [act, seconds] of [["back10", -10], ["back1", -1], ["fwd1", 1], ["fwd10", 10]]) {
       this.el.querySelector(`[data-act=${act}]`).title = range?.editable
