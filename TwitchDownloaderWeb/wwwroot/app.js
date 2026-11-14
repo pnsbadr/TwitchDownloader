@@ -1694,17 +1694,163 @@ function fillSegmentSlot(slot) {
   const from = Number(slot.dataset.from);
   const to = Number(slot.dataset.to);
   const clips = stripClips(slot.dataset.vod, slot.dataset.self);
+  const pick = segmentPick(slot);
   let strip = null;
+  let shown = { from, to };
   if (markers && slot.dataset.kind === "clip") {
     const window = clipWindow(from, to, Number(slot.dataset.vodLength));
     const hasSegments = markers.some((m) => isSegment(m) && m.endSeconds > window.from && m.seconds < window.to);
+    if (hasSegments) shown = window;
     strip = hasSegments
-      ? segmentStrip(markers, window.from, window.to, { clips, self: { start: from, end: to } })
-      : markerChips(markers, from, to);
+      ? segmentStrip(markers, window.from, window.to, { clips, self: { start: from, end: to }, pick })
+      : markerChips(markers, from, to, { pick });
   } else if (markers) {
-    strip = slot.dataset.kind === "chips" ? markerChips(markers, from, to) : segmentStrip(markers, from, to, { clips });
+    strip = slot.dataset.kind === "chips" ? markerChips(markers, from, to, { pick }) : segmentStrip(markers, from, to, { clips, pick });
   }
-  slot.replaceChildren(...(strip ? [strip] : []));
+  // Picks of segments that were deleted, or that this card no longer shows, are dropped
+  if (pick && markers) {
+    const visible = new Set(markers.filter((m) => isSegment(m) && m.endSeconds > shown.from && m.seconds < shown.to).map((m) => m.id));
+    for (const id of [...pick.selected]) if (!visible.has(id)) pick.selected.delete(id);
+  }
+  slot.replaceChildren(...[strip, segmentDownloadBar(slot)].filter(Boolean));
+}
+
+// ---------- segment downloads (pick segments on a card, download them: one file each, or joined when the Owner allows it) ----------
+//
+// Segments never become library cards (badrfly, 2026-11-14). Picks are per card and only kept in this page.
+
+const segmentPicks = new Map(); // card key -> Set of marker IDs
+const segmentDownloads = new Map(); // VOD ID (string) -> the team's segment downloads on it (GET /api/segment-downloads)
+let segmentPollTimer = null;
+
+// A library card picks for itself (its title and quality name the files); a VOD card for the VOD
+function slotKey(slot) {
+  return `${slot.dataset.vod}:${slot.dataset.self ?? "vod"}`;
+}
+
+function segmentPick(slot) {
+  if (!can("GenerateFiles")) return null;
+  const key = slotKey(slot);
+  if (!segmentPicks.has(key)) segmentPicks.set(key, new Set());
+  return {
+    selected: segmentPicks.get(key),
+    onToggle: (marker) => {
+      const selected = segmentPicks.get(key);
+      if (selected.has(marker.id)) selected.delete(marker.id);
+      else selected.add(marker.id);
+      fillSegmentSlot(slot);
+    },
+  };
+}
+
+function segmentDownloadBar(slot) {
+  const key = slotKey(slot);
+  const picked = segmentPicks.get(key) ?? new Set();
+  const entryId = slot.dataset.self ? Number(slot.dataset.self) : null;
+  const downloads = (segmentDownloads.get(slot.dataset.vod) ?? []).filter((d) => (d.entryId ?? null) === entryId);
+  if (!picked.size && !downloads.length) return null;
+
+  const bar = el("div", { class: "seg-downloads" });
+  if (picked.size) {
+    const start = (combined) => startSegmentDownload(slot, [...picked], combined, bar);
+    bar.append(el("div", { class: "seg-pick-row" },
+      el("span", {}, `${picked.size} segment${picked.size === 1 ? "" : "s"} picked`),
+      el("button", { type: "button", class: "small", onclick: () => start(false) }, "Download"),
+      me?.combineSegmentDownloads
+        ? el("button", { type: "button", class: "small secondary", onclick: () => start(true) }, "Download as one file")
+        : null,
+      el("button", { type: "button", class: "link small", onclick: () => { picked.clear(); fillSegmentSlot(slot); } }, "Clear")));
+  }
+  for (const download of downloads) bar.append(segmentDownloadRow(download));
+  return bar;
+}
+
+function segmentDownloadRow(download) {
+  const done = download.items.filter((i) => i.status === "Ready" || i.status === "Failed").length;
+  const total = download.items.length;
+  const what = `${total} segment${total === 1 ? "" : "s"}${download.combined ? ", joined" : ""}`;
+  const links = [];
+  if (download.combinedFileUrl) links.push(el("a", { href: download.combinedFileUrl, download: "" }, "Joined file"));
+  if (download.zipUrl && total > 1) links.push(el("a", { href: download.zipUrl, download: "" }, "All (.zip)"));
+  for (const item of download.items) {
+    if (item.fileUrl) links.push(el("a", { href: item.fileUrl, download: "", title: `${item.label || "Segment"} · ${formatTrimValue(item.startSeconds)}–${formatTrimValue(item.endSeconds)}` },
+      `${item.position}.${item.label ? ` ${item.label}` : ""}`));
+  }
+  const status = {
+    Queued: "queued",
+    Running: `making ${Math.min(done + 1, total)} of ${total}…`,
+    Ready: download.expiresAtUtc ? `kept until ${formatDate(download.expiresAtUtc)}` : "ready",
+    Failed: "failed",
+  }[download.status] ?? download.status;
+  const failed = download.items.filter((i) => i.status === "Failed");
+  const error = download.error ?? (failed.length ? `${failed.length} segment${failed.length === 1 ? "" : "s"} failed: ${failed[0].error ?? ""}` : null);
+  return el("div", { class: "seg-download-row" },
+    el("span", { class: download.status === "Failed" ? "badge error" : download.status === "Ready" ? "badge ok" : "badge busy" }, `Segments · ${what}`),
+    el("span", { class: "muted" }, status),
+    ...links,
+    download.canDelete
+      ? el("button", { type: "button", class: "link small danger", title: "Delete these files", onclick: () => deleteSegmentDownload(download) }, "×")
+      : null,
+    error ? el("div", { class: "entry-error" }, error) : null);
+}
+
+async function startSegmentDownload(slot, markerIds, combined, bar) {
+  const body = { markerIds, combined };
+  if (slot.dataset.self) body.entryId = Number(slot.dataset.self);
+  try {
+    const download = await api("POST", `/api/vods/${slot.dataset.vod}/segment-downloads`, body);
+    segmentPicks.get(slotKey(slot))?.clear();
+    const list = segmentDownloads.get(slot.dataset.vod) ?? [];
+    segmentDownloads.set(slot.dataset.vod, [download, ...list.filter((d) => d.id !== download.id)]);
+    refillSlots(slot.dataset.vod);
+    scheduleSegmentPoll();
+  } catch (error) {
+    bar.querySelector(".entry-error.seg-pick-error")?.remove();
+    bar.append(el("div", { class: "entry-error seg-pick-error" }, error.message));
+  }
+}
+
+async function deleteSegmentDownload(download) {
+  try {
+    await api("DELETE", `/api/segment-downloads/${download.id}`);
+    const vod = String(download.vodId);
+    segmentDownloads.set(vod, (segmentDownloads.get(vod) ?? []).filter((d) => d.id !== download.id));
+    refillSlots(vod);
+  } catch (error) {
+    showLibraryNote(error.message);
+  }
+}
+
+function refillSlots(vodId) {
+  document.querySelectorAll(`.seg-slot[data-vod="${CSS.escape(String(vodId))}"]`).forEach(fillSegmentSlot);
+}
+
+async function loadSegmentDownloads(vodIds) {
+  const ids = [...new Set(vodIds.filter((id) => Number(id) > 0).map(String))];
+  for (let i = 0; i < ids.length; i += MARKERS_PER_REQUEST) {
+    const chunk = ids.slice(i, i + MARKERS_PER_REQUEST);
+    const downloads = await api("GET", `/api/segment-downloads?vodIds=${chunk.join(",")}`);
+    for (const id of chunk) segmentDownloads.set(id, []);
+    for (const download of downloads) segmentDownloads.get(String(download.vodId))?.push(download);
+  }
+}
+
+// While a segment download is being made, check on it every few seconds
+function scheduleSegmentPoll() {
+  if (segmentPollTimer) return;
+  const busy = () => [...segmentDownloads.entries()].filter(([, list]) => list.some((d) => d.status === "Queued" || d.status === "Running")).map(([vod]) => vod);
+  if (!busy().length) return;
+  segmentPollTimer = setTimeout(async () => {
+    segmentPollTimer = null;
+    const vods = busy();
+    try {
+      await loadSegmentDownloads(vods);
+      vods.forEach(refillSlots);
+    } catch (error) {
+      console.warn("Couldn't check segment downloads:", error);
+    }
+    scheduleSegmentPoll();
+  }, POLL_MS);
 }
 
 async function loadMarkersFor(vodIds) {
@@ -1725,6 +1871,12 @@ async function loadMarkersFor(vodIds) {
     } catch (error) {
       console.warn("Couldn't load markers:", error);
     }
+  }
+  try {
+    await loadSegmentDownloads(ids);
+    scheduleSegmentPoll();
+  } catch (error) {
+    console.warn("Couldn't load segment downloads:", error);
   }
   document.querySelectorAll(".seg-slot").forEach(fillSegmentSlot);
 }

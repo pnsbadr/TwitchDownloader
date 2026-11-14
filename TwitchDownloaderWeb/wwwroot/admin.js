@@ -127,6 +127,11 @@ function teamRow(team) {
     actions.push(el("button", { type: "button", class: "link small", onclick: () => makeOwnerLink(team) },
       team.ownerUsername ? "Owner link (hand over)" : "Owner link"));
   }
+  // Features still being tried out: only the Owner turns them on, per team
+  if (staffMe.isOwner) {
+    actions.push(el("button", { type: "button", class: "link small", onclick: () => setTeamFeature(team, { combineSegmentDownloads: !team.combineSegmentDownloads }) },
+      team.combineSegmentDownloads ? "Turn off joined segments" : "Allow joined segments"));
+  }
   if (can("DisableTeams")) {
     actions.push(el("button", { type: "button", class: team.disabledAtUtc ? "link small" : "link danger small", onclick: () => setTeamDisabled(team, !team.disabledAtUtc) },
       team.disabledAtUtc ? "Enable" : "Disable"));
@@ -137,6 +142,9 @@ function teamRow(team) {
       el("strong", {}, team.name),
       team.disabledAtUtc ? el("span", { class: "badge error" }, "Disabled") : null,
       team.autoSaveAudio ? el("span", { class: "badge ok" }, "Auto audio saving") : null,
+      team.combineSegmentDownloads
+        ? el("span", { class: "badge ok", title: "Members can download picked segments joined into one file" }, "Joined segments")
+        : null,
       el("div", { class: "muted small-text" },
         `${team.ownerUsername ? `Owner ${team.ownerUsername}` : "No owner yet"} · ${plural(team.memberCount, "member")} · `
         + `${plural(team.entryCount, "entry", "entries")} · ${formatBytes(team.diskBytes)} on disk · `
@@ -193,6 +201,15 @@ function showLinkIn(box, panel) {
   panel.querySelector(".link-box")?.remove();
   panel.querySelector("h2").after(box);
   box.scrollIntoView({ block: "nearest" });
+}
+
+async function setTeamFeature(team, features) {
+  try {
+    await api("PUT", `/api/admin/teams/${team.id}/features`, features);
+    loadTeams();
+  } catch (error) {
+    showError(error);
+  }
 }
 
 async function setTeamDisabled(team, disabled) {

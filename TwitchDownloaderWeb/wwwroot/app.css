@@ -1084,3 +1084,16 @@ table.activity td.num { text-align: right; font-variant-numeric: tabular-nums; }
 @media (prefers-reduced-motion: reduce) {
   .live-dot { animation: none; }
 }
+
+/* ---- picking segments on a card for a segment download (makePickable in player-bar.js, segmentDownloadBar in app.js) ---- */
+.seg-pickable { cursor: pointer; }
+.seg-box.seg-picked { top: -6px; bottom: -6px; z-index: 2; outline: 2px solid var(--text); outline-offset: 1px; }
+.seg-box.seg-picked::before { inset: 6px 0; opacity: 1; }
+.seg-pickable:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-index: 2; }
+.entry-markers .vp-chip.seg-pickable .vp-chip-go { cursor: pointer; }
+.vp-chip.seg-picked { outline: 2px solid var(--text); outline-offset: 1px; }
+.vp-chip.seg-picked .vp-chip-go::before { content: "✓ "; font-weight: 700; }
+.seg-downloads { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; font-size: 0.9em; }
+.seg-pick-row, .seg-download-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.seg-download-row a { white-space: nowrap; }
+.seg-download-row .entry-error { flex-basis: 100%; }

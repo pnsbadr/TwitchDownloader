@@ -162,8 +162,30 @@ function drawSegmentBox(ctx, a, b, top, height, color, dashed = false) {
   ctx.restore();
 }
 
+// Segments on a card's strip or chips can be picked for a segment download (badrfly, 2026-11-14). pick: { selected: Set of marker
+// IDs, onToggle(marker) }. Makes the item a toggle; picked ones are drawn raised and outlined (chips get a check).
+function makePickable(item, marker, pick) {
+  if (!pick || !isSegment(marker)) return;
+  const picked = pick.selected.has(marker.id);
+  item.classList.add("seg-pickable");
+  item.classList.toggle("seg-picked", picked);
+  item.setAttribute("role", "button");
+  item.setAttribute("tabindex", "0");
+  item.setAttribute("aria-pressed", String(picked));
+  item.title += picked ? "\nPicked for download (click to unpick)" : "\nClick to pick for download";
+  const toggle = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    pick.onToggle(marker);
+  };
+  item.addEventListener("click", toggle);
+  item.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") toggle(event);
+  });
+}
+
 // Chips for a library entry (like the list under the player): the markers and segments between from and to. Null when none.
-function markerChips(markers, from, to) {
+function markerChips(markers, from, to, { pick = null } = {}) {
   const inside = markers.filter((m) => (isSegment(m) ? m.endSeconds > from && m.seconds < to : m.seconds >= from && m.seconds <= to));
   if (!inside.length) return null;
   const list = document.createElement("div");
@@ -188,6 +210,7 @@ function markerChips(markers, from, to) {
       body.append(by);
     }
     chip.append(body);
+    makePickable(chip, marker, pick);
     list.append(chip);
   }
   return list;
@@ -196,7 +219,7 @@ function markerChips(markers, from, to) {
 // A small strip for a library entry or VOD card: the markers and segments that fall between from and to (VOD seconds), and the
 // team's clips there (a purple line on top, like the player's lane). self: the range of the clip the strip belongs to (a stored
 // clip's 5-minute window), highlighted. Null when there's nothing to show. Hovering one shows its title and times.
-function segmentStrip(markers, from, to, { clips = [], self = null } = {}) {
+function segmentStrip(markers, from, to, { clips = [], self = null, pick = null } = {}) {
   const span = to - from;
   if (!(span > 0)) return null;
   const inside = markers.filter((m) => (isSegment(m) ? m.endSeconds > from && m.seconds < to : m.seconds >= from && m.seconds <= to));
@@ -244,6 +267,7 @@ function segmentStrip(markers, from, to, { clips = [], self = null } = {}) {
     } else {
       item.className = "seg-mark";
     }
+    makePickable(item, marker, pick);
     strip.append(item);
   }
   return strip;
