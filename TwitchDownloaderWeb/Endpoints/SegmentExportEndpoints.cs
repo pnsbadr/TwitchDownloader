@@ -252,7 +252,11 @@ namespace TwitchDownloaderWeb.Endpoints
 
             var name = $"{BaseName(export)} - segments.zip";
             context.Response.ContentType = "application/zip";
-            context.Response.Headers.ContentDisposition = new System.Net.Mime.ContentDisposition { FileName = name, DispositionType = "attachment" }.ToString();
+            // Titles often have emoji: SetHttpFileName adds an ASCII filename plus filename*=UTF-8''... (a raw non-ASCII header value makes
+            // Kestrel drop the response, which the browser shows as "Site wasn't available")
+            var disposition = new Microsoft.Net.Http.Headers.ContentDispositionHeaderValue("attachment");
+            disposition.SetHttpFileName(name);
+            context.Response.Headers.ContentDisposition = disposition.ToString();
             // ZipArchive writes synchronously; the archive streams out as it's made (no temporary copy on disk)
             if (context.Features.Get<IHttpBodyControlFeature>() is { } bodyControl)
                 bodyControl.AllowSynchronousIO = true;
