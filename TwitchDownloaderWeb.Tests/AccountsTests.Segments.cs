@@ -108,7 +108,7 @@ namespace TwitchDownloaderWeb.Tests
             var ct = TestContext.Current.CancellationToken;
             _vods.Vods[50] = new VodDetails(50, "Big stream", "arky", 600, DateTime.UtcNow.AddDays(-1), null);
             var (owner, member, teamId, memberId) = await TeamWithMemberAsync("sg1");
-            var entryId = AddEntry(teamId, memberId, "Card: title");
+            var entryId = AddEntry(teamId, memberId, "🟢 I GOT MAIL? 🟢 !newsong");
             using (var scope = _factory.Services.CreateScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
@@ -166,6 +166,8 @@ namespace TwitchDownloaderWeb.Tests
 
             var zip = await member.GetAsync(export.GetProperty("zipUrl").GetString(), ct);
             Assert.Equal(HttpStatusCode.OK, zip.StatusCode);
+            // The title's emoji reach the file name (filename*), and the header stays ASCII
+            Assert.Equal("🟢 I GOT MAIL？ 🟢 !newsong - segments.zip", zip.Content.Headers.ContentDisposition!.FileNameStar);
             using (var archive = new ZipArchive(new MemoryStream(await zip.Content.ReadAsByteArrayAsync(ct))))
             {
                 Assert.Equal(2, archive.Entries.Count);
