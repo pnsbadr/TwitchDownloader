@@ -32,6 +32,8 @@ namespace TwitchDownloaderWeb.Data
         public DbSet<AccountLink> AccountLinks => Set<AccountLink>();
         public DbSet<TeamRole> TeamRoles => Set<TeamRole>();
         public DbSet<VodMarker> Markers => Set<VodMarker>();
+        public DbSet<SegmentExport> SegmentExports => Set<SegmentExport>();
+        public DbSet<SegmentExportItem> SegmentExportItems => Set<SegmentExportItem>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -116,6 +118,25 @@ namespace TwitchDownloaderWeb.Data
                 entity.HasQueryFilter(x => !ScopedToTeam || x.TeamId == ScopeTeamId);
             });
 
+            modelBuilder.Entity<SegmentExport>(entity =>
+            {
+                entity.Property(x => x.Title).HasMaxLength(500);
+                entity.Property(x => x.Quality).HasMaxLength(64);
+                entity.Property(x => x.Status).HasConversion<string>().HasMaxLength(32);
+                entity.HasIndex(x => new { x.TeamId, x.VodId });
+                entity.HasIndex(x => x.Status);
+                entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasMany(x => x.Items).WithOne().HasForeignKey(x => x.ExportId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasQueryFilter(x => !ScopedToTeam || x.TeamId == ScopeTeamId);
+            });
+
+            modelBuilder.Entity<SegmentExportItem>(entity =>
+            {
+                entity.Property(x => x.Label).HasMaxLength(VodMarker.MaxLabelLength);
+                entity.Property(x => x.Status).HasConversion<string>().HasMaxLength(32);
+                entity.HasIndex(x => new { x.ExportId, x.Position }).IsUnique();
+            });
+
             modelBuilder.Entity<StaffAccount>(entity =>
             {
                 entity.Property(x => x.Username).HasMaxLength(32);
@@ -187,6 +208,10 @@ namespace TwitchDownloaderWeb.Data
                     case VodMarker marker:
                         if (marker.TeamId == 0 && _actor.TeamId is { } markerTeam) marker.TeamId = markerTeam;
                         if (marker.CreatedByUserId == 0 && _actor.UserId is { } markerUser) marker.CreatedByUserId = markerUser;
+                        break;
+                    case SegmentExport export:
+                        if (export.TeamId == 0 && _actor.TeamId is { } exportTeam) export.TeamId = exportTeam;
+                        if (export.CreatedByUserId == 0 && _actor.UserId is { } exportUser) export.CreatedByUserId = exportUser;
                         break;
                     case SavedChannel channel:
                         if (channel.TeamId == 0 && _actor.TeamId is { } channelTeam) channel.TeamId = channelTeam;

@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using TwitchDownloaderWeb.Data;
+using TwitchDownloaderWeb.Services.Segments;
 using TwitchDownloaderWeb.Services.Shortform;
 
 namespace TwitchDownloaderWeb.Services
@@ -19,11 +20,13 @@ namespace TwitchDownloaderWeb.Services
         private readonly DownloadQueue _queue;
         private readonly LibraryStorage _storage;
         private readonly ShortformService _shortform;
+        private readonly SegmentExportQueue _segmentQueue;
         private readonly ILogger<LibraryCleanupService> _logger;
 
         public LibraryCleanupService(IServiceScopeFactory scopeFactory, DownloadQueue queue, LibraryStorage storage, ShortformService shortform,
-            ILogger<LibraryCleanupService> logger)
+            SegmentExportQueue segmentQueue, ILogger<LibraryCleanupService> logger)
         {
+            _segmentQueue = segmentQueue;
             _shortform = shortform;
             _scopeFactory = scopeFactory;
             _queue = queue;
@@ -66,6 +69,7 @@ namespace TwitchDownloaderWeb.Services
 
             await DeleteExpiredGeneratedFilesAsync(db, cancellationToken);
             await DeleteOrphanedFilesAsync(db, cancellationToken);
+            await CleanupSegmentExportsAsync(db, cancellationToken);
 
             var entryIds = (await db.Entries.Select(x => x.Id).ToListAsync(cancellationToken)).ToHashSet();
             _shortform.Cleanup(entryIds);
@@ -96,6 +100,50 @@ namespace TwitchDownloaderWeb.Services
 
             if (expired.Count > 0)
                 _logger.LogInformation("Expired {Count} on-demand file(s).", expired.Count);
+        }
+
+        /// <summary>Deletes segment downloads past their expiry (files and row), and folders in "segments/" that no download owns.</summary>
+        private async Task CleanupSegmentExportsAsync(LibraryDbContext db, CancellationToken cancellationToken)
+        {
+            var now = DateTime.UtcNow;
+            var expired = await db.SegmentExports.Where(x => x.ExpiresAtUtc <= now).ToListAsync(cancellationToken);
+            foreach (var export in expired)
+            {
+                if (!TryDeleteFolder(_storage.Resolve(LibraryStorage.SegmentExportRelativeFolder(export.Id))))
+                    continue;
+                db.SegmentExports.Remove(export);
+                db.Audit(AuditActions.SegmentsExpired, export.EntryId, $"Segment download {export.Id} of VOD {export.VodId}", teamId: export.TeamId);
+            }
+            await db.SaveChangesAsync(cancellationToken);
+
+            var folder = _storage.SegmentsFolder;
+            if (!Directory.Exists(folder))
+                return;
+
+            var ids = (await db.SegmentExports.Select(x => x.Id).ToListAsync(cancellationToken)).ToHashSet();
+            foreach (var dir in new DirectoryInfo(folder).EnumerateDirectories())
+            {
+                if (!int.TryParse(dir.Name, out var id) || ids.Contains(id) || _segmentQueue.IsRunning(id)
+                    || DateTime.UtcNow - dir.LastWriteTimeUtc < OrphanMinAge)
+                    continue;
+                if (TryDeleteFolder(dir.FullName))
+                    _logger.LogInformation("Deleted orphaned segment download folder {Path}.", dir.FullName);
+            }
+        }
+
+        private bool TryDeleteFolder(string path)
+        {
+            try
+            {
+                if (Directory.Exists(path))
+                    Directory.Delete(path, true);
+                return true;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                _logger.LogWarning("Couldn't delete {Path}: {Message}; trying again next round.", path, ex.Message);
+                return false;
+            }
         }
 
         private async Task DeleteOrphanedFilesAsync(LibraryDbContext db, CancellationToken cancellationToken)

@@ -17,23 +17,18 @@ namespace TwitchDownloaderWeb.Services
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly DownloadQueue _queue;
         private readonly VodInfoService _vodInfo;
-        private readonly VodDownloadRunner _runner;
-        private readonly AudioRestoreService _restore;
-        private readonly ExactTrimService _exactTrim;
+        private readonly IVodCutter _cutter;
         private readonly ClipFileService _clipFiles;
         private readonly LibraryStorage _storage;
         private readonly IOptions<DownloadSettings> _settings;
         private readonly ILogger<DownloadWorker> _logger;
 
-        public DownloadWorker(IServiceScopeFactory scopeFactory, DownloadQueue queue, VodInfoService vodInfo, VodDownloadRunner runner,
-            AudioRestoreService restore, ExactTrimService exactTrim, ClipFileService clipFiles, LibraryStorage storage, IOptions<DownloadSettings> settings, ILogger<DownloadWorker> logger)
+        public DownloadWorker(IServiceScopeFactory scopeFactory, DownloadQueue queue, VodInfoService vodInfo, IVodCutter cutter, ClipFileService clipFiles, LibraryStorage storage, IOptions<DownloadSettings> settings, ILogger<DownloadWorker> logger)
         {
             _scopeFactory = scopeFactory;
             _queue = queue;
             _vodInfo = vodInfo;
-            _runner = runner;
-            _restore = restore;
-            _exactTrim = exactTrim;
+            _cutter = cutter;
             _clipFiles = clipFiles;
             _storage = storage;
             _settings = settings;
@@ -254,34 +249,11 @@ namespace TwitchDownloaderWeb.Services
         }
 
         /// <summary>
-        /// Downloads a VOD entry's cut. Swaps rescued clean audio into muted parts if we have any; otherwise (or if that fails)
-        /// a normal download. We own this path, so any leftover from an earlier attempt is overwritten.
+        /// Downloads a VOD entry's cut (saved clean audio swapped into muted parts when there is any). We own this path, so any
+        /// leftover from an earlier attempt is overwritten.
         /// </summary>
-        /// <returns>The audio restore attempt, or null if the VOD has no audio rescue or the attempt failed.</returns>
-        private async Task<AudioRestoreResult?> DownloadVodCutAsync(LibraryDbContext db, LibraryEntry entry, string fullPath, CancellationToken cancellationToken)
-        {
-            AudioRestoreResult? restore = null;
-            try
-            {
-                restore = await _restore.TryDownloadRestoredAsync(db, entry, fullPath, _logger, cancellationToken);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogWarning(ex, "Restoring audio for entry {EntryId} failed; downloading without it.", entry.Id);
-                db.Audit(AuditActions.AudioRestoreFailed, entry.Id, ex.Message);
-            }
-
-            if (restore is not { Downloaded: true })
-            {
-                if (entry.TrimMode == VideoTrimMode.Exact)
-                    await _exactTrim.DownloadAsync(entry, fullPath, _logger, cancellationToken);
-                else
-                    await _runner.DownloadAsync(entry.VodId, entry.Quality, entry.TrimMode, entry.StartTime, entry.EndTime,
-                        fullPath, info => info, _logger, cancellationToken);
-            }
-
-            return restore;
-        }
+        private Task<AudioRestoreResult?> DownloadVodCutAsync(LibraryDbContext db, LibraryEntry entry, string fullPath, CancellationToken cancellationToken) =>
+            _cutter.CutAsync(db, entry, fullPath, _logger, error => db.Audit(AuditActions.AudioRestoreFailed, entry.Id, error), cancellationToken);
 
         /// <summary>Twitch no longer has what the entry's file would be made from.</summary>
         private static async Task MarkUnavailableAsync(LibraryDbContext db, LibraryEntry entry, string message, CancellationToken cancellationToken)

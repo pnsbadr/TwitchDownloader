@@ -31,5 +31,14 @@ namespace TwitchDownloaderWeb
 
         /// <summary>libx264 CRF for Exact trims (lower is better quality and bigger files).</summary>
         public int ExactTrimCrf { get; set; } = 18;
+
+        /// <summary>Most segments one segment download may have.</summary>
+        public int MaxSegmentsPerDownload { get; set; } = 50;
+
+        /// <summary>Most video one segment download may make, all segments together (every segment is re-encoded).</summary>
+        public int MaxSegmentDownloadSeconds { get; set; } = 3 * 3600;
+
+        /// <summary>Segment downloads a team may have queued or running at once.</summary>
+        public int MaxActiveSegmentDownloadsPerTeam { get; set; } = 3;
     }
 }

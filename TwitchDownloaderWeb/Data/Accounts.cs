@@ -67,6 +67,12 @@ namespace TwitchDownloaderWeb.Data
         /// </summary>
         public bool AutoSaveAudio { get; set; }
 
+        /// <summary>
+        /// Members may download picked segments joined into one file (besides one file per segment, which every team has). Only the app
+        /// Owner turns it on, per team (badrfly, 2026-11-14). Off by default.
+        /// </summary>
+        public bool CombineSegmentDownloads { get; set; }
+
         public List<TeamMember> Members { get; set; } = [];
     }
 

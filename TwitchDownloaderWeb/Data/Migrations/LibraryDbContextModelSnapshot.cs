@@ -325,6 +325,122 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.ToTable("Channels", (string)null);
                 });
 
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.SegmentExport", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("Combined")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("CombinedFilePath")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long?>("CombinedFileSizeBytes")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("CreatedByUserId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("EntryId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Error")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("ExpiresAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Quality")
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("TeamId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("VodId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Status");
+
+                    b.HasIndex("TeamId", "VodId");
+
+                    b.ToTable("SegmentExports");
+                });
+
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.SegmentExportItem", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double?>("AudioMutedSeconds")
+                        .HasColumnType("REAL");
+
+                    b.Property<double?>("AudioRestoredSeconds")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("EndSeconds")
+                        .HasColumnType("REAL");
+
+                    b.Property<string>("Error")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("ExportId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("FilePath")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long?>("FileSizeBytes")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Label")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("MarkerId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Position")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double>("StartSeconds")
+                        .HasColumnType("REAL");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ExportId", "Position")
+                        .IsUnique();
+
+                    b.ToTable("SegmentExportItems");
+                });
+
             modelBuilder.Entity("TwitchDownloaderWeb.Data.StaffAccount", b =>
                 {
                     b.Property<int>("Id")
@@ -387,6 +503,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .HasColumnType("INTEGER");
 
                     b.Property<bool>("AutoSaveAudio")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("CombineSegmentDownloads")
                         .HasColumnType("INTEGER");
 
                     b.Property<DateTime>("CreatedAtUtc")
@@ -670,6 +789,24 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.SegmentExport", b =>
+                {
+                    b.HasOne("TwitchDownloaderWeb.Data.Team", null)
+                        .WithMany()
+                        .HasForeignKey("TeamId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.SegmentExportItem", b =>
+                {
+                    b.HasOne("TwitchDownloaderWeb.Data.SegmentExport", null)
+                        .WithMany("Items")
+                        .HasForeignKey("ExportId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("TwitchDownloaderWeb.Data.Team", b =>
                 {
                     b.HasOne("TwitchDownloaderWeb.Data.UserAccount", "OwnerUser")
@@ -722,6 +859,11 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .HasForeignKey("TeamId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.SegmentExport", b =>
+                {
+                    b.Navigation("Items");
                 });
 
             modelBuilder.Entity("TwitchDownloaderWeb.Data.Team", b =>

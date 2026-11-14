@@ -69,6 +69,14 @@ namespace TwitchDownloaderWeb.Data
         public const string TeamEnabled = "team.enabled";
         public const string SupportViewStarted = "support.started";
         public const string SupportViewEnded = "support.ended";
+        /// <summary>Segment downloads (picked segments of a VOD, one file each or joined; never library entries).</summary>
+        public const string SegmentsRequested = "segments.requested";
+        public const string SegmentsReady = "segments.ready";
+        public const string SegmentsFailed = "segments.failed";
+        public const string SegmentsDeleted = "segments.deleted";
+        public const string SegmentsExpired = "segments.expired";
+        /// <summary>The app Owner turned a team feature (e.g. joined segment downloads) on or off.</summary>
+        public const string TeamFeaturesChanged = "team.features_changed";
     }
 
     /// <summary>

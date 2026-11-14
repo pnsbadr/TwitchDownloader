@@ -27,6 +27,7 @@ namespace TwitchDownloaderWeb.Services.Accounts
             [AuditActions.EntryDeleted] = "deleted",
             [AuditActions.FileServed] = "downloaded",
             [AuditActions.GenerationRequested] = "generated",
+            [AuditActions.SegmentsRequested] = "generated",
             [AuditActions.ShortformRequested] = "vertical",
         };
 
@@ -83,6 +84,14 @@ namespace TwitchDownloaderWeb.Services.Accounts
                 builders[key] = (b.Counts, b.Added + 1, b.Disk + bytes);
             }
 
+            // Segment downloads' files count for whoever started them
+            foreach (var export in await SegmentExportDiskAsync(db, teamId, userId, cancellationToken))
+            {
+                var key = (export.TeamId, export.UserId.ToString());
+                var b = Get(key);
+                builders[key] = (b.Counts, b.Added, b.Disk + export.Bytes);
+            }
+
             return builders.ToDictionary(x => x.Key, x => new UserActivity(x.Value.Counts, x.Value.Added, x.Value.Disk));
         }
 
@@ -101,7 +110,25 @@ namespace TwitchDownloaderWeb.Services.Accounts
                                      + (entry.GeneratedExpiresAtUtc > now ? entry.GeneratedFileSizeBytes ?? 0 : 0)
                                      + shortform.ListRenders(entry.Id).Sum(x => x.SizeBytes);
             }
+            foreach (var export in await SegmentExportDiskAsync(db, null, null, cancellationToken))
+                disk[export.TeamId] = disk.GetValueOrDefault(export.TeamId) + export.Bytes;
             return disk;
+        }
+
+        /// <summary>Bytes of each unexpired segment download's files (every team's: staff code).</summary>
+        private static async Task<List<(int TeamId, int UserId, long Bytes)>> SegmentExportDiskAsync(LibraryDbContext db, int? teamId, int? userId,
+            CancellationToken cancellationToken)
+        {
+            var now = DateTime.UtcNow;
+            var query = db.SegmentExports.IgnoreQueryFilters().AsNoTracking().Where(x => x.ExpiresAtUtc == null || x.ExpiresAtUtc > now);
+            if (teamId is { } t)
+                query = query.Where(x => x.TeamId == t);
+            if (userId is { } u)
+                query = query.Where(x => x.CreatedByUserId == u);
+            var rows = await query
+                .Select(x => new { x.TeamId, x.CreatedByUserId, Combined = x.CombinedFileSizeBytes ?? 0, Items = x.Items.Sum(i => i.FileSizeBytes ?? 0) })
+                .ToListAsync(cancellationToken);
+            return rows.Select(x => (x.TeamId, x.CreatedByUserId, x.Combined + x.Items)).ToList();
         }
     }
 }

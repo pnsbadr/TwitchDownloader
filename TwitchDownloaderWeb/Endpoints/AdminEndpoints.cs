@@ -16,7 +16,10 @@ namespace TwitchDownloaderWeb.Endpoints
     public sealed record StaffMeDto(int Id, string Username, bool IsOwner, IReadOnlyList<string> Permissions, IReadOnlyList<StaffPermissionInfo> PermissionCatalog);
 
     public sealed record AdminTeamDto(int Id, string Name, DateTime CreatedAtUtc, int? OwnerUserId, string? OwnerUsername, int MemberCount, int EntryCount,
-        DateTime? DisabledAtUtc, bool AutoSaveAudio, long DiskBytes, DateTime? LastActiveAtUtc);
+        DateTime? DisabledAtUtc, bool AutoSaveAudio, long DiskBytes, DateTime? LastActiveAtUtc, bool CombineSegmentDownloads);
+
+    /// <param name="CombineSegmentDownloads">Members may download picked segments joined into one file. Null leaves it as it is.</param>
+    public sealed record TeamFeaturesRequest(bool? CombineSegmentDownloads);
 
     /// <param name="OtherTeams">How many other teams this person is in.</param>
     public sealed record AdminTeamMemberDto(int UserId, string Username, bool IsOwner, string? RoleName, DateTime JoinedAtUtc, DateTime? LastActiveAtUtc,
@@ -80,6 +83,8 @@ namespace TwitchDownloaderWeb.Endpoints
                 .RequireStaff(StaffPermission.ViewTeamsAndUsers | StaffPermission.ManageTeamLinks | StaffPermission.DisableTeams | StaffPermission.ViewAsSupport);
             staff.MapGet("/teams/{id:int}", GetTeam).RequireStaff(StaffPermission.ViewTeamsAndUsers);
             staff.MapPut("/teams/{id:int}/disabled", SetTeamDisabled).RequireStaff(StaffPermission.DisableTeams);
+            // Features still being tried out: only the app Owner turns them on, per team (badrfly, 2026-11-14)
+            staff.MapPut("/teams/{id:int}/features", SetTeamFeatures).RequireStaffOwner();
 
             staff.MapGet("/users", ListUsers)
                 .RequireStaff(StaffPermission.ViewTeamsAndUsers | StaffPermission.ResetUserPasswords | StaffPermission.DisableUsers);
@@ -233,13 +238,15 @@ namespace TwitchDownloaderWeb.Endpoints
                 {
                     x.Id, x.Name, x.CreatedAtUtc, x.OwnerUserId, OwnerUsername = x.OwnerUser!.Username, MemberCount = x.Members.Count,
                     EntryCount = db.Entries.IgnoreQueryFilters().Count(e => e.TeamId == x.Id), x.DisabledAtUtc, x.AutoSaveAudio,
+                    x.CombineSegmentDownloads,
                 })
                 .ToListAsync(cancellationToken);
             var lastActive = (await db.TeamMembers.AsNoTracking().Select(x => new { x.TeamId, x.User!.LastActiveAtUtc }).ToListAsync(cancellationToken))
                 .GroupBy(x => x.TeamId).ToDictionary(x => x.Key, x => x.Max(m => m.LastActiveAtUtc));
             var disk = await ActivityReport.TeamDiskAsync(db, shortform, cancellationToken);
             return teams.Select(x => new AdminTeamDto(x.Id, x.Name, x.CreatedAtUtc, x.OwnerUserId, x.OwnerUsername, x.MemberCount, x.EntryCount,
-                x.DisabledAtUtc, x.AutoSaveAudio, disk.GetValueOrDefault(x.Id), lastActive.GetValueOrDefault(x.Id))).ToList();
+                x.DisabledAtUtc, x.AutoSaveAudio, disk.GetValueOrDefault(x.Id), lastActive.GetValueOrDefault(x.Id),
+                x.CombineSegmentDownloads)).ToList();
         }
 
         private static async Task<IResult> ListTeams(LibraryDbContext db, ShortformService shortform, CancellationToken cancellationToken) =>
@@ -281,6 +288,23 @@ namespace TwitchDownloaderWeb.Endpoints
             {
                 team.DisabledAtUtc = request.Disabled ? DateTime.UtcNow : null;
                 db.Audit(request.Disabled ? AuditActions.TeamDisabled : AuditActions.TeamEnabled, null, $"\"{team.Name}\" by {me.Username}", teamId: team.Id);
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            return Results.NoContent();
+        }
+
+        private static async Task<IResult> SetTeamFeatures(int id, TeamFeaturesRequest request, StaffContext me, LibraryDbContext db,
+            CancellationToken cancellationToken)
+        {
+            var team = await db.Teams.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+            if (team is null)
+                return Results.Problem(detail: "Team not found.", statusCode: StatusCodes.Status404NotFound);
+
+            if (request.CombineSegmentDownloads is { } combine && combine != team.CombineSegmentDownloads)
+            {
+                team.CombineSegmentDownloads = combine;
+                db.Audit(AuditActions.TeamFeaturesChanged, null,
+                    $"\"{team.Name}\": joined segment downloads {(combine ? "on" : "off")} by {me.Username}", teamId: team.Id);
                 await db.SaveChangesAsync(cancellationToken);
             }
             return Results.NoContent();

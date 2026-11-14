@@ -6,6 +6,7 @@ using TwitchDownloaderWeb.Services.Accounts;
 using TwitchDownloaderWeb.Services;
 using TwitchDownloaderWeb.Services.AudioRescue;
 using TwitchDownloaderWeb.Services.Playback;
+using TwitchDownloaderWeb.Services.Segments;
 using TwitchDownloaderWeb.Services.Shortform;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -21,6 +22,7 @@ builder.Services.AddDbContext<LibraryDbContext>(options => options.UseSqlite($"D
 
 builder.Services.AddSingleton<VodInfoService>();
 builder.Services.AddSingleton<IVodDetailsSource>(sp => sp.GetRequiredService<VodInfoService>());
+builder.Services.AddSingleton<IVodQualitySource>(sp => sp.GetRequiredService<VodInfoService>());
 builder.Services.AddSingleton<LiveMarkerEntryService>();
 builder.Services.AddSingleton<ClipInfoService>();
 builder.Services.AddSingleton<IVodLookup>(sp => sp.GetRequiredService<VodInfoService>());
@@ -39,11 +41,14 @@ builder.Services.AddSingleton<VodPlaybackService>();
 builder.Services.AddSingleton<PlaybackAudioSwap>();
 builder.Services.AddSingleton<VodDownloadRunner>();
 builder.Services.AddSingleton<ExactTrimService>();
+builder.Services.AddSingleton<IVodCutter, VodCutService>();
 builder.Services.AddSingleton<ClipFileService>();
 builder.Services.AddSingleton<LibraryStorage>();
 builder.Services.AddSingleton<DownloadQueue>();
 builder.Services.AddSingleton<ShortformService>();
 builder.Services.AddHostedService<DownloadWorker>();
+builder.Services.AddSingleton<SegmentExportQueue>();
+builder.Services.AddHostedService<SegmentExportWorker>();
 builder.Services.AddHostedService<LibraryCleanupService>();
 builder.Services.AddHostedService<ReferenceVodCheckService>();
 
@@ -79,6 +84,7 @@ app.MapAudioRescueEndpoints();
 app.MapShortformEndpoints();
 app.MapPlaybackEndpoints();
 app.MapTimelineEndpoints();
+app.MapSegmentExportEndpoints();
 
 app.Run();
 
