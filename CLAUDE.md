@@ -86,6 +86,12 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   marker leaves it as it is. **One per VOD per team**: `MadeFromMarkers` stays set after it stops following, so later markers don't make a
   second card (they used to, which looked like cards duplicating; the migration backfilled it from the `entry.added` audit text).
   `PUT /trim` with `followMarkers: true` (the player's undo of a hand re-cut) makes it follow again and moves it to the markers. `IVodDetailsSource` (VodInfoService; faked in `AccountsTests`) is where it reads the VOD.
+- `SegmentExports` + `SegmentExportItems` (cascade): **segment downloads** (badrfly, 2026-11-14). Members pick team segments on a card's strip/chips
+  and download them: **one file per segment** (default, every team) or also **joined into one file** (`Combined`, only for teams where the app
+  Owner turned on `Teams.CombineSegmentDownloads`, off by default; `PUT /api/admin/teams/{id}/features`, `RequireStaffOwner`). Segments **never
+  become library entries**. Each item copies the segment's label/range at request time (`MarkerId` has no FK). `EntryId` = the card it was picked on
+  (title + quality for the files; no FK). Team query filter; `TeamId`/`CreatedByUserId` filled by `SaveChanges`. Audited `segments.requested`
+  (counts as "generated" activity) / `segments.ready` / `segments.failed` / `segments.deleted` / `segments.expired`, `team.features_changed`.
 - A converter marks every `DateTime` as UTC when read back (SQLite has no date type) — keep all times UTC.
 - Migrations: `cd TwitchDownloaderWeb && dotnet tool restore && dotnet ef migrations add <Name> -o Data/Migrations`.
   They are applied automatically at startup.
@@ -173,6 +179,21 @@ Plan and badrfly's decisions: Claude Doc "Logins, teams and permissions plan". B
   `LoggerTaskProgress` (Core `ITaskProgress` → `ILogger`), `TrimTime` (parses `h:mm:ss`/`m:ss`/seconds with
   unbounded hours; TimeSpan's own format caps hours at 23).
 
+### Segment downloads (`Services/Segments/`)
+- `SegmentExportQueue` + `SegmentExportWorker` (BackgroundService, one export at a time, separate from `DownloadWorker`). Each segment is cut by
+  `IVodCutter` (`VodCutService`, the same path library entries use: saved clean audio swapped into muted parts, Exact re-encode) into
+  `downloads/segments/{exportId}/{position}.mp4`; positions follow start time. One failing segment doesn't stop the others. Combined: if all
+  segments worked, `SegmentJoiner` joins them with ffmpeg's concat demuxer (`-c copy`, the files share codec settings; re-encodes if copy fails)
+  into `combined.mp4`; if any failed, the files that worked stay and `Error` says it wasn't joined. Interrupted exports are re-queued at startup and
+  keep segments already made. Files expire after `Downloads:GeneratedFileHours`; `LibraryCleanupService` deletes expired exports (row + folder)
+  and orphaned folders in `segments/`. Disk use counts for the team and the member who started it (`ActivityReport`).
+- Limits (`Downloads:`): `MaxSegmentsPerDownload` (50), `MaxSegmentDownloadSeconds` (3 h, all segments together), `MaxActiveSegmentDownloadsPerTeam` (3).
+  A segment ending after what a live VOD has streamed is refused (400). `IVodQualitySource` (VodInfoService) checks quality/restricted; faked in tests.
+- Page: on library and VOD cards, members with `GenerateFiles` click segments (strip boxes or chips) to pick them (`makePickable` in player-bar.js;
+  picks are per card, in the page only), then **Download** (or **Download as one file** when `me.combineSegmentDownloads`). The card lists the team's
+  segment downloads it started (polled while running): joined file, All (.zip), each file, ×. The zip (`/zip`) is streamed, stored without compression.
+  The Admin page's Teams tab has "Allow joined segments" (Owner only). No new shortcuts.
+
 ### Muted audio rescue (`Services/AudioRescue/`)
 Twitch mutes segments (`123-muted.ts`) and keeps the clean copy (`123.ts`) for a limited time (Core assumes 24 h and
 only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We save clean audio and splice it back:
@@ -232,7 +253,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/entries/{id}/shortform` / `POST /api/entries/{id}/shortform` | Vertical (9:16) renders: `{ status: None\|Rendering\|Failed, progress, error, layout, renders: [{ id, createdAtUtc, expiresAtUtc, sizeBytes, layout, fileUrl, thumbnailUrl }] }` (newest first) / start a render (202) with `{ mode: single\|split, top: {x,y,width,height}, bottom?, splitRatio?, trimStart?, trimEnd? }` (fractions of the source video). 409 if the entry has no file |
 | `GET /api/entries/{id}/shortform/{renderId}/file[?inline=true]` / `.../thumbnail` / `DELETE .../{renderId}` | A render's mp4 (`<title> (vertical).mp4`, audited `file.served`; `inline` = the page's preview player, not audited), its jpg thumbnail, delete it. 404 if gone/expired |
 | `GET /api/vods/{id}/play.m3u8[?segments=proxy]` / `.../play/{n}.m3u8` / `.../play/{n}/{segment}` | HLS for the page's player (see Watching VODs), plus `.../play/{n}/clean/{key}.ts` (muted segment with saved audio swapped in). 403 sub-only, 404 gone, 502 Twitch unreachable. Playlists `no-store` |
-| `POST /api/auth/login` / `logout` / `GET /api/auth/me` / `POST /api/auth/team` `{ teamId }` | Team user session; `me` = `{ id, username, teams: [{ id, name, isOwner }], currentTeamId }` |
+| `POST /api/auth/login` / `logout` / `GET /api/auth/me` / `POST /api/auth/team` `{ teamId }` | Team user session; `me` = `{ id, username, teams: [{ id, name, isOwner }], currentTeamId, permissions, timeZone, support, combineSegmentDownloads }` |
 | `POST /api/links/inspect` `{ token }` / `POST /api/links/accept` `{ token, newAccount, username?, password?, teamName? }` | One-time links (see Accounts). Blank username with a session = join as the logged-in user |
 | `GET /api/team` / `DELETE /api/team/members/{userId}` / `PUT /api/team/members/{userId}/role` `{ roleId }` / `POST /api/team/members/{userId}/password-reset` | Team page: members, roles, permission catalog, `myPermissions` |
 | `POST /api/team/roles` `{ name, permissions: [keys] }` / `PUT,DELETE /api/team/roles/{id}` | Roles (guard rails above) |
@@ -246,6 +267,9 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/admin/staff` / `POST /api/admin/staff/invites` / `PUT /api/admin/staff/{id}/permissions` `{ permissions }` / `PUT .../disabled` / `POST .../password-reset` | Moderators (Owner only) |
 | `GET /api/timeline/entries?vodIds=1,2` | The team's library entries on up to 200 VODs: `[{ id, vodId, title, kind, start, end, referenceOnly }]` (card strips) |
 | `GET /api/vods/{id}/timeline` / `POST /api/vods/{id}/markers` `{ seconds, endSeconds?, label?, color? }` / `PUT /api/markers/{id}` (same body, whole marker) / `DELETE /api/markers/{id}` / `GET /api/markers?vodIds=1,2` | Player timeline: `{ clips: [{ id, title, kind, start, end, referenceOnly, followsMarkers, canEdit }], maxStoredClipSeconds, markers: [{ id, vodId, seconds, endSeconds, label, color, createdBy, createdAtUtc, canDelete, canEdit }] }` (team's own); `/api/markers` lists markers of up to 200 VODs (library and VOD cards). Entries carry `startSeconds`/`endSeconds` for placing them (and `followsMarkers`). Add 201 (`AddEntries`; `liveEntry: { entryId, created }` when it made or moved the live markers entry, else null); change own (`AddEntries`) or anyone's (`EditAnyEntries`); delete own (`AddEntries`) or anyone's (`DeleteAnyEntries`), else 403 |
+| `POST /api/vods/{id}/segment-downloads` `{ markerIds, combined?, quality?, entryId? }` | Segment download (202; `GenerateFiles`). `combined` without the team feature → 403 `code: "combine-not-enabled"`. Markers must be the team's segments on that VOD (400) |
+| `GET /api/segment-downloads?vodIds=` / `GET .../{id}` / `.../{id}/files/{position}` / `.../{id}/combined` / `.../{id}/zip` / `DELETE .../{id}` | `{ id, vodId, entryId, title, quality, combined, status: Queued\|Running\|Ready\|Failed, error, expiresAtUtc, combinedFileUrl, zipUrl, canDelete, items: [{ position, label, startSeconds, endSeconds, status, error, fileSizeBytes, audioRestoredSeconds, audioMutedSeconds, fileUrl }] }`; files audited `file.served`. Delete own (`GenerateFiles`) or anyone's (`DeleteAnyEntries`) |
+| `PUT /api/admin/teams/{id}/features` `{ combineSegmentDownloads }` | App Owner only: per-team features being tried out |
 | `POST /api/vods/download` | Phase 1 dev endpoint: synchronous, writes `<title>.mp4` straight into `downloads/`, not part of the library |
 
 `canDownload` in entry responses checks the generated file's expiry itself, since cleanup runs periodically.

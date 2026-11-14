@@ -17,8 +17,15 @@ namespace TwitchDownloaderWeb.Services
         Task<VodDetails?> GetVodAsync(long vodId);
     }
 
+    /// <summary>A VOD's qualities from Twitch. <see cref="VodInfoService"/> in the app; a fake in tests.</summary>
+    public interface IVodQualitySource
+    {
+        /// <returns>The VOD's qualities, or null if the playlist is restricted (e.g. subscriber-only).</returns>
+        Task<IVideoQualities<M3U8.Stream>?> GetQualitiesAsync(long vodId);
+    }
+
     /// <summary>Looks up VOD metadata and qualities from Twitch, and holds the request checks shared by the endpoints.</summary>
-    public sealed class VodInfoService : IVodLookup, IVodDetailsSource
+    public sealed class VodInfoService : IVodLookup, IVodDetailsSource, IVodQualitySource
     {
         public static long? ParseVodId(string? text)
         {

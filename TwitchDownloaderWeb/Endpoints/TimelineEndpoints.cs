@@ -80,7 +80,7 @@ namespace TwitchDownloaderWeb.Endpoints
         public const int MaxVodIdsPerRequest = 200;
 
         /// <returns>The VOD IDs, or the validation problem to return.</returns>
-        private static (HashSet<long> Ids, IResult? Problem) ParseVodIds(string? vodIds)
+        internal static (HashSet<long> Ids, IResult? Problem) ParseVodIds(string? vodIds)
         {
             var ids = new HashSet<long>();
             foreach (var part in (vodIds ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
@@ -239,7 +239,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 CanEdit = !team.IsSupport && CanEdit(team, x),
             };
 
-        private static async Task<Dictionary<int, string>> UserNamesAsync(LibraryDbContext db, IEnumerable<int> userIds, CancellationToken cancellationToken)
+        internal static async Task<Dictionary<int, string>> UserNamesAsync(LibraryDbContext db, IEnumerable<int> userIds, CancellationToken cancellationToken)
         {
             var ids = userIds.Distinct().ToList();
             return await db.Users.AsNoTracking().Where(x => ids.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.Username, cancellationToken);

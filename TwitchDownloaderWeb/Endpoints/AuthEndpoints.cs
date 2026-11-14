@@ -15,8 +15,9 @@ namespace TwitchDownloaderWeb.Endpoints
     /// <param name="Permissions">The caller's permissions in that team (all of them for its owner); the page hides what they can't do.</param>
     /// <param name="TimeZone">"local" or "pacific".</param>
     /// <param name="Support">Set during a support visit (app staff viewing a team read-only); Id is then 0 and Username the staff account's.</param>
+    /// <param name="CombineSegmentDownloads">The current team may download picked segments joined into one file (the app Owner turns it on per team).</param>
     public sealed record MeDto(int Id, string Username, IReadOnlyList<MeTeamDto> Teams, int? CurrentTeamId, IReadOnlyList<string> Permissions, string TimeZone,
-        MeSupportDto? Support = null);
+        MeSupportDto? Support = null, bool CombineSegmentDownloads = false);
 
     public sealed record MeSupportDto(string StaffUsername, int TeamId, string TeamName);
 
@@ -109,14 +110,18 @@ namespace TwitchDownloaderWeb.Endpoints
             var memberships = await db.TeamMembers.AsNoTracking()
                 .Where(x => x.UserId == id && x.Team!.DisabledAtUtc == null)
                 .OrderBy(x => x.JoinedAtUtc)
-                .Select(x => new { x.TeamId, x.Team!.Name, IsOwner = x.Team.OwnerUserId == id, Permissions = x.Role == null ? TeamPermission.None : x.Role.Permissions })
+                .Select(x => new
+                {
+                    x.TeamId, x.Team!.Name, IsOwner = x.Team.OwnerUserId == id, Permissions = x.Role == null ? TeamPermission.None : x.Role.Permissions,
+                    x.Team.CombineSegmentDownloads,
+                })
                 .ToListAsync(cancellationToken);
 
             var wanted = int.TryParse(context.Request.Cookies[TeamScope.TeamCookie], out var cookieTeam) ? cookieTeam : (int?)null;
             var current = memberships.FirstOrDefault(x => x.TeamId == wanted) ?? memberships.FirstOrDefault();
             var permissions = current is null ? TeamPermission.None : current.IsOwner ? TeamPermission.All : current.Permissions;
             return Results.Ok(new MeDto(user.Id, user.Username, memberships.Select(x => new MeTeamDto(x.TeamId, x.Name, x.IsOwner)).ToList(), current?.TeamId,
-                TeamPermissions.ToKeys(permissions), user.TimeZone ?? "local"));
+                TeamPermissions.ToKeys(permissions), user.TimeZone ?? "local", CombineSegmentDownloads: current?.CombineSegmentDownloads == true));
         }
 
         private static async Task<IResult> UpdateSettings(UserSettingsRequest request, HttpContext context, LibraryDbContext db, CancellationToken cancellationToken)
