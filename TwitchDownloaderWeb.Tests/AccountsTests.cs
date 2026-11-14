@@ -24,6 +24,9 @@ namespace TwitchDownloaderWeb.Tests
         /// <summary>Twitch's VOD details as the app sees them; VODs not in here don't exist.</summary>
         private readonly FakeVodDetails _vods = new();
 
+        /// <summary>Makes segment files without Twitch (see AccountsTests.Segments.cs).</summary>
+        private readonly FakeCutter _cutter = new();
+
         public AccountsTests()
         {
             Directory.CreateDirectory(_dir);
@@ -33,7 +36,13 @@ namespace TwitchDownloaderWeb.Tests
                 builder.UseSetting("Downloads:OutputFolder", Path.Combine(_dir, "downloads"));
                 builder.UseSetting("Auth:LoginAttemptsPerMinute", "100000");
                 builder.UseSetting("AudioRescue:Enabled", "false");
-                builder.ConfigureTestServices(services => services.AddSingleton<IVodDetailsSource>(_vods));
+                builder.UseSetting("Ffmpeg:Path", FakeCutter.Ffmpeg);
+                builder.ConfigureTestServices(services =>
+                {
+                    services.AddSingleton<IVodDetailsSource>(_vods);
+                    services.AddSingleton<IVodQualitySource>(new FakeQualities());
+                    services.AddSingleton<IVodCutter>(_cutter);
+                });
             });
 
             // Starts the app (runs the migrations), then adds the staff Owner and an old entry in the migrated "Main team"
