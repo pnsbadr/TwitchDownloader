@@ -38,6 +38,8 @@ namespace TwitchDownloaderWeb.Data
         public DbSet<VideoSegment> VideoSegments => Set<VideoSegment>();
         public DbSet<SegmentExport> SegmentExports => Set<SegmentExport>();
         public DbSet<SegmentExportItem> SegmentExportItems => Set<SegmentExportItem>();
+        public DbSet<ExportBatch> ExportBatches => Set<ExportBatch>();
+        public DbSet<ExportItem> ExportItems => Set<ExportItem>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -180,6 +182,27 @@ namespace TwitchDownloaderWeb.Data
                 entity.HasIndex(x => new { x.ExportId, x.Position }).IsUnique();
             });
 
+            modelBuilder.Entity<ExportBatch>(entity =>
+            {
+                entity.Property(x => x.Status).HasConversion<string>().HasMaxLength(32);
+                entity.HasIndex(x => new { x.TeamId, x.CreatedByUserId });
+                entity.HasIndex(x => x.Status);
+                entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasMany(x => x.Items).WithOne().HasForeignKey(x => x.BatchId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasQueryFilter(x => !ScopedToTeam || x.TeamId == ScopeTeamId);
+            });
+
+            modelBuilder.Entity<ExportItem>(entity =>
+            {
+                entity.Property(x => x.FileName).HasMaxLength(ExportItem.MaxFileNameLength);
+                entity.Property(x => x.Quality).HasMaxLength(64);
+                entity.Property(x => x.RenderId).HasMaxLength(32);
+                entity.Property(x => x.Kind).HasConversion<string>().HasMaxLength(32);
+                entity.Property(x => x.TrimMode).HasConversion<string>().HasMaxLength(16);
+                entity.Property(x => x.Status).HasConversion<string>().HasMaxLength(32);
+                entity.HasIndex(x => new { x.BatchId, x.Position }).IsUnique();
+            });
+
             modelBuilder.Entity<StaffAccount>(entity =>
             {
                 entity.Property(x => x.Username).HasMaxLength(32);
@@ -269,6 +292,10 @@ namespace TwitchDownloaderWeb.Data
                     case SegmentExport export:
                         if (export.TeamId == 0 && _actor.TeamId is { } exportTeam) export.TeamId = exportTeam;
                         if (export.CreatedByUserId == 0 && _actor.UserId is { } exportUser) export.CreatedByUserId = exportUser;
+                        break;
+                    case ExportBatch batch:
+                        if (batch.TeamId == 0 && _actor.TeamId is { } batchTeam) batch.TeamId = batchTeam;
+                        if (batch.CreatedByUserId == 0 && _actor.UserId is { } batchUser) batch.CreatedByUserId = batchUser;
                         break;
                     case SavedChannel channel:
                         if (channel.TeamId == 0 && _actor.TeamId is { } channelTeam) channel.TeamId = channelTeam;

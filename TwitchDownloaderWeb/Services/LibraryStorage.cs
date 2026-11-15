@@ -15,6 +15,7 @@ namespace TwitchDownloaderWeb.Services
         public const string WorkFolderName = "work";
         public const string ShortformFolderName = "shortform";
         public const string SegmentsFolderName = "segments";
+        public const string ExportsFolderName = "exports";
 
         private readonly ILogger<LibraryStorage> _logger;
 
@@ -45,6 +46,15 @@ namespace TwitchDownloaderWeb.Services
         public static string CombinedSegmentsRelativePath(int exportId) => Path.Combine(SegmentExportRelativeFolder(exportId), "combined.mp4");
 
         public string SegmentsFolder => Path.Combine(RootFolder, SegmentsFolderName);
+
+        public static string ExportRelativeFolder(int batchId) => Path.Combine(ExportsFolderName, batchId.ToString());
+
+        /// <summary>An export item's file; a .zip video keeps its segment files in a folder of this name without ".mp4".</summary>
+        public static string ExportItemRelativePath(int batchId, int position) => Path.Combine(ExportRelativeFolder(batchId), $"{position}.mp4");
+
+        public static string ExportItemRelativeFolder(int batchId, int position) => Path.Combine(ExportRelativeFolder(batchId), position.ToString());
+
+        public string ExportsFolder => Path.Combine(RootFolder, ExportsFolderName);
 
         /// <summary>Rescued clean audio for a VOD segment. Kept until pruned, independent of library entries.</summary>
         public static string RescuedSegmentRelativePath(long vodId, string segmentKey) => Path.Combine(RescueFolderName, vodId.ToString(), $"{segmentKey}.ts");

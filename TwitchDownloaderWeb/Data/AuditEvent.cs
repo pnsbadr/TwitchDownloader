@@ -80,6 +80,12 @@ namespace TwitchDownloaderWeb.Data
         public const string SegmentsFailed = "segments.failed";
         public const string SegmentsDeleted = "segments.deleted";
         public const string SegmentsExpired = "segments.expired";
+        /// <summary>Exports (the Export tab's list: VOD ranges, clips, verticals, videos, segments; never library entries).</summary>
+        public const string ExportRequested = "export.requested";
+        public const string ExportReady = "export.ready";
+        public const string ExportFailed = "export.failed";
+        public const string ExportDeleted = "export.deleted";
+        public const string ExportExpired = "export.expired";
         /// <summary>The app Owner turned a team feature (e.g. joined segment downloads) on or off.</summary>
         public const string TeamFeaturesChanged = "team.features_changed";
     }

@@ -21,12 +21,14 @@ namespace TwitchDownloaderWeb.Services
         private readonly LibraryStorage _storage;
         private readonly ShortformService _shortform;
         private readonly SegmentExportQueue _segmentQueue;
+        private readonly ExportQueue _exportQueue;
         private readonly ILogger<LibraryCleanupService> _logger;
 
         public LibraryCleanupService(IServiceScopeFactory scopeFactory, DownloadQueue queue, LibraryStorage storage, ShortformService shortform,
-            SegmentExportQueue segmentQueue, ILogger<LibraryCleanupService> logger)
+            SegmentExportQueue segmentQueue, ExportQueue exportQueue, ILogger<LibraryCleanupService> logger)
         {
             _segmentQueue = segmentQueue;
+            _exportQueue = exportQueue;
             _shortform = shortform;
             _scopeFactory = scopeFactory;
             _queue = queue;
@@ -70,6 +72,7 @@ namespace TwitchDownloaderWeb.Services
             await DeleteExpiredGeneratedFilesAsync(db, cancellationToken);
             await DeleteOrphanedFilesAsync(db, cancellationToken);
             await CleanupSegmentExportsAsync(db, cancellationToken);
+            await CleanupExportsAsync(db, cancellationToken);
 
             var entryIds = (await db.Entries.Select(x => x.Id).ToListAsync(cancellationToken)).ToHashSet();
             _shortform.Cleanup(entryIds);
@@ -128,6 +131,35 @@ namespace TwitchDownloaderWeb.Services
                     continue;
                 if (TryDeleteFolder(dir.FullName))
                     _logger.LogInformation("Deleted orphaned segment download folder {Path}.", dir.FullName);
+            }
+        }
+
+        /// <summary>Deletes exports past their expiry (files and row), and folders in "exports/" that no export owns.</summary>
+        private async Task CleanupExportsAsync(LibraryDbContext db, CancellationToken cancellationToken)
+        {
+            var now = DateTime.UtcNow;
+            var expired = await db.ExportBatches.Where(x => x.ExpiresAtUtc <= now).ToListAsync(cancellationToken);
+            foreach (var batch in expired)
+            {
+                if (!TryDeleteFolder(_storage.Resolve(LibraryStorage.ExportRelativeFolder(batch.Id))))
+                    continue;
+                db.ExportBatches.Remove(batch);
+                db.Audit(AuditActions.ExportExpired, null, $"Export {batch.Id}", teamId: batch.TeamId);
+            }
+            await db.SaveChangesAsync(cancellationToken);
+
+            var folder = _storage.ExportsFolder;
+            if (!Directory.Exists(folder))
+                return;
+
+            var ids = (await db.ExportBatches.Select(x => x.Id).ToListAsync(cancellationToken)).ToHashSet();
+            foreach (var dir in new DirectoryInfo(folder).EnumerateDirectories())
+            {
+                if (!int.TryParse(dir.Name, out var id) || ids.Contains(id) || _exportQueue.IsRunning(id)
+                    || DateTime.UtcNow - dir.LastWriteTimeUtc < OrphanMinAge)
+                    continue;
+                if (TryDeleteFolder(dir.FullName))
+                    _logger.LogInformation("Deleted orphaned export folder {Path}.", dir.FullName);
             }
         }
 

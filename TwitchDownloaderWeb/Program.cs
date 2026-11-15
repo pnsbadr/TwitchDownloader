@@ -52,6 +52,8 @@ builder.Services.AddSingleton<ShortformService>();
 builder.Services.AddHostedService<DownloadWorker>();
 builder.Services.AddSingleton<SegmentExportQueue>();
 builder.Services.AddHostedService<SegmentExportWorker>();
+builder.Services.AddSingleton<ExportQueue>();
+builder.Services.AddHostedService<ExportWorker>();
 builder.Services.AddHostedService<LibraryCleanupService>();
 builder.Services.AddHostedService<ReferenceVodCheckService>();
 
@@ -88,6 +90,7 @@ app.MapShortformEndpoints();
 app.MapPlaybackEndpoints();
 app.MapTimelineEndpoints();
 app.MapSegmentExportEndpoints();
+app.MapExportEndpoints();
 app.MapCopyEndpoints();
 app.MapVideoEndpoints();
 
