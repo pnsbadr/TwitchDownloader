@@ -473,9 +473,12 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   **undo/redo** of box/layout/split/trim/part changes (50 steps, page only), keys in keybinds.js scopes `vertical` / `vertical-box`.
   **Parts** (vertical part 2, badrfly 2026-11-15): S splits the file at the playhead into parts, each with its own layout (`vx.parts`, a
   partition of the whole file; the part under the playhead is live in `vx.mode/ratio/boxes`, `stash()` / `loadPart()`); presets, One/Two boxes
-  and box edits change that part only ("Use this layout on every part" copies it). Delete leaves a part out (hatched on the trim bar, skipped
-  in the preview, the render closes the gap); J joins it with the part before (which keeps its layout). The trim range still cuts the ends.
-  `currentLayout()` sends kept parts inside the trim with same-looking neighbors joined: one → a plain layout as before, more → `parts`. The Player 2
+  and box edits change that part only ("Use this layout on every part" copies it). Delete leaves a part out (skipped in the preview, the render
+  closes the gap); J joins it with the part before (which keeps its layout). The trim range still cuts the ends.
+  `currentLayout()` sends kept parts inside the trim with same-looking neighbors joined: one → a plain layout as before, more → `parts`.
+  The parts show in a **Layout row** under the clip in the Player 2 timeline (`hooks.onParts` → `Timeline.setVerticalParts`, file seconds
+  mapped to the VOD with `fileToVod`; `hasLayoutRow` / `drawVerticalParts` / `layoutPartAt`): a white line at each split, "n · One box /
+  Two boxes / Left out" labels, the part under the playhead with a white bar, left-out parts hatched, outside the trim darker; click seeks. The Player 2
   timeline stays below and follows the preview (`fileToVod` / `vodToFile` in `ui/editor.js` map file seconds over the clip's kept parts);
   trimming or cutting the clip there reloads the file (`verticalEntryChanged`), and a clip without a file says why (long clips get "Make
   the file", `POST /generate`). While it's open only the timeline's tool and zoom keys still work.

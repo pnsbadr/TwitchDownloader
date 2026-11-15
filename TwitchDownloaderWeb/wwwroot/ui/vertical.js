@@ -530,8 +530,7 @@ function build() {
   const head = el("div", { class: "vx2-trim-head" });
   const startHandle = el("div", { class: "vx2-trim-handle", tabindex: "0", role: "slider", "aria-label": "Render start", "data-edge": "start" });
   const endHandle = el("div", { class: "vx2-trim-handle", tabindex: "0", role: "slider", "aria-label": "Render end", "data-edge": "end" });
-  const partsLayer = el("div", { class: "vx2-parts" });
-  const trim = el("div", { class: "vx2-trim" }, range, partsLayer, head, startHandle, endHandle);
+  const trim = el("div", { class: "vx2-trim" }, range, head, startHandle, endHandle);
   trim.addEventListener("pointerdown", (event) => {
     if (event.target.classList.contains("vx2-trim-handle")) return;
     const rect = trim.getBoundingClientRect();
@@ -598,8 +597,10 @@ function build() {
   const empty = el("p", { class: "faint vx2-empty" }, "No vertical versions of this clip yet.");
 
   const side = el("aside", { class: "vx2-side" },
+    el("div", { class: "vx2-group faint" }, "Layout of this part"),
     el("div", { class: "vx2-tools", "data-tip-placement": "bottom" }, one, two, presets, el("span", { class: "tools-sep" }), safeButton, snapButton,
       el("span", { class: "tools-sep" }), undoButton, redoButton),
+    el("div", { class: "vx2-group faint" }, "Parts"),
     el("div", { class: "vx2-tools", "data-tip-placement": "bottom" }, splitButton, joinButton, removeButton, allButton),
     partInfo,
     safeName,
@@ -614,7 +615,7 @@ function build() {
     panel, video, stage, stageWrap, boxNodes, guides, note, canvas, safe, renderVideo, split, back, portrait, previewWrap,
     play, time, trim, range, head, startHandle, endHandle, trimText, mute, volume, one, two, presetMenu, safeButton, safeName,
     snapButton, undo: undoButton, redo: redoButton, render, progress, message, list, empty,
-    partsLayer, leftOut, partInfo, joinButton, removeButton, allButton,
+    leftOut, partInfo, joinButton, removeButton, allButton,
   };
 
   for (const type of ["play", "pause", "timeupdate", "durationchange"]) video.addEventListener(type, renderPlayer);
@@ -706,25 +707,37 @@ function renderSafe() {
 
 function renderParts() {
   if (!vx.dom) return;
-  const { partsLayer, leftOut, partInfo, joinButton, removeButton, allButton } = vx.dom;
+  const { leftOut, partInfo, joinButton, removeButton, allButton } = vx.dom;
   const duration = duration_();
   const many = vx.parts.length > 1;
-  const pct = (t) => (duration ? (t / duration) * 100 : 0);
-  partsLayer.replaceChildren(...(duration && many ? vx.parts.map((part, i) => el("div", {
-    class: `vx2-part${part.removed ? " removed" : ""}${i === vx.part ? " current" : ""}`,
-    style: `left:${pct(part.start)}%;width:${pct(Math.min(partEnd(i), duration) - part.start)}%`,
-  }, el("span", {}, String(i + 1)))) : []));
+  sendParts(duration);
   const part = vx.parts[vx.part];
   const removed = Boolean(part?.removed);
   leftOut.hidden = !removed || !vx.dom.renderVideo.hidden;
-  partInfo.textContent = many && part
-    ? `Part ${vx.part + 1} of ${vx.parts.length} · ${tenths(part.start)} – ${tenths(Math.min(partEnd(vx.part), duration))}${removed ? " · left out" : ""}`
-    : "";
+  partInfo.textContent = !part ? "" : many
+    ? `Part ${vx.part + 1} of ${vx.parts.length} · ${lookName(part)} · ${tenths(part.start)} – ${tenths(Math.min(partEnd(vx.part), duration))}${removed ? " · left out" : ""}`
+    : "One part. Press S at the playhead to split the clip and give each part its own layout.";
   joinButton.querySelector("sl-icon-button").disabled = vx.part === 0;
   allButton.querySelector("sl-icon-button").disabled = !many;
   const remove = removeButton.querySelector("sl-icon-button");
   remove.name = removed ? "plus-circle" : "minus-circle";
   remove.toggleAttribute("data-active", removed);
+}
+
+const lookName = (part) => (part.mode === "single" ? "One box" : "Two boxes");
+
+// The Player 2 timeline draws the parts on the clip (file seconds; editor.js maps them to the VOD)
+function sendParts(duration) {
+  if (!vx.ready || !duration) {
+    vx.hooks.onParts?.(null);
+    return;
+  }
+  vx.hooks.onParts?.({
+    parts: vx.parts.map((part, i) => ({
+      start: part.start, end: Math.min(partEnd(i), duration), removed: part.removed, current: i === vx.part, label: lookName(part),
+    })),
+    trim: { ...vx.trim },
+  });
 }
 
 function draw() {
@@ -1406,6 +1419,7 @@ export function closeVertical() {
   cancelAnimationFrame(vx.frame);
   vx.entry = null;
   vx.ready = false;
+  vx.hooks.onParts?.(null);
   vx.host.classList.remove("vertical");
   vx.dom.panel.hidden = true;
 }

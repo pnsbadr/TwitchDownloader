@@ -655,7 +655,14 @@ function setUpPlayer2() {
     },
   });
   wirePlayerButtons(2, "p2");
-  setUpVertical($("player2"), { onExit: () => toggleVertical(false) });
+  setUpVertical($("player2"), {
+    onExit: () => toggleVertical(false),
+    // The vertical editor's parts on the clip in Player 2's row (file seconds -> VOD seconds)
+    onParts: (info) => timeline2.setVerticalParts(info && {
+      parts: info.parts.map((part) => ({ ...part, start: fileToVod(part.start), end: fileToVod(part.end) })),
+      trim: { start: fileToVod(info.trim.start), end: fileToVod(info.trim.end) },
+    }),
+  });
   $("p2-vertical").addEventListener("click", () => toggleVertical(true));
   $("p2-show").addEventListener("click", showInPlayer1);
   $("p2-rename").addEventListener("click", () => {
