@@ -471,6 +471,16 @@ step next to the old page; `index.html` stays the old library until the new edit
   Filter popover (funnel icon): VODs = search loaded titles + broadcasts/highlights/uploads; clips = server search, sort field + order, Last
   24 hours or one day (`ui/dates.js`, midnights in the viewer's time zone, filtered on the sort field). Double-click/Enter loads a card in its
   player; right-click (or the Menu key) opens Load / Export / Rename / Delete (by permission; `ui/dialogs.js` `askText`/`confirmAction`).
+- **Player 1** (`ui/media.js`, step 3): `MediaPlayer` wraps the old page's app player (hls.js, `HlsBackend`) and Twitch embed fallback
+  (`EmbedBackend`), same storage keys (`clipLibrary.playerMode` / `clipLibrary.playerVolume`) and direct/proxy segment fallback. Header: clock, or a
+  LIVE button while the playlist has no ENDLIST (outlined when > 8 s behind). Gear menu = quality + switch player. Keys (`ui/editor.js` `setUpKeys`):
+  the `player` scope of keybinds.js, anywhere on the editor screen except while typing (and arrows/Enter/Space on tabs, sliders, menus).
+- **Timeline** (`ui/timeline.js`, step 3): Player 1 tab = every member's rows on the VOD (`GET /api/vods/{id}/timeline`, re-read every 5 s),
+  the caller's first and tinted. Canvases for the ruler (ticks; muted red / saved audio green along the bottom, from hls.js fragments) and the
+  rows; row headers are DOM (delete checkbox when allowed, kind icon, name (double-click renames own, `PUT /api/rows/{id}`), owner, hide / solo /
+  lock (page only)). Footer: add video row / clip row (`POST /api/vods/{id}/rows`), delete checked rows, zoom slider (log scale, min 10 s), Fit.
+  Click seeks (on an item: to its start), wheel zooms, Shift+wheel pans; the view follows the playhead until panned. Segments hatched with
+  brackets, moments a line + triangle, clips solid violet bars (reference ones translucent). Editing is step 3b.
 - `editor.html?demo` fills sample cards (nothing is sent to the server) to try the shell.
 
 ### Twitch clips (`ClipInfoService`, `ClipFileService`)
