@@ -33,6 +33,8 @@ namespace TwitchDownloaderWeb.Tests
         {
             Assert.Null(WithParts(Single(0, 4), Split(6, 10)).Validate(10));
             Assert.Null(WithParts(Single(0, 4), Split(4, 10)).Validate(10));
+            // A part may be shorter than a whole render's 1 s minimum
+            Assert.Null(WithParts(Single(0, 4), Split(4, 4.6), Single(4.6, 8)).Validate(10));
             Assert.NotNull(WithParts().Validate(10));
             Assert.Contains("order", WithParts(Single(5, 8), Split(2, 4)).Validate(10));
             Assert.Contains("order", WithParts(Single(0, 5), Split(4, 8)).Validate(10));

@@ -480,7 +480,10 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   `currentLayout()` sends kept parts inside the trim with same-looking neighbors joined: one → a plain layout as before, more → `parts`.
   The parts show in a **Layout row** under the clip in the Player 2 timeline (`hooks.onParts` → `Timeline.setVerticalParts`, file seconds
   mapped to the VOD with `fileToVod`; `hasLayoutRow` / `drawVerticalParts` / `layoutPartAt`): a white line at each split, "n · One box /
-  Two boxes / Left out" labels, the part under the playhead with a white bar, left-out parts hatched, outside the trim darker; click seeks. The Player 2
+  Two boxes / Left out" labels, the part under the playhead with a white bar, left-out parts hatched; click seeks. Dragging a split line moves it, dragging a part
+  slides it (keeps its length, pushes into its neighbors; the file's start/end stay put; parts ≥ 0.5 s; snaps like other edges; one
+  undo step): `layoutGrab` / `dragLayout` in `ui/timeline-edit.js` → `hooks.onLayoutParts` → `setVerticalPartStarts`. `vx.trim` is always the
+  whole file (a longer new file used to stay cut at the old end, drawn dark and not rendered). The Player 2
   timeline stays below and follows the preview (`fileToVod` / `vodToFile` in `ui/editor.js` map file seconds over the clip's kept parts);
   trimming or cutting the clip there reloads the file (`verticalEntryChanged`), and a clip without a file says why (long clips get "Make
   the file", `POST /generate`). While it's open only the timeline's tool and zoom keys still work.

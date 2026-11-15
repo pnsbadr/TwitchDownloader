@@ -259,8 +259,9 @@ export const editing = {
   },
 
   updateCursor(edge = false) {
-    const cursor = this.press?.kind === "pan" ? "grabbing"
-      : this.press?.kind === "edge" || edge ? "ew-resize"
+    const cursor = this.press?.kind === "pan" || (this.press?.kind === "layout" && this.press.grab === "slide") ? "grabbing"
+      : edge === "grab" ? "grab"
+      : this.press?.kind === "edge" || this.press?.kind === "layout" || edge ? "ew-resize"
         : { pointer: "pointer", cut: "crosshair", zoom: "zoom-in", hand: "grab" }[this.tool];
     this.track.style.cursor = cursor;
     this.ruler.style.cursor = this.tool === "hand" ? cursor : this.tool === "zoom" ? "zoom-in" : "pointer";
@@ -378,6 +379,16 @@ export const editing = {
       return;
     }
 
+    // The vertical editor's Layout row: drag a split line to move it, drag a part to slide it
+    const grab = this.tool === "pointer" ? this.layoutGrab(x, y, rect.width) : null;
+    if (grab) {
+      this.press = { kind: "layout", ...grab, startX: event.clientX, from: t, moved: false, rect };
+      canvas.setPointerCapture(event.pointerId);
+      this.seekTo(t);
+      this.updateCursor();
+      return;
+    }
+
     const selected = this.selectedItem();
     const edge = selected && this.canMoveEdges(selected) ? this.edgeAt(selected, x, y, rect.width) : null;
     if (edge) {
@@ -418,10 +429,25 @@ export const editing = {
     if (!press) {
       // Edge cursor over the selected item's edges
       if (this.tool === "pointer" && this.hover?.canvas === this.track) {
+        const grab = this.layoutGrab(this.hover.x, this.hover.y, this.hover.width);
+        if (grab) {
+          this.updateCursor(grab.grab === "edge" ? true : "grab");
+          return;
+        }
         const selected = this.selectedItem();
         const edge = selected && this.canMoveEdges(selected) && this.edgeAt(selected, this.hover.x, this.hover.y, this.hover.width);
         this.updateCursor(Boolean(edge));
       }
+      return;
+    }
+    if (press.kind === "layout") {
+      if (!press.moved && Math.abs(event.clientX - press.startX) < DRAG_THRESHOLD_PX) return;
+      press.moved = true;
+      const raw = this.xToTime(event.clientX - press.rect.left, press.rect.width);
+      this.layoutDrag = this.dragLayout(press, raw, press.rect.width);
+      this.edgeTip = { time: this.layoutDrag.tipTime, clientX: event.clientX, clientY: event.clientY };
+      this.dirty = true;
+      this.renderTip();
       return;
     }
     if (press.kind === "pan") {
@@ -484,6 +510,11 @@ export const editing = {
     this.edgeTip = null;
     if (hadTip) this.renderTip();
     this.updateCursor();
+    if (press?.kind === "layout") {
+      const drag = this.layoutDrag;
+      this.layoutDrag = null;
+      if (press.moved && drag) this.hooks.onLayoutParts?.(drag.edges.slice(1, -1));
+    }
     if (press?.kind === "edge" && press.moved && this.preview) {
       const { start, end } = this.preview;
       this.commitRange(press.item, start, end);
@@ -663,11 +694,80 @@ export const editing = {
     }
     // cut-out parts' edges
     for (const item of [...this.markers, ...this.clips]) for (const cut of item.cuts ?? []) points.push(cut.start, cut.end);
+    // the vertical editor's split lines (Layout row), except the ones being dragged
+    if (this.hasLayoutRow()) {
+      this.verticalParts.parts.forEach((part, k) => {
+        if (k > 0 && !skip?.layout?.includes(k)) points.push(part.start);
+      });
+    }
     const now = this.getPosition();
     if (now != null) points.push(now);
     if (this.marking) points.push(this.marking.start);
     if (this.draft) points.push(this.draft.start, ...(this.draft.end != null ? [this.draft.end] : []));
     return points;
+  },
+
+  // ---------- the vertical editor's Layout row ----------
+
+  // The split lines as one list: the first part's start, each later part's start, the last part's end
+  layoutEdges() {
+    const parts = this.verticalParts.parts;
+    return [...parts.map((part) => part.start), parts[parts.length - 1].end];
+  },
+
+  // What a press at x/y in the Layout row takes hold of: a split line ("edge", its index) or a part's body ("slide")
+  layoutGrab(x, y, width) {
+    const part = this.layoutPartAt(x, y, width);
+    if (!part || this.verticalParts.parts.length < 2) return null;
+    const edges = this.layoutEdges();
+    let best = null;
+    for (let k = 1; k < edges.length - 1; k++) {
+      const distance = Math.abs(x - this.timeToX(edges[k], width));
+      if (distance <= EDGE_PX && (!best || distance < best.distance)) best = { k, distance };
+    }
+    if (best) return { grab: "edge", k: best.k, edges };
+    return { grab: "slide", i: part.number - 1, edges };
+  },
+
+  // The split lines while dragging (VOD seconds). A split line moves between its neighbors; a sliding part keeps its
+  // length and pushes into its neighbors (the first part's start and the last part's end are the file's, they stay put).
+  dragLayout(press, raw, width) {
+    const MIN = 0.5;
+    const edges = [...press.edges];
+    const n = edges.length - 1;
+    if (press.grab === "edge") {
+      const { k } = press;
+      const t = this.snapTime(raw, width, { layout: [k] });
+      edges[k] = round(Math.max(edges[k - 1] + MIN, Math.min(t, edges[k + 1] - MIN)));
+      return { edges, tipTime: edges[k] };
+    }
+    const { i } = press;
+    const moveStart = i > 0;
+    const moveEnd = i + 1 < n;
+    let d = raw - press.from;
+    // Snap whichever moving edge is closer to something
+    const skip = { layout: [moveStart ? i : -1, moveEnd ? i + 1 : -1] };
+    if (moveStart) {
+      const s = this.snapTime(edges[i] + d, width, skip);
+      if (this.snapAt != null) d = s - edges[i];
+      else if (moveEnd) d = this.snapTime(edges[i + 1] + d, width, skip) - edges[i + 1];
+    } else if (moveEnd) {
+      d = this.snapTime(edges[i + 1] + d, width, skip) - edges[i + 1];
+    }
+    let lo = -Infinity;
+    let hi = Infinity;
+    if (moveStart) {
+      lo = Math.max(lo, edges[i - 1] + MIN - edges[i]);
+      if (!moveEnd) hi = Math.min(hi, edges[i + 1] - MIN - edges[i]);
+    }
+    if (moveEnd) {
+      hi = Math.min(hi, edges[i + 2] - MIN - edges[i + 1]);
+      if (!moveStart) lo = Math.max(lo, edges[i] + MIN - edges[i + 1]);
+    }
+    d = Math.max(lo, Math.min(d, hi));
+    if (moveStart) edges[i] = round(edges[i] + d);
+    if (moveEnd) edges[i + 1] = round(edges[i + 1] + d);
+    return { edges, tipTime: moveStart ? edges[i] : edges[i + 1] };
   },
 
   snapTime(seconds, width, skip) {
