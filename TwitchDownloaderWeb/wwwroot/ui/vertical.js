@@ -12,6 +12,11 @@
 // the next one's, the last to the end of the file). There are no trim handles: I / O leave out everything before / after the
 // playhead, and a render's trim becomes left-out parts at the ends (trimToParts; vx.trim stays the whole file). Rendered parts
 // are the kept ones, neighbors with the same layout joined; one part is sent as a plain layout (with its trim), more as `parts`.
+//
+// Moving boxes: a part can have keyframes (part.keys, [{ t, boxes }] in file seconds). Its boxes glide from one keyframe to the next
+// (eased: slow, faster, slow, the same curve as the server's render) and stay put before the first and after the last. F adds one at the
+// playhead (or removes the one there); once a part has one, moving a box sets the keyframe at the playhead (made if needed). The
+// mode and split ratio stay the same through the part.
 
 import { el, api, can, me, loadSetting, saveSetting, toast, formatDate, iconButton, withTooltip } from "./core.js";
 import { askText, confirmAction } from "./dialogs.js";
@@ -23,6 +28,8 @@ const MAX_RATIO = 0.8;
 const MIN_BOX = 0.05;
 const MIN_TRIM = 1;          // seconds, the server's minimum
 const MIN_PART = 0.5;        // seconds, the server's minimum part
+const MAX_KEYS = 30;         // keyframes per part, the server's limit
+const KEY_NEAR = 0.05;       // seconds: a keyframe this close to the playhead is "at" it
 const SNAP_PX = 8;
 const HISTORY_LIMIT = 50;
 const VOLUME_KEY = "clipLibrary.previewVolume"; // shared with the old page's editor
@@ -50,7 +57,8 @@ const vx = {
   ratio: 0.4,
   boxes: { single: null, top: null, bottom: null },
   trim: { start: 0, end: 0 },
-  parts: [],          // [{ start, removed, mode, ratio, boxes }]; the one at vx.part is live in vx.mode/ratio/boxes
+  parts: [],          // [{ start, removed, mode, ratio, boxes, keys? }]; the one at vx.part is live in vx.mode/ratio/boxes
+  motionAt: null,     // the playhead time the live boxes were last worked out for (moving boxes)
   part: 0,
   videoAspect: 16 / 9,
   ready: false,
@@ -133,12 +141,139 @@ function applyOne(layout) {
 
 const liveState = () => ({ mode: vx.mode, ratio: vx.ratio, boxes: structuredClone(vx.boxes) });
 
+// ---------- moving boxes (keyframes) ----------
+
+const ease = (u) => u * u * (3 - 2 * u);
+const isKeyed = (part) => (part?.keys?.length ?? 0) > 0;
+
+function mix(a, b, u) {
+  return { x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u, w: a.w + (b.w - a.w) * u, h: a.h + (b.h - a.h) * u };
+}
+
+// A part's boxes at file time t: its keyframes eased between, or its fixed boxes
+function boxesAt(part, t) {
+  const keys = part.keys;
+  if (!keys?.length) return structuredClone(part.boxes);
+  if (t <= keys[0].t) return structuredClone(keys[0].boxes);
+  const last = keys[keys.length - 1];
+  if (t >= last.t) return structuredClone(last.boxes);
+  let i = 0;
+  while (keys[i + 1].t <= t) i++;
+  const a = keys[i];
+  const b = keys[i + 1];
+  const u = ease((t - a.t) / (b.t - a.t));
+  return { single: mix(a.boxes.single, b.boxes.single, u), top: mix(a.boxes.top, b.boxes.top, u), bottom: mix(a.boxes.bottom, b.boxes.bottom, u) };
+}
+
+// A server layout's keyframes (applyOne has set the live boxes and ratio from the same layout)
+function keysFromServer(layout) {
+  if (!layout?.keys?.length) return [];
+  return layout.keys.map((key) => {
+    const boxes = structuredClone(vx.boxes);
+    if (layout.mode === "single") {
+      if (key.top) boxes.single = fit("single", fromServer(key.top));
+    } else {
+      if (key.top) boxes.top = fit("top", fromServer(key.top));
+      if (key.bottom) boxes.bottom = fit("bottom", fromServer(key.bottom));
+    }
+    return { t: key.time, boxes };
+  });
+}
+
+function keyIndexAt(part, t) {
+  return part?.keys?.findIndex((key) => Math.abs(key.t - t) < KEY_NEAR) ?? -1;
+}
+
+const playhead = () => vx.dom?.video.currentTime || 0;
+
+// A box was moved in a part with keyframes: the keyframe at the playhead gets the boxes (made if there's none)
+function keyHere() {
+  const part = vx.parts[vx.part];
+  if (!isKeyed(part)) return;
+  const t = seconds3(playhead());
+  const i = keyIndexAt(part, t);
+  if (i >= 0) {
+    part.keys[i] = { t: part.keys[i].t, boxes: structuredClone(vx.boxes) };
+    return;
+  }
+  if (part.keys.length >= MAX_KEYS) {
+    toast(`A part can have at most ${MAX_KEYS} keyframes.`);
+    return;
+  }
+  part.keys.push({ t, boxes: structuredClone(vx.boxes) });
+  part.keys.sort((a, b) => a.t - b.t);
+}
+
+// F: a keyframe at the playhead with the boxes as they are, or remove the one there
+function toggleKeyframe() {
+  if (!vx.ready) return;
+  const part = vx.parts[vx.part];
+  const t = seconds3(playhead());
+  const i = keyIndexAt(part, t);
+  const first = !isKeyed(part);
+  if (i < 0 && part.keys?.length >= MAX_KEYS) {
+    toast(`A part can have at most ${MAX_KEYS} keyframes.`);
+    return;
+  }
+  change(() => {
+    part.keys ??= [];
+    if (i >= 0) part.keys.splice(i, 1);
+    else {
+      part.keys.push({ t, boxes: structuredClone(vx.boxes) });
+      part.keys.sort((a, b) => a.t - b.t);
+    }
+    vx.motionAt = null;
+  });
+  if (first && i < 0) toast("Keyframe added. Move the playhead and then a box: the boxes glide from one keyframe to the next.");
+}
+
+function clearKeyframes() {
+  const part = vx.parts[vx.part];
+  if (!isKeyed(part)) return;
+  change(() => { part.keys = []; });
+  toast("The boxes in this part stay put again.");
+}
+
+// Every keyframe inside its own part, in time order (file seconds)
+function allKeyTimes() {
+  const times = [];
+  vx.parts.forEach((part, i) => {
+    for (const key of part.keys ?? []) if (key.t >= part.start - 0.001 && key.t <= partEnd(i) + 0.001) times.push(key.t);
+  });
+  return times.sort((a, b) => a - b);
+}
+
+function jumpKeyframe(direction) {
+  if (!vx.ready) return;
+  const t = playhead();
+  const times = allKeyTimes();
+  const next = direction > 0 ? times.find((k) => k > t + 0.01) : times.reverse().find((k) => k < t - 0.01);
+  if (next == null) {
+    toast(times.length ? `No keyframe ${direction > 0 ? "after" : "before"} the playhead.` : "No keyframes yet: press F to add one.");
+    return;
+  }
+  seek(next);
+}
+
+// While a keyed part plays (or the playhead moves), the live boxes follow its keyframes
+function applyMotion() {
+  if (!vx.ready || vx.dragging) return;
+  const part = vx.parts[vx.part];
+  if (!isKeyed(part)) return;
+  const t = playhead();
+  if (vx.motionAt === t) return;
+  vx.motionAt = t;
+  vx.boxes = boxesAt(part, t);
+  renderBoxes();
+  renderKeyInfo();
+}
+
 // Starts over from a layout (a render's, or null for the defaults): its parts, and with trim its start and end
 function applyLayout(layout, { trim = true } = {}) {
   const list = layout?.parts?.length ? layout.parts : null;
   if (!list) {
     applyOne(layout);
-    vx.parts = [{ start: 0, removed: false, ...liveState() }];
+    vx.parts = [{ start: 0, removed: false, ...liveState(), keys: keysFromServer(layout) }];
     vx.part = 0;
     if (trim) trimToParts(layout?.trimStart ?? 0, layout?.trimEnd ?? Infinity);
     return;
@@ -149,7 +284,7 @@ function applyLayout(layout, { trim = true } = {}) {
     const previousEnd = i ? list[i - 1].end : 0;
     if (i > 0 && part.start > previousEnd + 0.01) parts.push({ ...structuredClone(parts.at(-1)), start: previousEnd, removed: true });
     applyOne(part);
-    parts.push({ start: i ? part.start : 0, removed: false, ...liveState() });
+    parts.push({ start: i ? part.start : 0, removed: false, ...liveState(), keys: keysFromServer(part) });
   });
   vx.parts = parts;
   if (trim) trimToParts(list[0].start, list.at(-1).end);
@@ -180,7 +315,8 @@ function loadPart(i) {
   if (!part) return;
   vx.mode = part.mode;
   vx.ratio = part.ratio;
-  vx.boxes = structuredClone(part.boxes);
+  vx.boxes = boxesAt(part, playhead());
+  vx.motionAt = null;
   if (vx.selected && !visibleBoxes().includes(vx.selected)) vx.selected = null;
 }
 
@@ -204,7 +340,7 @@ function pieces() {
     const start = Math.max(part.start, vx.trim.start);
     const end = Math.min(partEnd(i), vx.trim.end);
     if (end - start < MIN_PART) return;
-    const layout = singleLayout(part);
+    const layout = pieceLayout(part, start);
     const last = list.at(-1);
     if (last && Math.abs(last.end - start) < 0.001 && sameLook(last.layout, layout)) last.end = end;
     else list.push({ start, end, layout });
@@ -235,9 +371,24 @@ function splitPart() {
   }
   change(() => {
     stash();
-    vx.parts.splice(i + 1, 0, { ...structuredClone(vx.parts[i]), start: t });
+    splitKeys(i, t);
     loadPart(i + 1);
   });
+}
+
+// Part i becomes two at t. Each side keeps its keyframes plus the nearest one past the split (not shown on the timeline), so the
+// boxes move exactly as before on both sides.
+function splitKeys(i, t) {
+  const part = vx.parts[i];
+  const after = { ...structuredClone(part), start: t };
+  if (isKeyed(part)) {
+    const keys = part.keys;
+    const firstAfter = keys.findIndex((key) => key.t >= t);
+    const lastBefore = firstAfter < 0 ? keys.length - 1 : firstAfter - 1;
+    part.keys = structuredClone(keys.slice(0, firstAfter < 0 ? keys.length : firstAfter + 1));
+    after.keys = structuredClone(keys.slice(Math.max(lastBefore, 0)));
+  }
+  vx.parts.splice(i + 1, 0, after);
 }
 
 function joinPart() {
@@ -270,7 +421,7 @@ function layoutToAllParts() {
   if (vx.parts.length < 2) return;
   change(() => {
     const live = liveState();
-    for (const part of vx.parts) Object.assign(part, structuredClone(live));
+    for (const part of vx.parts) Object.assign(part, structuredClone(live), { keys: [] });
   });
   toast("Every part now has this layout.");
 }
@@ -282,6 +433,18 @@ function fitParts() {
   vx.parts = vx.parts.filter((part, i) => i === 0 || part.start <= duration - MIN_PART);
   if (!vx.parts.some((part) => !part.removed)) vx.parts[0].removed = false;
   loadPart(partAt(vx.dom.video.currentTime || 0));
+}
+
+// A part's layout for the server, with its keyframes (from 2 on; one keyframe is just fixed boxes)
+function pieceLayout(part, start) {
+  const layout = singleLayout({ ...part, boxes: boxesAt(part, start) });
+  if ((part.keys?.length ?? 0) < 2) return layout;
+  layout.keys = part.keys.map((key) => ({
+    time: seconds3(key.t),
+    top: toServer(part.mode === "single" ? key.boxes.single : key.boxes.top),
+    ...part.mode === "single" ? {} : { bottom: toServer(key.boxes.bottom) },
+  }));
+  return layout;
 }
 
 // A part's (or the live) boxes as the server's layout, without times
@@ -297,7 +460,7 @@ function currentLayout() {
   const list = pieces();
   const duration = duration_();
   if (list.length <= 1) {
-    const piece = list[0] ?? { start: vx.trim.start, end: vx.trim.end, layout: singleLayout(liveState()) };
+    const piece = list[0] ?? { start: vx.trim.start, end: vx.trim.end, layout: pieceLayout(vx.parts[vx.part] ?? liveState(), vx.trim.start) };
     // Null = from the start / to the end, so an untrimmed render covers the whole file
     return {
       ...piece.layout,
@@ -318,9 +481,12 @@ const close = (x, y) => Math.abs((x ?? 0) - (y ?? 0)) < 0.0005;
 const sameBox = (p, q) => (!p && !q) || (p && q && close(p.x, q.x) && close(p.y, q.y) && close(p.width, q.width) && close(p.height, q.height));
 const sameTime = (x, y) => (x == null && y == null) || (x != null && y != null && Math.abs(x - y) < 0.05);
 
-// Same boxes, ignoring times
+const sameKeys = (a, b) => (a?.length ?? 0) === (b?.length ?? 0)
+  && (a ?? []).every((key, i) => sameTime(key.time, b[i].time) && sameBox(key.top, b[i].top) && sameBox(key.bottom, b[i].bottom));
+
+// Same boxes (and keyframes), ignoring times
 function sameLook(a, b) {
-  if (!a || !b || a.mode !== b.mode) return false;
+  if (!a || !b || a.mode !== b.mode || !sameKeys(a.keys, b.keys)) return false;
   return sameBox(a.top, b.top) && (a.mode === "single" || (sameBox(a.bottom, b.bottom) && close(a.splitRatio, b.splitRatio)));
 }
 
@@ -389,7 +555,10 @@ function ownPresets() {
 // layout: a layout, or a function making one (built-ins work out their boxes for the video's shape)
 // A layout goes on the part under the playhead
 function usePreset(layout) {
-  change(() => applyOne(typeof layout === "function" ? layout() : layout));
+  change(() => {
+    applyOne(typeof layout === "function" ? layout() : layout);
+    keyHere();
+  });
 }
 
 async function savePreset() {
@@ -565,6 +734,11 @@ function build() {
   const removeButton = iconButton({ icon: "minus-circle", label: "Leave this part out / put it back", keybind: "verticalRemovePart", onClick: toggleRemoved });
   const allButton = iconButton({ icon: "copy-simple", label: "Use this layout on every part", onClick: layoutToAllParts });
   const partInfo = el("span", { class: "vx2-part-info faint" });
+  const keyButton = iconButton({ icon: "diamond", label: "Keyframe at the playhead (add / remove)", keybind: "verticalKeyframe", onClick: toggleKeyframe });
+  const prevKey = iconButton({ icon: "caret-left", label: "Previous keyframe", keybind: "verticalPrevKeyframe", onClick: () => jumpKeyframe(-1) });
+  const nextKey = iconButton({ icon: "caret-right", label: "Next keyframe", keybind: "verticalNextKeyframe", onClick: () => jumpKeyframe(1) });
+  const clearKeys = iconButton({ icon: "x-circle", label: "Remove this part's keyframes (the boxes stay put)", onClick: clearKeyframes });
+  const keyInfo = el("span", { class: "vx2-part-info faint" });
 
   const render = el("sl-button", { variant: "primary", class: "vx2-render-button" },
     el("sl-icon", { slot: "prefix", library: "ph", name: "export" }), "Render");
@@ -581,6 +755,9 @@ function build() {
     el("div", { class: "vx2-group faint" }, "Parts"),
     el("div", { class: "vx2-tools", "data-tip-placement": "bottom" }, splitButton, joinButton, removeButton, allButton),
     partInfo,
+    el("div", { class: "vx2-group faint" }, "Moving boxes"),
+    el("div", { class: "vx2-tools", "data-tip-placement": "bottom" }, keyButton, prevKey, nextKey, clearKeys),
+    keyInfo,
     safeName,
     el("div", { class: "vx2-render-row" }, withTooltip(render, "Render the vertical video", "verticalRender"), progress),
     message,
@@ -593,7 +770,7 @@ function build() {
     panel, video, stage, stageWrap, boxNodes, guides, note, canvas, safe, renderVideo, split, back, portrait, previewWrap,
     play, time, trimText, mute, volume, one, two, presetMenu, safeButton, safeName,
     snapButton, undo: undoButton, redo: redoButton, render, progress, message, list, empty,
-    leftOut, partInfo, joinButton, removeButton, allButton,
+    leftOut, partInfo, joinButton, removeButton, allButton, keyButton, clearKeys, keyInfo,
   };
 
   for (const type of ["play", "pause", "timeupdate", "durationchange"]) video.addEventListener(type, renderPlayer);
@@ -700,6 +877,22 @@ function renderParts() {
   const remove = removeButton.querySelector("sl-icon-button");
   remove.name = removed ? "plus-circle" : "minus-circle";
   remove.toggleAttribute("data-active", removed);
+  renderKeyInfo();
+}
+
+// The keyframe button lights up on a keyframe; the line under it says what the part does
+function renderKeyInfo() {
+  if (!vx.dom) return;
+  const { keyButton, clearKeys, keyInfo } = vx.dom;
+  const part = vx.parts[vx.part];
+  const count = part?.keys?.length ?? 0;
+  const on = keyIndexAt(part, playhead()) >= 0;
+  keyButton.querySelector("sl-icon-button").toggleAttribute("data-active", on);
+  clearKeys.querySelector("sl-icon-button").disabled = !count;
+  const text = !part ? ""
+    : !count ? "The boxes stay put. Press F to add a keyframe, then move the playhead and a box: they glide between keyframes."
+      : `${count} keyframe${count === 1 ? "" : "s"} in this part${on ? " · on one now (moving a box changes it)" : " · moving a box adds one here"}`;
+  if (keyInfo.textContent !== text) keyInfo.textContent = text;
 }
 
 const lookName = (part) => (part.mode === "single" ? "One box" : "Two boxes");
@@ -712,7 +905,9 @@ function sendParts(duration) {
   }
   vx.hooks.onParts?.({
     parts: vx.parts.map((part, i) => ({
-      start: part.start, end: Math.min(partEnd(i), duration), removed: part.removed, current: i === vx.part, label: lookName(part),
+      start: part.start, end: Math.min(partEnd(i), duration), removed: part.removed, current: i === vx.part,
+      label: lookName(part) + (part.keys?.length > 1 ? " · moving" : ""),
+      keys: (part.keys ?? []).map((key) => key.t).filter((t) => t >= part.start - 0.001 && t <= Math.min(partEnd(i), duration) + 0.001),
     })),
     trim: { ...vx.trim },
   });
@@ -721,6 +916,7 @@ function sendParts(duration) {
 function draw() {
   if (!vx.open) return;
   followPlayhead();
+  applyMotion();
   const { canvas, video } = vx.dom;
   const ctx = canvas.getContext("2d");
   const cw = canvas.width;
@@ -847,7 +1043,9 @@ function startBoxDrag(event) {
     node.removeEventListener("pointerup", onUp);
     node.removeEventListener("pointercancel", onUp);
     vx.guides = [];
-    renderBoxes();
+    keyHere();
+    vx.motionAt = null;
+    renderAll();
     record(before);
   };
   node.addEventListener("pointermove", onMove);
@@ -861,6 +1059,7 @@ function nudge(dx, dy) {
   change(() => {
     const box = vx.boxes[name];
     vx.boxes[name] = { ...box, x: clamp(box.x + dx, 0, 1 - box.w), y: clamp(box.y + dy, 0, 1 - box.h) };
+    keyHere();
   });
 }
 
@@ -868,6 +1067,10 @@ function setRatio(ratio) {
   vx.ratio = clamp(ratio, MIN_RATIO, MAX_RATIO);
   vx.boxes.top = fit("top", vx.boxes.top);
   vx.boxes.bottom = fit("bottom", vx.boxes.bottom);
+  for (const key of vx.parts[vx.part]?.keys ?? []) {
+    key.boxes.top = fit("top", key.boxes.top);
+    key.boxes.bottom = fit("bottom", key.boxes.bottom);
+  }
 }
 
 function startSplitDrag(event) {
@@ -986,7 +1189,7 @@ function cutAt(t) {
   stash();
   const i = partAt(t);
   if (t - vx.parts[i].start < MIN_PART || partEnd(i) - t < MIN_PART) return;
-  vx.parts.splice(i + 1, 0, { ...structuredClone(vx.parts[i]), start: t });
+  splitKeys(i, t);
   loadPart(partAt(vx.dom.video.currentTime || 0));
 }
 
@@ -1299,7 +1502,10 @@ function onMetadata() {
     stash();
     for (const part of vx.parts) {
       vx.ratio = part.ratio;
-      for (const name of ["single", "top", "bottom"]) part.boxes[name] = fit(name, part.boxes[name]);
+      for (const name of ["single", "top", "bottom"]) {
+        part.boxes[name] = fit(name, part.boxes[name]);
+        for (const key of part.keys ?? []) key.boxes[name] = fit(name, key.boxes[name]);
+      }
     }
     // vx.trim is always the whole file: a longer new file (the clip was made longer) must not stay cut at the old end
     setTrim(0, Infinity);
@@ -1476,6 +1682,9 @@ export function handleVerticalKey(event) {
     verticalRender: startRender,
     verticalSplitPart: splitPart,
     verticalJoinPart: joinPart,
+    verticalKeyframe: toggleKeyframe,
+    verticalPrevKeyframe: () => jumpKeyframe(-1),
+    verticalNextKeyframe: () => jumpKeyframe(1),
     verticalRemovePart: toggleRemoved,
     verticalExit: () => vx.hooks.onExit?.(),
     verticalNudge: () => nudge(...arrows[event.key]),

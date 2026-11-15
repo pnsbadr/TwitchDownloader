@@ -661,7 +661,7 @@ function setUpPlayer2() {
     onExit: () => toggleVertical(false),
     // The vertical editor's parts on the clip in Player 2's row (file seconds -> VOD seconds)
     onParts: (info) => timeline2.setVerticalParts(info && {
-      parts: info.parts.map((part) => ({ ...part, start: fileToVod(part.start), end: fileToVod(part.end) })),
+      parts: info.parts.map((part) => ({ ...part, start: fileToVod(part.start), end: fileToVod(part.end), keys: (part.keys ?? []).map(fileToVod) })),
       trim: { start: fileToVod(info.trim.start), end: fileToVod(info.trim.end) },
     }),
   });
