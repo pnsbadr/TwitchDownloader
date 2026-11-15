@@ -645,6 +645,7 @@ export class Timeline {
       canvas.addEventListener("pointercancel", () => {
         this.press = null;
         this.preview = null;
+        this.layoutDrag = null;
         this.snapAt = null;
         this.edgeTip = null;
         this.dirty = true;
@@ -743,6 +744,7 @@ export class Timeline {
     const part = hover.canvas === this.track ? this.layoutPartAt(hover.x, hover.y, hover.width) : null;
     if (part) {
       lines.push(`Part ${part.number} · ${part.removed ? "left out of the render" : part.label}`);
+      lines.push("Drag a split line to move it · drag a part to slide it");
       lines.push("S splits at the playhead · Delete leaves a part out · J joins");
     }
     if (item) {
@@ -927,7 +929,12 @@ export class Timeline {
   }
 
   drawVerticalParts(ctx, width, y) {
-    const { parts, trim } = this.verticalParts;
+    const { trim } = this.verticalParts;
+    // While a split line is dragged, the parts are drawn where they'd end up
+    const edges = this.layoutDrag?.edges;
+    const parts = edges
+      ? this.verticalParts.parts.map((part, i) => ({ ...part, start: edges[i], end: edges[i + 1] }))
+      : this.verticalParts.parts;
     ctx.fillStyle = "rgb(139 124 246 / 0.06)";
     ctx.fillRect(0, y, width, ROW_HEIGHT - 1);
     const top = y + 6;

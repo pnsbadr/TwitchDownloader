@@ -12,7 +12,7 @@ import { Timeline } from "./timeline.js";
 import { skipCut, keptSeconds, keptParts } from "./cuts.js";
 import { setUpExport, addToExport, exportShown, pausePreview } from "./export.js";
 import { showShortcuts } from "./shortcuts.js";
-import { setUpVertical, openVertical, closeVertical, verticalOpen, verticalEntryId, pauseVertical, verticalEntryChanged, handleVerticalKey, verticalTime, verticalSeek } from "./vertical.js";
+import { setUpVertical, openVertical, closeVertical, verticalOpen, verticalEntryId, pauseVertical, verticalEntryChanged, handleVerticalKey, verticalTime, verticalSeek, setVerticalPartStarts } from "./vertical.js";
 
 // Phosphor icons, bold weight, as <sl-icon library="ph" name="…">
 registerIconLibrary("ph", {
@@ -628,6 +628,8 @@ function setUpPlayer2() {
   });
   timeline2 = new Timeline({
     mode: "item",
+    // Split lines dragged in the Layout row (VOD seconds -> seconds into the clip's file)
+    onLayoutParts: (starts) => setVerticalPartStarts(starts.map(vodToFile)),
     onSeek: p2Seek,
     getPosition: p2Position,
     openItemEditor,

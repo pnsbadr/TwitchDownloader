@@ -440,7 +440,7 @@ function snapshot() {
 function restore(state) {
   const data = JSON.parse(state);
   vx.parts = data.parts;
-  vx.trim = data.trim;
+  setTrim(0, Infinity);
   loadPart(partAt(vx.dom.video.currentTime || 0));
   renderAll();
 }
@@ -974,7 +974,7 @@ function leaveOutSide(side) {
 }
 
 function putAllBack() {
-  if (!vx.parts.some((part) => part.removed)) return;
+  if (!vx.parts.some((part) => part.removed) && !isTrimmed()) return;
   change(() => {
     for (const part of vx.parts) part.removed = false;
     setTrim(0, Infinity);
@@ -1301,7 +1301,8 @@ function onMetadata() {
       vx.ratio = part.ratio;
       for (const name of ["single", "top", "bottom"]) part.boxes[name] = fit(name, part.boxes[name]);
     }
-    setTrim(vx.trim.start, vx.trim.end >= duration_() - 0.05 ? Infinity : vx.trim.end);
+    // vx.trim is always the whole file: a longer new file (the clip was made longer) must not stay cut at the old end
+    setTrim(0, Infinity);
     fitParts();
   }
   vx.ready = true;
@@ -1416,6 +1417,25 @@ export function closeVertical() {
 // Seconds into the clip's file shown in the editor, or null
 export function verticalTime() {
   return vx.open && vx.ready ? vx.dom.video.currentTime : null;
+}
+
+// The Layout row in the Player 2 timeline moved split lines (dragging a split or sliding a part): the new start of every
+// part after the first, in file seconds. Ignored if a part would end up shorter than MIN_PART.
+export function setVerticalPartStarts(starts) {
+  if (!vx.open || !vx.ready || starts.length !== vx.parts.length - 1) return;
+  const duration = duration_();
+  const edges = [0, ...starts.map(seconds3), duration];
+  if (edges.some((t, k) => k > 0 && t - edges[k - 1] < MIN_PART - 0.001)) {
+    toast(`Parts are at least ${MIN_PART} s long.`);
+    renderAll();
+    return;
+  }
+  if (starts.every((t, k) => Math.abs(t - vx.parts[k + 1].start) < 0.001)) return;
+  change(() => {
+    stash();
+    starts.forEach((t, k) => { vx.parts[k + 1].start = edges[k + 1]; });
+    loadPart(partAt(vx.dom.video.currentTime || 0));
+  });
 }
 
 export function verticalSeek(seconds) {
