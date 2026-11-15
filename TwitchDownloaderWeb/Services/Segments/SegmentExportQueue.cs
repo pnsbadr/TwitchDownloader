@@ -7,7 +7,16 @@ namespace TwitchDownloaderWeb.Services.Segments
     /// In-memory queue of segment downloads (by export ID), processed by <see cref="SegmentExportWorker"/>. The database status is the
     /// source of truth; anything queued or running at shutdown is queued again at startup.
     /// </summary>
-    public sealed class SegmentExportQueue
+    public sealed class SegmentExportQueue : IdJobQueue;
+
+    /// <summary>
+    /// In-memory queue of export batches (by batch ID), processed by <see cref="ExportWorker"/>. The database status is the source of truth;
+    /// anything queued or running at shutdown is queued again at startup.
+    /// </summary>
+    public sealed class ExportQueue : IdJobQueue;
+
+    /// <summary>A queue of jobs by row ID, with cancellation of the running one (the row was deleted).</summary>
+    public abstract class IdJobQueue
     {
         private readonly Channel<int> _channel = Channel.CreateUnbounded<int>();
         private readonly ConcurrentDictionary<int, CancellationTokenSource> _running = new();

@@ -40,5 +40,14 @@ namespace TwitchDownloaderWeb
 
         /// <summary>Segment downloads a team may have queued or running at once.</summary>
         public int MaxActiveSegmentDownloadsPerTeam { get; set; } = 3;
+
+        /// <summary>Most items one export may have (a clip in both formats counts twice).</summary>
+        public int MaxExportItems { get; set; } = 50;
+
+        /// <summary>Most video one export may cut, all items together (copied stored clips and vertical renders don't count).</summary>
+        public int MaxExportSeconds { get; set; } = 3 * 3600;
+
+        /// <summary>Exports a team may have queued or running at once.</summary>
+        public int MaxActiveExportsPerTeam { get; set; } = 3;
     }
 }

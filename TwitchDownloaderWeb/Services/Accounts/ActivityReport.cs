@@ -28,6 +28,7 @@ namespace TwitchDownloaderWeb.Services.Accounts
             [AuditActions.FileServed] = "downloaded",
             [AuditActions.GenerationRequested] = "generated",
             [AuditActions.SegmentsRequested] = "generated",
+            [AuditActions.ExportRequested] = "generated",
             [AuditActions.ShortformRequested] = "vertical",
         };
 
@@ -117,6 +118,24 @@ namespace TwitchDownloaderWeb.Services.Accounts
 
         /// <summary>Bytes of each unexpired segment download's files (every team's: staff code).</summary>
         private static async Task<List<(int TeamId, int UserId, long Bytes)>> SegmentExportDiskAsync(LibraryDbContext db, int? teamId, int? userId,
+            CancellationToken cancellationToken) =>
+            [.. await SegmentDownloadDiskAsync(db, teamId, userId, cancellationToken), .. await ExportDiskAsync(db, teamId, userId, cancellationToken)];
+
+        /// <summary>Bytes of each unexpired export's files (every team's: staff code).</summary>
+        private static async Task<List<(int TeamId, int UserId, long Bytes)>> ExportDiskAsync(LibraryDbContext db, int? teamId, int? userId,
+            CancellationToken cancellationToken)
+        {
+            var now = DateTime.UtcNow;
+            var query = db.ExportBatches.IgnoreQueryFilters().AsNoTracking().Where(x => x.ExpiresAtUtc == null || x.ExpiresAtUtc > now);
+            if (teamId is { } t)
+                query = query.Where(x => x.TeamId == t);
+            if (userId is { } u)
+                query = query.Where(x => x.CreatedByUserId == u);
+            var rows = await query.Select(x => new { x.TeamId, x.CreatedByUserId, Bytes = x.Items.Sum(i => i.FileSizeBytes ?? 0) }).ToListAsync(cancellationToken);
+            return rows.Select(x => (x.TeamId, x.CreatedByUserId, x.Bytes)).ToList();
+        }
+
+        private static async Task<List<(int TeamId, int UserId, long Bytes)>> SegmentDownloadDiskAsync(LibraryDbContext db, int? teamId, int? userId,
             CancellationToken cancellationToken)
         {
             var now = DateTime.UtcNow;
