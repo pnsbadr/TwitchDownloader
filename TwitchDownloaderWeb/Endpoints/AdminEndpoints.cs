@@ -17,9 +17,13 @@ namespace TwitchDownloaderWeb.Endpoints
     public sealed record StaffMeDto(int Id, string Username, bool IsOwner, IReadOnlyList<string> Permissions, IReadOnlyList<StaffPermissionInfo> PermissionCatalog);
 
     /// <param name="Channels">The Twitch channels the team works on (only their VODs are open to it).</param>
+    /// <param name="RevokedChannels">Channels taken with "Revoke now": the team's work on their VODs is hidden until one is assigned again.</param>
     public sealed record AdminTeamDto(int Id, string Name, DateTime CreatedAtUtc, int? OwnerUserId, string? OwnerUsername, int MemberCount, int EntryCount,
         DateTime? DisabledAtUtc, bool AutoSaveAudio, long DiskBytes, DateTime? LastActiveAtUtc, bool CombineSegmentDownloads,
-        IReadOnlyList<AdminChannelDto> Channels);
+        IReadOnlyList<AdminChannelDto> Channels, IReadOnlyList<AdminRevokedChannelDto> RevokedChannels);
+
+    /// <param name="HiddenVods">How many VODs the team's work is hidden on.</param>
+    public sealed record AdminRevokedChannelDto(string Login, string DisplayName, DateTime RevokedAtUtc, int HiddenVods);
 
     /// <param name="AccessEndedAtUtc">Removed with "keep existing work": only VODs the team already worked on stay open. Null = assigned.</param>
     public sealed record AdminChannelDto(int Id, string Login, string DisplayName, DateTime AddedAtUtc, DateTime? AccessEndedAtUtc)
@@ -266,9 +270,14 @@ namespace TwitchDownloaderWeb.Endpoints
             var channels = (await db.Channels.IgnoreQueryFilters().AsNoTracking().Where(x => teamIds.Contains(x.TeamId)).ToListAsync(cancellationToken))
                 .GroupBy(x => x.TeamId)
                 .ToDictionary(x => x.Key, x => (IReadOnlyList<AdminChannelDto>)x.OrderBy(c => c.DisplayName, StringComparer.OrdinalIgnoreCase).Select(AdminChannelDto.From).ToList());
+            var revoked = (await db.RevokedChannels.AsNoTracking().Where(x => teamIds.Contains(x.TeamId))
+                    .Select(x => new { x.TeamId, Dto = new AdminRevokedChannelDto(x.Login, x.DisplayName, x.RevokedAtUtc, x.HiddenVods.Count) })
+                    .ToListAsync(cancellationToken))
+                .GroupBy(x => x.TeamId)
+                .ToDictionary(x => x.Key, x => (IReadOnlyList<AdminRevokedChannelDto>)x.Select(r => r.Dto).OrderBy(r => r.DisplayName, StringComparer.OrdinalIgnoreCase).ToList());
             return teams.Select(x => new AdminTeamDto(x.Id, x.Name, x.CreatedAtUtc, x.OwnerUserId, x.OwnerUsername, x.MemberCount, x.EntryCount,
                 x.DisabledAtUtc, x.AutoSaveAudio, disk.GetValueOrDefault(x.Id), lastActive.GetValueOrDefault(x.Id),
-                x.CombineSegmentDownloads, channels.GetValueOrDefault(x.Id) ?? [])).ToList();
+                x.CombineSegmentDownloads, channels.GetValueOrDefault(x.Id) ?? [], revoked.GetValueOrDefault(x.Id) ?? [])).ToList();
         }
 
         private static async Task<IResult> ListTeams(LibraryDbContext db, ShortformService shortform, CancellationToken cancellationToken) =>
@@ -396,10 +405,11 @@ namespace TwitchDownloaderWeb.Endpoints
 
         /// <param name="mode">
         /// "revoke" (the team loses every VOD of the channel at once, work on them included) or "future" (the team keeps the VODs it
-        /// already has entries or markers on, nothing else; badrfly, 2026-11-15). Required.
+        /// already has entries or markers on, nothing else; badrfly, 2026-11-15). Required. Revoking also hides the team's work on the
+        /// channel's VODs until it is assigned again (<see cref="RevokedChannel"/>).
         /// </param>
         private static async Task<IResult> RemoveTeamChannel(int id, int channelId, string? mode, StaffContext me, LibraryDbContext db,
-            CancellationToken cancellationToken)
+            TeamChannelAccess access, CancellationToken cancellationToken)
         {
             var revoke = mode?.Trim().ToLowerInvariant() switch
             {
@@ -418,9 +428,30 @@ namespace TwitchDownloaderWeb.Endpoints
 
             if (revoke.Value)
             {
+                List<long> hidden;
+                try
+                {
+                    hidden = await FindChannelVodsWithWorkAsync(db, access, team.Id, channel, cancellationToken);
+                }
+                catch (HttpRequestException)
+                {
+                    return Results.Problem(detail: "Couldn't reach Twitch to find which of the team's VODs are this channel's. Try again in a moment.",
+                        statusCode: StatusCodes.Status502BadGateway);
+                }
+
                 db.Channels.Remove(channel);
+                db.RevokedChannels.Add(new RevokedChannel
+                {
+                    TeamId = team.Id,
+                    Login = channel.Login,
+                    DisplayName = channel.DisplayName,
+                    TwitchUserId = channel.TwitchUserId,
+                    RevokedAtUtc = DateTime.UtcNow,
+                    HiddenVods = hidden.Select(vodId => new HiddenVod { TeamId = team.Id, VodId = vodId }).ToList(),
+                });
                 db.Audit(AuditActions.ChannelRemoved, null,
-                    $"{channel.DisplayName} ({channel.Login}) from \"{team.Name}\" by {me.Username}: access revoked now", teamId: team.Id);
+                    $"{channel.DisplayName} ({channel.Login}) from \"{team.Name}\" by {me.Username}: access revoked now, work on {hidden.Count} VOD(s) hidden",
+                    teamId: team.Id);
             }
             else if (channel.AccessEndedAtUtc is null)
             {
@@ -433,10 +464,58 @@ namespace TwitchDownloaderWeb.Endpoints
             return Results.NoContent();
         }
 
+        /// <summary>
+        /// The VODs of <paramref name="channel"/> the team has work on (entries, markers, rows, videos, exports), found by asking Twitch for each
+        /// VOD's channel (cached). A VOD Twitch no longer has counts when the team's entries or videos on it name the channel.
+        /// </summary>
+        private static async Task<List<long>> FindChannelVodsWithWorkAsync(LibraryDbContext db, TeamChannelAccess access, int teamId, SavedChannel channel,
+            CancellationToken cancellationToken)
+        {
+            var vodIds = new HashSet<long>();
+            vodIds.UnionWith(await db.Entries.IgnoreQueryFilters().Where(x => x.TeamId == teamId && x.VodId != 0).Select(x => x.VodId).Distinct().ToListAsync(cancellationToken));
+            vodIds.UnionWith(await db.Markers.IgnoreQueryFilters().Where(x => x.TeamId == teamId).Select(x => x.VodId).Distinct().ToListAsync(cancellationToken));
+            vodIds.UnionWith(await db.TimelineRows.IgnoreQueryFilters().Where(x => x.TeamId == teamId).Select(x => x.VodId).Distinct().ToListAsync(cancellationToken));
+            vodIds.UnionWith(await db.Videos.IgnoreQueryFilters().Where(x => x.TeamId == teamId).Select(x => x.VodId).Distinct().ToListAsync(cancellationToken));
+            vodIds.UnionWith(await db.SegmentExports.IgnoreQueryFilters().Where(x => x.TeamId == teamId).Select(x => x.VodId).Distinct().ToListAsync(cancellationToken));
+            vodIds.UnionWith(await db.ExportItems.Where(x => db.ExportBatches.IgnoreQueryFilters().Any(b => b.Id == x.BatchId && b.TeamId == teamId) && x.VodId != 0)
+                .Select(x => x.VodId).Distinct().ToListAsync(cancellationToken));
+            // VODs already hidden by an earlier revoke of another channel stay as they are
+            vodIds.ExceptWith(await db.HiddenVods.Where(x => x.TeamId == teamId).Select(x => x.VodId).ToListAsync(cancellationToken));
+
+            var names = new[] { channel.Login, channel.DisplayName.ToLowerInvariant() };
+            var result = new List<long>();
+            foreach (var vodId in vodIds.Order())
+            {
+                if (await access.GetVodChannelAsync(vodId) is { } owner)
+                {
+                    if ((!string.IsNullOrEmpty(owner.UserId) && owner.UserId == channel.TwitchUserId)
+                        || string.Equals(owner.Login, channel.Login, StringComparison.OrdinalIgnoreCase))
+                        result.Add(vodId);
+                    continue;
+                }
+
+                // Gone from Twitch: go by the channel name saved with the team's entries/videos on it
+                var saved = await db.Entries.IgnoreQueryFilters().Where(x => x.TeamId == teamId && x.VodId == vodId && x.ChannelName != null)
+                    .Select(x => x.ChannelName!).Concat(db.Videos.IgnoreQueryFilters().Where(x => x.TeamId == teamId && x.VodId == vodId && x.ChannelName != null)
+                    .Select(x => x.ChannelName!)).ToListAsync(cancellationToken);
+                if (saved.Any(x => names.Contains(x.ToLowerInvariant())))
+                    result.Add(vodId);
+            }
+            return result;
+        }
+
+        /// <summary>Lets the team see its work on a channel's VODs again (saved with the caller's next SaveChanges).</summary>
+        private static void Unhide(LibraryDbContext db, int teamId, string login, string? twitchUserId)
+        {
+            var revoked = db.RevokedChannels.Where(x => x.TeamId == teamId && (x.Login == login || (twitchUserId != null && x.TwitchUserId == twitchUserId))).ToList();
+            db.RevokedChannels.RemoveRange(revoked); // hidden VODs go with them (cascade)
+        }
+
         /// <summary>Assigns a channel again that was removed with "keep existing work" (saved with the caller's next SaveChanges).</summary>
         internal static void Reassign(LibraryDbContext db, Team team, SavedChannel channel, string how)
         {
             channel.AccessEndedAtUtc = null;
+            Unhide(db, team.Id, channel.Login, channel.TwitchUserId);
             db.Audit(AuditActions.ChannelAdded, null, $"{channel.DisplayName} ({channel.Login}) to \"{team.Name}\" again {how}", teamId: team.Id);
         }
 
@@ -452,6 +531,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 AddedAtUtc = DateTime.UtcNow,
             };
             db.Channels.Add(channel);
+            Unhide(db, team.Id, channel.Login, channel.TwitchUserId);
             db.Audit(AuditActions.ChannelAdded, null, $"{channel.DisplayName} ({channel.Login}) to \"{team.Name}\" {how}", teamId: team.Id);
             return channel;
         }

@@ -219,7 +219,11 @@ function toggleTeamChannels(team, details) {
     }
   };
   const remove = (channel, mode, label, title, danger) => el("button", { type: "button", class: danger ? "link danger small" : "link small", title,
-    onclick: () => run("DELETE", `/api/admin/teams/${team.id}/channels/${channel.id}?mode=${mode}`) }, label);
+    onclick: () => {
+      if (mode === "revoke" && !confirm(`Revoke ${channel.displayName} from ${team.name} now? The team loses every VOD of this channel, and its clips, `
+        + "videos, segments and files from them are hidden. Nothing is deleted: assigning the channel again brings it all back.")) return;
+      run("DELETE", `/api/admin/teams/${team.id}/channels/${channel.id}?mode=${mode}`);
+    } }, label);
   const list = el("ul", { class: "plain-list" }, ...team.channels.map((channel) => el("li", { class: "list-row" },
     el("div", { class: "grow" }, el("strong", {}, channel.displayName),
       channel.accessEndedAtUtc ? el("span", { class: "badge", title: "No new VODs; VODs the team already worked on stay open" }, "Existing work only") : null,
@@ -230,11 +234,22 @@ function toggleTeamChannels(team, details) {
         ? el("button", { type: "button", class: "link small", onclick: () => run("POST", `/api/admin/teams/${team.id}/channels`, { login: channel.login }) },
           "Assign again")
         : remove(channel, "future", "Stop new VODs", "The team keeps the VODs it already has clips or markers on, and loses the rest.", false),
-      remove(channel, "revoke", "Revoke now", "The team loses every VOD of this channel at once, including work it already did.", true)))));
+      remove(channel, "revoke", "Revoke now", "The team loses every VOD of this channel at once, and its work on them is hidden until you assign it again.", true)))));
   if (!team.channels.length) list.append(el("li", { class: "muted" }, "No channels yet."));
+  for (const channel of team.revokedChannels || []) {
+    list.append(el("li", { class: "list-row" },
+      el("div", { class: "grow" }, el("strong", {}, channel.displayName),
+        el("span", { class: "badge", title: "The team's work on this channel's VODs is hidden, not deleted" }, "Revoked"),
+        el("span", { class: "muted small-text" }, ` ${channel.login} · revoked ${formatWhen(channel.revokedAtUtc)}`
+          + ` · work on ${channel.hiddenVods} VOD${channel.hiddenVods === 1 ? "" : "s"} hidden`)),
+      el("div", { class: "row admin-actions" },
+        el("button", { type: "button", class: "link small", title: "Opens its VODs and brings the hidden work back",
+          onclick: () => run("POST", `/api/admin/teams/${team.id}/channels`, { login: channel.login }) }, "Assign again"))));
+  }
   details.replaceChildren(
     el("p", { class: "muted small-text" }, "Members only see and work on these channels' VODs. \"Stop new VODs\" keeps the VODs the team "
-      + "already worked on; \"Revoke now\" closes every VOD of the channel, work included."),
+      + "already worked on; \"Revoke now\" closes every VOD of the channel and hides the team's work on them (kept, and back when you assign "
+      + "the channel again)."),
     list, add);
   input.focus();
 }

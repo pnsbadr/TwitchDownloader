@@ -40,6 +40,8 @@ namespace TwitchDownloaderWeb.Data
         public DbSet<SegmentExportItem> SegmentExportItems => Set<SegmentExportItem>();
         public DbSet<ExportBatch> ExportBatches => Set<ExportBatch>();
         public DbSet<ExportItem> ExportItems => Set<ExportItem>();
+        public DbSet<RevokedChannel> RevokedChannels => Set<RevokedChannel>();
+        public DbSet<HiddenVod> HiddenVods => Set<HiddenVod>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -58,8 +60,12 @@ namespace TwitchDownloaderWeb.Data
                 entity.HasIndex(x => x.Status);
                 entity.HasIndex(x => x.TeamId);
                 entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Restrict);
-                // A request sees only its own team's library; requests without a resolved team see nothing
-                entity.HasQueryFilter(x => !ScopedToTeam || x.TeamId == ScopeTeamId);
+                // A request sees only its own team's library; requests without a resolved team see nothing. Work on VODs of a channel
+                // revoked from the team is hidden (old Twitch clips without a source VOD go by their channel name)
+                entity.HasQueryFilter(x => !ScopedToTeam || (x.TeamId == ScopeTeamId
+                    && !HiddenVods.Any(h => h.TeamId == ScopeTeamId && h.VodId == x.VodId)
+                    && !(x.VodId == 0 && x.ChannelName != null && RevokedChannels.Any(c => c.TeamId == ScopeTeamId
+                        && (c.Login == x.ChannelName.ToLower() || c.DisplayName.ToLower() == x.ChannelName.ToLower())))));
             });
 
             modelBuilder.Entity<AuditEvent>(entity =>
@@ -124,7 +130,7 @@ namespace TwitchDownloaderWeb.Data
                 entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
                 // A row is only deleted after its markers (TimelineEndpoints); SetNull is a safety net
                 entity.HasOne(x => x.Row).WithMany().HasForeignKey(x => x.RowId).OnDelete(DeleteBehavior.SetNull);
-                entity.HasQueryFilter(x => !ScopedToTeam || x.TeamId == ScopeTeamId);
+                entity.HasQueryFilter(x => !ScopedToTeam || (x.TeamId == ScopeTeamId && !HiddenVods.Any(h => h.TeamId == ScopeTeamId && h.VodId == x.VodId)));
             });
 
             modelBuilder.Entity<TimelineRow>(entity =>
@@ -133,7 +139,7 @@ namespace TwitchDownloaderWeb.Data
                 entity.Property(x => x.Name).HasMaxLength(TimelineRow.MaxNameLength);
                 entity.HasIndex(x => new { x.TeamId, x.VodId, x.UserId });
                 entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
-                entity.HasQueryFilter(x => !ScopedToTeam || x.TeamId == ScopeTeamId);
+                entity.HasQueryFilter(x => !ScopedToTeam || (x.TeamId == ScopeTeamId && !HiddenVods.Any(h => h.TeamId == ScopeTeamId && h.VodId == x.VodId)));
             });
 
             modelBuilder.Entity<Video>(entity =>
@@ -144,7 +150,7 @@ namespace TwitchDownloaderWeb.Data
                 entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
                 entity.HasOne<TimelineRow>().WithMany().HasForeignKey(x => x.RowId).OnDelete(DeleteBehavior.Cascade);
                 entity.HasMany(x => x.Segments).WithOne().HasForeignKey(x => x.VideoId).OnDelete(DeleteBehavior.Cascade);
-                entity.HasQueryFilter(x => !ScopedToTeam || x.TeamId == ScopeTeamId);
+                entity.HasQueryFilter(x => !ScopedToTeam || (x.TeamId == ScopeTeamId && !HiddenVods.Any(h => h.TeamId == ScopeTeamId && h.VodId == x.VodId)));
             });
 
             modelBuilder.Entity<VideoSegment>(entity =>
@@ -172,7 +178,7 @@ namespace TwitchDownloaderWeb.Data
                 entity.HasIndex(x => x.Status);
                 entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
                 entity.HasMany(x => x.Items).WithOne().HasForeignKey(x => x.ExportId).OnDelete(DeleteBehavior.Cascade);
-                entity.HasQueryFilter(x => !ScopedToTeam || x.TeamId == ScopeTeamId);
+                entity.HasQueryFilter(x => !ScopedToTeam || (x.TeamId == ScopeTeamId && !HiddenVods.Any(h => h.TeamId == ScopeTeamId && h.VodId == x.VodId)));
             });
 
             modelBuilder.Entity<SegmentExportItem>(entity =>
@@ -189,7 +195,9 @@ namespace TwitchDownloaderWeb.Data
                 entity.HasIndex(x => x.Status);
                 entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
                 entity.HasMany(x => x.Items).WithOne().HasForeignKey(x => x.BatchId).OnDelete(DeleteBehavior.Cascade);
-                entity.HasQueryFilter(x => !ScopedToTeam || x.TeamId == ScopeTeamId);
+                // An export with anything from a hidden VOD is hidden whole
+                entity.HasQueryFilter(x => !ScopedToTeam || (x.TeamId == ScopeTeamId
+                    && !x.Items.Any(i => HiddenVods.Any(h => h.TeamId == ScopeTeamId && h.VodId == i.VodId))));
             });
 
             modelBuilder.Entity<ExportItem>(entity =>
@@ -201,6 +209,22 @@ namespace TwitchDownloaderWeb.Data
                 entity.Property(x => x.TrimMode).HasConversion<string>().HasMaxLength(16);
                 entity.Property(x => x.Status).HasConversion<string>().HasMaxLength(32);
                 entity.HasIndex(x => new { x.BatchId, x.Position }).IsUnique();
+            });
+
+            modelBuilder.Entity<RevokedChannel>(entity =>
+            {
+                entity.Property(x => x.Login).HasMaxLength(25);
+                entity.Property(x => x.DisplayName).HasMaxLength(100);
+                entity.Property(x => x.TwitchUserId).HasMaxLength(32);
+                entity.HasIndex(x => x.TeamId);
+                entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasMany(x => x.HiddenVods).WithOne().HasForeignKey(x => x.RevokedChannelId).OnDelete(DeleteBehavior.Cascade);
+                // No query filter: the other filters read it, and only staff code and those filters use it
+            });
+
+            modelBuilder.Entity<HiddenVod>(entity =>
+            {
+                entity.HasIndex(x => new { x.TeamId, x.VodId });
             });
 
             modelBuilder.Entity<StaffAccount>(entity =>

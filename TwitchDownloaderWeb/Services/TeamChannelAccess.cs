@@ -97,6 +97,10 @@ namespace TwitchDownloaderWeb.Services
                 : VodAccess.NotAssigned;
         }
 
+        /// <summary>The VOD's channel (login, Twitch user ID), or null when Twitch has no such VOD. Throws <see cref="HttpRequestException"/> when Twitch is unreachable.</summary>
+        public async Task<(string? Login, string? UserId)?> GetVodChannelAsync(long vodId) =>
+            await GetOwnerAsync(vodId) is { } owner ? (owner.Login, owner.UserId) : null;
+
         private async Task<VodOwner?> GetOwnerAsync(long vodId)
         {
             var key = ("vod-owner", vodId);
