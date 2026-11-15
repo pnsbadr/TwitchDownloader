@@ -97,6 +97,22 @@ namespace TwitchDownloaderWeb.Services.Playback
             return HlsPlaylists.RewriteMedia(text, baseUrl, segment => segmentUrl(segment, baseUrl));
         }
 
+        /// <summary>The variant's media playlist as Twitch serves it (segment paths relative to the variant's folder), or null if gone.</summary>
+        public async Task<string?> GetRawMediaPlaylistAsync(long vodId, int variantIndex, CancellationToken cancellationToken)
+        {
+            if (await GetVariantAsync(vodId, variantIndex, cancellationToken) is not { } variant)
+                return null;
+
+            using var response = await httpClientFactory.CreateClient(HttpClientName).GetAsync(variant.PlaylistUrl, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                cache.Remove(CacheKey(vodId));
+                return null;
+            }
+
+            return await response.Content.ReadAsStringAsync(cancellationToken);
+        }
+
         /// <summary>Fetches one segment of a variant from Twitch for the player (the caller disposes the response).</summary>
         public async Task<HttpResponseMessage?> GetSegmentAsync(long vodId, int variantIndex, string segmentName, CancellationToken cancellationToken)
         {

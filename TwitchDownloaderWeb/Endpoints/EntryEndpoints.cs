@@ -97,6 +97,7 @@ namespace TwitchDownloaderWeb.Endpoints
             FollowsMarkers = entry.FollowsMarkers,
             RowId = entry.RowId,
             CopiedFromEntryId = entry.CopiedFromEntryId,
+            FrameUrl = CardThumbnailService.EntryUrl(entry),
             Cuts = entry.Kind == EntryKind.Vod
                 ? CutOuts.Normalize(CutOuts.Read(entry.Cuts), entry.StartTime.TotalSeconds, entry.EndTime?.TotalSeconds ?? entry.VodLengthSeconds)
                 : [],
@@ -104,6 +105,10 @@ namespace TwitchDownloaderWeb.Endpoints
 
         /// <summary>Cut-out parts (VOD seconds, inside the trim); the file skips them and <see cref="ClipLengthSeconds"/> is what's left.</summary>
         public IReadOnlyList<CutRange> Cuts { get; init; } = [];
+
+        /// <summary>A frame from the middle of the clip for its card (see <see cref="CardThumbnailService"/>); null for Twitch clips,
+        /// which keep Twitch's thumbnail in <see cref="ThumbnailUrl"/> (the VOD's for VOD clips: the page shows it while the frame loads).</summary>
+        public string? FrameUrl { get; init; }
 
         /// <summary>The clip this one was copied from (see <see cref="CopyEndpoints"/>).</summary>
         public int? CopiedFromEntryId { get; init; }
@@ -148,6 +153,7 @@ namespace TwitchDownloaderWeb.Endpoints
             entries.MapDelete("/{id:int}", DeleteEntry).RequireTeam(TeamPermission.DeleteOwnEntries | TeamPermission.DeleteAnyEntries);
             entries.MapPost("/{id:int}/generate", GenerateEntry).RequireTeam(TeamPermission.GenerateFiles);
             entries.MapGet("/{id:int}/file", DownloadEntryFile).RequireTeam(TeamPermission.ViewLibrary);
+            entries.MapGet("/{id:int}/thumbnail", GetThumbnail).RequireTeam(TeamPermission.ViewLibrary);
 
             return app;
         }
@@ -635,6 +641,27 @@ namespace TwitchDownloaderWeb.Endpoints
         }
 
         /// <param name="preview">True when the page plays the file (e.g. the vertical editor); not audited as a download.</param>
+        /// <summary>
+        /// The card's frame (<see cref="EntryDto.FrameUrl"/>). The URL carries the frame's time, so it can be cached; a re-trim gives a new URL.
+        /// 404 when it can't be made (the page then shows the VOD's thumbnail).
+        /// </summary>
+        private static async Task<IResult> GetThumbnail(int id, LibraryDbContext db, CardThumbnailService thumbnails, HttpContext context,
+            CancellationToken cancellationToken)
+        {
+            if (await db.Entries.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, cancellationToken) is not { } entry)
+                return Results.NotFound();
+
+            return ThumbnailResult(await thumbnails.GetForEntryAsync(entry, cancellationToken), context);
+        }
+
+        internal static IResult ThumbnailResult(string? path, HttpContext context)
+        {
+            if (path is null)
+                return Results.NotFound();
+            context.Response.Headers.CacheControl = "private, max-age=604800";
+            return Results.File(path, "image/jpeg");
+        }
+
         private static async Task<IResult> DownloadEntryFile(int id, bool? preview, HttpRequest request, LibraryDbContext db, LibraryStorage storage,
             ILoggerFactory loggerFactory, CancellationToken cancellationToken)
         {
