@@ -303,7 +303,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/channels` | The team's assigned channels (members can't add or remove them; see Team channels) |
 | `GET /api/channels/{login}/vods?type=archive\|highlight\|upload\|all&cursor=&limit=` | One of the team's channels' VODs (else 403 `channel-not-assigned`), newest first, via Core's `GetGqlVideos`. `nextCursor` = last edge's cursor; `unmuteWindowOpen` = ended < 24 h ago. 502 if Twitch is unreachable |
 | `GET /api/vods/{id}/rescue` / `POST /api/vods/{id}/rescue` | Audio rescue status (404 if none) / start one now (202; a Failed one is retried; one paused by `AudioRescue:Enabled` being off is resumed; others returned as is) |
-| `GET /api/entries/{id}/shortform` / `POST /api/entries/{id}/shortform` | Vertical (9:16) renders: `{ status: None\|Rendering\|Failed, progress, error, layout, renders: [{ id, createdAtUtc, expiresAtUtc, sizeBytes, layout, fileUrl, thumbnailUrl }] }` (newest first) / start a render (202) with `{ mode: single\|split, top: {x,y,width,height}, bottom?, splitRatio?, trimStart?, trimEnd? }` (fractions of the source video). 409 if the entry has no file |
+| `GET /api/entries/{id}/shortform` / `POST /api/entries/{id}/shortform` | Vertical (9:16) renders: `{ status: None\|Rendering\|Failed, progress, error, layout, renders: [{ id, createdAtUtc, expiresAtUtc, sizeBytes, layout, fileUrl, thumbnailUrl }] }` (newest first) / start a render (202) with `{ mode: single\|split, top: {x,y,width,height}, bottom?, splitRatio?, trimStart?, trimEnd?, parts? }` (fractions of the source video; `parts: [{ start, end, mode, top, bottom?, splitRatio? }]` in file seconds, in order, no overlap, each ≥ 0.5 s, at most 40: rendered one by one and joined, the plain fields are then set from them). 409 if the entry has no file |
 | `GET /api/entries/{id}/shortform/{renderId}/file[?inline=true]` / `.../thumbnail` / `DELETE .../{renderId}` | A render's mp4 (`<title> (vertical).mp4`, audited `file.served`; `inline` = the page's preview player, not audited), its jpg thumbnail, delete it. 404 if gone/expired |
 | `GET /api/vods/{id}/play.m3u8[?segments=proxy]` / `.../play/{n}.m3u8` / `.../play/{n}/{segment}` | HLS for the page's player (see Watching VODs), plus `.../play/{n}/clean/{key}.ts` (muted segment with saved audio swapped in). 403 sub-only, 404 gone, 502 Twitch unreachable. Playlists `no-store` |
 | `POST /api/auth/login` / `logout` / `GET /api/auth/me` / `POST /api/auth/team` `{ teamId }` | Team user session; `me` = `{ id, username, teams: [{ id, name, isOwner }], currentTeamId, permissions, timeZone, support, combineSegmentDownloads }` |
@@ -470,7 +470,12 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   presets made for the video's shape, plus your own saved in `localStorage` `clipco.vertical.presets`; team-wide presets would need the
   backend), **safe zones** overlay (TikTok / Shorts / Reels, approximate; `clipco.vertical.safeZone`), **snapping** of boxes to the video's
   edges, middle and each other (shares `clipLibrary.snap`; Alt drags freely, dashed guides), a selected box moves with the arrow keys,
-  **undo/redo** of box/layout/split/trim changes (50 steps, page only), keys in keybinds.js scopes `vertical` / `vertical-box`. The Player 2
+  **undo/redo** of box/layout/split/trim/part changes (50 steps, page only), keys in keybinds.js scopes `vertical` / `vertical-box`.
+  **Parts** (vertical part 2, badrfly 2026-11-15): S splits the file at the playhead into parts, each with its own layout (`vx.parts`, a
+  partition of the whole file; the part under the playhead is live in `vx.mode/ratio/boxes`, `stash()` / `loadPart()`); presets, One/Two boxes
+  and box edits change that part only ("Use this layout on every part" copies it). Delete leaves a part out (hatched on the trim bar, skipped
+  in the preview, the render closes the gap); J joins it with the part before (which keeps its layout). The trim range still cuts the ends.
+  `currentLayout()` sends kept parts inside the trim with same-looking neighbors joined: one → a plain layout as before, more → `parts`. The Player 2
   timeline stays below and follows the preview (`fileToVod` / `vodToFile` in `ui/editor.js` map file seconds over the clip's kept parts);
   trimming or cutting the clip there reloads the file (`verticalEntryChanged`), and a clip without a file says why (long clips get "Make
   the file", `POST /generate`). While it's open only the timeline's tool and zoom keys still work.
@@ -517,6 +522,11 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   deletes older/expired ones, leftovers, and folders of deleted entries. One render at a time; job state is in memory
   (an interrupted render is just gone). Deleting the entry deletes its folder. The editor reopens with the newest render's layout.
   Audited `shortform.rendered` / `shortform.failed`. No chat overlay yet.
+- **Parts** (`ShortformLayout.Parts`, `ShortformPart`, badrfly 2026-11-15): a layout per part of the file. `Validate` checks the parts
+  instead of the plain fields; the endpoint then calls `Normalize()` (plain fields = first part's layout, `TrimStart` = first start,
+  `TrimEnd` = last end), so the stored layout works for anything that reads one layout. `ShortformService` renders each part like a trimmed
+  render into `{renderId}.p{n}.mp4` (AAC audio, same 1080x1920 libx264) and joins them with `SegmentJoiner` (stream copy); part files and
+  `join.txt` are deleted after. Progress is split by part length. Audit details say "n parts". Test: `ShortformPartsTests` (needs ffmpeg).
 - **Who made a render** (badrfly, 2026-11-15, frontend rework): the `.json` keeps `createdByUserId` (null for older renders); renders in
   `GET /shortform` carry `createdByUserId`/`createdBy`. Exporting a clip as vertical uses the member's **own newest** render, or with
   `TeamPermission.DownloadTeamVerticals` ("Download team vertical entries", bit 18) any of the team's renders of that clip they pick; neither

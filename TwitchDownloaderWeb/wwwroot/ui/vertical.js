@@ -5,6 +5,12 @@
 // the clip's cut-out parts, so trim times are seconds into the file. Boxes are fractions (0..1) of the video's width and
 // height, and each keeps the shape of the portrait slot it fills, so nothing is stretched. The server renders the same
 // layout with ffmpeg (POST /api/entries/{id}/shortform).
+//
+// Parts: the split tool (S) cuts the file at the playhead into parts, each with its own layout (face cam, split, gameplay).
+// The boxes on screen are always the layout of the part under the playhead. A part can be left out (Delete): it's skipped in
+// the preview and the render closes the gap (ripple). vx.parts is a partition of the whole file (part i runs from its start to
+// the next one's, the last to the end of the file); the trim range still cuts the start and end. Rendered parts are the kept
+// ones inside the trim, neighbors with the same layout joined; one part is sent as a plain layout, more as `parts`.
 
 import { el, api, can, me, loadSetting, saveSetting, toast, formatDate, iconButton, withTooltip } from "./core.js";
 import { askText, confirmAction } from "./dialogs.js";
@@ -15,6 +21,7 @@ const MIN_RATIO = 0.2;
 const MAX_RATIO = 0.8;
 const MIN_BOX = 0.05;
 const MIN_TRIM = 1;          // seconds, the server's minimum
+const MIN_PART = 0.5;        // seconds, the server's minimum part
 const SNAP_PX = 8;
 const HISTORY_LIMIT = 50;
 const VOLUME_KEY = "clipLibrary.previewVolume"; // shared with the old page's editor
@@ -42,9 +49,12 @@ const vx = {
   ratio: 0.4,
   boxes: { single: null, top: null, bottom: null },
   trim: { start: 0, end: 0 },
+  parts: [],          // [{ start, removed, mode, ratio, boxes }]; the one at vx.part is live in vx.mode/ratio/boxes
+  part: 0,
   videoAspect: 16 / 9,
   ready: false,
   savedLayout: undefined, // the newest render's layout, applied once the video's size is known
+  laidOut: false,     // savedLayout applied (the first file's metadata); later files keep the boxes
   frame: 0,
   pollTimer: null,
   entryTimer: null,
@@ -52,6 +62,7 @@ const vx = {
   renders: [],
   selected: null,     // "single" | "top" | "bottom"
   guides: [],
+  dragging: false,    // a box is being dragged: the boxes don't switch parts meanwhile
   history: [],
   future: [],
   snap: true,
@@ -103,10 +114,10 @@ function defaultBoxes() {
 const fromServer = (box) => (box ? { x: box.x, y: box.y, w: box.width, h: box.height } : null);
 const toServer = (box) => ({ x: box.x, y: box.y, width: box.w, height: box.h });
 
-function applyLayout(layout, { trim = true } = {}) {
+// Sets the live (current part's) boxes from one layout
+function applyOne(layout) {
   vx.boxes = defaultBoxes();
   vx.mode = "split";
-  if (trim) setTrim(layout?.trimStart ?? 0, layout?.trimEnd ?? Infinity);
   if (!layout) return;
   if (layout.mode === "single") {
     vx.mode = "single";
@@ -119,24 +130,209 @@ function applyLayout(layout, { trim = true } = {}) {
   }
 }
 
-function currentLayout() {
-  const layout = vx.mode === "single"
-    ? { mode: "single", top: toServer(vx.boxes.single) }
-    : { mode: "split", top: toServer(vx.boxes.top), bottom: toServer(vx.boxes.bottom), splitRatio: vx.ratio };
-  // Null = from the start / to the end, so an untrimmed render covers the whole file
+const liveState = () => ({ mode: vx.mode, ratio: vx.ratio, boxes: structuredClone(vx.boxes) });
+
+// Starts over from a layout (a render's, or null for the defaults): its parts, and with trim its start and end
+function applyLayout(layout, { trim = true } = {}) {
+  const list = layout?.parts?.length ? layout.parts : null;
+  if (!list) {
+    applyOne(layout);
+    vx.parts = [{ start: 0, removed: false, ...liveState() }];
+    vx.part = 0;
+    if (trim) setTrim(layout?.trimStart ?? 0, layout?.trimEnd ?? Infinity);
+    return;
+  }
+  // The render's parts, with the gaps between them as left-out parts (they keep the layout before them)
+  const parts = [];
+  list.forEach((part, i) => {
+    const previousEnd = i ? list[i - 1].end : 0;
+    if (i > 0 && part.start > previousEnd + 0.01) parts.push({ ...structuredClone(parts.at(-1)), start: previousEnd, removed: true });
+    applyOne(part);
+    parts.push({ start: i ? part.start : 0, removed: false, ...liveState() });
+  });
+  vx.parts = parts;
+  if (trim) setTrim(list[0].start, list.at(-1).end);
+  loadPart(partAt(vx.dom?.video.currentTime || 0));
+}
+
+// ---------- parts ----------
+
+function partEnd(i) {
+  return i + 1 < vx.parts.length ? vx.parts[i + 1].start : (duration_() || Infinity);
+}
+
+function partAt(t) {
+  let i = 0;
+  while (i + 1 < vx.parts.length && vx.parts[i + 1].start <= t + 1e-6) i++;
+  return i;
+}
+
+// The live boxes back into their part
+function stash() {
+  const part = vx.parts[vx.part];
+  if (part) Object.assign(part, liveState());
+}
+
+function loadPart(i) {
+  vx.part = clamp(i, 0, vx.parts.length - 1);
+  const part = vx.parts[vx.part];
+  if (!part) return;
+  vx.mode = part.mode;
+  vx.ratio = part.ratio;
+  vx.boxes = structuredClone(part.boxes);
+  if (vx.selected && !visibleBoxes().includes(vx.selected)) vx.selected = null;
+}
+
+// The boxes follow the part under the playhead
+function followPlayhead() {
+  if (!vx.ready || vx.dragging) return;
+  const i = partAt(vx.dom.video.currentTime || 0);
+  if (i === vx.part) return;
+  stash();
+  loadPart(i);
+  renderBoxes();
+  renderParts();
+}
+
+// The part of the file each kept part renders (inside the trim), neighbors with the same layout joined
+function pieces() {
+  stash();
+  const list = [];
+  vx.parts.forEach((part, i) => {
+    if (part.removed) return;
+    const start = Math.max(part.start, vx.trim.start);
+    const end = Math.min(partEnd(i), vx.trim.end);
+    if (end - start < MIN_PART) return;
+    const layout = singleLayout(part);
+    const last = list.at(-1);
+    if (last && Math.abs(last.end - start) < 0.001 && sameLook(last.layout, layout)) last.end = end;
+    else list.push({ start, end, layout });
+  });
+  return list;
+}
+
+const keptSeconds = () => pieces().reduce((sum, piece) => sum + piece.end - piece.start, 0);
+
+// Where playback goes from t: t itself in a kept part, else the next kept part's start; null after the last one
+function playable(t) {
+  for (let i = partAt(t); i < vx.parts.length; i++) {
+    const start = Math.max(vx.parts[i].start, vx.trim.start);
+    const end = Math.min(partEnd(i), vx.trim.end);
+    if (vx.parts[i].removed || end - start <= 0.01) continue;
+    if (t < end) return Math.max(t, start);
+  }
+  return null;
+}
+
+function splitPart() {
+  if (!vx.ready) return;
+  const t = vx.dom.video.currentTime;
+  const i = partAt(t);
+  if (t - vx.parts[i].start < MIN_PART || partEnd(i) - t < MIN_PART) {
+    toast(`Too close to the edge of a part: parts are at least ${MIN_PART} s long.`);
+    return;
+  }
+  change(() => {
+    stash();
+    vx.parts.splice(i + 1, 0, { ...structuredClone(vx.parts[i]), start: t });
+    loadPart(i + 1);
+  });
+}
+
+function joinPart() {
+  if (!vx.ready) return;
+  if (vx.part === 0) {
+    toast("This is the first part: there's no part before it to join.");
+    return;
+  }
+  // The part before keeps its layout; the joined part is kept unless both were left out
+  change(() => {
+    const [joined] = vx.parts.splice(vx.part, 1);
+    vx.parts[vx.part - 1].removed &&= joined.removed;
+    loadPart(vx.part - 1);
+  });
+}
+
+function toggleRemoved() {
+  if (!vx.ready) return;
+  const part = vx.parts[vx.part];
+  if (!part.removed && !vx.parts.some((other, i) => i !== vx.part && !other.removed)) {
+    toast("Split the clip first (S): a part can only be left out when another one is kept.");
+    return;
+  }
+  change(() => {
+    vx.parts[vx.part].removed = !vx.parts[vx.part].removed;
+  });
+}
+
+function layoutToAllParts() {
+  if (vx.parts.length < 2) return;
+  change(() => {
+    const live = liveState();
+    for (const part of vx.parts) Object.assign(part, structuredClone(live));
+  });
+  toast("Every part now has this layout.");
+}
+
+// A new file (the clip was changed): drop parts that start past its end
+function fitParts() {
   const duration = duration_();
-  layout.trimStart = vx.trim.start > 0.05 ? Math.round(vx.trim.start * 1000) / 1000 : null;
-  layout.trimEnd = duration && vx.trim.end < duration - 0.05 ? Math.round(vx.trim.end * 1000) / 1000 : null;
-  return layout;
+  stash();
+  vx.parts = vx.parts.filter((part, i) => i === 0 || part.start <= duration - MIN_PART);
+  if (!vx.parts.some((part) => !part.removed)) vx.parts[0].removed = false;
+  loadPart(partAt(vx.dom.video.currentTime || 0));
+}
+
+// A part's (or the live) boxes as the server's layout, without times
+function singleLayout({ mode, ratio, boxes }) {
+  return mode === "single"
+    ? { mode: "single", top: toServer(boxes.single) }
+    : { mode: "split", top: toServer(boxes.top), bottom: toServer(boxes.bottom), splitRatio: ratio };
+}
+
+const seconds3 = (t) => Math.round(t * 1000) / 1000;
+
+function currentLayout() {
+  const list = pieces();
+  const duration = duration_();
+  if (list.length <= 1) {
+    const piece = list[0] ?? { start: vx.trim.start, end: vx.trim.end, layout: singleLayout(liveState()) };
+    // Null = from the start / to the end, so an untrimmed render covers the whole file
+    return {
+      ...piece.layout,
+      trimStart: piece.start > 0.05 ? seconds3(piece.start) : null,
+      trimEnd: duration && piece.end < duration - 0.05 ? seconds3(piece.end) : null,
+    };
+  }
+  // The server mirrors the first part in the plain fields too
+  return {
+    ...list[0].layout,
+    trimStart: list[0].start > 0 ? seconds3(list[0].start) : null,
+    trimEnd: seconds3(list.at(-1).end),
+    parts: list.map((piece) => ({ start: seconds3(piece.start), end: seconds3(piece.end), ...piece.layout })),
+  };
+}
+
+const close = (x, y) => Math.abs((x ?? 0) - (y ?? 0)) < 0.0005;
+const sameBox = (p, q) => (!p && !q) || (p && q && close(p.x, q.x) && close(p.y, q.y) && close(p.width, q.width) && close(p.height, q.height));
+const sameTime = (x, y) => (x == null && y == null) || (x != null && y != null && Math.abs(x - y) < 0.05);
+
+// Same boxes, ignoring times
+function sameLook(a, b) {
+  if (!a || !b || a.mode !== b.mode) return false;
+  return sameBox(a.top, b.top) && (a.mode === "single" || (sameBox(a.bottom, b.bottom) && close(a.splitRatio, b.splitRatio)));
 }
 
 function sameLayout(a, b) {
-  if (!a || !b || a.mode !== b.mode) return false;
-  const close = (x, y) => Math.abs((x ?? 0) - (y ?? 0)) < 0.0005;
-  const sameBox = (p, q) => (!p && !q) || (p && q && close(p.x, q.x) && close(p.y, q.y) && close(p.width, q.width) && close(p.height, q.height));
-  const sameTime = (x, y) => (x == null && y == null) || (x != null && y != null && Math.abs(x - y) < 0.05);
+  if (!a || !b) return false;
+  const pa = a.parts?.length > 1 ? a.parts : null;
+  const pb = b.parts?.length > 1 ? b.parts : null;
+  if (pa || pb) {
+    return Boolean(pa && pb) && pa.length === pb.length
+      && pa.every((p, i) => sameTime(p.start, pb[i].start) && sameTime(p.end, pb[i].end) && sameLook(p, pb[i]));
+  }
   if (!sameTime(a.trimStart, b.trimStart) || !sameTime(a.trimEnd, b.trimEnd)) return false;
-  return sameBox(a.top, b.top) && (a.mode === "single" || (sameBox(a.bottom, b.bottom) && close(a.splitRatio, b.splitRatio)));
+  return sameLook(a, b);
 }
 
 const visibleBoxes = () => (vx.mode === "single" ? ["single"] : ["top", "bottom"]);
@@ -190,14 +386,15 @@ function ownPresets() {
 }
 
 // layout: a layout, or a function making one (built-ins work out their boxes for the video's shape)
+// A layout goes on the part under the playhead
 function usePreset(layout) {
-  change(() => applyLayout(typeof layout === "function" ? layout() : layout, { trim: false }));
+  change(() => applyOne(typeof layout === "function" ? layout() : layout));
 }
 
 async function savePreset() {
   const name = await askText({ heading: "Save this layout", label: "Name", confirm: "Save", maxLength: 40 });
   if (!name) return;
-  const { trimStart, trimEnd, ...layout } = currentLayout();
+  const layout = singleLayout(liveState());
   const list = ownPresets().filter((p) => p.name !== name);
   list.push({ name, layout });
   saveSetting(PRESETS_KEY, list);
@@ -232,15 +429,18 @@ function renderPresetMenu() {
   );
 }
 
-// ---------- undo / redo (boxes, layout, split, trim) ----------
+// ---------- undo / redo (boxes, layout, split, trim, parts) ----------
 
 function snapshot() {
-  return JSON.stringify({ mode: vx.mode, ratio: vx.ratio, boxes: vx.boxes, trim: vx.trim });
+  stash();
+  return JSON.stringify({ parts: vx.parts, trim: vx.trim });
 }
 
 function restore(state) {
   const data = JSON.parse(state);
-  Object.assign(vx, { mode: data.mode, ratio: data.ratio, boxes: data.boxes, trim: data.trim });
+  vx.parts = data.parts;
+  vx.trim = data.trim;
+  loadPart(partAt(vx.dom.video.currentTime || 0));
   renderAll();
 }
 
@@ -319,7 +519,8 @@ function build() {
   const back = el("sl-button", { class: "vx2-back", size: "small", hidden: true },
     el("sl-icon", { slot: "prefix", library: "ph", name: "arrow-left" }), "Back to the editor");
   back.addEventListener("click", closePlayback);
-  const portrait = el("div", { class: "vx2-portrait" }, canvas, safe, split, renderVideo);
+  const leftOut = el("div", { class: "vx2-left-out", hidden: true }, "Left out of the render");
+  const portrait = el("div", { class: "vx2-portrait" }, canvas, safe, leftOut, split, renderVideo);
   const previewWrap = el("div", { class: "vx2-preview-wrap" }, portrait, back);
 
   // Bottom bar: play, time, trim, start/end at the playhead, volume, back to the player
@@ -329,7 +530,8 @@ function build() {
   const head = el("div", { class: "vx2-trim-head" });
   const startHandle = el("div", { class: "vx2-trim-handle", tabindex: "0", role: "slider", "aria-label": "Render start", "data-edge": "start" });
   const endHandle = el("div", { class: "vx2-trim-handle", tabindex: "0", role: "slider", "aria-label": "Render end", "data-edge": "end" });
-  const trim = el("div", { class: "vx2-trim" }, range, head, startHandle, endHandle);
+  const partsLayer = el("div", { class: "vx2-parts" });
+  const trim = el("div", { class: "vx2-trim" }, range, partsLayer, head, startHandle, endHandle);
   trim.addEventListener("pointerdown", (event) => {
     if (event.target.classList.contains("vx2-trim-handle")) return;
     const rect = trim.getBoundingClientRect();
@@ -381,6 +583,11 @@ function build() {
   const undoButton = iconButton({ icon: "arrow-u-up-left", label: "Undo", keybind: "verticalUndo", onClick: undo });
   const redoButton = iconButton({ icon: "arrow-u-up-right", label: "Redo", keybind: "verticalRedo", onClick: redo });
   const safeName = el("span", { class: "vx2-safe-name faint" });
+  const splitButton = iconButton({ icon: "scissors", label: "Split into parts at the playhead", keybind: "verticalSplitPart", onClick: splitPart });
+  const joinButton = iconButton({ icon: "arrows-in-line-horizontal", label: "Join with the part before", keybind: "verticalJoinPart", onClick: joinPart });
+  const removeButton = iconButton({ icon: "minus-circle", label: "Leave this part out / put it back", keybind: "verticalRemovePart", onClick: toggleRemoved });
+  const allButton = iconButton({ icon: "copy-simple", label: "Use this layout on every part", onClick: layoutToAllParts });
+  const partInfo = el("span", { class: "vx2-part-info faint" });
 
   const render = el("sl-button", { variant: "primary", class: "vx2-render-button" },
     el("sl-icon", { slot: "prefix", library: "ph", name: "export" }), "Render");
@@ -393,6 +600,8 @@ function build() {
   const side = el("aside", { class: "vx2-side" },
     el("div", { class: "vx2-tools", "data-tip-placement": "bottom" }, one, two, presets, el("span", { class: "tools-sep" }), safeButton, snapButton,
       el("span", { class: "tools-sep" }), undoButton, redoButton),
+    el("div", { class: "vx2-tools", "data-tip-placement": "bottom" }, splitButton, joinButton, removeButton, allButton),
+    partInfo,
     safeName,
     el("div", { class: "vx2-render-row" }, withTooltip(render, "Render the vertical video", "verticalRender"), progress),
     message,
@@ -405,6 +614,7 @@ function build() {
     panel, video, stage, stageWrap, boxNodes, guides, note, canvas, safe, renderVideo, split, back, portrait, previewWrap,
     play, time, trim, range, head, startHandle, endHandle, trimText, mute, volume, one, two, presetMenu, safeButton, safeName,
     snapButton, undo: undoButton, redo: redoButton, render, progress, message, list, empty,
+    partsLayer, leftOut, partInfo, joinButton, removeButton, allButton,
   };
 
   for (const type of ["play", "pause", "timeupdate", "durationchange"]) video.addEventListener(type, renderPlayer);
@@ -443,6 +653,7 @@ function layoutPanel() {
 
 function renderAll() {
   renderBoxes();
+  renderParts();
   renderTrim();
   renderSafe();
   renderUndo();
@@ -493,8 +704,32 @@ function renderSafe() {
     el("div", { class: "vx2-safe-box", style: `left:${pct(zone.left)};right:${pct(zone.right)};top:${pct(zone.top)};bottom:${pct(zone.bottom)}` }));
 }
 
+function renderParts() {
+  if (!vx.dom) return;
+  const { partsLayer, leftOut, partInfo, joinButton, removeButton, allButton } = vx.dom;
+  const duration = duration_();
+  const many = vx.parts.length > 1;
+  const pct = (t) => (duration ? (t / duration) * 100 : 0);
+  partsLayer.replaceChildren(...(duration && many ? vx.parts.map((part, i) => el("div", {
+    class: `vx2-part${part.removed ? " removed" : ""}${i === vx.part ? " current" : ""}`,
+    style: `left:${pct(part.start)}%;width:${pct(Math.min(partEnd(i), duration) - part.start)}%`,
+  }, el("span", {}, String(i + 1)))) : []));
+  const part = vx.parts[vx.part];
+  const removed = Boolean(part?.removed);
+  leftOut.hidden = !removed || !vx.dom.renderVideo.hidden;
+  partInfo.textContent = many && part
+    ? `Part ${vx.part + 1} of ${vx.parts.length} · ${tenths(part.start)} – ${tenths(Math.min(partEnd(vx.part), duration))}${removed ? " · left out" : ""}`
+    : "";
+  joinButton.querySelector("sl-icon-button").disabled = vx.part === 0;
+  allButton.querySelector("sl-icon-button").disabled = !many;
+  const remove = removeButton.querySelector("sl-icon-button");
+  remove.name = removed ? "plus-circle" : "minus-circle";
+  remove.toggleAttribute("data-active", removed);
+}
+
 function draw() {
   if (!vx.open) return;
+  followPlayhead();
   const { canvas, video } = vx.dom;
   const ctx = canvas.getContext("2d");
   const cw = canvas.width;
@@ -614,7 +849,9 @@ function startBoxDrag(event) {
     }
     renderBoxes();
   };
+  vx.dragging = true;
   const onUp = () => {
+    vx.dragging = false;
     node.removeEventListener("pointermove", onMove);
     node.removeEventListener("pointerup", onUp);
     node.removeEventListener("pointercancel", onUp);
@@ -719,8 +956,11 @@ function renderTrim() {
   endHandle.style.left = `${pct(vx.trim.end)}%`;
   startHandle.setAttribute("aria-valuetext", tenths(vx.trim.start));
   endHandle.setAttribute("aria-valuetext", tenths(vx.trim.end));
-  trimText.textContent = duration ? `${tenths(vx.trim.end - vx.trim.start)}${isTrimmed() ? " of " + tenths(duration) : ""}` : "";
-  trimText.title = duration ? `Renders ${tenths(vx.trim.start)} – ${tenths(vx.trim.end)} of the clip` : "";
+  const kept = duration ? keptSeconds() : 0;
+  const shorter = isTrimmed() || Math.abs(kept - (vx.trim.end - vx.trim.start)) > 0.05;
+  trimText.textContent = duration ? `${tenths(kept)}${shorter ? " of " + tenths(duration) : ""}` : "";
+  trimText.title = duration ? `Renders ${tenths(vx.trim.start)} – ${tenths(vx.trim.end)} of the clip${shorter && vx.parts.length > 1 ? ", without the parts left out" : ""}` : "";
+  renderParts();
   renderPlayer();
   renderMatches();
 }
@@ -764,10 +1004,13 @@ function trimAtPlayhead(edge) {
 
 // ---------- playback ----------
 
+// Playback stays inside the trim and skips parts left out, looping at the end
 function keepInTrim() {
   const video = vx.dom.video;
   if (!vx.ready || !duration_() || video.paused) return;
-  if (video.currentTime >= vx.trim.end || video.currentTime < vx.trim.start - 0.25) video.currentTime = vx.trim.start;
+  const t = video.currentTime;
+  const next = playable(t < vx.trim.start - 0.25 ? vx.trim.start : t) ?? playable(vx.trim.start) ?? vx.trim.start;
+  if (next - t > 0.05 || next < t - 0.05) video.currentTime = next;
 }
 
 function togglePlay() {
@@ -775,7 +1018,10 @@ function togglePlay() {
   closePlayback();
   const video = vx.dom.video;
   if (video.paused) {
-    if (video.currentTime < vx.trim.start || video.currentTime >= vx.trim.end - 0.05) video.currentTime = vx.trim.start;
+    const t = video.currentTime;
+    const from = t < vx.trim.start || t >= vx.trim.end - 0.05 ? vx.trim.start : t;
+    const next = playable(from) ?? playable(vx.trim.start) ?? vx.trim.start;
+    if (Math.abs(next - t) > 0.01) video.currentTime = next;
     video.play().catch(() => {});
   } else {
     video.pause();
@@ -834,6 +1080,7 @@ function playRender(render) {
   back.hidden = false;
   renderBoxes();
   renderSafe();
+  renderParts();
   renderVideo.play().catch(() => {});
 }
 
@@ -848,6 +1095,7 @@ function closePlayback() {
   back.hidden = true;
   renderBoxes();
   renderSafe();
+  renderParts();
 }
 
 // ---------- renders ----------
@@ -885,6 +1133,7 @@ function renderState(state) {
 }
 
 function renderLength(layout) {
+  if (layout.parts?.length > 1) return `${layout.parts.length} parts, ${tenths(layout.parts.reduce((sum, p) => sum + p.end - p.start, 0))}`;
   if (layout.trimStart == null && layout.trimEnd == null) return "whole clip";
   const start = layout.trimStart ?? 0;
   const end = layout.trimEnd ?? (duration_() || start);
@@ -910,7 +1159,7 @@ function renderRenders(newId) {
       thumb,
       el("div", { class: "vx2-render-body" },
         el("div", { class: "vx2-render-title" }, formatDate(r.createdAtUtc), el("span", { class: "vx2-match", hidden: true }, "Matches")),
-        el("div", { class: "faint" }, `${r.createdBy ?? "Someone"} · ${r.layout.mode === "split" ? "two boxes" : "one box"} · ${renderLength(r.layout)}`),
+        el("div", { class: "faint" }, `${r.createdBy ?? "Someone"} · ${r.layout.parts?.length > 1 ? "" : (r.layout.mode === "split" ? "two boxes · " : "one box · ")}${renderLength(r.layout)}`),
         el("div", { class: "faint" }, `${formatSize(r.sizeBytes)} · until ${formatDate(r.expiresAtUtc)}`)),
       el("div", { class: "vx2-render-actions" },
         withTooltip(download, "Download"),
@@ -1036,16 +1285,22 @@ async function refreshEntry() {
 
 function onMetadata() {
   const video = vx.dom.video;
-  const first = vx.savedLayout !== null;
+  // savedLayout is undefined until the clip's renders are read, then the newest one's layout or null (none yet)
+  const first = !vx.laidOut;
   vx.videoAspect = video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : 16 / 9;
   if (first) {
     // The first time: the newest render's layout (the editor reopens where it was), else the defaults
     applyLayout(vx.savedLayout ?? null);
-    vx.savedLayout = null;
+    vx.laidOut = true;
   } else {
     // A new file (the clip was changed): keep the boxes, fit the trim into the new length
-    for (const name of ["single", "top", "bottom"]) vx.boxes[name] = fit(name, vx.boxes[name]);
+    stash();
+    for (const part of vx.parts) {
+      vx.ratio = part.ratio;
+      for (const name of ["single", "top", "bottom"]) part.boxes[name] = fit(name, part.boxes[name]);
+    }
     setTrim(vx.trim.start, vx.trim.end >= duration_() - 0.05 ? Infinity : vx.trim.end);
+    fitParts();
   }
   vx.ready = true;
   showNote("");
@@ -1101,6 +1356,7 @@ export async function openVertical(entryId) {
   vx.selected = null;
   vx.wasRendering = false;
   vx.savedLayout = undefined;
+  vx.laidOut = false;
   vx.host.classList.add("vertical");
   vx.dom.panel.hidden = false;
   vx.dom.message.textContent = "";
@@ -1195,6 +1451,9 @@ export function handleVerticalKey(event) {
     verticalUndo: undo,
     verticalRedo: redo,
     verticalRender: startRender,
+    verticalSplitPart: splitPart,
+    verticalJoinPart: joinPart,
+    verticalRemovePart: toggleRemoved,
     verticalExit: () => vx.hooks.onExit?.(),
     verticalNudge: () => nudge(...arrows[event.key]),
     verticalNudgeBig: () => nudge(...arrows[event.key]),
