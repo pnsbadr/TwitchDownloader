@@ -68,8 +68,39 @@
           <button type="button" role="tab" class="side-tab display" data-list="clips" aria-selected="false">Clips</button>
         </div>
         <div class="side-tools" data-tip-placement="bottom">
+          <sl-select id="side-channel" size="small" hoist aria-label="Channel" hidden></sl-select>
           <span class="side-count faint" id="side-count"></span>
-          <sl-icon-button name="funnel-simple" label="Search, sort and filter" id="side-filter" disabled></sl-icon-button>
+          <sl-dropdown id="filter-menu" placement="bottom-end" distance="4" hoist stay-open-on-select>
+            <sl-icon-button slot="trigger" library="ph" name="funnel-simple" label="Search, sort and filter" id="side-filter"></sl-icon-button>
+            <div class="filter-panel" id="filter-panel">
+              <sl-input id="filter-search" size="small" clearable placeholder="Search titles" aria-label="Search">
+                <sl-icon library="ph" name="magnifying-glass" slot="prefix"></sl-icon>
+              </sl-input>
+              <div class="filter-row" id="filter-type-row">
+                <sl-radio-group id="filter-type" size="small" label="Show" value="archive">
+                  <sl-radio-button value="archive">Broadcasts</sl-radio-button>
+                  <sl-radio-button value="highlight">Highlights</sl-radio-button>
+                  <sl-radio-button value="upload">Uploads</sl-radio-button>
+                </sl-radio-group>
+              </div>
+              <div class="filter-row" id="filter-sort-row">
+                <sl-select id="filter-sort" size="small" label="Sort by" hoist value="dateAdded">
+                  <sl-option value="dateAdded">Date added</sl-option>
+                  <sl-option value="streamDate">Stream date</sl-option>
+                </sl-select>
+                <sl-tooltip content="Newest first" hoist><sl-icon-button id="filter-order" library="ph" name="sort-descending" label="Newest first"></sl-icon-button></sl-tooltip>
+              </div>
+              <div class="filter-row filter-dates" id="filter-date-row">
+                <sl-switch id="filter-24h" size="small">Last 24 hours</sl-switch>
+                <div class="filter-day">
+                  <sl-input id="filter-day" type="date" size="small" label="Day" clearable></sl-input>
+                  <sl-button id="filter-today" size="small">Today</sl-button>
+                </div>
+                <p class="faint filter-note">Dates use the sort field and your time zone.</p>
+              </div>
+              <sl-button id="filter-clear" size="small" variant="text">Clear filters</sl-button>
+            </div>
+          </sl-dropdown>
         </div>
         <div class="side-list" id="side-list" role="list"></div>
       </aside>
@@ -90,13 +121,13 @@
                 </div>
               </div>
               <div class="player-controls" data-tip-placement="top">
-                <sl-icon-button name="play" label="Play / pause" data-keybind="playPause" disabled></sl-icon-button>
-                <sl-icon-button name="arrow-counter-clockwise" label="Back 10 s" data-keybind="back10" disabled></sl-icon-button>
-                <sl-icon-button name="arrow-clockwise" label="Forward 10 s" data-keybind="fwd10" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="play" label="Play / pause" data-keybind="playPause" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="arrow-counter-clockwise" label="Back 10 s" data-keybind="back10" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="arrow-clockwise" label="Forward 10 s" data-keybind="fwd10" disabled></sl-icon-button>
                 <span class="controls-gap"></span>
-                <sl-icon-button name="speaker-high" label="Volume" disabled></sl-icon-button>
-                <sl-icon-button name="gear-six" label="Quality" disabled></sl-icon-button>
-                <sl-icon-button name="corners-out" label="Fullscreen" data-keybind="fullscreen" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="speaker-high" label="Volume" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="gear-six" label="Quality" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="corners-out" label="Fullscreen" data-keybind="fullscreen" disabled></sl-icon-button>
               </div>
             </section>
 
@@ -113,16 +144,16 @@
                 </div>
               </div>
               <div class="player-controls" data-tip-placement="top">
-                <sl-icon-button name="play" label="Play / pause" disabled></sl-icon-button>
-                <sl-icon-button name="arrow-counter-clockwise" label="Back 10 s" disabled></sl-icon-button>
-                <sl-icon-button name="arrow-clockwise" label="Forward 10 s" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="play" label="Play / pause" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="arrow-counter-clockwise" label="Back 10 s" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="arrow-clockwise" label="Forward 10 s" disabled></sl-icon-button>
                 <span class="controls-gap"></span>
-                <sl-icon-button name="crosshair" label="Show in Player 1" disabled></sl-icon-button>
-                <sl-icon-button name="device-mobile" label="Vertical editor (clips)" disabled hidden id="p2-vertical"></sl-icon-button>
-                <sl-icon-button name="pencil-simple" label="Rename" disabled></sl-icon-button>
-                <sl-icon-button name="trash" label="Delete" disabled></sl-icon-button>
-                <sl-icon-button name="speaker-high" label="Volume" disabled></sl-icon-button>
-                <sl-icon-button name="corners-out" label="Fullscreen" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="crosshair" label="Show in Player 1" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="device-mobile" label="Vertical editor (clips)" disabled hidden id="p2-vertical"></sl-icon-button>
+                <sl-icon-button library="ph" name="pencil-simple" label="Rename" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="trash" label="Delete" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="speaker-high" label="Volume" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="corners-out" label="Fullscreen" disabled></sl-icon-button>
               </div>
             </section>
           </div>
@@ -132,25 +163,25 @@
                  takes the right side and the tools slide to the left -->
             <div class="toolsbar" id="toolsbar" data-tip-placement="top">
               <div class="tools" id="tools">
-                <sl-icon-button name="cursor" label="Pointer" data-keybind="toolPointer" data-tool="pointer" data-active disabled></sl-icon-button>
-                <sl-icon-button name="scissors" label="Cut" data-keybind="toolCut" data-tool="cut" disabled></sl-icon-button>
-                <sl-icon-button name="magnifying-glass-plus" label="Zoom" data-keybind="toolZoom" data-tool="zoom" disabled></sl-icon-button>
-                <sl-icon-button name="hand" label="Hand" data-keybind="toolHand" data-tool="hand" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="cursor" label="Pointer" data-keybind="toolPointer" data-tool="pointer" data-active disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="scissors" label="Cut" data-keybind="toolCut" data-tool="cut" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="magnifying-glass-plus" label="Zoom" data-keybind="toolZoom" data-tool="zoom" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="hand" label="Hand" data-keybind="toolHand" data-tool="hand" disabled></sl-icon-button>
                 <span class="tools-sep"></span>
-                <sl-icon-button name="magnet" label="Snapping" data-keybind="toggleSnap" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="magnet" label="Snapping" data-keybind="toggleSnap" disabled></sl-icon-button>
                 <span class="tools-sep"></span>
-                <sl-icon-button name="map-pin" label="Moment marker" data-keybind="marker" data-create="marker" disabled></sl-icon-button>
-                <sl-icon-button name="brackets-square" label="Segment" data-keybind="segment" data-create="segment" disabled></sl-icon-button>
-                <sl-icon-button name="film-strip" label="Clip" data-keybind="clip" data-create="clip" disabled></sl-icon-button>
-                <sl-icon-button name="link-simple" label="Link segments into a video" data-create="video" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="map-pin" label="Moment marker" data-keybind="marker" data-create="marker" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="brackets-square" label="Segment" data-keybind="segment" data-create="segment" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="film-strip" label="Clip" data-keybind="clip" data-create="clip" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="link-simple" label="Link segments into a video" data-create="video" disabled></sl-icon-button>
                 <span class="tools-sep"></span>
-                <sl-icon-button name="arrow-u-up-left" label="Undo" data-keybind="undo" disabled></sl-icon-button>
-                <sl-icon-button name="arrow-u-up-right" label="Redo" data-keybind="redo" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="arrow-u-up-left" label="Undo" data-keybind="undo" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="arrow-u-up-right" label="Redo" data-keybind="redo" disabled></sl-icon-button>
               </div>
               <div class="item-editor" id="item-editor" hidden>
                 <sl-input id="item-title" size="small" placeholder="Title" maxlength="200" aria-label="Title"></sl-input>
                 <div class="swatches" id="item-colors" role="radiogroup" aria-label="Color"></div>
-                <sl-icon-button name="check" label="Apply" id="item-apply" hidden></sl-icon-button>
+                <sl-icon-button library="ph" name="check" label="Apply" id="item-apply" hidden></sl-icon-button>
               </div>
             </div>
 
@@ -170,15 +201,15 @@
               </div>
               <footer class="tl-foot" data-tip-placement="top">
                 <div class="tl-foot-left">
-                  <sl-icon-button name="rows-plus-bottom" label="Insert video row" disabled></sl-icon-button>
-                  <sl-icon-button name="list-plus" label="Insert clip row" disabled></sl-icon-button>
-                  <sl-icon-button name="trash" label="Delete toggled rows" disabled></sl-icon-button>
+                  <sl-icon-button library="ph" name="rows-plus-bottom" label="Insert video row" disabled></sl-icon-button>
+                  <sl-icon-button library="ph" name="list-plus" label="Insert clip row" disabled></sl-icon-button>
+                  <sl-icon-button library="ph" name="trash" label="Delete toggled rows" disabled></sl-icon-button>
                 </div>
                 <div class="tl-foot-right">
-                  <sl-icon-button name="magnifying-glass-minus" label="Zoom out" data-keybind="zoomOut" disabled></sl-icon-button>
+                  <sl-icon-button library="ph" name="magnifying-glass-minus" label="Zoom out" data-keybind="zoomOut" disabled></sl-icon-button>
                   <sl-range id="tl-zoom" min="0" max="100" value="0" tooltip="none" aria-label="Timeline zoom" disabled></sl-range>
-                  <sl-icon-button name="magnifying-glass-plus" label="Zoom in" data-keybind="zoomIn" disabled></sl-icon-button>
-                  <sl-icon-button name="arrows-out-line-horizontal" label="Fit" data-keybind="fit" disabled></sl-icon-button>
+                  <sl-icon-button library="ph" name="magnifying-glass-plus" label="Zoom in" data-keybind="zoomIn" disabled></sl-icon-button>
+                  <sl-icon-button library="ph" name="arrows-out-line-horizontal" label="Fit" data-keybind="fit" disabled></sl-icon-button>
                 </div>
               </footer>
             </section>
@@ -198,5 +229,8 @@
       </main>
     </div>
   </div>
+
+  <!-- Right-click menu for cards (ui/library.js) -->
+  <sl-menu class="context-menu" id="context-menu" hidden></sl-menu>
 </body>
 </html>

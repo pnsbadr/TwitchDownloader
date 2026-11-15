@@ -399,3 +399,46 @@ button.team-pill:hover { background: var(--bg-4); }
   }
   .narrow-note h1 { font-size: 36px; margin: 0 0 12px; }
 }
+
+/* ---------- left panel: channel picker, filter popover, right-click menu (step 2) ---------- */
+
+.side-tools { gap: 8px; }
+.side-tools .side-count { flex: 1; }
+#side-channel { width: 150px; }
+#side-filter[data-active]::part(base) { color: var(--accent-strong); background: var(--accent-soft); }
+
+.filter-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 300px;
+  padding: 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.45);
+}
+.filter-row { display: flex; align-items: flex-end; gap: 6px; }
+.filter-row sl-select { flex: 1; }
+.filter-dates { flex-direction: column; align-items: stretch; gap: 10px; }
+.filter-dates sl-switch { align-self: flex-start; }
+.filter-day { display: flex; align-items: flex-end; gap: 6px; }
+.filter-day sl-input { flex: 1; }
+.filter-note { margin: 0; font-size: 12px; }
+#filter-clear { align-self: flex-start; }
+
+.context-menu {
+  position: fixed;
+  z-index: 1800;
+  min-width: 190px;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.5);
+}
+.context-menu sl-menu-item.danger::part(base) { color: #ff8585; }
+
+.card-badge.tag { left: 4px; right: auto; background: rgb(0 0 0 / 0.75); }
+.card-status-icon { font-size: 18px; color: var(--text-dim); padding: 6px; }
+.card-meta.error { color: #ff8585; }
+.card-actions { align-items: center; }
+
+.small-dialog::part(panel) { background: var(--bg-2); }
+.small-dialog { --width: 420px; }
