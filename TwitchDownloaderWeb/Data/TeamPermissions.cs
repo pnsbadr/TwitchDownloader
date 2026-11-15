@@ -9,7 +9,7 @@ namespace TwitchDownloaderWeb.Data
     {
         None = 0,
 
-        /// <summary>See the library, saved channels and VOD browser; watch VODs; play and download files and vertical renders.</summary>
+        /// <summary>See the library and the VODs of the team's channels; watch VODs; play and download files and vertical renders.</summary>
         ViewLibrary = 1L << 0,
         AddEntries = 1L << 1,
         /// <summary>Rename and re-cut entries they added.</summary>
@@ -21,7 +21,7 @@ namespace TwitchDownloaderWeb.Data
         GenerateFiles = 1L << 6,
         MakeVertical = 1L << 7,
         DeleteRenders = 1L << 8,
-        /// <summary>Save and remove the team's channels.</summary>
+        /// <summary>No longer used: the app Owner assigns a team's channels (2026-11-15). Kept so the bit isn't reused.</summary>
         ManageChannels = 1L << 9,
         /// <summary>The Save audio now button.</summary>
         SaveAudio = 1L << 10,
@@ -52,8 +52,8 @@ namespace TwitchDownloaderWeb.Data
         /// <summary>Names and help text for the role editor, in display order. Keys are the enum names.</summary>
         public static readonly IReadOnlyList<(TeamPermission Permission, TeamPermissionInfo Info)> Catalog =
         [
-            (TeamPermission.ViewLibrary, new("ViewLibrary", "Library", "View the library", "See entries, saved channels and VODs; watch, play and download files.")),
-            (TeamPermission.AddEntries, new("AddEntries", "Library", "Add VODs and clips", "Add new entries to the library.")),
+            (TeamPermission.ViewLibrary, new("ViewLibrary", "Library", "View the library", "See entries and the VODs of the team's channels; watch, play and download files.")),
+            (TeamPermission.AddEntries, new("AddEntries", "Library", "Make clips and segments", "Make clips, segments and markers on the team's VODs.")),
             (TeamPermission.EditOwnEntries, new("EditOwnEntries", "Library", "Edit own entries", "Rename and re-cut entries they added.")),
             (TeamPermission.EditAnyEntries, new("EditAnyEntries", "Library", "Edit anyone's entries", "Rename and re-cut any entry.")),
             (TeamPermission.DeleteOwnEntries, new("DeleteOwnEntries", "Library", "Delete own entries", "Delete entries they added.")),
@@ -61,7 +61,6 @@ namespace TwitchDownloaderWeb.Data
             (TeamPermission.GenerateFiles, new("GenerateFiles", "Library", "Make files", "Generate files for reference-only entries and retry failed downloads.")),
             (TeamPermission.MakeVertical, new("MakeVertical", "Vertical", "Make vertical videos", "Render 9:16 versions of entries.")),
             (TeamPermission.DeleteRenders, new("DeleteRenders", "Vertical", "Delete vertical renders", "Delete anyone's vertical renders.")),
-            (TeamPermission.ManageChannels, new("ManageChannels", "Channels and audio", "Manage saved channels", "Save and remove the team's channels.")),
             (TeamPermission.SaveAudio, new("SaveAudio", "Channels and audio", "Save audio now", "Use the Save audio now button on VODs.")),
             (TeamPermission.ManageAudioSettings, new("ManageAudioSettings", "Channels and audio", "Automatic audio saving", "Turn the team's automatic audio saving on or off.")),
             (TeamPermission.InviteMembers, new("InviteMembers", "Team", "Invite people", "Make and revoke invite links.")),

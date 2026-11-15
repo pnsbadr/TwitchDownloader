@@ -31,7 +31,10 @@ namespace TwitchDownloaderWeb.Data
         /// <summary>The app-wide audit log.</summary>
         ViewAuditLog = 1L << 6,
 
-        All = (1L << 7) - 1,
+        /// <summary>Assign and remove the Twitch channels each team works on (also on team links).</summary>
+        ManageTeamChannels = 1L << 7,
+
+        All = (1L << 8) - 1,
     }
 
     public sealed record StaffPermissionInfo(string Key, string Label, string Description);
@@ -47,6 +50,8 @@ namespace TwitchDownloaderWeb.Data
             (StaffPermission.ViewAuditLog, new("ViewAuditLog", "See the app log", "The audit log of every team and of staff.")),
             (StaffPermission.ManageTeamLinks, new("ManageTeamLinks", "Make team links",
                 "Team registration and team owner links. An owner link hands a team to whoever opens it.")),
+            (StaffPermission.ManageTeamChannels, new("ManageTeamChannels", "Assign team channels",
+                "Choose which Twitch channels each team can work on, on the Teams tab and on team links.")),
             (StaffPermission.ResetUserPasswords, new("ResetUserPasswords", "Reset user passwords",
                 "Password reset links for any user. Whoever opens one gets into that account.")),
             (StaffPermission.DisableUsers, new("DisableUsers", "Disable users", "Disable and re-enable user accounts (signs them out).")),

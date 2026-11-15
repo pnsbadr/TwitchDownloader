@@ -1,3 +1,4 @@
+using TwitchDownloaderWeb.Services;
 using TwitchDownloaderWeb.Data;
 using TwitchDownloaderWeb.Services.Accounts;
 using TwitchDownloaderWeb.Services.Playback;
@@ -13,10 +14,10 @@ namespace TwitchDownloaderWeb.Endpoints
     {
         public static IEndpointRouteBuilder MapPlaybackEndpoints(this IEndpointRouteBuilder app)
         {
-            app.MapGet("/api/vods/{vodId:long}/play.m3u8", GetMaster).RequireTeam(TeamPermission.ViewLibrary);
-            app.MapGet("/api/vods/{vodId:long}/play/{variant:int}.m3u8", GetMedia).RequireTeam(TeamPermission.ViewLibrary);
-            app.MapGet("/api/vods/{vodId:long}/play/{variant:int}/{segment}", GetSegment).RequireTeam(TeamPermission.ViewLibrary);
-            app.MapGet("/api/vods/{vodId:long}/play/{variant:int}/clean/{key}.ts", GetCleanSegment).RequireTeam(TeamPermission.ViewLibrary);
+            app.MapGet("/api/vods/{vodId:long}/play.m3u8", GetMaster).RequireTeam(TeamPermission.ViewLibrary).RequireChannelVod();
+            app.MapGet("/api/vods/{vodId:long}/play/{variant:int}.m3u8", GetMedia).RequireTeam(TeamPermission.ViewLibrary).RequireChannelVod();
+            app.MapGet("/api/vods/{vodId:long}/play/{variant:int}/{segment}", GetSegment).RequireTeam(TeamPermission.ViewLibrary).RequireChannelVod();
+            app.MapGet("/api/vods/{vodId:long}/play/{variant:int}/clean/{key}.ts", GetCleanSegment).RequireTeam(TeamPermission.ViewLibrary).RequireChannelVod();
             return app;
         }
 

@@ -40,6 +40,7 @@ namespace TwitchDownloaderWeb.Tests
                 builder.ConfigureTestServices(services =>
                 {
                     services.AddSingleton<IVodDetailsSource>(_vods);
+                    services.AddSingleton<IChannelLookup>(new FakeChannels());
                     services.AddSingleton<IVodQualitySource>(new FakeQualities());
                     services.AddSingleton<IVodCutter>(_cutter);
                 });
@@ -55,15 +56,40 @@ namespace TwitchDownloaderWeb.Tests
             });
             var entry = new LibraryEntry { TeamId = 1, Title = "Old clip", VodId = 1, Status = EntryStatus.ReferenceOnly, AddedAtUtc = DateTime.UtcNow };
             db.Entries.Add(entry);
+            db.Channels.Add(new SavedChannel { TeamId = 1, Login = "arky", DisplayName = "Arky", TwitchUserId = FakeChannels.IdOf("arky"), AddedAtUtc = DateTime.UtcNow });
             db.SaveChanges();
             _mainTeamEntryId = entry.Id;
         }
 
+        /// <summary>
+        /// VODs not added to <see cref="Vods"/> are a finished 10-hour stream on arky's channel, the channel every test team gets;
+        /// VOD IDs from 900000 up don't exist. VODs without a channel login are arky's too.
+        /// </summary>
         private sealed class FakeVodDetails : IVodDetailsSource
         {
+            public const long MissingFrom = 900000;
+
             public readonly System.Collections.Concurrent.ConcurrentDictionary<long, VodDetails> Vods = new();
 
-            public Task<VodDetails?> GetVodAsync(long vodId) => Task.FromResult(Vods.GetValueOrDefault(vodId));
+            public Task<VodDetails?> GetVodAsync(long vodId)
+            {
+                if (vodId >= MissingFrom)
+                    return Task.FromResult<VodDetails?>(null);
+                var vod = Vods.GetValueOrDefault(vodId) ?? new VodDetails(vodId, $"Stream {vodId}", "Arky", 36000, new DateTime(2026, 11, 1, 18, 0, 0, DateTimeKind.Utc), null);
+                return Task.FromResult<VodDetails?>(vod.ChannelLogin is null
+                    ? vod with { ChannelLogin = "arky", ChannelUserId = FakeChannels.IdOf("arky") }
+                    : vod with { ChannelUserId = vod.ChannelUserId ?? FakeChannels.IdOf(vod.ChannelLogin) });
+            }
+        }
+
+        /// <summary>Every valid login exists on Twitch except "nobody"; IDs are made up from the login.</summary>
+        private sealed class FakeChannels : IChannelLookup
+        {
+            public static string IdOf(string login) => "id-" + login.ToLowerInvariant();
+
+            public Task<ChannelDetails?> GetChannelAsync(string login) => Task.FromResult(login == "nobody"
+                ? null
+                : new ChannelDetails(login, char.ToUpperInvariant(login[0]) + login[1..], IdOf(login)));
         }
 
         public void Dispose()
@@ -125,7 +151,7 @@ namespace TwitchDownloaderWeb.Tests
         public async Task RegistrationLinkMakesANewTeamWithItsOwnLibrary()
         {
             var staff = await StaffClientAsync();
-            var token = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration" });
+            var token = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channels = new[] { "arky" } });
 
             var owner = NewClient();
             var accepted = await AcceptAsync(owner, token, "creator1", newAccount: true, teamName: "Creator team");
@@ -149,7 +175,7 @@ namespace TwitchDownloaderWeb.Tests
         public async Task OwnerLinkClaimsTheMainTeamAndAnAccountCanBeInSeveralTeams()
         {
             var staff = await StaffClientAsync();
-            var registration = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration" });
+            var registration = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channels = new[] { "arky" } });
             var user = NewClient();
             Assert.Equal(HttpStatusCode.OK, (await AcceptAsync(user, registration, "badrfly", newAccount: true, teamName: "Side team")).StatusCode);
 
@@ -178,7 +204,7 @@ namespace TwitchDownloaderWeb.Tests
         public async Task InvitedMembersStartWithNoAccess()
         {
             var staff = await StaffClientAsync();
-            var registration = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration" });
+            var registration = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channels = new[] { "arky" } });
             var owner = NewClient();
             await AcceptAsync(owner, registration, "teamowner", newAccount: true, teamName: "Team A");
 
@@ -207,7 +233,7 @@ namespace TwitchDownloaderWeb.Tests
         public async Task RevokedLinksDontWork()
         {
             var staff = await StaffClientAsync();
-            var create = await staff.PostAsJsonAsync("/api/admin/links", new { kind = "registration" }, TestContext.Current.CancellationToken);
+            var create = await staff.PostAsJsonAsync("/api/admin/links", new { kind = "registration", channels = new[] { "arky" } }, TestContext.Current.CancellationToken);
             var json = await create.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
             var url = json.GetProperty("url").GetString()!;
             Assert.Equal(HttpStatusCode.NoContent, (await staff.DeleteAsync($"/api/admin/links/{json.GetProperty("id").GetInt32()}", TestContext.Current.CancellationToken)).StatusCode);
@@ -223,7 +249,7 @@ namespace TwitchDownloaderWeb.Tests
             // A staff session is not a team session
             Assert.Equal(HttpStatusCode.Unauthorized, (await staff.GetAsync("/api/entries", TestContext.Current.CancellationToken)).StatusCode);
 
-            var registration = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration" });
+            var registration = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channels = new[] { "arky" } });
             var user = NewClient();
             await AcceptAsync(user, registration, "editor", newAccount: true, teamName: "Team B");
             // ...and a team session is not a staff session
@@ -237,7 +263,7 @@ namespace TwitchDownloaderWeb.Tests
         public async Task WrongPasswordsLockTheAccount()
         {
             var staff = await StaffClientAsync();
-            var registration = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration" });
+            var registration = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channels = new[] { "arky" } });
             await AcceptAsync(NewClient(), registration, "target", newAccount: true, teamName: "Team C");
 
             var client = NewClient();
@@ -263,7 +289,7 @@ namespace TwitchDownloaderWeb.Tests
         private async Task<(HttpClient Owner, HttpClient Member, int TeamId, int MemberId)> TeamWithMemberAsync(string prefix)
         {
             var staff = await StaffClientAsync();
-            var registration = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration" });
+            var registration = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channels = new[] { "arky" } });
             var owner = NewClient();
             await AcceptAsync(owner, registration, prefix + "owner", newAccount: true, teamName: prefix + " team");
             var invite = await MakeLinkAsync(owner, "/api/team/invites", new { });
@@ -318,7 +344,6 @@ namespace TwitchDownloaderWeb.Tests
 
             // Not in the role at all
             Assert.Equal(HttpStatusCode.Forbidden, (await member.PostAsJsonAsync("/api/entries", new { vodId = "123" }, ct)).StatusCode);
-            Assert.Equal(HttpStatusCode.Forbidden, (await member.PostAsJsonAsync("/api/channels", new { login = "arky" }, ct)).StatusCode);
             Assert.Equal(HttpStatusCode.Forbidden, (await member.GetAsync("/api/team", ct)).StatusCode);
             Assert.Equal(HttpStatusCode.Forbidden, (await member.PostAsJsonAsync($"/api/entries/{theirs}/generate", new { }, ct)).StatusCode);
             // Owner-only dev endpoint, even with every permission

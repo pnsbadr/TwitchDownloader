@@ -33,7 +33,7 @@ namespace TwitchDownloaderWeb.Endpoints
     {
         public static IEndpointRouteBuilder MapSegmentExportEndpoints(this IEndpointRouteBuilder app)
         {
-            app.MapPost("/api/vods/{vodId:long}/segment-downloads", Create).RequireTeam(TeamPermission.GenerateFiles);
+            app.MapPost("/api/vods/{vodId:long}/segment-downloads", Create).RequireTeam(TeamPermission.GenerateFiles).RequireChannelVod();
             var group = app.MapGroup("/api/segment-downloads");
             group.MapGet("/", List).RequireTeam(TeamPermission.ViewLibrary);
             group.MapGet("/{id:int}", Get).RequireTeam(TeamPermission.ViewLibrary);

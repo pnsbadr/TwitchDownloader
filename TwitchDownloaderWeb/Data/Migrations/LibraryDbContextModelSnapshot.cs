@@ -23,6 +23,10 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("ChannelsJson")
+                        .HasMaxLength(8000)
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("TEXT");
 
