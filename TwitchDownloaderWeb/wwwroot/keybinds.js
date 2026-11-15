@@ -41,7 +41,7 @@ const KEYBINDS = [
   { id: "toolHand", scope: "player", keys: ["H"], description: "Hand tool: drag the zoomed timeline to scroll it (only moves the view)" },
   { id: "undo", scope: "player", keys: ["Ctrl+Z"], description: "Undo your last marker/segment change (up to 10)" },
   { id: "redo", scope: "player", keys: ["Ctrl+Shift+Z", "Ctrl+Y"], description: "Redo" },
-  { id: "deleteSelected", scope: "player", keys: ["Delete", "Backspace"], description: "Delete the selected segment" },
+  { id: "deleteSelected", scope: "player", keys: ["Delete", "Backspace"], description: "Delete the selected segment (new editor: also a selected marker or clip)" },
   { id: "escape", scope: "player", keys: ["Escape"], description: "Cancel marking a segment or clip, or unselect the selected segment or card" },
 
   { id: "wheelZoom", scope: "player-mouse", keys: ["Wheel"], description: "Zoom the timeline around the mouse" },

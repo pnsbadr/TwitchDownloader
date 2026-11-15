@@ -5,7 +5,7 @@
 import { registerIconLibrary } from "https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.20.1/cdn/utilities/icon-library.js";
 import { $, el, api, me, can, loadMe, sessionHandlers, TEAM_PAGE_PERMISSIONS, wireIconButtons, loadSetting, saveSetting, toast, formatDuration } from "./core.js";
 import { dropTarget } from "./drag.js";
-import { setUpLibrary, showList } from "./library.js";
+import { setUpLibrary, showList, refreshClips } from "./library.js";
 import { MARKER_COLORS } from "./colors.js";
 import { MediaPlayer, formatClock } from "./media.js";
 import { Timeline } from "./timeline.js";
@@ -259,6 +259,11 @@ function setUpPlayer1() {
   timeline = new Timeline({
     onSeek: (seconds) => player1.seek(seconds),
     getPosition: () => (player1.ready ? player1.position() : null),
+    openItemEditor,
+    closeItemEditor: () => closeItemEditor(false),
+    onChange: renderTools,
+    onClipsChanged: refreshClips,
+    onCreated: () => {}, // Player 2 opens new segments and clips by itself (step 4)
   });
   $("p1-play").addEventListener("click", () => player1.togglePlay());
   $("p1-back").addEventListener("click", () => player1.skip(-10));
@@ -293,8 +298,69 @@ function setUpPlayer1() {
   renderPlayer1();
 }
 
+// ---------- tools bar ----------
+
+function renderTools() {
+  if (DEMO || !timeline) return;
+  const on = Boolean(timeline.vodId) && timeline.tab !== "p2";
+  const canAdd = on && timeline.canAdd();
+  for (const button of document.querySelectorAll("#tools [data-tool]")) {
+    button.disabled = !on;
+    button.toggleAttribute("data-active", on && timeline.tool === button.dataset.tool);
+  }
+  const snap = document.querySelector('#tools [data-keybind="toggleSnap"]');
+  snap.disabled = !on;
+  snap.toggleAttribute("data-active", on && timeline.snap);
+  for (const button of document.querySelectorAll("#tools [data-create]")) {
+    const kind = button.dataset.create;
+    button.disabled = !canAdd || kind === "video"; // linking videos comes in step 6
+    button.toggleAttribute("data-active", canAdd && timeline.marking?.kind === kind);
+  }
+  document.querySelector('#tools [data-keybind="undo"]').disabled = !timeline.canUndo();
+  document.querySelector('#tools [data-keybind="redo"]').disabled = !timeline.canRedo();
+}
+
+function setUpTools() {
+  if (DEMO) return;
+  for (const button of document.querySelectorAll("#tools [data-tool]")) {
+    button.addEventListener("click", () => timeline.setTool(button.dataset.tool));
+  }
+  document.querySelector('#tools [data-keybind="toggleSnap"]').addEventListener("click", () => timeline.toggleSnap());
+  document.querySelector('#tools [data-keybind="undo"]').addEventListener("click", () => timeline.undo());
+  document.querySelector('#tools [data-keybind="redo"]').addEventListener("click", () => timeline.redo());
+  const create = {
+    marker: () => timeline.addMoment(),
+    segment: () => timeline.mark("segment"),
+    clip: () => timeline.mark("clip"),
+  };
+  for (const button of document.querySelectorAll("#tools [data-create]")) {
+    button.addEventListener("click", () => create[button.dataset.create]?.());
+  }
+  renderTools();
+}
+
+// Play / pause: with a segment or clip selected and the player paused, play just it
+function playPause() {
+  if (!player1.ready) return;
+  const range = timeline.selectedRange();
+  if (range && !player1.playing()) {
+    const now = player1.position();
+    const from = now != null && now >= range.start && now < range.end - 0.05 ? now : range.start;
+    player1.playRange(from, range.end);
+    return;
+  }
+  player1.togglePlay();
+}
+
+function playLastSeconds() {
+  const range = timeline.selectedRange();
+  if (!player1.ready || !range) return;
+  player1.playRange(Math.max(range.start, range.end - 3), range.end);
+}
+
 function setUpPlayers() {
   setUpPlayer1();
+  setUpTools();
   for (const player of ["p1", "p2"]) {
     dropTarget($(`${player}-screen`), {
       accepts: (item) => PLAYER_KINDS[player].includes(item.kind),
@@ -324,8 +390,10 @@ function setUpKeys() {
     const id = keybindFor("player", event);
     if (!id) return;
     const ready = player1.ready;
+    const on = Boolean(timeline.vodId) && timeline.tab !== "p2";
     const run = {
-      playPause: () => ready && player1.togglePlay(),
+      playPause: () => playPause(),
+      playEnd: () => playLastSeconds(),
       back10: () => ready && player1.skip(-10),
       fwd10: () => ready && player1.skip(10),
       back5: () => ready && player1.skip(-5),
@@ -336,6 +404,20 @@ function setUpKeys() {
       zoomIn: () => timeline.vodId && timeline.zoomBy(0.5),
       zoomOut: () => timeline.vodId && timeline.zoomBy(2),
       fit: () => timeline.vodId && timeline.fit(),
+      toolPointer: () => on && timeline.setTool("pointer"),
+      toolCut: () => on && timeline.setTool("cut"),
+      toolZoom: () => on && timeline.setTool("zoom"),
+      toolHand: () => on && timeline.setTool("hand"),
+      toggleSnap: () => on && timeline.toggleSnap(),
+      marker: () => on && timeline.addMoment(),
+      segment: () => on && timeline.mark("segment"),
+      clip: () => on && timeline.mark("clip"),
+      setStart: () => on && timeline.setEdgeAtPlayhead("start"),
+      setEnd: () => on && timeline.setEdgeAtPlayhead("end"),
+      undo: () => on && timeline.undo(),
+      redo: () => on && timeline.redo(),
+      deleteSelected: () => on && timeline.deleteSelected(),
+      escape: () => on && timeline.escape(),
     }[id];
     if (!run) return;
     // Space on a focused button would also click it
@@ -356,14 +438,16 @@ export function openItemEditor(options) {
   closeItemEditor(false);
   itemEditor = { ...options, color: options.color ?? "yellow" };
   $("item-title").value = options.title ?? "";
+  $("item-title").placeholder = options.placeholder ?? "Title";
   $("item-apply").hidden = !options.needsApply;
+  $("item-colors").hidden = options.colors === false;
   renderSwatches();
   $("toolsbar").classList.add("editing");
   $("item-editor").hidden = false;
   setTimeout(() => $("item-title").focus(), 0);
 }
 
-function closeItemEditor(apply) {
+export function closeItemEditor(apply) {
   if (!itemEditor) return;
   const editor = itemEditor;
   itemEditor = null;
@@ -383,7 +467,11 @@ function renderSwatches() {
       "aria-label": name,
       style: `background:${hex}`,
     });
-    swatch.addEventListener("click", () => { itemEditor.color = name; renderSwatches(); });
+    swatch.addEventListener("click", () => {
+      itemEditor.color = name;
+      itemEditor.onColor?.(name);
+      renderSwatches();
+    });
     return el("sl-tooltip", { content: name, hoist: true }, swatch);
   }));
 }
@@ -468,7 +556,10 @@ async function start() {
   if (DEMO) wireDemoTools();
   listTabs = tabs(document.querySelector(".side-tabs"), "data-list", showList, "clipco.editor.list");
   setUpPlayers();
-  timelineTabs = tabs(document.querySelector(".tl-tabs"), "data-tl", (tab) => timeline.showTab(tab), null);
+  timelineTabs = tabs(document.querySelector(".tl-tabs"), "data-tl", (tab) => {
+    timeline.showTab(tab);
+    renderTools();
+  }, null);
   setUpKeys();
   setUpItemEditor();
 }
