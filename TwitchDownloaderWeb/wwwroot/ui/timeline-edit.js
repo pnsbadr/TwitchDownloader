@@ -7,7 +7,10 @@
 // (the last own row clicked, else their first of that kind). Others' items: view only; with "edit anyone's entries" each
 // change asks "Edit original" or "Make a copy" (Enter = copy); anyone who may add things can copy them from the right-click
 // menu. Undo/redo: the last 10 marker changes and clip re-trims per VOD, in this tab only, shared by both timelines.
-// Dragging an item's body (not its edges) drags it to other places, e.g. onto Player 2 (ui/drag.js).
+// Dragging an item's body (not its edges) drags it to other places, e.g. onto Player 2 (ui/drag.js), or onto one of the
+// member's own rows on Player 1 (step 5): own items move there, others' are copied there, Alt copies own ones too, and
+// Alt + a clip on a video row makes a segment at exactly its times. Segments and markers only go on video rows, clips on
+// clip rows.
 //
 // Every time a new kind of item gets drawn here, add its times to snapPoints().
 
@@ -15,7 +18,7 @@ import { api, me, can, toast } from "./core.js";
 import { confirmAction, chooseEditTarget } from "./dialogs.js";
 import { openMenu } from "./menu.js";
 import { formatClock } from "./media.js";
-import { startDrag } from "./drag.js";
+import { startDrag, dropTarget } from "./drag.js";
 
 const EDGE_PX = 7;
 const SNAP_PX = 8;
@@ -92,6 +95,32 @@ export const editing = {
     this.maxStoredClipSeconds = 180;
     this.histories = HISTORIES;
     this.pendingTrim = null;  // { id, start, end, before, timer }: a stored clip's new range, saved after a pause
+    this.dropRowId = null;    // the row a dragged item would land on (drawn highlighted)
+    if (this.mode === "vod") {
+      dropTarget(this.track, {
+        accepts: (item, info) => Boolean(this.dropPlan(item, info)),
+        onOver: (item, info) => {
+          const plan = this.dropPlan(item, info);
+          const rowId = plan?.row.id ?? null;
+          if (rowId !== this.dropRowId) {
+            this.dropRowId = rowId;
+            this.dirty = true;
+          }
+          this.showDropTip(plan, info);
+        },
+        onLeave: () => {
+          this.dropRowId = null;
+          this.dirty = true;
+          this.showDropTip(null);
+        },
+        onDrop: (item, info) => {
+          this.dropRowId = null;
+          this.showDropTip(null);
+          const plan = this.dropPlan(item, info);
+          if (plan) this.runDrop(plan);
+        },
+      });
+    }
     this.lastColor = "yellow";
   },
 
@@ -438,6 +467,102 @@ export const editing = {
   seekTo(seconds) {
     this.follow = true;
     this.onSeek(seconds);
+  },
+
+  // ---------- dropping items on rows (step 5) ----------
+
+  // What dropping item at the pointer would do: { action, row, source } or null (not allowed there)
+  dropPlan(item, info) {
+    if (this.mode !== "vod" || !this.vodId || !this.active || me?.support || this.track.hidden) return null;
+    const data = item?.data;
+    if (!data || String(data.vodId) !== this.vodId) return null;
+    const rect = this.track.getBoundingClientRect();
+    const row = this.rows[Math.floor((info.y - rect.top) / this.rowHeight)];
+    if (!row || row.userId !== me?.id || this.stateOf(row).locked || this.stateOf(row).hidden) return null;
+    const videoRow = !isClipKind(row.kind);
+    if (item.kind === "segment" || item.kind === "moment") {
+      if (!videoRow) return null;
+      const marker = this.markers.find((m) => m.id === data.id);
+      if (!marker) return null;
+      const own = marker.createdByUserId === me?.id;
+      if (own && !info.altKey) {
+        if (marker.rowId === row.id || !marker.canEdit) return null;
+        return { action: "moveMarker", row, source: marker };
+      }
+      return this.canAdd() ? { action: "copyMarker", row, source: marker } : null;
+    }
+    if (item.kind === "clip") {
+      if (data.kind !== "Vod") return null;
+      if (videoRow) return info.altKey && this.canAdd() ? { action: "clipToSegment", row, source: data } : null;
+      const own = data.addedByUserId != null && String(data.addedByUserId) === String(me?.id);
+      if (own && !info.altKey) {
+        if (data.rowId === row.id || !(can("EditOwnEntries") || can("EditAnyEntries"))) return null;
+        return { action: "moveClip", row, source: data };
+      }
+      return this.canAdd() ? { action: "copyClip", row, source: data } : null;
+    }
+    return null;
+  },
+
+  // Next to the pointer while dragging over a row: what letting go does
+  showDropTip(plan, info) {
+    if (!plan) {
+      this.tip.hidden = true;
+      return;
+    }
+    const text = {
+      moveMarker: "Move to this row",
+      copyMarker: "Copy to this row",
+      clipToSegment: "Make a segment at the clip's times",
+      moveClip: "Move to this row",
+      copyClip: "Copy to this row",
+    }[plan.action];
+    this.tip.textContent = text;
+    this.tip.hidden = false;
+    this.tip.style.left = `${info.x + 14}px`;
+    this.tip.style.top = `${info.y + 40}px`;
+  },
+
+  async runDrop({ action, row, source }) {
+    try {
+      switch (action) {
+        case "moveMarker": {
+          const before = { ...markerBody(source), rowId: source.rowId ?? undefined };
+          const after = { ...markerBody(source), rowId: row.id };
+          await this.putMarker(source.id, after);
+          this.remember({ type: "change", ref: { id: source.id }, before, after });
+          this.selected = { type: "marker", id: source.id };
+          break;
+        }
+        case "copyMarker":
+        case "clipToSegment": {
+          const url = action === "copyMarker" ? `/api/markers/${source.id}/copy` : `/api/entries/${source.id}/copy-as-segment`;
+          const copy = await api("POST", url, { rowId: row.id });
+          this.remember({ type: "add", ref: { id: copy.id }, data: { ...markerBody(copy), rowId: row.id } });
+          this.selected = { type: "marker", id: copy.id };
+          toast(action === "copyMarker" ? "Copied to your row." : "Made a segment from the clip.");
+          break;
+        }
+        case "moveClip":
+          await api("PUT", `/api/entries/${source.id}/row`, { rowId: row.id });
+          this.remember({ type: "clipRow", ref: { id: source.id }, before: source.rowId, after: row.id });
+          this.selected = { type: "clip", id: source.id };
+          break;
+        case "copyClip": {
+          const copy = await api("POST", `/api/entries/${source.id}/copy`, { rowId: row.id });
+          this.selected = { type: "clip", id: copy.id };
+          this.hooks.onClipsChanged?.();
+          toast("Copied to your row.");
+          break;
+        }
+      }
+    } catch (error) {
+      toast(error.message, "error");
+    }
+    this.activeRowId = row.id;
+    this.changed();
+    await this.load();
+    this.edited();
   },
 
   // ---------- snapping ----------
@@ -972,6 +1097,10 @@ export const editing = {
         break;
       case "trim":
         await this.trimClip(step.ref.id, reverse ? step.before : step.after);
+        break;
+      case "clipRow":
+        await api("PUT", `/api/entries/${step.ref.id}/row`, { rowId: reverse ? step.before : step.after });
+        this.edited();
         break;
     }
   },

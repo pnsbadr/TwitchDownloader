@@ -517,6 +517,12 @@ step next to the old page; `index.html` stays the old library until the new edit
   fullscreen. Only one player plays at a time. The tools bar and keys work on the player whose timeline tab is open; clicking a player
   with something loaded opens its tab. In Player 2 the create tools and the cut tool are off (step 7 makes it the cut-out tool). Undo/redo
   history is shared by both timelines. Videos load in Player 2 from step 6; old Twitch clips without a VOD can't.
+- **Dropping on rows** (step 5, `dropPlan` / `runDrop` in `ui/timeline-edit.js`): the Player 1 track is a drop target for timeline items and
+  clip cards of the same VOD, on the member's **own, unlocked** rows only. Own segment/moment on another own video row → moved (`PUT /api/markers/{id}`
+  with `rowId`); own clip on another own clip row → moved (`PUT /api/entries/{id}/row`); someone else's (or own with Alt) → copied there
+  (`POST .../copy`); **Alt + a VOD clip on a video row** → a segment at its times (`copy-as-segment`). Segments and moments never go on clip
+  rows, clips go on video rows only with Alt, Twitch clips aren't copied. The row is highlighted and a tip says what letting go does;
+  moves and copies are undo steps (`clipRow` for clip moves).
 - `editor.html?demo` fills sample cards (nothing is sent to the server) to try the shell.
 
 ### Twitch clips (`ClipInfoService`, `ClipFileService`)

@@ -13,6 +13,7 @@ import { askText, confirmAction } from "./dialogs.js";
 import { MARKER_COLORS } from "./colors.js";
 import { formatClock } from "./media.js";
 import { editing } from "./timeline-edit.js";
+import { isDragging } from "./drag.js";
 
 const ROW_HEIGHT = 36;
 const MIN_SPAN = 10;
@@ -587,6 +588,8 @@ export class Timeline {
       tip.style.top = `${this.edgeTip.clientY + 16}px`;
       return;
     }
+    // While something is dragged the tip says what dropping it does (showDropTip)
+    if (isDragging()) return;
     const hover = this.hover;
     if (!hover || !this.vodId || this.press) {
       tip.hidden = true;
@@ -704,6 +707,20 @@ export class Timeline {
       ctx.globalAlpha = 1;
     });
     this.drawPending(ctx, width, now);
+    // The row a dragged item would land on
+    const dropIndex = this.dropRowId == null ? -1 : this.rows.findIndex((row) => row.id === this.dropRowId);
+    if (dropIndex >= 0) {
+      const accent = css.getPropertyValue("--accent").trim() || "#8b7cf6";
+      ctx.save();
+      ctx.fillStyle = accent;
+      ctx.globalAlpha = 0.14;
+      ctx.fillRect(0, dropIndex * ROW_HEIGHT, width, ROW_HEIGHT);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(1, dropIndex * ROW_HEIGHT + 1, width - 2, ROW_HEIGHT - 2);
+      ctx.restore();
+    }
     const focus = this.focusItem();
     if (focus) {
       // Player 2: outside the item is darker (playback stays inside it)
