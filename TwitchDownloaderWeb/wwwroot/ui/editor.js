@@ -9,6 +9,7 @@ import { setUpLibrary, showList, refreshClips, refreshVideos } from "./library.j
 import { MARKER_COLORS } from "./colors.js";
 import { MediaPlayer, formatClock } from "./media.js";
 import { Timeline } from "./timeline.js";
+import { skipCut } from "./cuts.js";
 
 // Phosphor icons, bold weight, as <sl-icon library="ph" name="…">
 registerIconLibrary("ph", {
@@ -321,12 +322,48 @@ function p2Seek(seconds) {
   player2.seek(part.vodStart + Math.min(Math.max(seconds - part.offset, 0), part.vodEnd - part.vodStart));
 }
 
-// While a video plays, the end of one part jumps to the start of the next; the last one stops
+// Cut-out parts are skipped while playing: jumps over the one at position (or stops when it runs to end). true = jumped.
+function jumpCuts(player, cuts, position, end) {
+  const to = skipCut(cuts, position, end);
+  if (to == null) return false;
+  if (to === "end") {
+    player.stopAt = null;
+    player.pause();
+  } else {
+    player.seek(to);
+  }
+  return true;
+}
+
+// Player 1 skips the cut-out parts of the selected segment or clip while it plays just that
+function p1Tick(position) {
+  if (!player1.playing() || player1.stopAt == null) return;
+  const item = timeline.selectedItem();
+  if (item?.cuts?.length) jumpCuts(player1, item.cuts, position, player1.stopAt);
+}
+
+// Player 2 skips its item's cut-out parts. While a video plays, the end of one part jumps to the start of the next (also
+// when the rest of a part is cut out); the last one stops.
 function p2Tick(position) {
-  if (p2Item?.type !== "video" || !player2.playing() || player2.stopAt != null) return;
+  if (!player2.playing()) return;
+  if (p2Item?.type !== "video") {
+    const item = timeline2.focusItem();
+    if (item?.cuts?.length && item.end != null && position >= item.start - 0.05 && position < item.end) jumpCuts(player2, item.cuts, position, item.end);
+    return;
+  }
   const parts = videoParts();
   const part = parts[p2Part];
-  if (!part || position < part.vodEnd - 0.04) return;
+  if (!part) return;
+  if (player2.stopAt != null) {
+    jumpCuts(player2, part.cuts, position, player2.stopAt);
+    return;
+  }
+  const to = skipCut(part.cuts, position, part.vodEnd);
+  if (typeof to === "number") {
+    player2.seek(to);
+    return;
+  }
+  if (to !== "end" && position < part.vodEnd - 0.04) return;
   if (p2Part + 1 < parts.length) {
     p2Part++;
     player2.seek(parts[p2Part].vodStart);
@@ -454,7 +491,10 @@ function wirePlayerButtons(n, which) {
 
 function setUpPlayer1() {
   player1 = new MediaPlayer($("p1-media"), {
-    onTick: (position) => renderClock(position),
+    onTick: (position) => {
+      renderClock(position);
+      p1Tick(position);
+    },
     onState: () => {
       playAlone(player1, player2);
       renderPlayer1();
@@ -589,7 +629,7 @@ function renderTools() {
   const on = Boolean(t.vodId);
   const canCreate = on && t.canCreate();
   for (const button of document.querySelectorAll("#tools [data-tool]")) {
-    button.disabled = !on || (button.dataset.tool === "cut" && t.mode === "item"); // Player 2's cut tool: step 7
+    button.disabled = !on;
     button.toggleAttribute("data-active", on && t.tool === button.dataset.tool);
   }
   const snap = document.querySelector('#tools [data-keybind="toggleSnap"]');
