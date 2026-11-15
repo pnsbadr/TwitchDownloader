@@ -41,6 +41,7 @@ builder.Services.AddHttpClient(VodPlaybackService.HttpClientName, client => clie
 builder.Services.AddSingleton<IVodPlaybackSource, TwitchVodPlaybackSource>();
 builder.Services.AddSingleton<VodPlaybackService>();
 builder.Services.AddSingleton<PlaybackAudioSwap>();
+builder.Services.AddSingleton<CardThumbnailService>();
 builder.Services.AddSingleton<VodDownloadRunner>();
 builder.Services.AddSingleton<ExactTrimService>();
 builder.Services.AddSingleton<IVodCutter, VodCutService>();

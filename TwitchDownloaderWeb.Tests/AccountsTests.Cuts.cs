@@ -91,12 +91,15 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal(170, entryDto.GetProperty("clipLengthSeconds").GetDouble());
             Assert.Equal([[150.0, 180.0]], CutsOf(entryDto));
             Assert.False(entryDto.GetProperty("isReferenceOnly").GetBoolean());
+            // The card's frame is the middle of what's left (85 s in: 35 s after the cut)
+            Assert.Equal($"/api/entries/{entryId}/thumbnail?t=2150", entryDto.GetProperty("frameUrl").GetString());
 
             // Without the cut it's 200 s: reference-only again
             var uncut = await (await owner.PutAsJsonAsync($"/api/entries/{entryId}/trim", new { startTime = "100", endTime = "300", cuts = Array.Empty<object>() }, ct))
                 .Content.ReadFromJsonAsync<JsonElement>(ct);
             Assert.Equal("ReferenceOnly", uncut.GetProperty("status").GetString());
             Assert.Equal(200, uncut.GetProperty("clipLengthSeconds").GetDouble());
+            Assert.Equal($"/api/entries/{entryId}/thumbnail?t=2000", uncut.GetProperty("frameUrl").GetString());
 
             // The timeline shows the clip's cuts and what's left
             Assert.Equal(HttpStatusCode.OK, (await owner.PutAsJsonAsync($"/api/entries/{entryId}/trim",
@@ -122,6 +125,7 @@ namespace TwitchDownloaderWeb.Tests
             var videoId = video.GetProperty("id").GetInt32();
             // a: 10 s - 2 s cut in the video; b: 10 s - 2 s of its own
             Assert.Equal(16, video.GetProperty("lengthSeconds").GetDouble());
+            Assert.Equal($"/api/videos/{videoId}/thumbnail?t=200", video.GetProperty("frameUrl").GetString()); // 8 s in: the end of a's kept parts
             var segs = video.GetProperty("segments").EnumerateArray().ToList();
             Assert.Equal([[15.0, 17.0]], segs[0].GetProperty("videoCuts").EnumerateArray()
                 .Select(x => new[] { x.GetProperty("start").GetDouble(), x.GetProperty("end").GetDouble() }).ToArray());

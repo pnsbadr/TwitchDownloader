@@ -22,7 +22,11 @@ namespace TwitchDownloaderWeb.Endpoints
     /// <param name="LengthSeconds">All its segments together, without their cut-out parts.</param>
     public sealed record VideoDto(int Id, long VodId, int RowId, int UserId, string? CreatedBy, string Title, string? ChannelName, DateTime StreamDateUtc,
         string? ThumbnailUrl, double LengthSeconds, IReadOnlyList<VideoSegmentDto> Segments, int? CopiedFromVideoId, DateTime CreatedAtUtc,
-        DateTime UpdatedAtUtc, bool CanEdit, bool CanDelete);
+        DateTime UpdatedAtUtc, bool CanEdit, bool CanDelete)
+    {
+        /// <summary>A frame from the middle of the video for its card (see <see cref="CardThumbnailService"/>); null without segments.</summary>
+        public string? FrameUrl { get; init; }
+    }
 
     /// <summary>
     /// Videos: linked segments (see <see cref="Video"/>). The link tool on the page makes them from segments on one of the member's video rows.
@@ -33,6 +37,7 @@ namespace TwitchDownloaderWeb.Endpoints
         {
             app.MapGet("/api/videos", List).RequireTeam(TeamPermission.ViewLibrary);
             app.MapGet("/api/videos/{id:int}", Get).RequireTeam(TeamPermission.ViewLibrary);
+            app.MapGet("/api/videos/{id:int}/thumbnail", GetThumbnail).RequireTeam(TeamPermission.ViewLibrary);
             app.MapPost("/api/vods/{vodId:long}/videos", Create).RequireTeam(TeamPermission.AddEntries).RequireChannelVod();
             // Own videos need AddEntries, anyone's EditAnyEntries / DeleteAnyEntries (checked in the handler)
             app.MapPut("/api/videos/{id:int}", Update).RequireTeam(TeamPermission.AddEntries | TeamPermission.EditAnyEntries);
@@ -66,9 +71,16 @@ namespace TwitchDownloaderWeb.Endpoints
                     .ToList();
                 return new VideoDto(video.Id, video.VodId, video.RowId, video.UserId, names.GetValueOrDefault(video.UserId), video.Title, video.ChannelName,
                     video.StreamDateUtc, video.ThumbnailUrl, Math.Round(segments.Sum(x => x.KeptSeconds), 2), segments,
-                    video.CopiedFromVideoId, video.CreatedAtUtc, video.UpdatedAtUtc, CanEdit(team, video), CanDelete(team, video));
+                    video.CopiedFromVideoId, video.CreatedAtUtc, video.UpdatedAtUtc, CanEdit(team, video), CanDelete(team, video))
+                {
+                    FrameUrl = CardThumbnailService.VideoUrl(video.Id, PlayedParts(video)),
+                };
             }).ToList();
         }
+
+        /// <summary>Everything the video plays, in order (markers loaded).</summary>
+        internal static IEnumerable<(double Start, double End)> PlayedParts(Video video) =>
+            video.Segments.Where(x => x.Marker is { EndSeconds: not null }).OrderBy(x => x.Position).SelectMany(KeptParts);
 
         /// <summary>What a video plays of one of its segments: the segment's range without its own cut-out parts or the video's.</summary>
         internal static IReadOnlyList<(double Start, double End)> KeptParts(VideoSegment link) =>
@@ -106,6 +118,16 @@ namespace TwitchDownloaderWeb.Endpoints
             }
 
             return null;
+        }
+
+        /// <summary>The card's frame (<see cref="VideoDto.FrameUrl"/>); 404 when it can't be made.</summary>
+        private static async Task<IResult> GetThumbnail(int id, LibraryDbContext db, CardThumbnailService thumbnails, HttpContext context,
+            CancellationToken cancellationToken)
+        {
+            if (await WithSegments(db).AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, cancellationToken) is not { } video)
+                return Results.NotFound();
+
+            return EntryEndpoints.ThumbnailResult(await thumbnails.GetForVideoAsync(video.VodId, PlayedParts(video).ToList(), cancellationToken), context);
         }
 
         /// <param name="vodIds">Only these VODs (comma separated); blank = all of the team's videos, newest first.</param>

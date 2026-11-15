@@ -22,11 +22,13 @@ namespace TwitchDownloaderWeb.Services
         private readonly ShortformService _shortform;
         private readonly SegmentExportQueue _segmentQueue;
         private readonly ExportQueue _exportQueue;
+        private readonly CardThumbnailService _thumbnails;
         private readonly ILogger<LibraryCleanupService> _logger;
 
         public LibraryCleanupService(IServiceScopeFactory scopeFactory, DownloadQueue queue, LibraryStorage storage, ShortformService shortform,
-            SegmentExportQueue segmentQueue, ExportQueue exportQueue, ILogger<LibraryCleanupService> logger)
+            SegmentExportQueue segmentQueue, ExportQueue exportQueue, CardThumbnailService thumbnails, ILogger<LibraryCleanupService> logger)
         {
+            _thumbnails = thumbnails;
             _segmentQueue = segmentQueue;
             _exportQueue = exportQueue;
             _shortform = shortform;
@@ -76,6 +78,7 @@ namespace TwitchDownloaderWeb.Services
 
             var entryIds = (await db.Entries.Select(x => x.Id).ToListAsync(cancellationToken)).ToHashSet();
             _shortform.Cleanup(entryIds);
+            _thumbnails.Cleanup();
         }
 
         private async Task DeleteExpiredGeneratedFilesAsync(LibraryDbContext db, CancellationToken cancellationToken)
