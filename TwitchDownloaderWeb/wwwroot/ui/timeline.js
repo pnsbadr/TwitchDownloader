@@ -1,0 +1,626 @@
+// The timeline under the players (frontend rework step 3). Player 1 tab: every member's rows on the loaded VOD, from
+// GET /api/vods/{id}/timeline. A row belongs to one member and one VOD: video rows hold segments (hatched boxes) and
+// moment markers (lines), clip rows hold clips (solid bars). Everyone can see and play every row; only the owner edits
+// it (editing comes in step 3b). Hide / solo / lock are page-only, per row.
+//
+// Drawing: one canvas for the ruler (with Twitch's muted parts in red and saved clean audio in green under the ticks)
+// and one for the rows; row headers are DOM next to it so they can hold buttons. Times are seconds into the VOD.
+
+import { $, el, api, me, can, toast, formatDuration, withTooltip } from "./core.js";
+import { askText, confirmAction } from "./dialogs.js";
+import { MARKER_COLORS } from "./colors.js";
+
+const ROW_HEIGHT = 36;
+const MIN_SPAN = 10;
+const REFRESH_MS = 5000;
+const CLIP_COLOR = "#8b7cf6";
+const MUTED_COLOR = "rgb(240 82 82 / 0.5)";
+const CLEAN_COLOR = "rgb(60 207 122 / 0.5)";
+const TICK_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400];
+
+export class Timeline {
+  constructor({ onSeek, getPosition }) {
+    this.onSeek = onSeek;
+    this.getPosition = getPosition;
+    this.ruler = el("canvas", { class: "tl-ruler-canvas" });
+    this.track = el("canvas", { class: "tl-track-canvas" });
+    this.tip = el("div", { class: "tl-tip", hidden: true });
+    $("tl-ruler").replaceChildren(this.ruler);
+    $("tl-track").replaceChildren(this.track, $("tl-empty"));
+    document.body.append(this.tip);
+
+    this.vodId = null;
+    this.vodTitle = "";
+    this.knownLength = 0;   // from the VOD card; the player's playlist can say more while live
+    this.mediaLength = 0;
+    this.rows = [];
+    this.markers = [];
+    this.clips = [];
+    this.videos = [];
+    this.audio = [];        // [{ start, end, clean }]
+    this.rowState = new Map(); // rowId -> { hidden, solo, locked, toggled }
+    this.view = { start: 0, end: 60 };
+    this.follow = true;     // the view follows the playhead until the user scrolls it away
+    this.hover = null;
+    this.dirty = true;
+    this.refreshTimer = null;
+    this.loading = false;
+    this.tab = "p1";
+
+    this.bindPointer();
+    this.bindFooter();
+    new ResizeObserver(() => { this.dirty = true; }).observe($("tl-track"));
+    new ResizeObserver(() => { this.dirty = true; }).observe($("tl-ruler"));
+    const frame = () => {
+      this.update();
+      requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+  }
+
+  // ---------- loading ----------
+
+  async open(vod) {
+    this.vodId = String(vod.vodId);
+    this.vodTitle = vod.title;
+    this.knownLength = vod.lengthSeconds || 0;
+    this.mediaLength = 0;
+    this.rows = [];
+    this.markers = [];
+    this.clips = [];
+    this.videos = [];
+    this.audio = [];
+    this.rowState.clear();
+    this.follow = true;
+    this.view = { start: 0, end: Math.max(MIN_SPAN, this.length()) };
+    this.renderHeads();
+    this.renderFooter();
+    await this.load();
+    clearInterval(this.refreshTimer);
+    this.refreshTimer = setInterval(() => {
+      if (!document.hidden) this.load();
+    }, REFRESH_MS);
+  }
+
+  close() {
+    clearInterval(this.refreshTimer);
+    this.vodId = null;
+    this.rows = [];
+    this.renderHeads();
+    this.renderFooter();
+    this.dirty = true;
+  }
+
+  async load() {
+    const vodId = this.vodId;
+    if (!vodId || this.loading) return;
+    this.loading = true;
+    try {
+      const timeline = await api("GET", `/api/vods/${encodeURIComponent(vodId)}/timeline`);
+      if (vodId !== this.vodId) return;
+      const rowsChanged = JSON.stringify(timeline.rows) !== JSON.stringify(this.rows);
+      this.rows = timeline.rows ?? [];
+      this.markers = timeline.markers ?? [];
+      this.clips = timeline.clips ?? [];
+      this.videos = timeline.videos ?? [];
+      if (rowsChanged) {
+        this.renderHeads();
+        this.renderFooter();
+      }
+    } catch (error) {
+      if (vodId === this.vodId) console.warn("Couldn't load the timeline:", error);
+    } finally {
+      this.loading = false;
+    }
+    this.dirty = true;
+  }
+
+  // The playing rendition's playlist (hls.js): muted/clean parts and the length so far
+  setDetails(details) {
+    const ranges = [];
+    for (const frag of details?.fragments ?? []) {
+      const url = frag.url || frag.relurl || "";
+      const clean = url.includes("/clean/");
+      const muted = clean || /-muted\.(ts|mp4)(\?|$)/i.test(url);
+      if (!muted) continue;
+      const last = ranges[ranges.length - 1];
+      if (last && last.clean === clean && Math.abs(last.end - frag.start) < 0.05) last.end = frag.start + frag.duration;
+      else ranges.push({ start: frag.start, end: frag.start + frag.duration, clean });
+    }
+    this.audio = ranges;
+    const fragments = details?.fragments ?? [];
+    const last = fragments[fragments.length - 1];
+    const before = this.length();
+    this.mediaLength = last ? last.start + last.duration : 0;
+    // First playlist: show the whole VOD
+    if (before <= MIN_SPAN || this.view.end > before - 0.5 && this.view.start <= 0) this.view.end = Math.max(this.view.end, Math.min(this.length(), this.view.start + this.span()));
+    this.dirty = true;
+  }
+
+  length() {
+    return Math.max(this.knownLength, this.mediaLength, MIN_SPAN);
+  }
+
+  span() {
+    return this.view.end - this.view.start;
+  }
+
+  // ---------- rows: headers and the footer buttons ----------
+
+  stateOf(row) {
+    if (!this.rowState.has(row.id)) this.rowState.set(row.id, { hidden: false, solo: false, locked: false, toggled: false });
+    return this.rowState.get(row.id);
+  }
+
+  canDeleteRow(row) {
+    if (me?.support) return false;
+    return (row.userId === me?.id && can("AddEntries")) || can("DeleteAnyEntries");
+  }
+
+  rowTitle(row) {
+    const name = row.name || (row.kind === "Clip" || row.kind === "clip" ? "Clips" : "Video");
+    const sameKind = this.rows.filter((r) => r.userId === row.userId && r.kind === row.kind);
+    const number = row.name || sameKind.length < 2 ? "" : ` ${sameKind.indexOf(row) + 1}`;
+    return `${name}${number}`;
+  }
+
+  // The timeline tabs: "p1" shows these rows; Player 2's own timeline comes in step 4
+  showTab(tab) {
+    this.tab = tab;
+    this.renderHeads();
+    this.renderFooter();
+  }
+
+  renderHeads() {
+    const heads = $("tl-heads");
+    const p1 = this.tab !== "p2";
+    heads.hidden = !p1;
+    this.ruler.hidden = !p1;
+    this.track.hidden = !p1;
+    $("tl-empty").hidden = p1 && Boolean(this.vodId && this.rows.length);
+    $("tl-empty").textContent = !p1
+      ? "Load a video, clip or segment in Player 2."
+      : this.vodId
+        ? "No rows on this VOD yet."
+        : "Load a VOD in Player 1 to see the team's rows.";
+    heads.replaceChildren(...this.rows.map((row, index) => {
+      const state = this.stateOf(row);
+      const isClip = /clip/i.test(row.kind);
+      const own = row.userId === me?.id;
+      const toggle = (key, label, icon, iconOn) => {
+        const button = el("sl-icon-button", { library: "ph", name: state[key] ? iconOn : icon, label, class: "row-btn" });
+        if (state[key]) button.setAttribute("data-active", "");
+        button.addEventListener("click", () => {
+          state[key] = !state[key];
+          this.renderHeads();
+          this.dirty = true;
+        });
+        return withTooltip(button, label);
+      };
+      const name = el("div", { class: "row-name" },
+        el("sl-icon", { library: "ph", name: isClip ? "film-strip" : "brackets-square", class: "row-kind" }),
+        el("span", { class: "row-title", title: row.canEdit ? "Double-click to rename" : "" }, this.rowTitle(row)),
+        el("span", { class: "row-owner" + (own ? " own" : "") }, own ? "you" : row.username));
+      if (row.canEdit) name.addEventListener("dblclick", () => this.renameRow(row));
+      const check = this.canDeleteRow(row)
+        ? el("sl-checkbox", { size: "small", class: "row-check", checked: state.toggled, "aria-label": "Select row to delete" })
+        : el("span", { class: "row-check-gap" });
+      check.addEventListener?.("sl-change", (event) => {
+        state.toggled = event.target.checked;
+        this.renderFooter();
+      });
+      return el("div", { class: "row-head" + (own ? " own" : "") + (index % 2 ? " odd" : ""), style: `height:${ROW_HEIGHT}px` },
+        check,
+        name,
+        el("div", { class: "row-btns" },
+          toggle("hidden", state.hidden ? "Show row" : "Hide row", "eye", "eye-slash"),
+          toggle("solo", "Solo (only this row)", "headphones", "headphones"),
+          row.canEdit ? toggle("locked", state.locked ? "Unlock row" : "Lock row", "lock-simple-open", "lock-simple") : null));
+    }));
+    this.dirty = true;
+  }
+
+  async renameRow(row) {
+    const name = await askText({ heading: "Rename row", label: "Name", value: row.name ?? "", confirm: "Rename", maxLength: 60 });
+    if (name === null) return;
+    try {
+      await api("PUT", `/api/rows/${row.id}`, { name: name.trim() });
+      await this.load();
+      this.renderHeads();
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  }
+
+  bindFooter() {
+    $("tl-add-video").addEventListener("click", () => this.addRow("video"));
+    $("tl-add-clip").addEventListener("click", () => this.addRow("clip"));
+    $("tl-delete-rows").addEventListener("click", () => this.deleteToggledRows());
+    $("tl-zoom-in").addEventListener("click", () => this.zoomBy(0.5));
+    $("tl-zoom-out").addEventListener("click", () => this.zoomBy(2));
+    $("tl-fit").addEventListener("click", () => this.fit());
+    $("tl-zoom").addEventListener("sl-input", (event) => this.zoomToSlider(Number(event.target.value)));
+  }
+
+  renderFooter() {
+    const p1 = this.tab !== "p2";
+    const canAdd = p1 && Boolean(this.vodId) && can("AddEntries") && !me?.support;
+    $("tl-add-video").disabled = !canAdd;
+    $("tl-add-clip").disabled = !canAdd;
+    $("tl-delete-rows").disabled = !p1 || !this.rows.some((row) => this.stateOf(row).toggled);
+    for (const id of ["tl-zoom-in", "tl-zoom-out", "tl-fit", "tl-zoom"]) $(id).disabled = !p1 || !this.vodId;
+  }
+
+  async addRow(kind) {
+    try {
+      await api("POST", `/api/vods/${encodeURIComponent(this.vodId)}/rows`, { kind });
+      await this.load();
+      this.renderHeads();
+      this.renderFooter();
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  }
+
+  async deleteToggledRows() {
+    const rows = this.rows.filter((row) => this.stateOf(row).toggled);
+    if (!rows.length) return;
+    const items = rows.reduce((n, row) => n + this.markers.filter((m) => m.rowId === row.id).length, 0);
+    const ok = await confirmAction({
+      heading: rows.length === 1 ? "Delete this row?" : `Delete ${rows.length} rows?`,
+      text: items
+        ? `The ${items} segment${items === 1 ? "" : "s"} and marker${items === 1 ? "" : "s"} on ${rows.length === 1 ? "it" : "them"} are deleted too.`
+        : "They're empty.",
+      confirm: "Delete",
+    });
+    if (!ok) return;
+    for (const row of rows) {
+      try {
+        await api("DELETE", `/api/rows/${row.id}`);
+        this.rowState.delete(row.id);
+      } catch (error) {
+        toast(`${this.rowTitle(row)}: ${error.message}`, "error");
+      }
+    }
+    await this.load();
+    this.renderHeads();
+    this.renderFooter();
+  }
+
+  // ---------- zoom and view ----------
+
+  // Slider 0 = whole VOD, 100 = MIN_SPAN; logarithmic in between
+  sliderValue() {
+    const ratio = Math.log(this.length() / this.span()) / Math.log(this.length() / MIN_SPAN);
+    return Math.round(Math.min(Math.max(ratio, 0), 1) * 100);
+  }
+
+  zoomToSlider(value) {
+    const span = this.length() * Math.pow(MIN_SPAN / this.length(), value / 100);
+    const center = this.getPosition() ?? (this.view.start + this.span() / 2);
+    this.setView(center - span / 2, center + span / 2, false);
+  }
+
+  zoomBy(factor, anchor = this.getPosition() ?? (this.view.start + this.span() / 2)) {
+    const span = Math.min(Math.max(this.span() * factor, MIN_SPAN), this.length());
+    const ratio = (anchor - this.view.start) / this.span();
+    this.setView(anchor - ratio * span, anchor - ratio * span + span);
+  }
+
+  fit() {
+    this.follow = true;
+    this.setView(0, this.length());
+  }
+
+  setView(start, end, updateSlider = true) {
+    let span = Math.min(Math.max(end - start, MIN_SPAN), this.length());
+    start = Math.min(Math.max(start, 0), Math.max(0, this.length() - span));
+    this.view = { start, end: start + span };
+    if (updateSlider) $("tl-zoom").value = this.sliderValue();
+    this.dirty = true;
+  }
+
+  // ---------- pointer ----------
+
+  xToTime(x, width) {
+    return this.view.start + (x / width) * this.span();
+  }
+
+  timeToX(seconds, width) {
+    return ((seconds - this.view.start) / this.span()) * width;
+  }
+
+  bindPointer() {
+    for (const canvas of [this.ruler, this.track]) {
+      canvas.addEventListener("pointerdown", (event) => {
+        if (!this.vodId || event.button !== 0) return;
+        const rect = canvas.getBoundingClientRect();
+        const item = canvas === this.track ? this.itemAt(event.clientX - rect.left, event.clientY - rect.top, rect.width) : null;
+        const seconds = item ? item.start : this.xToTime(event.clientX - rect.left, rect.width);
+        this.follow = true;
+        this.onSeek(Math.max(0, Math.min(seconds, this.length())));
+      });
+      canvas.addEventListener("pointermove", (event) => {
+        const rect = canvas.getBoundingClientRect();
+        this.hover = { canvas, x: event.clientX - rect.left, y: event.clientY - rect.top, width: rect.width, clientX: event.clientX, clientY: event.clientY };
+        this.renderTip();
+      });
+      canvas.addEventListener("pointerleave", () => {
+        this.hover = null;
+        this.renderTip();
+      });
+      canvas.addEventListener("wheel", (event) => {
+        if (!this.vodId) return;
+        event.preventDefault();
+        const rect = canvas.getBoundingClientRect();
+        if (event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
+          const delta = (event.shiftKey ? event.deltaY : event.deltaX) / rect.width * this.span();
+          this.follow = false;
+          this.setView(this.view.start + delta, this.view.end + delta);
+        } else {
+          this.follow = false;
+          this.zoomBy(event.deltaY > 0 ? 1.25 : 0.8, this.xToTime(event.clientX - rect.left, rect.width));
+        }
+      }, { passive: false });
+    }
+  }
+
+  // The item drawn under a point of the rows canvas: { kind, start, end?, title, by, row }
+  itemAt(x, y, width) {
+    const row = this.rows[Math.floor(y / ROW_HEIGHT)];
+    if (!row || this.stateOf(row).hidden) return null;
+    const t = this.xToTime(x, width);
+    const pad = (4 / width) * this.span();
+    const items = this.itemsOf(row);
+    // moments first (thin), then ranges, topmost (last drawn) first
+    for (const item of [...items].reverse()) {
+      if (item.end == null && Math.abs(item.start - t) <= pad * 1.5) return item;
+    }
+    for (const item of [...items].reverse()) {
+      if (item.end != null && t >= item.start - pad && t <= item.end + pad) return item;
+    }
+    return null;
+  }
+
+  itemsOf(row) {
+    if (/clip/i.test(row.kind)) {
+      return this.clips.filter((c) => c.rowId === row.id).map((c) => ({
+        kind: "clip", id: c.id, start: c.startSeconds ?? c.start, end: c.endSeconds ?? c.end ?? this.length(), title: c.title,
+        by: c.createdBy, reference: c.referenceOnly, row,
+      }));
+    }
+    return this.markers.filter((m) => m.rowId === row.id).map((m) => ({
+      kind: m.endSeconds == null ? "moment" : "segment", id: m.id, start: m.seconds, end: m.endSeconds,
+      title: m.label, color: m.color, by: m.createdBy, row,
+    }));
+  }
+
+  renderTip() {
+    const tip = this.tip;
+    const hover = this.hover;
+    if (!hover || !this.vodId) {
+      tip.hidden = true;
+      return;
+    }
+    const t = this.xToTime(hover.x, hover.width);
+    const item = hover.canvas === this.track ? this.itemAt(hover.x, hover.y, hover.width) : null;
+    const lines = [formatDuration(Math.max(0, t), { short: false })];
+    if (item) {
+      const range = item.end != null ? `${formatDuration(item.start, { short: false })} – ${formatDuration(item.end, { short: false })}` : `at ${formatDuration(item.start, { short: false })}`;
+      lines.push(`${item.title || { clip: "Clip", segment: "Segment", moment: "Marker" }[item.kind]} · ${range}`);
+      if (item.by) lines.push(`by ${item.by}`);
+    }
+    tip.replaceChildren(...lines.map((line, i) => el("div", { class: i ? "" : "num" }, line)));
+    tip.hidden = false;
+    tip.style.left = `${hover.clientX + 12}px`;
+    tip.style.top = `${hover.clientY + 16}px`;
+  }
+
+  // ---------- drawing ----------
+
+  update() {
+    const now = this.getPosition();
+    if (this.vodId && now != null) {
+      // Keep the playhead in view while following
+      if (this.follow && (now < this.view.start || now > this.view.end)) {
+        const span = this.span();
+        this.setView(now - span * 0.1, now + span * 0.9);
+      }
+      if (now !== this.lastNow) this.dirty = true;
+      this.lastNow = now;
+    }
+    if (!this.dirty) return;
+    this.dirty = false;
+    this.drawRuler(now);
+    this.drawTrack(now);
+  }
+
+  prepare(canvas, cssHeight) {
+    const dpr = window.devicePixelRatio || 1;
+    const width = canvas.parentElement.clientWidth;
+    if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(cssHeight * dpr)) {
+      canvas.width = Math.round(width * dpr);
+      canvas.height = Math.round(cssHeight * dpr);
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${cssHeight}px`;
+    }
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, cssHeight);
+    return { ctx, width };
+  }
+
+  drawRuler(now) {
+    const height = this.ruler.parentElement.clientHeight || 32;
+    const { ctx, width } = this.prepare(this.ruler, height);
+    if (!this.vodId) return;
+    const css = getComputedStyle(document.documentElement);
+    const span = this.span();
+    const step = TICK_STEPS.find((s) => (s / span) * width >= 80) ?? TICK_STEPS[TICK_STEPS.length - 1];
+    ctx.font = "12px Barlow, system-ui, sans-serif";
+    ctx.textBaseline = "top";
+    for (let t = Math.ceil(this.view.start / step) * step; t <= this.view.end; t += step) {
+      const x = Math.round(this.timeToX(t, width)) + 0.5;
+      ctx.strokeStyle = css.getPropertyValue("--line-strong");
+      ctx.beginPath();
+      ctx.moveTo(x, height - 14);
+      ctx.lineTo(x, height - 6);
+      ctx.stroke();
+      ctx.fillStyle = css.getPropertyValue("--text-dim");
+      ctx.fillText(formatDuration(t), x + 4, 4);
+      // minor ticks
+      for (let i = 1; i < 5; i++) {
+        const mx = Math.round(this.timeToX(t + (step * i) / 5, width)) + 0.5;
+        ctx.beginPath();
+        ctx.moveTo(mx, height - 10);
+        ctx.lineTo(mx, height - 6);
+        ctx.stroke();
+      }
+    }
+    // Audio: muted (red) and saved clean audio (green) along the bottom
+    for (const range of this.audio) {
+      const x1 = this.timeToX(range.start, width);
+      const x2 = this.timeToX(range.end, width);
+      if (x2 < 0 || x1 > width) continue;
+      ctx.fillStyle = range.clean ? CLEAN_COLOR : MUTED_COLOR;
+      ctx.fillRect(x1, height - 5, Math.max(1, x2 - x1), 5);
+    }
+    this.drawPlayhead(ctx, width, height, now, true);
+  }
+
+  drawTrack(now) {
+    const height = Math.max(this.rows.length * ROW_HEIGHT, $("tl-track").clientHeight);
+    const { ctx, width } = this.prepare(this.track, this.rows.length * ROW_HEIGHT || 1);
+    if (!this.vodId) return;
+    const css = getComputedStyle(document.documentElement);
+    const anySolo = this.rows.some((row) => this.stateOf(row).solo);
+    this.rows.forEach((row, index) => {
+      const y = index * ROW_HEIGHT;
+      const state = this.stateOf(row);
+      ctx.fillStyle = row.userId === me?.id ? "rgb(139 124 246 / 0.06)" : index % 2 ? "rgb(255 255 255 / 0.015)" : "transparent";
+      ctx.fillRect(0, y, width, ROW_HEIGHT);
+      ctx.fillStyle = css.getPropertyValue("--line");
+      ctx.fillRect(0, y + ROW_HEIGHT - 1, width, 1);
+      if (state.hidden) return;
+      ctx.globalAlpha = anySolo && !state.solo ? 0.25 : 1;
+      for (const item of this.itemsOf(row)) this.drawItem(ctx, item, y, width);
+      ctx.globalAlpha = 1;
+    });
+    this.drawPlayhead(ctx, width, height, now, false);
+  }
+
+  drawItem(ctx, item, y, width) {
+    const x1 = this.timeToX(item.start, width);
+    if (item.kind === "moment") {
+      if (x1 < -8 || x1 > width + 8) return;
+      const color = MARKER_COLORS[item.color] ?? MARKER_COLORS.yellow;
+      ctx.fillStyle = color;
+      ctx.fillRect(Math.round(x1) - 1, y + 4, 2, ROW_HEIGHT - 8);
+      ctx.beginPath();
+      ctx.moveTo(x1 - 6, y + 4);
+      ctx.lineTo(x1 + 6, y + 4);
+      ctx.lineTo(x1, y + 11);
+      ctx.closePath();
+      ctx.fill();
+      return;
+    }
+    const x2 = this.timeToX(item.end, width);
+    if (x2 < 0 || x1 > width) return;
+    const left = Math.max(x1, -2);
+    const right = Math.min(x2, width + 2);
+    const top = y + 6;
+    const h = ROW_HEIGHT - 12;
+    if (item.kind === "clip") {
+      ctx.fillStyle = item.reference ? "rgb(139 124 246 / 0.35)" : CLIP_COLOR;
+      roundRect(ctx, left, top, Math.max(2, right - left), h, 4);
+      ctx.fill();
+      if (item.reference) {
+        ctx.strokeStyle = CLIP_COLOR;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    } else {
+      const color = MARKER_COLORS[item.color] ?? MARKER_COLORS.yellow;
+      ctx.fillStyle = hatch(ctx, color);
+      ctx.fillRect(left, top, Math.max(2, right - left), h);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      // brackets at both ends
+      for (const [x, dir] of [[x1, 1], [x2, -1]]) {
+        if (x < -4 || x > width + 4) continue;
+        ctx.beginPath();
+        ctx.moveTo(x + 5 * dir, top);
+        ctx.lineTo(x, top);
+        ctx.lineTo(x, top + h);
+        ctx.lineTo(x + 5 * dir, top + h);
+        ctx.stroke();
+      }
+    }
+    // title inside when there's room
+    const room = right - left - 12;
+    if (item.title && room > 30) {
+      ctx.font = "600 12px Barlow, system-ui, sans-serif";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#fff";
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(left + 6, top, room, h);
+      ctx.clip();
+      ctx.shadowColor = "rgb(0 0 0 / 0.8)";
+      ctx.shadowBlur = 3;
+      ctx.fillText(item.title, Math.max(left, 0) + 6, top + h / 2);
+      ctx.restore();
+    }
+  }
+
+  drawPlayhead(ctx, width, height, now, withHandle) {
+    if (now == null) return;
+    const x = Math.round(this.timeToX(now, width)) + 0.5;
+    if (x < 0 || x > width) return;
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, height);
+    ctx.stroke();
+    if (withHandle) {
+      ctx.fillStyle = "#fff";
+      ctx.beginPath();
+      ctx.moveTo(x - 6, 0);
+      ctx.lineTo(x + 6, 0);
+      ctx.lineTo(x, 8);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h);
+}
+
+const hatches = new Map();
+function hatch(ctx, color) {
+  if (hatches.has(color)) return hatches.get(color);
+  const tile = document.createElement("canvas");
+  tile.width = tile.height = 8;
+  const t = tile.getContext("2d");
+  t.fillStyle = color;
+  t.globalAlpha = 0.22;
+  t.fillRect(0, 0, 8, 8);
+  t.globalAlpha = 0.75;
+  t.strokeStyle = color;
+  t.lineWidth = 1.5;
+  t.beginPath();
+  t.moveTo(-2, 10);
+  t.lineTo(10, -2);
+  t.moveTo(-2, 2);
+  t.lineTo(2, -2);
+  t.moveTo(6, 10);
+  t.lineTo(10, 6);
+  t.stroke();
+  const pattern = ctx.createPattern(tile, "repeat");
+  hatches.set(color, pattern);
+  return pattern;
+}

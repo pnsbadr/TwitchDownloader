@@ -6,6 +6,9 @@ import { registerIconLibrary } from "https://cdn.jsdelivr.net/npm/@shoelace-styl
 import { $, el, api, me, can, loadMe, sessionHandlers, TEAM_PAGE_PERMISSIONS, wireIconButtons, loadSetting, saveSetting, toast, formatDuration } from "./core.js";
 import { dropTarget } from "./drag.js";
 import { setUpLibrary, showList } from "./library.js";
+import { MARKER_COLORS } from "./colors.js";
+import { MediaPlayer, formatClock } from "./media.js";
+import { Timeline } from "./timeline.js";
 
 // Phosphor icons, bold weight, as <sl-icon library="ph" name="…">
 registerIconLibrary("ph", {
@@ -14,11 +17,6 @@ registerIconLibrary("ph", {
 
 const DEMO = new URLSearchParams(location.search).has("demo");
 
-// Same names and order as VodMarker.Colors on the server and MARKER_COLORS in player-bar.js
-export const MARKER_COLORS = {
-  yellow: "#f2c230", blue: "#3d8bfd", pink: "#ff5fa2", orange: "#ff8a3d",
-  red: "#ff4d4d", lime: "#9be15d", teal: "#2ec4b6", violet: "#a78bfa", gray: "#a1a1aa",
-};
 
 // ---------- gate (no team, no role, support ended) ----------
 
@@ -152,16 +150,21 @@ function openExport(item) {
   if (DEMO) toast(`"${item.data?.title ?? item.label}" would be added to the export list (step 8).`);
 }
 
-// ---------- players (filled in steps 3 and 4) ----------
+// ---------- players ----------
 
 const PLAYER_KINDS = { p1: ["vod"], p2: ["video", "clip", "segment"] };
+const FRAME_SECONDS = 1 / 30;
 
-// item = { kind, data } from a card or a drop. Playback comes in steps 3 (Player 1) and 4 (Player 2).
+let player1 = null;
+let timeline = null;
+let p1Vod = null;
+
+// item = { kind, data } from a card or a drop. Player 2 comes in step 4.
 function load(item) {
   const data = item.data;
   const player = PLAYER_KINDS.p1.includes(item.kind) ? "p1" : "p2";
   if (player === "p1") {
-    $("p1-info").textContent = data.title;
+    openVod(data);
   } else {
     const length = data.clipLengthSeconds ?? data.lengthSeconds;
     $("p2-info").textContent = [item.kind.toUpperCase(), length !== undefined ? formatDuration(length) : null, data.title].filter(Boolean).join(" · ");
@@ -169,13 +172,176 @@ function load(item) {
   timelineTabs.pick(player);
 }
 
+async function openVod(vod) {
+  if (DEMO) {
+    toast("Playback isn't available in the demo.");
+    return;
+  }
+  p1Vod = vod;
+  $("p1-info").textContent = vod.title;
+  $("p1-info").title = vod.title;
+  $("p1-hint").hidden = true;
+  $("p1-media").hidden = false;
+  showNote("Loading…");
+  timeline.open(vod);
+  try {
+    await player1.open(vod.vodId, 0);
+    if (p1Vod !== vod) return;
+    const notes = [];
+    if (player1.fallbackReason) notes.push(`Twitch player: our player couldn't play this VOD (${player1.fallbackReason}).`);
+    if (player1.cleanSegments) notes.push("Saved audio plays over muted parts.");
+    showNote(notes.join(" "), notes.length ? 8000 : 0);
+  } catch (error) {
+    if (p1Vod !== vod) return;
+    showNote(`Couldn't play this VOD: ${error.message}`);
+  }
+}
+
+let noteTimer = null;
+function showNote(text, hideAfter = 0) {
+  clearTimeout(noteTimer);
+  $("p1-note").textContent = text;
+  $("p1-note").hidden = !text;
+  if (text && hideAfter) noteTimer = setTimeout(() => { $("p1-note").hidden = true; }, hideAfter);
+}
+
+function renderPlayer1() {
+  const ready = player1.ready;
+  for (const id of ["p1-play", "p1-back", "p1-fwd", "p1-full", "p1-quality"]) $(id).disabled = !ready;
+  const app = ready && player1.kind === "app";
+  $("p1-mute").disabled = !app;
+  $("p1-volume").disabled = !app;
+  const playing = player1.playing();
+  $("p1-play").name = playing ? "pause" : "play";
+  $("p1-play").label = playing ? "Pause" : "Play";
+  const volume = player1.volume;
+  if (volume) {
+    $("p1-volume").value = Math.round(volume.volume * 100);
+    $("p1-mute").name = volume.muted || volume.volume === 0 ? "speaker-slash" : volume.volume < 0.5 ? "speaker-low" : "speaker-high";
+    $("p1-mute").label = volume.muted ? "Unmute" : "Mute";
+  }
+  renderClock(player1.position());
+}
+
+function renderClock(position) {
+  const ready = player1.ready && position != null;
+  $("p1-clock").hidden = !ready || player1.live;
+  if (ready && !player1.live) $("p1-clock").textContent = `${formatClock(position)} / ${formatClock(player1.duration() || p1Vod?.lengthSeconds || 0)}`;
+  const live = $("p1-live");
+  live.hidden = !ready || !player1.live;
+  if (!live.hidden) live.classList.toggle("behind", player1.livePosition() - position > 8);
+}
+
+// Quality menu: Auto + the renditions (app player), and the switch between our player and Twitch's
+function renderQualityMenu() {
+  const items = [];
+  if (player1.kind === "app") {
+    const levels = player1.levels();
+    const current = player1.level;
+    items.push(el("sl-menu-item", { type: "checkbox", value: "level:-1", checked: current === -1 }, "Auto"));
+    for (const level of levels) {
+      items.push(el("sl-menu-item", { type: "checkbox", value: `level:${level.index}`, checked: current === level.index }, level.name));
+    }
+    items.push(el("sl-divider"));
+  }
+  items.push(el("sl-menu-item", { value: "switch" },
+    el("sl-icon", { slot: "prefix", library: "ph", name: "swap" }),
+    player1.kind === "app" ? "Use the Twitch player" : "Use the app player"));
+  $("p1-quality-items").replaceChildren(...items);
+}
+
+function setUpPlayer1() {
+  player1 = new MediaPlayer($("p1-media"), {
+    onTick: (position) => renderClock(position),
+    onState: () => renderPlayer1(),
+    onDetails: (details) => timeline.setDetails(details),
+  });
+  timeline = new Timeline({
+    onSeek: (seconds) => player1.seek(seconds),
+    getPosition: () => (player1.ready ? player1.position() : null),
+  });
+  $("p1-play").addEventListener("click", () => player1.togglePlay());
+  $("p1-back").addEventListener("click", () => player1.skip(-10));
+  $("p1-fwd").addEventListener("click", () => player1.skip(10));
+  $("p1-full").addEventListener("click", () => player1.fullscreen());
+  $("p1-live").addEventListener("click", () => {
+    player1.seek(player1.livePosition());
+    player1.play();
+  });
+  $("p1-mute").addEventListener("click", () => {
+    const volume = player1.volume;
+    if (!volume) return;
+    if (volume.volume === 0) player1.setVolume(0.5, false);
+    else player1.setVolume(null, !volume.muted);
+  });
+  $("p1-volume").addEventListener("sl-input", (event) => player1.setVolume(Number(event.target.value) / 100, false));
+  $("p1-quality-menu").addEventListener("sl-show", renderQualityMenu);
+  $("p1-quality-items").addEventListener("sl-select", async (event) => {
+    const value = event.detail.item.value;
+    if (value === "switch") {
+      showNote("Switching player…");
+      try {
+        await player1.switchPlayer();
+        showNote("");
+      } catch (error) {
+        showNote(`Couldn't play this VOD: ${error.message}`);
+      }
+    } else if (value.startsWith("level:")) {
+      player1.level = Number(value.slice(6));
+    }
+  });
+  renderPlayer1();
+}
+
 function setUpPlayers() {
+  setUpPlayer1();
   for (const player of ["p1", "p2"]) {
     dropTarget($(`${player}-screen`), {
       accepts: (item) => PLAYER_KINDS[player].includes(item.kind),
       onDrop: (item) => load(item),
     });
   }
+}
+
+// ---------- keyboard (every key is listed in keybinds.js) ----------
+
+// Typing in a field, or a control that uses these keys itself (tabs, sliders, menus, checkboxes, buttons)
+const CONTROL_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "Enter", " "]);
+function isTyping(event) {
+  if (event.defaultPrevented) return true;
+  return event.composedPath().some((node) => {
+    if (!(node instanceof HTMLElement)) return false;
+    if (node.isContentEditable || /^(INPUT|TEXTAREA|SELECT|SL-INPUT|SL-TEXTAREA|SL-SELECT)$/.test(node.tagName)) return true;
+    const control = /^(SL-RANGE|SL-CHECKBOX|SL-SWITCH|SL-RADIO-GROUP|SL-MENU)$/.test(node.tagName)
+      || /^(tab|menuitem|radio)$/.test(node.getAttribute("role") ?? "");
+    return control && CONTROL_KEYS.has(event.key) && !(event.key === " " && node.getAttribute("role") === "tab");
+  });
+}
+
+function setUpKeys() {
+  document.addEventListener("keydown", (event) => {
+    if ($("view-editor").hidden || isTyping(event) || document.querySelector("sl-dialog[open]")) return;
+    const id = keybindFor("player", event);
+    if (!id) return;
+    const ready = player1.ready;
+    const run = {
+      playPause: () => ready && player1.togglePlay(),
+      back10: () => ready && player1.skip(-10),
+      fwd10: () => ready && player1.skip(10),
+      back5: () => ready && player1.skip(-5),
+      fwd5: () => ready && player1.skip(5),
+      frameBack: () => { if (ready) { player1.pause(); player1.skip(-FRAME_SECONDS); } },
+      frameFwd: () => { if (ready) { player1.pause(); player1.skip(FRAME_SECONDS); } },
+      fullscreen: () => ready && player1.fullscreen(),
+      zoomIn: () => timeline.vodId && timeline.zoomBy(0.5),
+      zoomOut: () => timeline.vodId && timeline.zoomBy(2),
+      fit: () => timeline.vodId && timeline.fit(),
+    }[id];
+    if (!run) return;
+    // Space on a focused button would also click it
+    event.preventDefault();
+    run();
+  });
 }
 
 // ---------- title and color editor in the tools bar ----------
@@ -301,8 +467,9 @@ async function start() {
   setUpLibrary({ onLoad: load, onExport: openExport, sample: DEMO ? demoSample() : null });
   if (DEMO) wireDemoTools();
   listTabs = tabs(document.querySelector(".side-tabs"), "data-list", showList, "clipco.editor.list");
-  timelineTabs = tabs(document.querySelector(".tl-tabs"), "data-tl", () => {}, null);
   setUpPlayers();
+  timelineTabs = tabs(document.querySelector(".tl-tabs"), "data-tl", (tab) => timeline.showTab(tab), null);
+  setUpKeys();
   setUpItemEditor();
 }
 

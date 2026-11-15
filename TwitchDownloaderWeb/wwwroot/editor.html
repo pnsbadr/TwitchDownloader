@@ -111,23 +111,33 @@
             <section class="player" id="player1" aria-label="Player 1">
               <header class="player-head">
                 <span class="player-name display">Player 1</span>
-                <span class="player-info num" id="p1-info"></span>
+                <span class="player-info" id="p1-info"></span>
+                <span class="player-clock num" id="p1-clock" hidden></span>
+                <sl-tooltip content="Go to the newest part" hoist>
+                  <button type="button" class="live-button" id="p1-live" hidden>LIVE</button>
+                </sl-tooltip>
               </header>
               <div class="player-screen" id="p1-screen">
-                <div class="drop-hint">
+                <div class="player-media" id="p1-media" hidden></div>
+                <p class="player-note" id="p1-note" hidden></p>
+                <div class="drop-hint" id="p1-hint">
                   <sl-icon library="ph" name="broadcast"></sl-icon>
                   <p>Drag a VOD or live stream here</p>
                   <p class="faint">or double-click its card</p>
                 </div>
               </div>
               <div class="player-controls" data-tip-placement="top">
-                <sl-icon-button library="ph" name="play" label="Play / pause" data-keybind="playPause" disabled></sl-icon-button>
-                <sl-icon-button library="ph" name="arrow-counter-clockwise" label="Back 10 s" data-keybind="back10" disabled></sl-icon-button>
-                <sl-icon-button library="ph" name="arrow-clockwise" label="Forward 10 s" data-keybind="fwd10" disabled></sl-icon-button>
+                <sl-icon-button library="ph" id="p1-play" name="play" label="Play / pause" data-keybind="playPause" disabled></sl-icon-button>
+                <sl-icon-button library="ph" id="p1-back" name="arrow-counter-clockwise" label="Back 10 s" data-keybind="back10" disabled></sl-icon-button>
+                <sl-icon-button library="ph" id="p1-fwd" name="arrow-clockwise" label="Forward 10 s" data-keybind="fwd10" disabled></sl-icon-button>
                 <span class="controls-gap"></span>
-                <sl-icon-button library="ph" name="speaker-high" label="Volume" disabled></sl-icon-button>
-                <sl-icon-button library="ph" name="gear-six" label="Quality" disabled></sl-icon-button>
-                <sl-icon-button library="ph" name="corners-out" label="Fullscreen" data-keybind="fullscreen" disabled></sl-icon-button>
+                <sl-icon-button library="ph" id="p1-mute" name="speaker-high" label="Mute" disabled></sl-icon-button>
+                <sl-range id="p1-volume" class="volume" min="0" max="100" value="100" tooltip="none" aria-label="Volume" disabled></sl-range>
+                <sl-dropdown id="p1-quality-menu" placement="top-end" hoist distance="4">
+                  <sl-icon-button library="ph" slot="trigger" id="p1-quality" name="gear-six" label="Quality and player" disabled></sl-icon-button>
+                  <sl-menu id="p1-quality-items"></sl-menu>
+                </sl-dropdown>
+                <sl-icon-button library="ph" id="p1-full" name="corners-out" label="Fullscreen" data-keybind="fullscreen" disabled></sl-icon-button>
               </div>
             </section>
 
@@ -201,15 +211,15 @@
               </div>
               <footer class="tl-foot" data-tip-placement="top">
                 <div class="tl-foot-left">
-                  <sl-icon-button library="ph" name="rows-plus-bottom" label="Insert video row" disabled></sl-icon-button>
-                  <sl-icon-button library="ph" name="list-plus" label="Insert clip row" disabled></sl-icon-button>
-                  <sl-icon-button library="ph" name="trash" label="Delete toggled rows" disabled></sl-icon-button>
+                  <sl-icon-button library="ph" id="tl-add-video" name="rows-plus-bottom" label="Insert video row" disabled></sl-icon-button>
+                  <sl-icon-button library="ph" id="tl-add-clip" name="list-plus" label="Insert clip row" disabled></sl-icon-button>
+                  <sl-icon-button library="ph" id="tl-delete-rows" name="trash" label="Delete toggled rows" disabled></sl-icon-button>
                 </div>
                 <div class="tl-foot-right">
-                  <sl-icon-button library="ph" name="magnifying-glass-minus" label="Zoom out" data-keybind="zoomOut" disabled></sl-icon-button>
+                  <sl-icon-button library="ph" id="tl-zoom-out" name="magnifying-glass-minus" label="Zoom out" data-keybind="zoomOut" disabled></sl-icon-button>
                   <sl-range id="tl-zoom" min="0" max="100" value="0" tooltip="none" aria-label="Timeline zoom" disabled></sl-range>
-                  <sl-icon-button library="ph" name="magnifying-glass-plus" label="Zoom in" data-keybind="zoomIn" disabled></sl-icon-button>
-                  <sl-icon-button library="ph" name="arrows-out-line-horizontal" label="Fit" data-keybind="fit" disabled></sl-icon-button>
+                  <sl-icon-button library="ph" id="tl-zoom-in" name="magnifying-glass-plus" label="Zoom in" data-keybind="zoomIn" disabled></sl-icon-button>
+                  <sl-icon-button library="ph" id="tl-fit" name="arrows-out-line-horizontal" label="Fit" data-keybind="fit" disabled></sl-icon-button>
                 </div>
               </footer>
             </section>
