@@ -15,8 +15,9 @@ namespace TwitchDownloaderWeb.Services.Shortform
     }
 
     /// <summary>A finished portrait render, kept until it expires or is pushed out by newer ones.</summary>
+    /// <param name="CreatedByUserId">Who started it (null for renders from before that was kept).</param>
     public sealed record ShortformRender(string Id, DateTime CreatedAtUtc, DateTime ExpiresAtUtc, long SizeBytes, ShortformLayout Layout,
-        bool HasThumbnail);
+        bool HasThumbnail, int? CreatedByUserId = null);
 
     /// <summary>The entry's current job (None when idle) plus its kept renders, newest first.</summary>
     public sealed record ShortformState(ShortformStatus Status, double Progress, string? Error, ShortformLayout? Layout,
@@ -57,13 +58,14 @@ namespace TwitchDownloaderWeb.Services.Shortform
         {
             public required CancellationTokenSource Cancellation { get; init; }
             public required ShortformLayout Layout { get; init; }
+            public int? UserId { get; init; }
             public ShortformStatus Status { get; set; } = ShortformStatus.Rendering;
             public double Progress { get; set; }
             public string? Error { get; set; }
         }
 
         /// <summary>What a render's metadata file holds.</summary>
-        private sealed record RenderInfo(DateTime CreatedAtUtc, ShortformLayout Layout);
+        private sealed record RenderInfo(DateTime CreatedAtUtc, ShortformLayout Layout, int? CreatedByUserId = null);
 
         private string EntryFolder(int entryId) => _storage.Resolve(Path.Combine(LibraryStorage.ShortformFolderName, entryId.ToString(CultureInfo.InvariantCulture)));
 
@@ -101,7 +103,7 @@ namespace TwitchDownloaderWeb.Services.Shortform
                     continue;
 
                 renders.Add(new ShortformRender(id, info.CreatedAtUtc, expires, video.Length, info.Layout,
-                    File.Exists(Path.ChangeExtension(json.FullName, ".jpg"))));
+                    File.Exists(Path.ChangeExtension(json.FullName, ".jpg")), info.CreatedByUserId));
             }
 
             // Older ones are deleted by the cleanup service
@@ -122,9 +124,10 @@ namespace TwitchDownloaderWeb.Services.Shortform
         }
 
         /// <summary>Starts rendering in the background. The layout must already be validated.</summary>
-        public void Start(int entryId, string sourcePath, double clipLengthSeconds, ShortformLayout layout)
+        /// <param name="userId">Who asked (kept with the render: exports use a member's own newest render).</param>
+        public void Start(int entryId, string sourcePath, double clipLengthSeconds, ShortformLayout layout, int? userId = null)
         {
-            var job = new Job { Cancellation = new CancellationTokenSource(), Layout = layout };
+            var job = new Job { Cancellation = new CancellationTokenSource(), Layout = layout, UserId = userId };
             if (_jobs.TryRemove(entryId, out var previous))
                 Cancel(previous);
             _jobs[entryId] = job;
@@ -277,7 +280,7 @@ namespace TwitchDownloaderWeb.Services.Shortform
                 await TryMakeThumbnailAsync(ffmpegPath, output, thumbnail, duration, token);
 
                 // Written last: a render only shows up once its metadata exists
-                var info = new RenderInfo(DateTime.UtcNow, layout);
+                var info = new RenderInfo(DateTime.UtcNow, layout, job.UserId);
                 await File.WriteAllTextAsync(RenderPath(entryId, renderId, "json")!, JsonSerializer.Serialize(info, JsonOptions), CancellationToken.None);
 
                 _jobs.TryRemove(new KeyValuePair<int, Job>(entryId, job));

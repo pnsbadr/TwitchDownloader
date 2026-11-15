@@ -7,15 +7,30 @@ using TwitchDownloaderWeb.Services.Accounts;
 namespace TwitchDownloaderWeb.Endpoints
 {
     public sealed record ShortformRenderDto(string Id, DateTime CreatedAtUtc, DateTime ExpiresAtUtc, long SizeBytes, ShortformLayout Layout,
-        string FileUrl, string? ThumbnailUrl);
+        string FileUrl, string? ThumbnailUrl)
+    {
+        /// <summary>Who made it (null for renders from before this was kept).</summary>
+        public int? CreatedByUserId { get; init; }
+
+        public string? CreatedBy { get; init; }
+    }
 
     /// <param name="Layout">The running render's layout, else the newest kept render's (so the editor reopens with it).</param>
     public sealed record ShortformDto(string Status, double Progress, string? Error, ShortformLayout? Layout, IReadOnlyList<ShortformRenderDto> Renders)
     {
-        public static ShortformDto From(int entryId, ShortformState state) => new(state.Status.ToString(), state.Progress, state.Error, state.Layout,
+        public static ShortformDto From(int entryId, ShortformState state, IReadOnlyDictionary<int, string>? names = null) => new(state.Status.ToString(),
+            state.Progress, state.Error, state.Layout,
             state.Renders.Select(x => new ShortformRenderDto(x.Id, x.CreatedAtUtc, x.ExpiresAtUtc, x.SizeBytes, x.Layout,
                 $"/api/entries/{entryId}/shortform/{x.Id}/file",
-                x.HasThumbnail ? $"/api/entries/{entryId}/shortform/{x.Id}/thumbnail" : null)).ToList());
+                x.HasThumbnail ? $"/api/entries/{entryId}/shortform/{x.Id}/thumbnail" : null)
+            {
+                CreatedByUserId = x.CreatedByUserId,
+                CreatedBy = x.CreatedByUserId is { } u ? names?.GetValueOrDefault(u) : null,
+            }).ToList());
+
+        public static async Task<ShortformDto> FromAsync(LibraryDbContext db, int entryId, ShortformState state, CancellationToken cancellationToken) =>
+            From(entryId, state, await TimelineEndpoints.UserNamesAsync(db, state.Renders.Where(x => x.CreatedByUserId is not null).Select(x => x.CreatedByUserId!.Value),
+                cancellationToken));
     }
 
     /// <summary>
@@ -40,11 +55,11 @@ namespace TwitchDownloaderWeb.Endpoints
             if (await db.Entries.FindAsync([id], cancellationToken) is null)
                 return EntryNotFound(id);
 
-            return Results.Ok(ShortformDto.From(id, shortform.GetState(id)));
+            return Results.Ok(await ShortformDto.FromAsync(db, id, shortform.GetState(id), cancellationToken));
         }
 
         /// <summary>Starts a render from the entry's file (stored, or an unexpired on-demand file). 202 with the new state.</summary>
-        private static async Task<IResult> StartShortform(int id, ShortformLayout layout, LibraryDbContext db, LibraryStorage storage,
+        private static async Task<IResult> StartShortform(int id, ShortformLayout layout, TeamContext team, LibraryDbContext db, LibraryStorage storage,
             ShortformService shortform, CancellationToken cancellationToken)
         {
             var entry = await db.Entries.FindAsync([id], cancellationToken);
@@ -60,11 +75,11 @@ namespace TwitchDownloaderWeb.Endpoints
             if (relativePath is null || !File.Exists(storage.Resolve(relativePath)))
                 return Results.Problem(detail: "The entry's file isn't ready, so it can't be made vertical yet.", statusCode: StatusCodes.Status409Conflict);
 
-            shortform.Start(id, storage.Resolve(relativePath), entry.ClipLengthSeconds, layout);
+            shortform.Start(id, storage.Resolve(relativePath), entry.ClipLengthSeconds, layout, team.UserId);
             // The render itself is audited by the background job, which doesn't know who asked; this records who did
             db.Audit(AuditActions.ShortformRequested, id, layout.IsSplit ? "split" : "single");
             await db.SaveChangesAsync(cancellationToken);
-            return Results.Accepted($"/api/entries/{id}/shortform", ShortformDto.From(id, shortform.GetState(id)));
+            return Results.Accepted($"/api/entries/{id}/shortform", await ShortformDto.FromAsync(db, id, shortform.GetState(id), cancellationToken));
         }
 
         /// <param name="inline">True plays the file in the page's preview player instead of downloading it (not audited).</param>
