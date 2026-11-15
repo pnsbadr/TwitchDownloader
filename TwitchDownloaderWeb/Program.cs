@@ -88,6 +88,7 @@ app.MapPlaybackEndpoints();
 app.MapTimelineEndpoints();
 app.MapSegmentExportEndpoints();
 app.MapCopyEndpoints();
+app.MapVideoEndpoints();
 
 app.Run();
 
