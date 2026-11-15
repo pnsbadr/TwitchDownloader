@@ -1,11 +1,13 @@
-// Editing on the Player 1 timeline (frontend rework step 3b), mixed into Timeline (ui/timeline.js).
+// Editing on the timelines (frontend rework steps 3b and 4), mixed into Timeline (ui/timeline.js). Player 2's timeline
+// ("item" mode) has the same tools for its one item, except creating and cutting; stored clips are trimmed only there.
 //
 // Tools (V/C/Z/H): pointer (click selects an item and seeks to it; drag the selected item's edges), cut (click a segment to
 // split it in two), zoom (click in, right click out) and hand (drag to scroll the view). S / X mark a segment / clip
 // (start, then end), M a moment; the title and color editor in the tools bar names it, and it goes on the member's own row
 // (the last own row clicked, else their first of that kind). Others' items: view only; with "edit anyone's entries" each
 // change asks "Edit original" or "Make a copy" (Enter = copy); anyone who may add things can copy them from the right-click
-// menu. Undo/redo: the last 10 marker changes and clip re-trims per VOD, in this tab only.
+// menu. Undo/redo: the last 10 marker changes and clip re-trims per VOD, in this tab only, shared by both timelines.
+// Dragging an item's body (not its edges) drags it to other places, e.g. onto Player 2 (ui/drag.js).
 //
 // Every time a new kind of item gets drawn here, add its times to snapPoints().
 
@@ -13,6 +15,7 @@ import { api, me, can, toast } from "./core.js";
 import { confirmAction, chooseEditTarget } from "./dialogs.js";
 import { openMenu } from "./menu.js";
 import { formatClock } from "./media.js";
+import { startDrag } from "./drag.js";
 
 const EDGE_PX = 7;
 const SNAP_PX = 8;
@@ -20,6 +23,10 @@ const DRAG_THRESHOLD_PX = 3;
 const MIN_LENGTH = 0.5;
 const HISTORY_LIMIT = 10;
 const SNAP_KEY = "clipLibrary.snap"; // shared with the old page's player bar
+const STORED_SAVE_DELAY_MS = 3000;     // a stored clip downloads again on every re-trim: wait for the last change
+
+// Undo/redo steps per VOD, shared by the Player 1 and Player 2 timelines
+const HISTORIES = new Map();
 
 // "0:01:02.5" for PUT /trim and POST /api/entries (hundredths)
 export function trimValue(seconds) {
@@ -70,7 +77,8 @@ function loadSnap() {
 export const editing = {
   initEditing(hooks) {
     // hooks: openItemEditor(options), closeItemEditor(), onChange() (tools, selection, undo state), onClipsChanged(),
-    // onCreated({ kind, data }) for new segments and clips (Player 2 picks them up in step 4)
+    // onCreated({ kind, data }) for new segments and clips (Player 2 opens them), onEdited() after anything was saved
+    // (the other timeline reads the VOD again)
     this.hooks = hooks;
     this.tool = "pointer";
     this.snap = loadSnap();
@@ -82,7 +90,8 @@ export const editing = {
     this.press = null;
     this.activeRowId = null;  // the member's own row clicked last: new items go there
     this.maxStoredClipSeconds = 180;
-    this.histories = new Map();
+    this.histories = HISTORIES;
+    this.pendingTrim = null;  // { id, start, end, before, timer }: a stored clip's new range, saved after a pause
     this.lastColor = "yellow";
   },
 
@@ -94,7 +103,7 @@ export const editing = {
     this.press = null;
     this.activeRowId = null;
     this.tool = "pointer";
-    this.hooks.closeItemEditor?.();
+    if (this.active) this.hooks.closeItemEditor?.();
     this.changed();
   },
 
@@ -103,10 +112,19 @@ export const editing = {
     this.hooks.onChange?.();
   },
 
+  edited() {
+    this.hooks.onEdited?.();
+  },
+
   // ---------- who may do what ----------
 
   canAdd() {
     return Boolean(this.vodId) && !me?.support && can("AddEntries");
+  },
+
+  // New markers, segments and clips are made on Player 1's timeline only
+  canCreate() {
+    return this.mode === "vod" && this.canAdd();
   },
 
   isOwn(item) {
@@ -123,11 +141,18 @@ export const editing = {
     return Boolean(item.data.canEdit);
   },
 
-  // Edges can be dragged on segments and on reference-only VOD clips (stored clips are trimmed in Player 2)
+  // Edges can be dragged on segments and on reference-only VOD clips; stored clips only in Player 2 (they download again)
   canMoveEdges(item) {
     if (!this.canEditItem(item)) return false;
     if (item.kind === "segment") return true;
-    return item.kind === "clip" && item.reference && item.data.kind === "Vod";
+    return item.kind === "clip" && item.data.kind === "Vod" && (item.reference || this.mode === "item");
+  },
+
+  // A stored clip's longest range: the stored-clip limit counts what's left after cut-out parts
+  clipLimit(item) {
+    if (item.kind !== "clip" || item.reference) return Infinity;
+    const cut = (item.cuts ?? []).reduce((sum, c) => sum + Math.max(0, c.end - c.start), 0);
+    return this.maxStoredClipSeconds + cut;
   },
 
   canDeleteItem(item) {
@@ -151,7 +176,10 @@ export const editing = {
     if (!choice) return null;
     if (choice === "original") return { id: item.id, copied: false };
     const copy = await this.copyItem(item, { quiet: true });
-    return copy ? { id: copy.id, copied: true } : null;
+    if (!copy) return null;
+    // Player 2 goes on with the copy
+    if (this.mode === "item") this.focusOn({ type: item.kind === "clip" ? "clip" : "marker", id: copy.id });
+    return { id: copy.id, copied: true };
   },
 
   // The member's own row for a new item: the one clicked last, else their first unlocked one. undefined = none yet
@@ -169,6 +197,7 @@ export const editing = {
 
   setTool(tool) {
     if (!["pointer", "cut", "zoom", "hand"].includes(tool)) return;
+    if (tool === "cut" && this.mode === "item") return; // Player 2's cut tool removes parts (step 7)
     this.tool = tool;
     this.updateCursor();
     this.changed();
@@ -200,8 +229,17 @@ export const editing = {
   },
 
   select(item) {
-    this.selected = item ? { type: item.kind === "clip" ? "clip" : "marker", id: item.id } : null;
+    // Player 2's item stays selected
+    if (this.mode === "item") this.selected = this.focus ? { ...this.focus } : null;
+    else this.selected = item ? { type: item.kind === "clip" ? "clip" : "marker", id: item.id } : null;
     this.changed();
+  },
+
+  // Player 2 switches to another item of the same VOD (a copy made by the first change)
+  focusOn(focus) {
+    this.focus = focus;
+    this.selected = { ...focus };
+    this.load();
   },
 
   selectedItem() {
@@ -232,11 +270,12 @@ export const editing = {
   },
 
   pointerDown(event, canvas) {
-    if (!this.vodId || this.tab === "p2" || event.button !== 0) return;
+    if (!this.vodId || event.button !== 0) return;
     const rect = canvas.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
-    const t = Math.max(0, Math.min(this.xToTime(x, rect.width), this.length()));
+    const extent = this.extent();
+    const t = Math.max(extent.start, Math.min(this.xToTime(x, rect.width), extent.end));
 
     if (this.tool === "hand") {
       this.press = { kind: "pan", lastX: event.clientX, width: rect.width };
@@ -275,7 +314,30 @@ export const editing = {
       return;
     }
     this.select(item);
-    this.seekTo(item ? item.start : t);
+    // Player 1: a click on an item goes to its start; Player 2 (one item) goes where it's clicked
+    this.seekTo(item && this.mode === "vod" ? item.start : t);
+    // Dragging the item's body takes it somewhere else (onto Player 2, ...)
+    if (item) {
+      this.press = { kind: "item", item, startX: event.clientX, startY: event.clientY, canvas, pointerId: event.pointerId };
+      canvas.setPointerCapture(event.pointerId);
+    }
+  },
+
+  // Where an item is drawn on the page (the drag shade leaves it lit)
+  itemRect(item, canvas) {
+    const rect = canvas.getBoundingClientRect();
+    const index = this.rows.indexOf(item.row);
+    const x1 = rect.left + this.timeToX(item.start, rect.width);
+    const x2 = item.end == null ? x1 : rect.left + this.timeToX(item.end, rect.width);
+    const left = Math.max(rect.left, Math.min(x1, x2) - 6);
+    const right = Math.min(rect.right, Math.max(x1, x2) + 6);
+    return new DOMRect(left, rect.top + index * this.rowHeight, Math.max(0, right - left), this.rowHeight);
+  },
+
+  // What a dragged timeline item carries (ui/drag.js): kind segment / moment / clip, data with its VOD
+  dragItem(item) {
+    const label = item.title || { clip: "Clip", segment: "Segment", moment: "Marker" }[item.kind];
+    return { kind: item.kind, label, data: { ...item.data, vodId: this.vodId, vodLengthSeconds: this.length() } };
   },
 
   pointerMove(event) {
@@ -298,7 +360,17 @@ export const editing = {
     }
     if (press.kind === "scrub") {
       const t = this.xToTime(event.clientX - press.rect.left, press.rect.width);
-      this.seekTo(Math.max(0, Math.min(t, this.length())));
+      const extent = this.extent();
+      this.seekTo(Math.max(extent.start, Math.min(t, extent.end)));
+      return;
+    }
+    if (press.kind === "item") {
+      if (Math.hypot(event.clientX - press.startX, event.clientY - press.startY) < 5) return;
+      this.press = null;
+      if (press.canvas.hasPointerCapture(press.pointerId)) press.canvas.releasePointerCapture(press.pointerId);
+      this.hover = null;
+      this.renderTip();
+      startDrag(event, this.dragItem(press.item), { sourceRect: () => this.itemRect(press.item, press.canvas) });
       return;
     }
     if (press.kind === "edge") {
@@ -309,8 +381,9 @@ export const editing = {
       const t = round(this.snapTime(raw, rect.width, { type: item.kind === "clip" ? "clip" : "marker", id: item.id, edge }));
       let start = item.start;
       let end = item.end;
-      if (edge === "start") start = Math.max(0, Math.min(t, end - MIN_LENGTH));
-      else end = Math.min(this.length(), Math.max(t, start + MIN_LENGTH));
+      const limit = this.clipLimit(item);
+      if (edge === "start") start = Math.max(0, end - limit, Math.min(t, end - MIN_LENGTH));
+      else end = Math.min(this.length(), start + limit, Math.max(t, start + MIN_LENGTH));
       this.preview = { type: item.kind === "clip" ? "clip" : "marker", id: item.id, start, end };
       this.edgeTip = { time: edge === "start" ? start : end, clientX: event.clientX, clientY: event.clientY };
       this.dirty = true;
@@ -333,7 +406,7 @@ export const editing = {
 
   contextMenu(event, canvas) {
     event.preventDefault();
-    if (!this.vodId || this.tab === "p2") return;
+    if (!this.vodId) return;
     const rect = canvas.getBoundingClientRect();
     const x = event.clientX - rect.left;
     if (this.tool === "zoom") {
@@ -405,7 +478,7 @@ export const editing = {
 
   // S (segment) / X (clip): first press marks the start at the playhead, the second the end; then the title editor opens
   mark(kind) {
-    if (!this.canAdd()) return;
+    if (!this.canCreate()) return;
     const position = this.getPosition();
     if (position == null) return;
     const now = round(position);
@@ -436,7 +509,7 @@ export const editing = {
 
   // M: a moment at the playhead
   addMoment() {
-    if (!this.canAdd()) return;
+    if (!this.canCreate()) return;
     const now = this.getPosition();
     if (now == null) return;
     if (this.targetRow("video") === false) {
@@ -517,6 +590,10 @@ export const editing = {
       this.dirty = true;
       return;
     }
+    if (item.kind === "clip" && !item.reference) {
+      this.scheduleTrim(target.id, { start: item.data.start, end: item.data.end ?? null }, { start, end });
+      return;
+    }
     try {
       if (item.kind === "clip") {
         const before = { start: item.data.start, end: item.data.end ?? null };
@@ -539,6 +616,53 @@ export const editing = {
     this.load();
   },
 
+  // A stored clip downloads again on every re-trim: keep the new range on screen and save it 3 s after the last change
+  // (or when Player 2 loads something else, or the page is closed)
+  scheduleTrim(id, before, { start, end }) {
+    const pending = this.pendingTrim;
+    clearTimeout(pending?.timer);
+    this.pendingTrim = {
+      id,
+      start,
+      end,
+      before: pending?.id === id ? pending.before : before,
+      timer: setTimeout(() => this.flushTrim(), STORED_SAVE_DELAY_MS),
+    };
+    this.preview = null;
+    this.changed();
+    if (this.mode === "item") this.hooks.onFocusChanged?.(this.focusItem());
+  },
+
+  async flushTrim() {
+    const pending = this.pendingTrim;
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    const after = { start: pending.start, end: pending.end };
+    try {
+      await this.trimClip(pending.id, after);
+      this.remember({ type: "trim", ref: { id: pending.id }, before: pending.before, after });
+    } catch (error) {
+      toast(error.message, "error");
+    }
+    if (this.pendingTrim === pending) this.pendingTrim = null;
+    this.changed();
+    if (this.mode === "item") this.hooks.onFocusChanged?.(this.focusItem());
+  },
+
+  // The page is closing: send a waiting stored-clip trim without waiting for the answer
+  flushTrimOnExit() {
+    const pending = this.pendingTrim;
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingTrim = null;
+    fetch(`/api/entries/${pending.id}/trim`, {
+      method: "PUT",
+      keepalive: true,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ startTime: trimValue(pending.start), endTime: pending.end == null ? "" : trimValue(pending.end) }),
+    }).catch(() => {});
+  },
+
   // I / O: the selected item's start or end at the playhead
   setEdgeAtPlayhead(edge) {
     const item = this.selectedItem();
@@ -553,6 +677,10 @@ export const editing = {
     const end = edge === "end" ? now : item.end;
     if (end - start < MIN_LENGTH) {
       toast(edge === "start" ? "The start has to be before the end." : "The end has to be after the start.");
+      return;
+    }
+    if (end - start > this.clipLimit(item)) {
+      toast(`Stored clips are at most ${formatClock(this.maxStoredClipSeconds).replace(/^0:0?|\.00$/g, "")}.`);
       return;
     }
     this.commitRange(item, start, end);
@@ -582,6 +710,7 @@ export const editing = {
       if (item.kind === "clip") {
         await api("PATCH", `/api/entries/${target.id}`, { title });
         this.hooks.onClipsChanged?.();
+        this.edited();
       } else {
         const before = markerBody(item.data);
         const after = { ...before, label: title, color };
@@ -597,6 +726,7 @@ export const editing = {
 
   // Cut tool: one segment becomes two at t
   async split(item, at) {
+    if (this.mode !== "vod") return;
     const t = round(at);
     if (!this.canEditItem(item)) {
       toast(this.canCopyItem(item) ? "This segment is view only. Right-click it to make a copy on your row." : "You can't change this segment.");
@@ -652,6 +782,7 @@ export const editing = {
       } else {
         this.remember({ type: "add", ref: { id: copy.id }, data: { ...markerBody(copy), rowId: copy.rowId ?? undefined } });
       }
+      this.edited();
       await this.load();
       this.selected = { type: item.kind === "clip" ? "clip" : "marker", id: copy.id };
       if (!quiet) toast(`Copied to your row.`);
@@ -673,10 +804,15 @@ export const editing = {
       });
       if (!ok) return;
       try {
+        if (this.pendingTrim?.id === item.id) {
+          clearTimeout(this.pendingTrim.timer);
+          this.pendingTrim = null;
+        }
         await api("DELETE", `/api/entries/${item.id}`);
         this.select(null);
         await this.load();
         this.hooks.onClipsChanged?.();
+        this.edited();
       } catch (error) {
         toast(error.message, "error");
       }
@@ -713,6 +849,7 @@ export const editing = {
 
   // Esc: stop marking, close the title editor, or unselect
   escape() {
+    if (this.mode === "item") return false;
     if (this.marking) {
       this.marking = null;
       this.changed();
@@ -735,6 +872,7 @@ export const editing = {
       this.load();
     }
     this.dirty = true;
+    this.edited();
     return marker;
   },
 
@@ -743,6 +881,7 @@ export const editing = {
     this.markers = this.markers.map((m) => (m.id === id ? marker : m));
     if (marker.liveEntry) this.hooks.onClipsChanged?.();
     this.dirty = true;
+    this.edited();
     return marker;
   },
 
@@ -750,12 +889,14 @@ export const editing = {
     await api("DELETE", `/api/markers/${id}`);
     this.markers = this.markers.filter((m) => m.id !== id);
     this.dirty = true;
+    this.edited();
   },
 
   async trimClip(id, { start, end }) {
     await api("PUT", `/api/entries/${id}/trim`, { startTime: trimValue(start), endTime: end == null ? "" : trimValue(end) });
     await this.load();
     this.hooks.onClipsChanged?.();
+    this.edited();
   },
 
   // ---------- undo / redo (last 10 per VOD, this tab only) ----------

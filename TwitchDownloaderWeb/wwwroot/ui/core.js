@@ -39,7 +39,12 @@ export async function api(method, url, body) {
   } else if (response.status === 403 && data?.code === "support-ended") {
     sessionHandlers.gate(data.detail, "Support view ended");
   }
-  if (!response.ok) throw new Error(problemMessage(data, response.status));
+  if (!response.ok) {
+    const error = new Error(problemMessage(data, response.status));
+    error.status = response.status;
+    error.code = data?.code ?? null;
+    throw error;
+  }
   return data;
 }
 

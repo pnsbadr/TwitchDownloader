@@ -333,7 +333,7 @@ function clipCard(entry) {
     entry.kind === "Clip" ? el("span", { class: "card-badge tag" }, "Twitch") : null,
     entry.kind !== "Clip" && entry.isReferenceOnly ? el("span", { class: "card-badge tag", title: "Longer than the stored-clip limit: not stored, made on demand" }, "Long") : null,
   ];
-  const item = { ...entry, kind: "clip" };
+  const item = entry; // keeps entry.kind (Vod / Clip): the card's own kind is "clip"
   return card({
     kind: "clip",
     title: entry.title,
@@ -393,7 +393,7 @@ export async function deleteClip(entry) {
 // --- videos: segments linked on one row (length, the VOD's date, who made it) ---
 
 function videoCard(video) {
-  const item = { ...video, kind: "video" };
+  const item = video;
   return card({
     kind: "video",
     title: video.title,

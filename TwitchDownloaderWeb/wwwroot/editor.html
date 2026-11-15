@@ -144,26 +144,29 @@
             <section class="player" id="player2" aria-label="Player 2">
               <header class="player-head">
                 <span class="player-name display">Player 2</span>
-                <span class="player-info" id="p2-info"></span>
+                <span class="player-info p2-info" id="p2-info"></span>
               </header>
               <div class="player-screen" id="p2-screen">
-                <div class="drop-hint">
+                <div class="player-media" id="p2-media" hidden></div>
+                <p class="player-note" id="p2-note" hidden></p>
+                <div class="drop-hint" id="p2-hint">
                   <sl-icon library="ph" name="film-strip"></sl-icon>
                   <p>Drag a video, clip or segment here</p>
                   <p class="faint">New segments and clips open here by themselves</p>
                 </div>
               </div>
               <div class="player-controls" data-tip-placement="top">
-                <sl-icon-button library="ph" name="play" label="Play / pause" disabled></sl-icon-button>
-                <sl-icon-button library="ph" name="arrow-counter-clockwise" label="Back 10 s" disabled></sl-icon-button>
-                <sl-icon-button library="ph" name="arrow-clockwise" label="Forward 10 s" disabled></sl-icon-button>
+                <sl-icon-button library="ph" id="p2-play" name="play" label="Play / pause" data-keybind="playPause" disabled></sl-icon-button>
+                <sl-icon-button library="ph" id="p2-back" name="arrow-counter-clockwise" label="Back 10 s" data-keybind="back10" disabled></sl-icon-button>
+                <sl-icon-button library="ph" id="p2-fwd" name="arrow-clockwise" label="Forward 10 s" data-keybind="fwd10" disabled></sl-icon-button>
                 <span class="controls-gap"></span>
-                <sl-icon-button library="ph" name="crosshair" label="Show in Player 1" disabled></sl-icon-button>
+                <sl-icon-button library="ph" id="p2-show" name="crosshair" label="Show in Player 1" disabled></sl-icon-button>
                 <sl-icon-button library="ph" name="device-mobile" label="Vertical editor (clips)" disabled hidden id="p2-vertical"></sl-icon-button>
-                <sl-icon-button library="ph" name="pencil-simple" label="Rename" disabled></sl-icon-button>
-                <sl-icon-button library="ph" name="trash" label="Delete" disabled></sl-icon-button>
-                <sl-icon-button library="ph" name="speaker-high" label="Volume" disabled></sl-icon-button>
-                <sl-icon-button library="ph" name="corners-out" label="Fullscreen" disabled></sl-icon-button>
+                <sl-icon-button library="ph" id="p2-rename" name="pencil-simple" label="Rename" disabled></sl-icon-button>
+                <sl-icon-button library="ph" id="p2-delete" name="trash" label="Delete" disabled></sl-icon-button>
+                <sl-icon-button library="ph" id="p2-mute" name="speaker-high" label="Mute" disabled></sl-icon-button>
+                <sl-range id="p2-volume" class="volume" min="0" max="100" value="100" tooltip="none" aria-label="Volume" disabled></sl-range>
+                <sl-icon-button library="ph" id="p2-full" name="corners-out" label="Fullscreen" data-keybind="fullscreen" disabled></sl-icon-button>
               </div>
             </section>
           </div>
