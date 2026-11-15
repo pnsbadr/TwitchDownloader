@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
+using TwitchDownloaderWeb.Data;
 using TwitchDownloaderWeb.Services;
 
 namespace TwitchDownloaderWeb.Tests
@@ -58,6 +60,16 @@ namespace TwitchDownloaderWeb.Tests
 
             Assert.Equal(HttpStatusCode.NotFound, (await owner.GetAsync($"/api/vods/{FakeVodDetails.MissingFrom}/timeline", ct)).StatusCode);
 
+            // Strict: work already on a VOD of a channel the team doesn't have doesn't open it
+            var teamId = (await GetJsonAsync(owner, "/api/auth/me")).GetProperty("currentTeamId").GetInt32();
+            using (var scope = _factory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+                db.Markers.Add(new VodMarker { TeamId = teamId, VodId = 201, Seconds = 1, Label = "", Color = "yellow", CreatedByUserId = 1, CreatedAtUtc = DateTime.UtcNow });
+                db.SaveChanges();
+            }
+            Assert.Equal(HttpStatusCode.Forbidden, (await owner.GetAsync("/api/vods/201/timeline", ct)).StatusCode);
+
             var clip = await owner.PostAsJsonAsync("/api/entries", new { vodId = "https://clips.twitch.tv/SomeClipSlug-abc123" }, ct);
             Assert.Equal(HttpStatusCode.Forbidden, clip.StatusCode);
             Assert.Equal("clip-links-disabled", await CodeOf(clip));
@@ -67,7 +79,7 @@ namespace TwitchDownloaderWeb.Tests
         }
 
         [Fact]
-        public async Task StaffAssignAndRemoveChannelsAndWorkAlreadyDoneStaysOpen()
+        public async Task StaffAssignChannelsAndRemoveThemForNewVodsOrRightAway()
         {
             var ct = TestContext.Current.CancellationToken;
             var (owner, _, teamId, _) = await TeamWithMemberAsync("ch2");
@@ -90,9 +102,25 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal(HttpStatusCode.Created, (await owner.PostAsJsonAsync("/api/vods/301/markers", new { seconds = 5 }, ct)).StatusCode);
             Assert.Equal(HttpStatusCode.OK, (await owner.GetAsync("/api/vods/302/timeline", ct)).StatusCode);
 
-            Assert.Equal(HttpStatusCode.NoContent, (await staff.DeleteAsync($"/api/admin/teams/{teamId}/channels/{channelId}", ct)).StatusCode);
-            // A VOD the team already worked on stays open; the channel's other VODs close
+            // Removing needs a choice
+            Assert.Equal(HttpStatusCode.BadRequest, (await staff.DeleteAsync($"/api/admin/teams/{teamId}/channels/{channelId}", ct)).StatusCode);
+
+            // "Stop new VODs": a VOD the team already worked on stays open, the channel's other VODs close and it leaves the team's list
+            Assert.Equal(HttpStatusCode.NoContent, (await staff.DeleteAsync($"/api/admin/teams/{teamId}/channels/{channelId}?mode=future", ct)).StatusCode);
             Assert.Equal(HttpStatusCode.OK, (await owner.GetAsync("/api/vods/301/timeline", ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await owner.GetAsync("/api/vods/302/timeline", ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await owner.GetAsync("/api/channels/ellsya/vods", ct)).StatusCode);
+            Assert.Equal(["arky"], (await GetJsonAsync(owner, "/api/channels")).EnumerateArray().Select(x => x.GetProperty("login").GetString()));
+            var ended = (await GetJsonAsync(staff, $"/api/admin/teams/{teamId}/channels")).EnumerateArray().Single(x => x.GetProperty("login").GetString() == "ellsya");
+            Assert.NotEqual(JsonValueKind.Null, ended.GetProperty("accessEndedAtUtc").ValueKind);
+
+            // Assigning it again opens everything again
+            Assert.Equal(HttpStatusCode.OK, (await staff.PostAsJsonAsync($"/api/admin/teams/{teamId}/channels", new { login = "ellsya" }, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await owner.GetAsync("/api/vods/302/timeline", ct)).StatusCode);
+
+            // "Revoke now": even the VOD the team worked on closes
+            Assert.Equal(HttpStatusCode.NoContent, (await staff.DeleteAsync($"/api/admin/teams/{teamId}/channels/{channelId}?mode=revoke", ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await owner.GetAsync("/api/vods/301/timeline", ct)).StatusCode);
             Assert.Equal(HttpStatusCode.Forbidden, (await owner.GetAsync("/api/vods/302/timeline", ct)).StatusCode);
 
             var audit = await GetJsonAsync(staff, $"/api/admin/audit?teamId={teamId}");

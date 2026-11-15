@@ -11,8 +11,8 @@ using TwitchDownloaderWeb.Data;
 namespace TwitchDownloaderWeb.Data.Migrations
 {
     [DbContext(typeof(LibraryDbContext))]
-    [Migration("20261115023842_TeamChannelLinks")]
-    partial class TeamChannelLinks
+    [Migration("20261115025122_TeamChannels")]
+    partial class TeamChannels
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -297,6 +297,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
+
+                    b.Property<DateTime?>("AccessEndedAtUtc")
+                        .HasColumnType("TEXT");
 
                     b.Property<DateTime>("AddedAtUtc")
                         .HasColumnType("TEXT");

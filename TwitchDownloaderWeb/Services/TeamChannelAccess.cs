@@ -19,10 +19,11 @@ namespace TwitchDownloaderWeb.Services
     }
 
     /// <summary>
-    /// Which VODs a team may work on (badrfly, 2026-11-15): members no longer add channels, VOD links or clip links; the app Owner assigns
-    /// each team its channels (<see cref="SavedChannel"/>, on the registration link and on the Admin page) and the team sees only their VODs.
-    /// A VOD the team already has library entries or markers on stays open, so work made before a channel was assigned or removed keeps
-    /// playing. Scoped: it reads <see cref="LibraryDbContext.Channels"/> through the team query filter, so it must run inside a team request.
+    /// Which VODs a team may open (badrfly, 2026-11-15): members no longer add channels, VOD links or clip links; the app Owner assigns
+    /// each team its channels (<see cref="SavedChannel"/>, on the registration link and on the Admin page) and the team opens only their VODs.
+    /// Strict: a VOD whose channel isn't assigned is closed, even if the team worked on it. The one exception is a channel the Owner removed
+    /// with "keep existing work" (<see cref="SavedChannel.AccessEndedAtUtc"/>): its VODs the team already has entries or markers on stay open.
+    /// Scoped: it reads <see cref="LibraryDbContext.Channels"/> through the team query filter, so it must run inside a team request.
     /// </summary>
     public sealed class TeamChannelAccess(LibraryDbContext db, IVodDetailsSource vods, IMemoryCache cache)
     {
@@ -51,7 +52,7 @@ namespace TwitchDownloaderWeb.Services
         public Task<bool> IsAssignedAsync(string login, CancellationToken cancellationToken)
         {
             var normalized = login.ToLowerInvariant();
-            return db.Channels.AsNoTracking().AnyAsync(x => x.Login == normalized, cancellationToken);
+            return db.Channels.AsNoTracking().AnyAsync(x => x.Login == normalized && x.AccessEndedAtUtc == null, cancellationToken);
         }
 
         /// <summary>Bumped when the Owner changes a team's channels, which makes every cached answer for that team stale at once.</summary>
@@ -62,11 +63,8 @@ namespace TwitchDownloaderWeb.Services
 
         private async Task<VodAccess> DecideAsync(long vodId, CancellationToken cancellationToken)
         {
-            if (await db.Entries.AsNoTracking().AnyAsync(x => x.VodId == vodId, cancellationToken)
-                || await db.Markers.AsNoTracking().AnyAsync(x => x.VodId == vodId, cancellationToken))
-                return VodAccess.Allowed;
-
-            var channels = await db.Channels.AsNoTracking().Select(x => new { x.Login, x.TwitchUserId }).ToListAsync(cancellationToken);
+            var channels = await db.Channels.AsNoTracking().Select(x => new { x.Login, x.TwitchUserId, Ended = x.AccessEndedAtUtc != null })
+                .ToListAsync(cancellationToken);
             if (channels.Count == 0)
                 return VodAccess.NotAssigned;
 
@@ -84,10 +82,19 @@ namespace TwitchDownloaderWeb.Services
                 return VodAccess.NotFound;
 
             // Compare by Twitch user ID first: a streamer can rename their login
-            var match = channels.Any(x =>
+            var match = channels.FirstOrDefault(x =>
                 (!string.IsNullOrEmpty(owner.UserId) && x.TwitchUserId == owner.UserId)
                 || (!string.IsNullOrEmpty(owner.Login) && string.Equals(x.Login, owner.Login, StringComparison.OrdinalIgnoreCase)));
-            return match ? VodAccess.Allowed : VodAccess.NotAssigned;
+            if (match is null)
+                return VodAccess.NotAssigned;
+            if (!match.Ended)
+                return VodAccess.Allowed;
+
+            // Removed with "keep existing work": only VODs the team already worked on
+            return await db.Entries.AsNoTracking().AnyAsync(x => x.VodId == vodId, cancellationToken)
+                   || await db.Markers.AsNoTracking().AnyAsync(x => x.VodId == vodId, cancellationToken)
+                ? VodAccess.Allowed
+                : VodAccess.NotAssigned;
         }
 
         private async Task<VodOwner?> GetOwnerAsync(long vodId)

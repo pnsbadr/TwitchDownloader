@@ -150,7 +150,7 @@ function teamRow(team) {
         ? el("span", { class: "badge ok", title: "Members can download picked segments joined into one file" }, "Joined segments")
         : null,
       el("div", { class: "muted small-text" },
-        team.channels.length ? `Channels: ${team.channels.map((c) => c.displayName).join(", ")}` : "No channels yet: the team sees no VODs"),
+        channelSummary(team)),
       el("div", { class: "muted small-text" },
         `${team.ownerUsername ? `Owner ${team.ownerUsername}` : "No owner yet"} · ${plural(team.memberCount, "member")} · `
         + `${plural(team.entryCount, "entry", "entries")} · ${formatBytes(team.diskBytes)} on disk · `
@@ -184,6 +184,14 @@ async function toggleTeamDetails(team, details) {
   render("7");
 }
 
+function channelSummary(team) {
+  const active = team.channels.filter((c) => !c.accessEndedAtUtc).map((c) => c.displayName);
+  const ended = team.channels.filter((c) => c.accessEndedAtUtc).map((c) => c.displayName);
+  if (!active.length && !ended.length) return "No channels yet: the team sees no VODs";
+  return [active.length ? `Channels: ${active.join(", ")}` : "No channels assigned", ended.length ? `existing work only: ${ended.join(", ")}` : null]
+    .filter(Boolean).join(" · ");
+}
+
 // The Twitch channels a team works on: its members only see these channels' VODs
 function toggleTeamChannels(team, details) {
   if (!details.hidden && details.dataset.view === "channels") { details.hidden = true; return; }
@@ -202,19 +210,31 @@ function toggleTeamChannels(team, details) {
       showError(error);
     }
   });
+  const run = async (method, url, body) => {
+    try {
+      await api(method, url, body);
+      await refreshTeam(team.id, details);
+    } catch (error) {
+      showError(error);
+    }
+  };
+  const remove = (channel, mode, label, title, danger) => el("button", { type: "button", class: danger ? "link danger small" : "link small", title,
+    onclick: () => run("DELETE", `/api/admin/teams/${team.id}/channels/${channel.id}?mode=${mode}`) }, label);
   const list = el("ul", { class: "plain-list" }, ...team.channels.map((channel) => el("li", { class: "list-row" },
-    el("div", { class: "grow" }, el("strong", {}, channel.displayName), el("span", { class: "muted small-text" }, ` ${channel.login} · added ${formatWhen(channel.addedAtUtc)}`)),
-    el("button", { type: "button", class: "link danger small", onclick: async () => {
-      try {
-        await api("DELETE", `/api/admin/teams/${team.id}/channels/${channel.id}`);
-        await refreshTeam(team.id, details);
-      } catch (error) {
-        showError(error);
-      }
-    } }, "Remove"))));
+    el("div", { class: "grow" }, el("strong", {}, channel.displayName),
+      channel.accessEndedAtUtc ? el("span", { class: "badge", title: "No new VODs; VODs the team already worked on stay open" }, "Existing work only") : null,
+      el("span", { class: "muted small-text" }, ` ${channel.login} · added ${formatWhen(channel.addedAtUtc)}`
+        + (channel.accessEndedAtUtc ? ` · new VODs closed ${formatWhen(channel.accessEndedAtUtc)}` : ""))),
+    el("div", { class: "row admin-actions" },
+      channel.accessEndedAtUtc
+        ? el("button", { type: "button", class: "link small", onclick: () => run("POST", `/api/admin/teams/${team.id}/channels`, { login: channel.login }) },
+          "Assign again")
+        : remove(channel, "future", "Stop new VODs", "The team keeps the VODs it already has clips or markers on, and loses the rest.", false),
+      remove(channel, "revoke", "Revoke now", "The team loses every VOD of this channel at once, including work it already did.", true)))));
   if (!team.channels.length) list.append(el("li", { class: "muted" }, "No channels yet."));
   details.replaceChildren(
-    el("p", { class: "muted small-text" }, "Members only see and work on these channels' VODs. Removing one keeps VODs the team already worked on."),
+    el("p", { class: "muted small-text" }, "Members only see and work on these channels' VODs. \"Stop new VODs\" keeps the VODs the team "
+      + "already worked on; \"Revoke now\" closes every VOD of the channel, work included."),
     list, add);
   input.focus();
 }

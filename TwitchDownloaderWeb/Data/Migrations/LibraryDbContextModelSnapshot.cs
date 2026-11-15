@@ -295,6 +295,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
+                    b.Property<DateTime?>("AccessEndedAtUtc")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime>("AddedAtUtc")
                         .HasColumnType("TEXT");
 

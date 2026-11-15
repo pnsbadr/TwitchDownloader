@@ -37,7 +37,7 @@ namespace TwitchDownloaderWeb.Endpoints
 
         private static async Task<IResult> ListChannels(LibraryDbContext db, CancellationToken cancellationToken)
         {
-            var channels = await db.Channels.AsNoTracking().OrderBy(x => x.DisplayName).ToListAsync(cancellationToken);
+            var channels = await db.Channels.AsNoTracking().Where(x => x.AccessEndedAtUtc == null).OrderBy(x => x.DisplayName).ToListAsync(cancellationToken);
             return Results.Ok(channels.Select(ChannelDto.From));
         }
 

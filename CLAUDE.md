@@ -107,9 +107,11 @@ Plan and badrfly's decisions: Claude Doc "Logins, teams and permissions plan". B
 - **Team channels** (badrfly, 2026-11-15, for the frontend rework): members can no longer add channels, VOD links or Twitch clip links.
   The app Owner (or a moderator with `StaffPermission.ManageTeamChannels`) assigns each team its Twitch channels on team registration/owner
   links (`AccountLinks.ChannelsJson`, checked on Twitch when the link is made, added when it's used) and on the Admin page's Teams tab
-  (`/api/admin/teams/{id}/channels`, audited `channel.added`/`channel.removed`). `TeamChannelAccess` decides which VODs a team may open:
-  the VOD's channel (GQL owner, cached 12 h; matched by Twitch user ID, then login) must be assigned, **or the team already has entries or
-  markers on that VOD** (work made before a channel was assigned or removed keeps playing). Every team endpoint taking a VOD ID from the
+  (`/api/admin/teams/{id}/channels`, audited `channel.added`/`channel.removed`). `TeamChannelAccess` decides which VODs a team may open,
+  **strictly**: the VOD's channel (GQL owner, cached 12 h; matched by Twitch user ID, then login) must be assigned; work already on a VOD
+  doesn't open it. Removing a channel takes a mode (badrfly): `?mode=revoke` deletes the row (every VOD closes now, work included) and
+  `?mode=future` sets `SavedChannel.AccessEndedAtUtc` (no new VODs and gone from the team's lists and audio watching; VODs the team has
+  entries or markers on stay open). Assigning it again (POST or a link) clears it. Every team endpoint taking a VOD ID from the
   client declares `.RequireChannelVod()` (route `{vodId}`) or checks in the handler (`/api/vods/info`, `POST /api/entries`, channel VOD
   lists); refused → 403 `code: "channel-not-assigned"`. Answers are cached 30 s per team+VOD; a channel change clears them
   (`TeamChannelAccess.Forget`). `TeamPermission.ManageChannels` is no longer used (kept so the bit isn't reused, not in the catalog).
@@ -279,7 +281,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `POST /api/vods/{id}/segment-downloads` `{ markerIds, combined?, quality?, entryId? }` | Segment download (202; `GenerateFiles`). `combined` without the team feature → 403 `code: "combine-not-enabled"`. Markers must be the team's segments on that VOD (400) |
 | `GET /api/segment-downloads?vodIds=` / `GET .../{id}` / `.../{id}/files/{position}` / `.../{id}/combined` / `.../{id}/zip` / `DELETE .../{id}` | `{ id, vodId, entryId, title, quality, combined, status: Queued\|Running\|Ready\|Failed, error, expiresAtUtc, combinedFileUrl, zipUrl, canDelete, items: [{ position, label, startSeconds, endSeconds, status, error, fileSizeBytes, audioRestoredSeconds, audioMutedSeconds, fileUrl }] }`; files audited `file.served`. Delete own (`GenerateFiles`) or anyone's (`DeleteAnyEntries`) |
 | `PUT /api/admin/teams/{id}/features` `{ combineSegmentDownloads }` | App Owner only: per-team features being tried out |
-| `GET,POST /api/admin/teams/{id}/channels` `{ login }` / `DELETE .../channels/{channelId}` | A team's channels (`ManageTeamChannels`; GET also `ViewTeamsAndUsers`). POST checks Twitch (404) and duplicates (409). Team links take `channels: [logins]` too; `GET /api/admin/teams` lists each team's `channels` |
+| `GET,POST /api/admin/teams/{id}/channels` `{ login }` / `DELETE .../channels/{channelId}?mode=revoke\|future` | A team's channels (`accessEndedAtUtc` set = existing work only) (`ManageTeamChannels`; GET also `ViewTeamsAndUsers`). POST checks Twitch (404) and duplicates (409). Team links take `channels: [logins]` too; `GET /api/admin/teams` lists each team's `channels` |
 | `POST /api/vods/download` | Phase 1 dev endpoint: synchronous, writes `<title>.mp4` straight into `downloads/`, not part of the library |
 
 `canDownload` in entry responses checks the generated file's expiry itself, since cleanup runs periodically.

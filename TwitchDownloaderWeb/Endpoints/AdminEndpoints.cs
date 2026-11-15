@@ -21,9 +21,11 @@ namespace TwitchDownloaderWeb.Endpoints
         DateTime? DisabledAtUtc, bool AutoSaveAudio, long DiskBytes, DateTime? LastActiveAtUtc, bool CombineSegmentDownloads,
         IReadOnlyList<AdminChannelDto> Channels);
 
-    public sealed record AdminChannelDto(int Id, string Login, string DisplayName, DateTime AddedAtUtc)
+    /// <param name="AccessEndedAtUtc">Removed with "keep existing work": only VODs the team already worked on stay open. Null = assigned.</param>
+    public sealed record AdminChannelDto(int Id, string Login, string DisplayName, DateTime AddedAtUtc, DateTime? AccessEndedAtUtc)
     {
-        public static AdminChannelDto From(SavedChannel channel) => new(channel.Id, channel.Login, channel.DisplayName, channel.AddedAtUtc);
+        public static AdminChannelDto From(SavedChannel channel) =>
+            new(channel.Id, channel.Login, channel.DisplayName, channel.AddedAtUtc, channel.AccessEndedAtUtc);
     }
 
     /// <param name="Login">A Twitch login or twitch.tv/&lt;login&gt; link.</param>
@@ -354,8 +356,17 @@ namespace TwitchDownloaderWeb.Endpoints
             if (ChannelService.NormalizeLogin(request.Login) is not { } login)
                 return ChannelEndpoints.InvalidLogin("login");
 
-            if (await db.Channels.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(x => x.TeamId == id && x.Login == login, cancellationToken) is { } existing)
-                return Results.Problem(detail: $"{team.Name} already has {existing.DisplayName}.", statusCode: StatusCodes.Status409Conflict);
+            if (await db.Channels.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.TeamId == id && x.Login == login, cancellationToken) is { } existing)
+            {
+                if (existing.AccessEndedAtUtc is null)
+                    return Results.Problem(detail: $"{team.Name} already has {existing.DisplayName}.", statusCode: StatusCodes.Status409Conflict);
+
+                // Removed earlier with "keep existing work": assigning it again opens all its VODs again
+                Reassign(db, team, existing, $"by {me.Username}");
+                await db.SaveChangesAsync(cancellationToken);
+                TeamChannelAccess.Forget(team.Id);
+                return Results.Ok(AdminChannelDto.From(existing));
+            }
 
             ChannelDetails? details;
             try
@@ -383,18 +394,50 @@ namespace TwitchDownloaderWeb.Endpoints
             return Results.Created($"/api/admin/teams/{id}/channels/{channel.Id}", AdminChannelDto.From(channel));
         }
 
-        private static async Task<IResult> RemoveTeamChannel(int id, int channelId, StaffContext me, LibraryDbContext db, CancellationToken cancellationToken)
+        /// <param name="mode">
+        /// "revoke" (the team loses every VOD of the channel at once, work on them included) or "future" (the team keeps the VODs it
+        /// already has entries or markers on, nothing else; badrfly, 2026-11-15). Required.
+        /// </param>
+        private static async Task<IResult> RemoveTeamChannel(int id, int channelId, string? mode, StaffContext me, LibraryDbContext db,
+            CancellationToken cancellationToken)
         {
+            var revoke = mode?.Trim().ToLowerInvariant() switch
+            {
+                "revoke" => true,
+                "future" => (bool?)false,
+                _ => null,
+            };
+            if (revoke is null)
+                return Results.ValidationProblem(new Dictionary<string, string[]>
+                    { ["mode"] = ["Mode must be revoke (all access ends now) or future (only VODs already worked on stay open)."] });
+
             var team = await db.Teams.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
             var channel = await db.Channels.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Id == channelId && x.TeamId == id, cancellationToken);
             if (team is null || channel is null)
                 return Results.Problem(detail: "Channel not found.", statusCode: StatusCodes.Status404NotFound);
 
-            db.Channels.Remove(channel);
-            db.Audit(AuditActions.ChannelRemoved, null, $"{channel.DisplayName} ({channel.Login}) from \"{team.Name}\" by {me.Username}", teamId: team.Id);
+            if (revoke.Value)
+            {
+                db.Channels.Remove(channel);
+                db.Audit(AuditActions.ChannelRemoved, null,
+                    $"{channel.DisplayName} ({channel.Login}) from \"{team.Name}\" by {me.Username}: access revoked now", teamId: team.Id);
+            }
+            else if (channel.AccessEndedAtUtc is null)
+            {
+                channel.AccessEndedAtUtc = DateTime.UtcNow;
+                db.Audit(AuditActions.ChannelRemoved, null,
+                    $"{channel.DisplayName} ({channel.Login}) from \"{team.Name}\" by {me.Username}: no new VODs, existing work kept", teamId: team.Id);
+            }
             await db.SaveChangesAsync(cancellationToken);
             TeamChannelAccess.Forget(team.Id);
             return Results.NoContent();
+        }
+
+        /// <summary>Assigns a channel again that was removed with "keep existing work" (saved with the caller's next SaveChanges).</summary>
+        internal static void Reassign(LibraryDbContext db, Team team, SavedChannel channel, string how)
+        {
+            channel.AccessEndedAtUtc = null;
+            db.Audit(AuditActions.ChannelAdded, null, $"{channel.DisplayName} ({channel.Login}) to \"{team.Name}\" again {how}", teamId: team.Id);
         }
 
         /// <summary>Adds the channel to the team (saved with the caller's next SaveChanges) with its audit event.</summary>

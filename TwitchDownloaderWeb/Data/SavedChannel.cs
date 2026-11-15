@@ -19,5 +19,12 @@ namespace TwitchDownloaderWeb.Data
         public string? AddedByUserId { get; set; }
 
         public int TeamId { get; set; }
+
+        /// <summary>
+        /// Set when the app Owner removed the channel with "keep existing work" (badrfly, 2026-11-15): the team keeps the VODs of this channel
+        /// it already has entries or markers on, but no other VODs, and the channel no longer shows in its lists. Null = assigned.
+        /// Assigning the channel again clears it. Removing it with "revoke now" deletes the row, which closes every VOD of the channel.
+        /// </summary>
+        public DateTime? AccessEndedAtUtc { get; set; }
     }
 }

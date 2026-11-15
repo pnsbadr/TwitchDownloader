@@ -327,9 +327,19 @@ namespace TwitchDownloaderWeb.Endpoints
             var linkChannels = LinkChannel.Read(link.ChannelsJson);
             if (linkChannels.Count > 0)
             {
-                var existing = await db.Channels.IgnoreQueryFilters().Where(x => x.TeamId == team.Id).Select(x => x.Login).ToListAsync(cancellationToken);
-                foreach (var channel in linkChannels.Where(x => !existing.Contains(x.Login)))
-                    AdminEndpoints.AddChannel(db, team, channel, $"({link.Kind} link {link.Id})");
+                var existing = await db.Channels.IgnoreQueryFilters().Where(x => x.TeamId == team.Id).ToListAsync(cancellationToken);
+                foreach (var channel in linkChannels)
+                {
+                    if (existing.FirstOrDefault(x => x.Login == channel.Login) is { } known)
+                    {
+                        if (known.AccessEndedAtUtc is not null)
+                            AdminEndpoints.Reassign(db, team, known, $"({link.Kind} link {link.Id})");
+                    }
+                    else
+                    {
+                        AdminEndpoints.AddChannel(db, team, channel, $"({link.Kind} link {link.Id})");
+                    }
+                }
                 TeamChannelAccess.Forget(team.Id);
             }
 
