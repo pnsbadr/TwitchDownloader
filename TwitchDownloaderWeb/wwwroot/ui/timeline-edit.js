@@ -521,6 +521,9 @@ export const editing = {
       entries.push({ icon: "pencil-simple", label: item.kind === "clip" ? "Rename" : "Edit title and color", run: () => this.editTitle(item) });
     }
     if (this.canCopyItem(item)) entries.push({ icon: "copy", label: "Make a copy on my row", run: () => this.copyItem(item) });
+    if (this.mode === "vod" && (item.kind === "segment" || (item.kind === "clip" && item.data.kind === "Vod"))) {
+      entries.push({ icon: "download-simple", label: "Add to the export list", run: () => this.hooks.onExport?.(item) });
+    }
     if (this.canDeleteItem(item)) entries.push({ icon: "trash", label: "Delete", danger: true, run: () => this.deleteItem(item) });
     if (!entries.length) entries.push({ icon: "eye", label: "View only", run: () => {} });
     openMenu(event.clientX, event.clientY, entries);

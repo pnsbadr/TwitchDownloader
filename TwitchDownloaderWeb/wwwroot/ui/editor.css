@@ -439,28 +439,131 @@ button.team-pill:hover { background: var(--bg-4); }
 .tl-foot-left, .tl-foot-right { display: flex; align-items: center; gap: 2px; }
 .tl-foot sl-range { width: 180px; margin: 0 6px; --track-color-active: var(--accent); }
 
-/* ---------- export screen (placeholder until step 8) ---------- */
+/* ---------- export screen (step 8, ui/export.js) ---------- */
 
-.view-export {
-  display: flex;
-  flex-direction: column;
+.view-export:not([hidden]) {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(300px, 2fr);
+  grid-template-rows: minmax(220px, 44%) minmax(0, 1fr);
+  grid-template-areas: "preview settings" "list history";
   padding: 8px;
   gap: 8px;
+  min-height: 0;
 }
-.export-soon {
-  flex: 1;
+.export-player { grid-area: preview; }
+.export-settings { grid-area: settings; }
+.export-list-panel { grid-area: list; }
+.export-history { grid-area: history; }
+
+.export-panel {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
+  min-height: 0;
+  min-width: 0;
   background: var(--bg-1);
-  border: 1px dashed var(--line-strong);
+  border: 1px solid var(--line);
   border-radius: var(--radius);
+  overflow: hidden;
 }
-.export-soon sl-icon { font-size: 48px; color: var(--text-faint); }
-.export-soon h2 { margin: 8px 0 4px; font-size: 30px; }
-.export-foot { display: flex; justify-content: flex-end; }
+.export-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 8px 4px 12px;
+  min-height: 38px;
+  border-bottom: 1px solid var(--line);
+}
+.export-panel-head .display { font-size: 18px; color: var(--text-dim); }
+.export-count { font-size: 13px; }
+.export-empty-note { padding: 16px 14px; margin: 0; }
+
+.xp-progress { height: 6px; background: var(--bg-3); cursor: pointer; }
+.xp-progress-fill { height: 100%; width: 0; background: var(--accent); }
+
+/* settings of the selected item */
+.export-settings-body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+.xs-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.xs-name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xs-label { display: block; font-size: 13px; color: var(--text-dim); margin-bottom: 4px; }
+.xs-note { font-size: 13px; margin: 0; }
+.xs-range { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.xs-format { display: flex; flex-direction: column; gap: 8px; }
+.xs-checks { display: flex; gap: 18px; }
+.xs-render {
+  position: relative;
+  align-self: flex-start;
+  width: 108px;
+  aspect-ratio: 9 / 16;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-small);
+  background: #000;
+  overflow: hidden;
+  cursor: pointer;
+}
+.xs-render img, .xs-render video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.xs-render sl-icon { position: absolute; inset: 0; margin: auto; font-size: 34px; color: #fff; filter: drop-shadow(0 1px 3px rgb(0 0 0 / 0.8)); }
+.xs-render.playing { width: 180px; cursor: default; }
+
+/* the list */
+.export-list { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.export-drop-hint { margin: auto; }
+.export-drop-hint sl-icon { font-size: 40px; color: var(--text-faint); }
+.xl-row {
+  display: grid;
+  grid-template-columns: auto 96px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 6px 6px 2px;
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.xl-row:hover { background: var(--bg-3); }
+.xl-row.selected { border-color: var(--accent); background: var(--bg-3); }
+.xl-row.has-error { border-color: var(--danger); }
+.xl-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.xl-row.sortable-ghost { opacity: 0.4; }
+.xl-handle { cursor: grab; color: var(--text-faint); display: flex; padding: 4px 2px; font-size: 18px; }
+.xl-thumb { width: 96px; aspect-ratio: 16 / 9; border-radius: var(--radius-small); background: var(--bg-4) center / cover; position: relative; }
+.xl-kind { position: absolute; left: 4px; bottom: 4px; display: flex; padding: 2px; border-radius: 3px; background: rgb(0 0 0 / 0.75); font-size: 14px; }
+.xl-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.xl-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.xl-kind-label { font: 600 12px/1 var(--font-display); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); flex: none; }
+.xl-name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xl-meta { font-size: 13px; color: var(--text-dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xl-error { font-size: 13px; color: #ff8a8a; }
+
+.export-foot { display: flex; align-items: center; justify-content: flex-end; gap: 16px; padding: 8px; border-top: 1px solid var(--line); }
+.export-summary { font-size: 14px; }
 .export-foot sl-button::part(base) { font-family: var(--font-display); font-size: 20px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; padding: 0 28px; }
+
+/* your exports */
+.export-batches { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+.xb { background: var(--bg-2); border-radius: var(--radius); padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; }
+.xb-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.xb-status { font: 600 12px/1 var(--font-display); letter-spacing: 0.08em; text-transform: uppercase; padding: 3px 6px; border-radius: 3px; background: var(--bg-4); }
+.xb-ready .xb-status { background: rgb(60 207 122 / 0.2); color: var(--ok); }
+.xb-failed .xb-status { background: rgb(240 82 82 / 0.2); color: #ff8a8a; }
+.xb-running .xb-status { background: var(--accent-soft); color: var(--accent-strong); }
+.xb-item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 2px 0; }
+.xb-item > sl-icon { color: var(--text-dim); }
+.xb-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.xb-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.xb-meta { font-size: 12px; }
+.xb-main sl-progress-bar { --height: 4px; --indicator-color: var(--accent); }
+.xb-expires { font-size: 12px; }
+
+/* the VOD range pop-up */
+.vod-dialog::part(panel) { width: min(860px, 92vw); }
+.vd-screen { aspect-ratio: 16 / 9; flex: none; border-radius: var(--radius-small); overflow: hidden; }
+.vd-controls { padding: 4px 0; }
+.vd-clock { color: var(--text-dim); font-size: 13px; }
+.vd-fields { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; margin-top: 6px; }
+.vd-fields sl-input { flex: 1 1 260px; }
+.vd-time { display: flex; align-items: flex-end; gap: 4px; }
+.vd-time .xs-label { margin-right: 4px; align-self: center; margin-bottom: 0; }
 
 /* ---------- small screens ---------- */
 
