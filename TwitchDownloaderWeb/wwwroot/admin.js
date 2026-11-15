@@ -69,6 +69,7 @@ async function start() {
   if (!tabs.length) return;
 
   $("registration-block").hidden = !can("ManageTeamLinks");
+  $("registration-channels-label").hidden = !can("ManageTeamChannels");
   $("tabs").replaceChildren(...tabs.map((tab) => el("button", { type: "button", class: "seg", "data-tab": tab.id, onclick: () => openTab(tab) }, tab.label)));
   $("tabs").hidden = false;
 
@@ -119,6 +120,9 @@ function teamRow(team) {
   if (can("ViewTeamsAndUsers")) {
     actions.push(el("button", { type: "button", class: "secondary small", onclick: () => toggleTeamDetails(team, details) }, "Members and activity"));
   }
+  if (can("ManageTeamChannels")) {
+    actions.push(el("button", { type: "button", class: "secondary small", onclick: () => toggleTeamChannels(team, details) }, "Channels"));
+  }
   if (can("ViewAsSupport")) {
     actions.push(el("button", { type: "button", class: "secondary small", title: "Open this team's library read-only. The visit is logged.",
       onclick: () => viewAsSupport(team) }, "View as support"));
@@ -146,6 +150,8 @@ function teamRow(team) {
         ? el("span", { class: "badge ok", title: "Members can download picked segments joined into one file" }, "Joined segments")
         : null,
       el("div", { class: "muted small-text" },
+        team.channels.length ? `Channels: ${team.channels.map((c) => c.displayName).join(", ")}` : "No channels yet: the team sees no VODs"),
+      el("div", { class: "muted small-text" },
         `${team.ownerUsername ? `Owner ${team.ownerUsername}` : "No owner yet"} · ${plural(team.memberCount, "member")} · `
         + `${plural(team.entryCount, "entry", "entries")} · ${formatBytes(team.diskBytes)} on disk · `
         + `${team.lastActiveAtUtc ? `last active ${formatWhen(team.lastActiveAtUtc)}` : "nobody active yet"} · created ${formatWhen(team.createdAtUtc)}`)),
@@ -154,8 +160,9 @@ function teamRow(team) {
 }
 
 async function toggleTeamDetails(team, details) {
-  if (!details.hidden) { details.hidden = true; return; }
+  if (!details.hidden && details.dataset.view === "members") { details.hidden = true; return; }
   details.hidden = false;
+  details.dataset.view = "members";
   const render = async (days) => {
     try {
       const detail = await api("GET", `/api/admin/teams/${team.id}?days=${days}`);
@@ -175,6 +182,51 @@ async function toggleTeamDetails(team, details) {
   const table = el("div");
   details.replaceChildren(el("div", { class: "row" }, el("label", { class: "inline-label" }, "Period", periodSelect(render))), table);
   render("7");
+}
+
+// The Twitch channels a team works on: its members only see these channels' VODs
+function toggleTeamChannels(team, details) {
+  if (!details.hidden && details.dataset.view === "channels") { details.hidden = true; return; }
+  details.hidden = false;
+  details.dataset.view = "channels";
+  const input = el("input", { maxlength: "100", placeholder: "Twitch name or link" });
+  const add = el("form", { class: "row", novalidate: "" },
+    el("label", { class: "grow" }, "Add a channel", input),
+    el("button", { type: "submit" }, "Add"));
+  add.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      await api("POST", `/api/admin/teams/${team.id}/channels`, { login: input.value });
+      await refreshTeam(team.id, details);
+    } catch (error) {
+      showError(error);
+    }
+  });
+  const list = el("ul", { class: "plain-list" }, ...team.channels.map((channel) => el("li", { class: "list-row" },
+    el("div", { class: "grow" }, el("strong", {}, channel.displayName), el("span", { class: "muted small-text" }, ` ${channel.login} · added ${formatWhen(channel.addedAtUtc)}`)),
+    el("button", { type: "button", class: "link danger small", onclick: async () => {
+      try {
+        await api("DELETE", `/api/admin/teams/${team.id}/channels/${channel.id}`);
+        await refreshTeam(team.id, details);
+      } catch (error) {
+        showError(error);
+      }
+    } }, "Remove"))));
+  if (!team.channels.length) list.append(el("li", { class: "muted" }, "No channels yet."));
+  details.replaceChildren(
+    el("p", { class: "muted small-text" }, "Members only see and work on these channels' VODs. Removing one keeps VODs the team already worked on."),
+    list, add);
+  input.focus();
+}
+
+async function refreshTeam(teamId, details) {
+  teams = await api("GET", "/api/admin/teams");
+  const team = teams.find((t) => t.id === teamId);
+  const row = details.closest("li");
+  const fresh = teamRow(team);
+  row.replaceWith(fresh);
+  const freshDetails = fresh.querySelector(".admin-details");
+  toggleTeamChannels(team, freshDetails);
 }
 
 async function viewAsSupport(team) {
@@ -325,7 +377,8 @@ async function loadLinks() {
     return el("li", { class: "list-row" },
       el("div", { class: "grow" },
         el("strong", {}, link.note || what),
-        el("div", { class: "muted small-text" }, `${what} · made ${formatWhen(link.createdAtUtc)} · ${state.text}`)),
+        el("div", { class: "muted small-text" }, `${what} · made ${formatWhen(link.createdAtUtc)} · ${state.text}`
+          + (link.channels?.length ? ` · channels: ${link.channels.join(", ")}` : ""))),
       state.open ? el("button", { type: "button", class: "secondary small", onclick: () => revoke(link) }, "Revoke") : null);
   }));
   if (!links.length) $("links").append(el("li", { class: "muted" }, "No links in the last 30 days."));
@@ -343,8 +396,10 @@ async function revoke(link) {
 $("registration-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
-    const link = await api("POST", "/api/admin/links", { kind: "registration", note: $("registration-note").value });
+    const channels = $("registration-channels").value.split(/[,\s]+/).filter(Boolean);
+    const link = await api("POST", "/api/admin/links", { kind: "registration", note: $("registration-note").value, channels });
     $("registration-note").value = "";
+    $("registration-channels").value = "";
     $("link-new").replaceChildren(linkBox(link.url));
     loadLinks();
   } catch (error) {
