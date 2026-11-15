@@ -34,6 +34,8 @@ namespace TwitchDownloaderWeb.Data
         public DbSet<VodMarker> Markers => Set<VodMarker>();
         public DbSet<TimelineRow> TimelineRows => Set<TimelineRow>();
         public DbSet<MemberVod> MemberVods => Set<MemberVod>();
+        public DbSet<Video> Videos => Set<Video>();
+        public DbSet<VideoSegment> VideoSegments => Set<VideoSegment>();
         public DbSet<SegmentExport> SegmentExports => Set<SegmentExport>();
         public DbSet<SegmentExportItem> SegmentExportItems => Set<SegmentExportItem>();
 
@@ -130,6 +132,26 @@ namespace TwitchDownloaderWeb.Data
                 entity.HasIndex(x => new { x.TeamId, x.VodId, x.UserId });
                 entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
                 entity.HasQueryFilter(x => !ScopedToTeam || x.TeamId == ScopeTeamId);
+            });
+
+            modelBuilder.Entity<Video>(entity =>
+            {
+                entity.Property(x => x.Title).HasMaxLength(Video.MaxTitleLength);
+                entity.Property(x => x.ChannelName).HasMaxLength(100);
+                entity.HasIndex(x => new { x.TeamId, x.VodId });
+                entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne<TimelineRow>().WithMany().HasForeignKey(x => x.RowId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasMany(x => x.Segments).WithOne().HasForeignKey(x => x.VideoId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasQueryFilter(x => !ScopedToTeam || x.TeamId == ScopeTeamId);
+            });
+
+            modelBuilder.Entity<VideoSegment>(entity =>
+            {
+                entity.HasIndex(x => new { x.VideoId, x.MarkerId }).IsUnique();
+                entity.HasIndex(x => x.MarkerId);
+                entity.HasOne(x => x.Marker).WithMany().HasForeignKey(x => x.MarkerId).OnDelete(DeleteBehavior.Cascade);
+                // Same team as its segment (matches the markers' filter)
+                entity.HasQueryFilter(x => !ScopedToTeam || x.Marker!.TeamId == ScopeTeamId);
             });
 
             modelBuilder.Entity<MemberVod>(entity =>
@@ -237,6 +259,9 @@ namespace TwitchDownloaderWeb.Data
                         break;
                     case TimelineRow row:
                         if (row.TeamId == 0 && _actor.TeamId is { } rowTeam) row.TeamId = rowTeam;
+                        break;
+                    case Video video:
+                        if (video.TeamId == 0 && _actor.TeamId is { } videoTeam) video.TeamId = videoTeam;
                         break;
                     case MemberVod memberVod:
                         if (memberVod.TeamId == 0 && _actor.TeamId is { } memberVodTeam) memberVod.TeamId = memberVodTeam;

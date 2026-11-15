@@ -65,7 +65,11 @@ namespace TwitchDownloaderWeb.Endpoints
     /// review never make a clip longer than this.</param>
     /// <param name="Rows">Every member's rows on the VOD (see <see cref="TimelineRow"/>), by owner then position.</param>
     public sealed record TimelineDto(IReadOnlyList<TimelineClipDto> Clips, IReadOnlyList<MarkerDto> Markers, int MaxStoredClipSeconds,
-        IReadOnlyList<TimelineRowDto> Rows);
+        IReadOnlyList<TimelineRowDto> Rows)
+    {
+        /// <summary>The team's videos (linked segments) on the VOD.</summary>
+        public IReadOnlyList<VideoDto> Videos { get; init; } = [];
+    }
 
     /// <summary>A library entry's place on its VOD, for the strips on library and VOD cards.</summary>
     public sealed record EntryRangeDto(int Id, long VodId, string Title, string Kind, double Start, double? End, bool ReferenceOnly);
@@ -123,6 +127,8 @@ namespace TwitchDownloaderWeb.Endpoints
 
             var markers = await db.Markers.AsNoTracking().Where(x => x.VodId == vodId).ToListAsync(cancellationToken);
             var rows = await db.TimelineRows.AsNoTracking().Where(x => x.VodId == vodId).ToListAsync(cancellationToken);
+            var videos = await db.Videos.AsNoTracking().Include(x => x.Segments).ThenInclude(x => x.Marker)
+                .Where(x => x.VodId == vodId).OrderBy(x => x.CreatedAtUtc).ToListAsync(cancellationToken);
             var names = await UserNamesAsync(db, markers.Select(x => x.CreatedByUserId).Concat(rows.Select(x => x.UserId))
                 .Concat(clips.Select(x => int.TryParse(x.AddedByUserId, out var u) ? u : 0)), cancellationToken);
 
@@ -142,7 +148,10 @@ namespace TwitchDownloaderWeb.Endpoints
                 // The caller's rows first, then the others' by name
                 rows.OrderBy(x => x.UserId != team.UserId).ThenBy(x => names.GetValueOrDefault(x.UserId), StringComparer.OrdinalIgnoreCase)
                     .ThenBy(x => x.UserId).ThenBy(x => x.Position).ThenBy(x => x.Id)
-                    .Select(x => TimelineRowDto.From(x, names, team)).ToList()));
+                    .Select(x => TimelineRowDto.From(x, names, team)).ToList())
+            {
+                Videos = await VideoEndpoints.ToDtosAsync(db, videos, team, cancellationToken),
+            });
         }
 
         /// <summary>The first time a member opens a VOD they get one video row and one clip row on it (unless they already have one of that kind).</summary>
@@ -285,6 +294,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 + (markers.Count > 0 ? $" with {markers.Count} segment{(markers.Count == 1 ? "" : "s")}/moment{(markers.Count == 1 ? "" : "s")}" : ""));
             await db.SaveChangesAsync(cancellationToken);
 
+            await VideoEndpoints.DeleteEmptyAsync(db, row.VodId, cancellationToken);
             if (markers.Count > 0)
                 await liveEntries.MarkersChangedAsync(db, row.VodId, cancellationToken, mayCreate: false);
             return Results.NoContent();
@@ -439,6 +449,11 @@ namespace TwitchDownloaderWeb.Endpoints
             if (errors.Count > 0)
                 return Results.ValidationProblem(errors);
 
+            var breaksVideo = (request.EndSeconds is null && marker.EndSeconds is not null) || (request.RowId is { } newRow && newRow != marker.RowId);
+            if (breaksVideo && await VideoEndpoints.TitlesLinkingAsync(db, marker.Id, cancellationToken) is { Count: > 0 } linked)
+                return Results.Problem(detail: $"This segment is in the video \"{linked[0]}\". Unlink it there first.", statusCode: StatusCodes.Status409Conflict,
+                    extensions: new Dictionary<string, object?> { ["code"] = "segment-in-video" });
+
             if (request.RowId is { } rowId && rowId != marker.RowId)
             {
                 if (await CheckRowAsync(db, rowId, marker.VodId, TimelineRowKind.Video, marker.CreatedByUserId, cancellationToken) is { } rowProblem)
@@ -478,6 +493,7 @@ namespace TwitchDownloaderWeb.Endpoints
             db.Audit(AuditActions.MarkerDeleted, null,
                 $"VOD {marker.VodId} {Describe(marker)}");
             await db.SaveChangesAsync(cancellationToken);
+            await VideoEndpoints.DeleteEmptyAsync(db, marker.VodId, cancellationToken);
             await liveEntries.MarkersChangedAsync(db, marker.VodId, cancellationToken, makeLiveEntry);
             return Results.NoContent();
         }
