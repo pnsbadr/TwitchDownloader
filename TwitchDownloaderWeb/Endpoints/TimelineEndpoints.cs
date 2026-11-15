@@ -18,6 +18,8 @@ namespace TwitchDownloaderWeb.Endpoints
 
         /// <summary>The adder's username.</summary>
         public string? CreatedBy { get; init; }
+
+        public int? CopiedFromEntryId { get; init; }
     }
 
     /// <param name="UserId">The member who owns it and everything on it.</param>
@@ -45,6 +47,12 @@ namespace TwitchDownloaderWeb.Endpoints
     {
         /// <summary>The creator's video row it sits on.</summary>
         public int? RowId { get; init; }
+
+        /// <summary>The segment/moment it was copied from.</summary>
+        public int? CopiedFromMarkerId { get; init; }
+
+        /// <summary>The clip it was made from (Alt+drag).</summary>
+        public int? CopiedFromEntryId { get; init; }
 
         /// <summary>Whether this user may move, resize, split, recolor or retitle it (own with AddEntries, anyone's with EditAnyEntries).</summary>
         public bool CanEdit { get; init; }
@@ -110,7 +118,7 @@ namespace TwitchDownloaderWeb.Endpoints
             var clips = await db.Entries.AsNoTracking()
                 .Where(x => x.VodId == vodId)
                 .OrderBy(x => x.AddedAtUtc)
-                .Select(x => new { x.Id, x.Title, x.Kind, x.StartTime, x.EndTime, x.Status, x.FollowsMarkers, x.AddedByUserId, x.RowId })
+                .Select(x => new { x.Id, x.Title, x.Kind, x.StartTime, x.EndTime, x.Status, x.FollowsMarkers, x.AddedByUserId, x.RowId, x.CopiedFromEntryId })
                 .ToListAsync(cancellationToken);
 
             var markers = await db.Markers.AsNoTracking().Where(x => x.VodId == vodId).ToListAsync(cancellationToken);
@@ -127,6 +135,7 @@ namespace TwitchDownloaderWeb.Endpoints
                     RowId = x.RowId,
                     AddedByUserId = x.AddedByUserId,
                     CreatedBy = int.TryParse(x.AddedByUserId, out var u) ? names.GetValueOrDefault(u) : null,
+                    CopiedFromEntryId = x.CopiedFromEntryId,
                 }).ToList(),
                 markers.OrderBy(x => x.Seconds).Select(x => ToDto(x, names, team)).ToList(),
                 settings.Value.MaxStoredClipSeconds,
@@ -473,12 +482,14 @@ namespace TwitchDownloaderWeb.Endpoints
             return Results.NoContent();
         }
 
-        private static MarkerDto ToDto(VodMarker x, IReadOnlyDictionary<int, string> names, TeamContext team) =>
+        internal static MarkerDto ToDto(VodMarker x, IReadOnlyDictionary<int, string> names, TeamContext team) =>
             new(x.Id, x.VodId, x.Seconds, x.EndSeconds, x.Label, x.Color, x.CreatedByUserId, names.GetValueOrDefault(x.CreatedByUserId), x.CreatedAtUtc,
                 !team.IsSupport && CanDelete(team, x))
             {
                 CanEdit = !team.IsSupport && CanEdit(team, x),
                 RowId = x.RowId,
+                CopiedFromMarkerId = x.CopiedFromMarkerId,
+                CopiedFromEntryId = x.CopiedFromEntryId,
             };
 
         internal static async Task<Dictionary<int, string>> UserNamesAsync(LibraryDbContext db, IEnumerable<int> userIds, CancellationToken cancellationToken)
@@ -489,7 +500,7 @@ namespace TwitchDownloaderWeb.Endpoints
 
         public const double MinSegmentSeconds = 0.5;
 
-        private static string Describe(VodMarker marker) =>
+        internal static string Describe(VodMarker marker) =>
             (marker.EndSeconds is { } end ? $"from {FormatTime(marker.Seconds)} to {FormatTime(end)}" : $"at {FormatTime(marker.Seconds)}")
             + (marker.Label.Length > 0 ? $": \"{marker.Label}\"" : "");
 

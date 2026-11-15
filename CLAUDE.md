@@ -96,6 +96,12 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   row doesn't come back). Migrations `TimelineRows` + `TimelineRowsBackfill` put existing markers on their creator's row and entries on
   their adder's (entries from before accounts: the team owner's) row. Deleting a row deletes its segments/moments (audited `row.deleted`);
   a clip row that still holds clips → 409 `code: "row-has-clips"`. Hide/solo/lock are page-only.
+- **Copies** (`CopyEndpoints`, badrfly, 2026-11-15): others' segments/moments are editable only with `EditAnyEntries` (as before), clips with
+  `EditAnyEntries`; otherwise members copy them onto their own row (`AddEntries`): `POST /api/markers/{id}/copy`, `POST /api/entries/{id}/copy`
+  (a Ready stored clip's file is copied, otherwise it downloads again; Twitch clip entries aren't copied) and `POST /api/entries/{id}/copy-as-segment`
+  (Alt+drag of a clip onto a video row: a segment at exactly its times, labeled with its title). Copies remember their source
+  (`VodMarkers.CopiedFromMarkerId` / `CopiedFromEntryId`, `LibraryEntries.CopiedFromEntryId`, no FK). Members with `EditAnyEntries` choose
+  "Edit original" or "Make a copy" on the page.
 - `SegmentExports` + `SegmentExportItems` (cascade): **segment downloads** (badrfly, 2026-11-14). Members pick team segments on a card's strip/chips
   and download them: **one file per segment** (default, every team) or also **joined into one file** (`Combined`, only for teams where the app
   Owner turned on `Teams.CombineSegmentDownloads`, off by default; `PUT /api/admin/teams/{id}/features`, `RequireStaffOwner`). Segments **never
@@ -287,6 +293,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/admin/audit?teamId=&userId=&staffId=&before=&limit=` / `POST,DELETE /api/admin/support` | App log; view as support |
 | `GET /api/admin/staff` / `POST /api/admin/staff/invites` / `PUT /api/admin/staff/{id}/permissions` `{ permissions }` / `PUT .../disabled` / `POST .../password-reset` | Moderators (Owner only) |
 | `GET /api/timeline/entries?vodIds=1,2` | The team's library entries on up to 200 VODs: `[{ id, vodId, title, kind, start, end, referenceOnly }]` (card strips) |
+| `POST /api/markers/{id}/copy` / `POST /api/entries/{id}/copy` / `POST /api/entries/{id}/copy-as-segment`, body `{ rowId? }` | Copies onto one of the caller's rows (see Copies) → 201 with the new marker/entry (`copiedFrom...` set) |
 | `POST /api/vods/{id}/rows` `{ kind: video\|clip, name? }` / `PUT /api/rows/{id}` `{ name?, position? }` / `DELETE /api/rows/{id}` / `PUT /api/entries/{id}/row` `{ rowId }` | Rows (see `TimelineRows`). Add/change own rows (`AddEntries`); delete own or anyone's (`DeleteAnyEntries`); a clip moves only to another clip row of its adder on the same VOD (Edit own/any) |
 | `GET /api/vods/{id}/timeline` / `POST /api/vods/{id}/markers` `{ seconds, endSeconds?, label?, color?, rowId? }` / `PUT /api/markers/{id}` (same body, whole marker) / `DELETE /api/markers/{id}` / `GET /api/markers?vodIds=1,2` | Player timeline: `{ clips: [{ id, title, kind, start, end, referenceOnly, followsMarkers, canEdit, rowId, addedByUserId, createdBy }], maxStoredClipSeconds, markers: [{ id, vodId, seconds, endSeconds, label, color, createdBy, createdAtUtc, canDelete, canEdit, rowId }], rows: [{ id, userId, username, kind, position, name, canEdit }] }` (rows: the caller's first, then by member) (team's own); `/api/markers` lists markers of up to 200 VODs (library and VOD cards). Entries carry `startSeconds`/`endSeconds` for placing them (and `followsMarkers`). Add 201 (`AddEntries`; `liveEntry: { entryId, created }` when it made or moved the live markers entry, else null); change own (`AddEntries`) or anyone's (`EditAnyEntries`); delete own (`AddEntries`) or anyone's (`DeleteAnyEntries`), else 403 |
 | `POST /api/vods/{id}/segment-downloads` `{ markerIds, combined?, quality?, entryId? }` | Segment download (202; `GenerateFiles`). `combined` without the team feature → 403 `code: "combine-not-enabled"`. Markers must be the team's segments on that VOD (400) |

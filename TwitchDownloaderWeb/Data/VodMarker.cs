@@ -28,6 +28,12 @@ namespace TwitchDownloaderWeb.Data
         public int? RowId { get; set; }
         public TimelineRow? Row { get; set; }
 
+        /// <summary>The segment/moment this is a copy of (a member copied someone else's to their own row). No FK: the original may be deleted.</summary>
+        public int? CopiedFromMarkerId { get; set; }
+
+        /// <summary>The clip this segment was made from (Alt+drag of a clip onto a video row). No FK.</summary>
+        public int? CopiedFromEntryId { get; set; }
+
         public const int MaxLabelLength = 200;
         // New colors go at the end (the page lists them in this order); the first is the default
         public static readonly IReadOnlyList<string> Colors = ["yellow", "blue", "pink", "orange", "red", "lime", "teal", "violet", "gray"];
