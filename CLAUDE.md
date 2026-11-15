@@ -495,7 +495,7 @@ step next to the old page; `index.html` stays the old library until the new edit
   lock (page only)). Footer: add video row / clip row (`POST /api/vods/{id}/rows`), delete checked rows, zoom slider (log scale, min 10 s), Fit.
   Click seeks (on an item: to its start), wheel zooms, Shift+wheel pans; the view follows the playhead until panned. Segments hatched with
   brackets, moments a line + triangle, clips solid violet bars (reference ones translucent), cut-out parts darker.
-- **Timeline editing** (`ui/timeline-edit.js`, mixed into `Timeline`, step 3b): tools bar tools Pointer / Cut / Zoom / Hand (V/C/Z/H), snapping (N,
+- **Timeline editing** (`ui/timeline-edit.js`, mixed into `Timeline`, steps 3b and 4): tools bar tools Pointer / Cut / Zoom / Hand (V/C/Z/H), snapping (N,
   `clipLibrary.snap`, 8 px; **new kinds of timeline items must add their times to `snapPoints()`**), undo/redo (last 10 per VOD, this tab:
   marker add/delete/change/split and clip re-trims). Pointer: click selects (white outline) and seeks; only the selected item's edges drag
   (segments, and reference-only VOD clips via `PUT /trim`; stored clips are trimmed in Player 2); I/O set them at the playhead; Space plays the
@@ -505,6 +505,18 @@ step next to the old page; `index.html` stays the old library until the new edit
   **Edit original / Make a copy** (`chooseEditTarget`, Enter = copy); right-click → "Make a copy on my row" (`POST .../copy`). Locked rows
   (page only) can't be edited. Hooks to `editor.js`: `openItemEditor` (`colors: false` for clips, `onColor` live preview), `onChange`
   (`renderTools`), `onClipsChanged` (library refresh), `onCreated` (Player 2, step 4). The right-click menu is `ui/menu.js` (shared with cards).
+- **Player 2** (step 4, `openInPlayer2` in `ui/editor.js`): plays one segment or clip, loaded by dropping a clip card (or "Load in Player 2"),
+  by dragging an item's body off the Player 1 timeline (`startDrag`; only edges of the selected item resize), or by itself when a segment or
+  clip is made on Player 1 (`onCreated`, without switching the tab). It's a second `MediaPlayer` and a second `Timeline` in mode `"item"`:
+  one row with just that item, the view locked to a window around it (25 % of its length each side, 5–60 s, `updateWindow`; outside the item
+  is shaded), seeks stay in the window and Play plays only the item. Its edges trim the item itself (`PUT /api/markers/{id}`, `PUT /trim`);
+  **stored clips are trimmed only here**, capped at the stored-clip limit (plus cut-out parts), and saved 3 s after the last change
+  (`scheduleTrim`; "saving…" in the header; flushed when something else loads and on `pagehide` with a keepalive fetch). After any save
+  each timeline calls `onEdited` and the other one reads the VOD again, so Player 1 moves too. Header: type, length (what's left after
+  cuts) and title; icons Show in Player 1 (opens the VOD there if needed, selects and zooms to the item), rename, delete, volume,
+  fullscreen. Only one player plays at a time. The tools bar and keys work on the player whose timeline tab is open; clicking a player
+  with something loaded opens its tab. In Player 2 the create tools and the cut tool are off (step 7 makes it the cut-out tool). Undo/redo
+  history is shared by both timelines. Videos load in Player 2 from step 6; old Twitch clips without a VOD can't.
 - `editor.html?demo` fills sample cards (nothing is sent to the server) to try the shell.
 
 ### Twitch clips (`ClipInfoService`, `ClipFileService`)

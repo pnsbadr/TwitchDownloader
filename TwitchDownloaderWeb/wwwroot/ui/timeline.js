@@ -1,5 +1,7 @@
-// The timeline under the players (frontend rework step 3). Player 1 tab: every member's rows on the loaded VOD, from
-// GET /api/vods/{id}/timeline. A row belongs to one member and one VOD: video rows hold segments (hatched boxes) and
+// The timeline under the players (frontend rework steps 3 and 4). There are two, one per player, sharing the same panel
+// (the Player 1 / Player 2 tabs show one at a time). Player 1's (mode "vod"): every member's rows on the loaded VOD, from
+// GET /api/vods/{id}/timeline. Player 2's (mode "item"): one segment or clip on its own row, the view locked to a window
+// around it; trimming it there changes the item itself, so Player 1's timeline moves too. A row belongs to one member and one VOD: video rows hold segments (hatched boxes) and
 // moment markers (lines), clip rows hold clips (solid bars). Everyone can see and play every row; only the owner edits
 // it (editing comes in step 3b). Hide / solo / lock are page-only, per row.
 //
@@ -20,17 +22,30 @@ const MUTED_COLOR = "rgb(240 82 82 / 0.5)";
 const CLEAN_COLOR = "rgb(60 207 122 / 0.5)";
 const TICK_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400];
 
+// Player 2's window around its item: a quarter of its length on each side, 5 s to 60 s
+function windowMargin(length) {
+  return Math.min(Math.max(length * 0.25, 5), 60);
+}
+
 export class Timeline {
-  constructor({ onSeek, getPosition, ...hooks }) {
+  // mode "vod" (Player 1) or "item" (Player 2). hooks: see initEditing in timeline-edit.js, plus for "item" mode
+  // onFocusChanged(item) (its range or title changed) and onFocusGone(message) (deleted, or its VOD can't be opened)
+  constructor({ mode = "vod", onSeek, getPosition, ...hooks }) {
+    this.mode = mode;
     this.onSeek = onSeek;
     this.rowHeight = ROW_HEIGHT;
     this.getPosition = getPosition;
-    this.ruler = el("canvas", { class: "tl-ruler-canvas" });
-    this.track = el("canvas", { class: "tl-track-canvas" });
+    this.ruler = el("canvas", { class: "tl-ruler-canvas", hidden: true });
+    this.track = el("canvas", { class: "tl-track-canvas", hidden: true });
+    this.heads = el("div", { class: "tl-heads-set", hidden: true });
     this.tip = el("div", { class: "tl-tip", hidden: true });
-    $("tl-ruler").replaceChildren(this.ruler);
-    $("tl-track").replaceChildren(this.track, $("tl-empty"));
+    $("tl-ruler").append(this.ruler);
+    $("tl-track").prepend(this.track);
+    $("tl-heads").append(this.heads);
     document.body.append(this.tip);
+    this.active = false;
+    this.focus = null;      // "item" mode: { type: "marker" | "clip", id } of the item Player 2 shows
+    this.window = null;     // "item" mode: { start, end } the view is locked to
 
     this.vodId = null;
     this.vodTitle = "";
@@ -48,7 +63,6 @@ export class Timeline {
     this.dirty = true;
     this.refreshTimer = null;
     this.loading = false;
-    this.tab = "p1";
     this.initEditing(hooks);
 
     this.bindPointer();
@@ -65,6 +79,7 @@ export class Timeline {
   // ---------- loading ----------
 
   async open(vod) {
+    await this.flushTrim();
     this.vodId = String(vod.vodId);
     this.vodTitle = vod.title;
     this.knownLength = vod.lengthSeconds || 0;
@@ -87,10 +102,42 @@ export class Timeline {
     }, REFRESH_MS);
   }
 
-  close() {
+  // Player 2: one segment ({ type: "marker" }) or clip ({ type: "clip" }) of a VOD
+  async openItem({ type, id, vodId, lengthSeconds }) {
+    await this.flushTrim();
+    this.vodId = String(vodId);
+    this.knownLength = lengthSeconds || 0;
+    this.mediaLength = 0;
+    this.rows = [];
+    this.markers = [];
+    this.clips = [];
+    this.videos = [];
+    this.audio = [];
+    this.rowState.clear();
+    this.focus = { type, id };
+    this.window = null;
+    this.resetEditing();
+    this.selected = { ...this.focus };
+    this.follow = true;
+    this.renderHeads();
+    this.renderFooter();
+    await this.load();
+    clearInterval(this.refreshTimer);
+    this.refreshTimer = setInterval(() => {
+      if (!document.hidden) this.load();
+    }, REFRESH_MS);
+  }
+
+  async close() {
+    await this.flushTrim();
     clearInterval(this.refreshTimer);
     this.vodId = null;
+    this.focus = null;
+    this.window = null;
     this.rows = [];
+    this.markers = [];
+    this.clips = [];
+    this.resetEditing();
     this.renderHeads();
     this.renderFooter();
     this.dirty = true;
@@ -98,26 +145,132 @@ export class Timeline {
 
   async load() {
     const vodId = this.vodId;
-    if (!vodId || this.loading) return;
+    if (!vodId) return;
+    if (this.loading) {
+      // Something changed while a read was on its way: read again after it
+      this.loadAgain = true;
+      return;
+    }
     this.loading = true;
     try {
       const timeline = await api("GET", `/api/vods/${encodeURIComponent(vodId)}/timeline`);
       if (vodId !== this.vodId) return;
-      const rowsChanged = JSON.stringify(timeline.rows) !== JSON.stringify(this.rows);
-      this.rows = timeline.rows ?? [];
-      this.markers = timeline.markers ?? [];
-      this.clips = timeline.clips ?? [];
-      this.videos = timeline.videos ?? [];
       if (timeline.maxStoredClipSeconds) this.maxStoredClipSeconds = timeline.maxStoredClipSeconds;
-      if (rowsChanged) {
-        this.renderHeads();
-        this.renderFooter();
+      if (this.mode === "item") {
+        this.applyItem(timeline);
+      } else {
+        const rowsChanged = JSON.stringify(timeline.rows) !== JSON.stringify(this.rows);
+        this.rows = timeline.rows ?? [];
+        this.markers = timeline.markers ?? [];
+        this.clips = timeline.clips ?? [];
+        this.videos = timeline.videos ?? [];
+        if (rowsChanged) {
+          this.renderHeads();
+          this.renderFooter();
+        }
       }
     } catch (error) {
-      if (vodId === this.vodId) console.warn("Couldn't load the timeline:", error);
+      if (vodId === this.vodId) {
+        console.warn("Couldn't load the timeline:", error);
+        // Player 2 can't show an item of a VOD the team can't open
+        if (this.mode === "item" && (error.status === 403 || error.status === 404) && !this.rows.length) this.hooks.onFocusGone?.(error.message);
+      }
     } finally {
       this.loading = false;
     }
+    this.dirty = true;
+    if (this.loadAgain) {
+      this.loadAgain = false;
+      this.load();
+    }
+  }
+
+  // "item" mode: keep only Player 2's item and its row
+  applyItem(timeline) {
+    const focus = this.focus;
+    if (!focus) return;
+    const found = focus.type === "clip"
+      ? (timeline.clips ?? []).find((c) => c.id === focus.id)
+      : (timeline.markers ?? []).find((m) => m.id === focus.id);
+    if (!found) {
+      this.markers = [];
+      this.clips = [];
+      this.hooks.onFocusGone?.(null);
+      return;
+    }
+    const row = (timeline.rows ?? []).find((r) => r.id === found.rowId) ?? {
+      id: 0,
+      userId: focus.type === "clip" ? Number(found.addedByUserId) : found.createdByUserId,
+      username: found.createdBy,
+      kind: focus.type === "clip" ? "Clip" : "Video",
+      position: 0,
+      name: null,
+      canEdit: false,
+    };
+    const rowsChanged = JSON.stringify([row]) !== JSON.stringify(this.rows);
+    this.rows = [row];
+    this.markers = focus.type === "marker" ? [found] : [];
+    this.clips = focus.type === "clip" ? [found] : [];
+    this.videos = [];
+    if (rowsChanged) {
+      this.renderHeads();
+      this.renderFooter();
+    }
+    this.updateWindow();
+    this.hooks.onFocusChanged?.(this.focusItem());
+  }
+
+  // Player 2's item as drawn (with an edge being dragged or a trim waiting to be saved)
+  focusItem() {
+    if (this.mode !== "item" || !this.rows.length) return null;
+    return this.itemsOf(this.rows[0])[0] ?? null;
+  }
+
+  // The window around Player 2's item. It only moves when the item comes close to its edges or gets much shorter, so
+  // trimming doesn't make the view jump.
+  updateWindow() {
+    const item = this.focusItem();
+    if (!item) return;
+    const end = item.end ?? item.start;
+    const margin = windowMargin(end - item.start);
+    const want = { start: Math.max(0, item.start - margin), end: Math.min(this.length(), end + margin) };
+    const old = this.window;
+    const tooTight = old && ((item.start < old.start + 1 && old.start > 0) || (end > old.end - 1 && old.end < this.length()));
+    const tooWide = old && old.end - old.start > 3 * (want.end - want.start);
+    if (old && !tooTight && !tooWide) return;
+    const fitted = !old || (Math.abs(this.view.start - old.start) < 0.01 && Math.abs(this.view.end - old.end) < 0.01);
+    this.window = want;
+    if (fitted || this.view.start < want.start || this.view.end > want.end) this.setView(want.start, want.end);
+  }
+
+  // What the view can show: the whole VOD, or Player 2's window
+  extent() {
+    return this.window ?? { start: 0, end: this.length() };
+  }
+
+  // Player 1: select an item (Player 2's "Show in Player 1") and zoom so it shows whole, with some room around it
+  reveal({ type, id }) {
+    this.selected = { type, id };
+    const item = this.selectedItem();
+    this.changed();
+    if (!item) return null;
+    const end = item.end ?? item.start;
+    const room = Math.max((end - item.start) * 0.2, 2);
+    this.follow = true;
+    this.setView(item.start - room, end + room);
+    return item;
+  }
+
+  // Shows this timeline in the panel (the Player 1 / Player 2 tabs)
+  setActive(on) {
+    this.active = on;
+    this.heads.hidden = !on;
+    this.ruler.hidden = !on;
+    this.track.hidden = !on;
+    this.hover = null;
+    this.tip.hidden = true;
+    this.renderHeads();
+    this.renderFooter();
     this.dirty = true;
   }
 
@@ -139,7 +292,8 @@ export class Timeline {
     const before = this.length();
     this.mediaLength = last ? last.start + last.duration : 0;
     // First playlist: show the whole VOD
-    if (before <= MIN_SPAN || this.view.end > before - 0.5 && this.view.start <= 0) this.view.end = Math.max(this.view.end, Math.min(this.length(), this.view.start + this.span()));
+    if (this.mode === "item") this.updateWindow();
+    else if (before <= MIN_SPAN || (this.view.end > before - 0.5 && this.view.start <= 0)) this.view.end = Math.max(this.view.end, Math.min(this.length(), this.view.start + this.span()));
     this.dirty = true;
   }
 
@@ -170,25 +324,17 @@ export class Timeline {
     return `${name}${number}`;
   }
 
-  // The timeline tabs: "p1" shows these rows; Player 2's own timeline comes in step 4
-  showTab(tab) {
-    this.tab = tab;
-    this.renderHeads();
-    this.renderFooter();
-  }
-
   renderHeads() {
-    const heads = $("tl-heads");
-    const p1 = this.tab !== "p2";
-    heads.hidden = !p1;
-    this.ruler.hidden = !p1;
-    this.track.hidden = !p1;
-    $("tl-empty").hidden = p1 && Boolean(this.vodId && this.rows.length);
-    $("tl-empty").textContent = !p1
-      ? "Load a video, clip or segment in Player 2."
-      : this.vodId
-        ? "No rows on this VOD yet."
-        : "Load a VOD in Player 1 to see the team's rows.";
+    const heads = this.heads;
+    const item = this.mode === "item";
+    if (this.active) {
+      $("tl-empty").hidden = Boolean(this.vodId && this.rows.length);
+      $("tl-empty").textContent = item
+        ? "Load a video, clip or segment in Player 2."
+        : this.vodId
+          ? "No rows on this VOD yet."
+          : "Load a VOD in Player 1 to see the team's rows.";
+    }
     heads.replaceChildren(...this.rows.map((row, index) => {
       const state = this.stateOf(row);
       const isClip = /clip/i.test(row.kind);
@@ -208,7 +354,7 @@ export class Timeline {
         el("span", { class: "row-title", title: row.canEdit ? "Double-click to rename" : "" }, this.rowTitle(row)),
         el("span", { class: "row-owner" + (own ? " own" : "") }, own ? "you" : row.username));
       if (row.canEdit) name.addEventListener("dblclick", () => this.renameRow(row));
-      const check = this.canDeleteRow(row)
+      const check = !item && this.canDeleteRow(row)
         ? el("sl-checkbox", { size: "small", class: "row-check", checked: state.toggled, "aria-label": "Select row to delete" })
         : el("span", { class: "row-check-gap" });
       check.addEventListener?.("sl-change", (event) => {
@@ -219,8 +365,8 @@ export class Timeline {
         check,
         name,
         el("div", { class: "row-btns" },
-          toggle("hidden", state.hidden ? "Show row" : "Hide row", "eye", "eye-slash"),
-          toggle("solo", "Solo (only this row)", "headphones", "headphones"),
+          item ? null : toggle("hidden", state.hidden ? "Show row" : "Hide row", "eye", "eye-slash"),
+          item ? null : toggle("solo", "Solo (only this row)", "headphones", "headphones"),
           row.canEdit ? toggle("locked", state.locked ? "Unlock row" : "Lock row", "lock-simple-open", "lock-simple") : null));
     }));
     this.dirty = true;
@@ -238,23 +384,29 @@ export class Timeline {
     }
   }
 
+  // Both timelines bind the footer; only the one on show acts
   bindFooter() {
-    $("tl-add-video").addEventListener("click", () => this.addRow("video"));
-    $("tl-add-clip").addEventListener("click", () => this.addRow("clip"));
-    $("tl-delete-rows").addEventListener("click", () => this.deleteToggledRows());
-    $("tl-zoom-in").addEventListener("click", () => this.zoomBy(0.5));
-    $("tl-zoom-out").addEventListener("click", () => this.zoomBy(2));
-    $("tl-fit").addEventListener("click", () => this.fit());
-    $("tl-zoom").addEventListener("sl-input", (event) => this.zoomToSlider(Number(event.target.value)));
+    const on = (id, type, run) => $(id).addEventListener(type, (event) => {
+      if (this.active) run(event);
+    });
+    on("tl-add-video", "click", () => this.addRow("video"));
+    on("tl-add-clip", "click", () => this.addRow("clip"));
+    on("tl-delete-rows", "click", () => this.deleteToggledRows());
+    on("tl-zoom-in", "click", () => this.zoomBy(0.5));
+    on("tl-zoom-out", "click", () => this.zoomBy(2));
+    on("tl-fit", "click", () => this.fit());
+    on("tl-zoom", "sl-input", (event) => this.zoomToSlider(Number(event.target.value)));
   }
 
   renderFooter() {
-    const p1 = this.tab !== "p2";
-    const canAdd = p1 && Boolean(this.vodId) && can("AddEntries") && !me?.support;
+    if (!this.active) return;
+    const rows = this.mode === "vod";
+    const canAdd = rows && Boolean(this.vodId) && can("AddEntries") && !me?.support;
     $("tl-add-video").disabled = !canAdd;
     $("tl-add-clip").disabled = !canAdd;
-    $("tl-delete-rows").disabled = !p1 || !this.rows.some((row) => this.stateOf(row).toggled);
-    for (const id of ["tl-zoom-in", "tl-zoom-out", "tl-fit", "tl-zoom"]) $(id).disabled = !p1 || !this.vodId;
+    $("tl-delete-rows").disabled = !rows || !this.rows.some((row) => this.stateOf(row).toggled);
+    for (const id of ["tl-zoom-in", "tl-zoom-out", "tl-fit", "tl-zoom"]) $(id).disabled = !this.vodId;
+    $("tl-zoom").value = this.sliderValue();
   }
 
   async addRow(kind) {
@@ -295,34 +447,48 @@ export class Timeline {
 
   // ---------- zoom and view ----------
 
-  // Slider 0 = whole VOD, 100 = MIN_SPAN; logarithmic in between
+  extentSpan() {
+    const extent = this.extent();
+    return extent.end - extent.start;
+  }
+
+  minSpan() {
+    return Math.min(MIN_SPAN, this.extentSpan());
+  }
+
+  // Slider 0 = everything (the whole VOD, or Player 2's window), 100 = MIN_SPAN; logarithmic in between
   sliderValue() {
-    const ratio = Math.log(this.length() / this.span()) / Math.log(this.length() / MIN_SPAN);
+    const full = this.extentSpan();
+    if (full <= this.minSpan() + 0.01) return 0;
+    const ratio = Math.log(full / this.span()) / Math.log(full / this.minSpan());
     return Math.round(Math.min(Math.max(ratio, 0), 1) * 100);
   }
 
   zoomToSlider(value) {
-    const span = this.length() * Math.pow(MIN_SPAN / this.length(), value / 100);
+    const full = this.extentSpan();
+    const span = full * Math.pow(this.minSpan() / full, value / 100);
     const center = this.getPosition() ?? (this.view.start + this.span() / 2);
     this.setView(center - span / 2, center + span / 2, false);
   }
 
   zoomBy(factor, anchor = this.getPosition() ?? (this.view.start + this.span() / 2)) {
-    const span = Math.min(Math.max(this.span() * factor, MIN_SPAN), this.length());
+    const span = Math.min(Math.max(this.span() * factor, this.minSpan()), this.extentSpan());
     const ratio = (anchor - this.view.start) / this.span();
     this.setView(anchor - ratio * span, anchor - ratio * span + span);
   }
 
   fit() {
     this.follow = true;
-    this.setView(0, this.length());
+    const extent = this.extent();
+    this.setView(extent.start, extent.end);
   }
 
   setView(start, end, updateSlider = true) {
-    let span = Math.min(Math.max(end - start, MIN_SPAN), this.length());
-    start = Math.min(Math.max(start, 0), Math.max(0, this.length() - span));
+    const extent = this.extent();
+    const span = Math.min(Math.max(end - start, this.minSpan()), extent.end - extent.start);
+    start = Math.min(Math.max(start, extent.start), Math.max(extent.start, extent.end - span));
     this.view = { start, end: start + span };
-    if (updateSlider) $("tl-zoom").value = this.sliderValue();
+    if (updateSlider && this.active) $("tl-zoom").value = this.sliderValue();
     this.dirty = true;
   }
 
@@ -395,7 +561,7 @@ export class Timeline {
   }
 
   itemsOf(row) {
-    const preview = this.preview;
+    const preview = this.preview ?? (this.pendingTrim ? { type: "clip", ...this.pendingTrim } : null);
     const moved = (type, item) => (preview && preview.type === type && preview.id === item.id
       ? { ...item, start: preview.start, end: preview.end }
       : item);
@@ -538,6 +704,15 @@ export class Timeline {
       ctx.globalAlpha = 1;
     });
     this.drawPending(ctx, width, now);
+    const focus = this.focusItem();
+    if (focus) {
+      // Player 2: outside the item is darker (playback stays inside it)
+      ctx.fillStyle = "rgb(0 0 0 / 0.35)";
+      const x1 = this.timeToX(focus.start, width);
+      const x2 = this.timeToX(focus.end ?? focus.start, width);
+      if (x1 > 0) ctx.fillRect(0, 0, x1, height);
+      if (x2 < width) ctx.fillRect(x2, 0, width - x2, height);
+    }
     if (this.snapAt != null) {
       const x = Math.round(this.timeToX(this.snapAt, width)) + 0.5;
       ctx.save();
