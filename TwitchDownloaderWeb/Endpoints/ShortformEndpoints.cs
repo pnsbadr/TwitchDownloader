@@ -68,6 +68,7 @@ namespace TwitchDownloaderWeb.Endpoints
 
             if (layout.Validate(entry.ClipLengthSeconds) is { } error)
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["layout"] = [error] });
+            layout = layout.Normalize();
 
             var relativePath = entry.Status == EntryStatus.Ready ? entry.FilePath
                 : EntryDto.HasUnexpiredGeneratedFile(entry) ? entry.GeneratedFilePath
@@ -77,7 +78,7 @@ namespace TwitchDownloaderWeb.Endpoints
 
             shortform.Start(id, storage.Resolve(relativePath), entry.ClipLengthSeconds, layout, team.UserId);
             // The render itself is audited by the background job, which doesn't know who asked; this records who did
-            db.Audit(AuditActions.ShortformRequested, id, layout.IsSplit ? "split" : "single");
+            db.Audit(AuditActions.ShortformRequested, id, layout.Summary);
             await db.SaveChangesAsync(cancellationToken);
             return Results.Accepted($"/api/entries/{id}/shortform", await ShortformDto.FromAsync(db, id, shortform.GetState(id), cancellationToken));
         }

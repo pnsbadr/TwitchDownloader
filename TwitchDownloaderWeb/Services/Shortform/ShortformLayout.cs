@@ -12,9 +12,15 @@ namespace TwitchDownloaderWeb.Services.Shortform
     /// the bottom box the rest (e.g. facecam over gameplay). Each box is scaled to its slot, so the page keeps the box's
     /// shape matching the slot; a mismatch only stretches the picture slightly.
     /// <see cref="TrimStart"/> / <see cref="TrimEnd"/> are seconds from the start of the entry's file (null = its start / end).
+    /// <see cref="Parts"/> (optional): the render is these parts of the file, in order, each with its own layout, joined back to back
+    /// (gaps between them are left out). With parts, the other fields mirror them after <see cref="Normalize"/> (the first part's layout,
+    /// the first start and last end), so code that only knows one layout (the page's older views) still sees a sensible one.
     /// </summary>
-    public sealed record ShortformLayout(string? Mode, CropBox? Top, CropBox? Bottom, double? SplitRatio, double? TrimStart = null, double? TrimEnd = null)
+    public sealed record ShortformLayout(string? Mode, CropBox? Top, CropBox? Bottom, double? SplitRatio, double? TrimStart = null, double? TrimEnd = null,
+        IReadOnlyList<ShortformPart>? Parts = null)
     {
+        public const int MaxParts = 40;
+        public const double MinPartSeconds = 0.5;
         public const double MinTrimSeconds = 1;
         public const int OutputWidth = 1080;
         public const int OutputHeight = 1920;
@@ -29,6 +35,9 @@ namespace TwitchDownloaderWeb.Services.Shortform
         /// <summary>Returns an error message, or null if the layout can be rendered from a file this long.</summary>
         public string? Validate(double clipLengthSeconds)
         {
+            if (Parts is not null)
+                return ValidateParts(clipLengthSeconds);
+
             if (TrimStart is { } start && (!double.IsFinite(start) || start < 0))
                 return "trimStart must be 0 or more seconds.";
 
@@ -57,6 +66,54 @@ namespace TwitchDownloaderWeb.Services.Shortform
             return null;
         }
 
+        private string? ValidateParts(double clipLengthSeconds)
+        {
+            if (Parts!.Count == 0)
+                return "parts must have at least one part (or leave it out).";
+            if (Parts.Count > MaxParts)
+                return $"A vertical video can have at most {MaxParts} parts.";
+
+            var previousEnd = 0.0;
+            for (var i = 0; i < Parts.Count; i++)
+            {
+                var part = Parts[i];
+                if (part is null || !double.IsFinite(part.Start) || !double.IsFinite(part.End) || part.Start < 0)
+                    return $"Part {i + 1} needs a start and end in seconds.";
+                if (part.End - part.Start < MinPartSeconds - Tolerance)
+                    return $"Part {i + 1} must be at least {MinPartSeconds} seconds long.";
+                if (part.Start < previousEnd - Tolerance)
+                    return "Parts must be in order and must not overlap.";
+                if (part.Start >= clipLengthSeconds)
+                    return $"Part {i + 1} starts after the end of the clip.";
+                if (part.ToLayout().Validate(clipLengthSeconds) is { } error)
+                    return $"Part {i + 1}: {error}";
+                previousEnd = part.End;
+            }
+
+            return GetDuration(clipLengthSeconds) < MinTrimSeconds ? $"The parts must add up to at least {MinTrimSeconds:0} second." : null;
+        }
+
+        /// <summary>With parts, sets the single-layout fields from them (first part's layout, first start, last end); otherwise returns itself.</summary>
+        public ShortformLayout Normalize()
+        {
+            if (Parts is not { Count: > 0 })
+                return this with { Parts = null };
+
+            var first = Parts[0];
+            return this with
+            {
+                Mode = first.Mode, Top = first.Top, Bottom = first.Bottom, SplitRatio = first.SplitRatio,
+                TrimStart = first.Start > 0 ? first.Start : null, TrimEnd = Parts[^1].End,
+            };
+        }
+
+        /// <summary>What the render is made of, in order: the parts, or this layout alone.</summary>
+        public IReadOnlyList<ShortformLayout> Pieces() => Parts is { Count: > 0 } ? Parts.Select(x => x.ToLayout()).ToList() : [this];
+
+        /// <summary>A short description for the audit log: "single", "split" or "3 parts".</summary>
+        [JsonIgnore]
+        public string Summary => Parts is { Count: > 1 } ? $"{Parts.Count} parts" : Pieces()[0].IsSplit ? "split" : "single";
+
         private static string? ValidateBox(CropBox? box, string name)
         {
             if (box is null)
@@ -79,7 +136,8 @@ namespace TwitchDownloaderWeb.Services.Shortform
         /// Length of the rendered part. A trim end isn't capped at <paramref name="clipLengthSeconds"/>: Safe-mode files run a
         /// little longer than the entry's length, and ffmpeg simply stops at the end of the file.
         /// </summary>
-        public double GetDuration(double clipLengthSeconds) => (TrimEnd ?? clipLengthSeconds) - GetStart();
+        public double GetDuration(double clipLengthSeconds) =>
+            Parts is { Count: > 0 } ? Parts.Sum(x => x.End - x.Start) : (TrimEnd ?? clipLengthSeconds) - GetStart();
 
         /// <summary>True if the render covers less than the whole file.</summary>
         [JsonIgnore]
@@ -113,5 +171,11 @@ namespace TwitchDownloaderWeb.Services.Shortform
         }
 
         private static double Clamp01(double value) => Math.Clamp(value, 0, 1);
+    }
+
+    /// <summary>One part of a vertical video: seconds <see cref="Start"/> to <see cref="End"/> of the entry's file with its own layout.</summary>
+    public sealed record ShortformPart(double Start, double End, string? Mode, CropBox? Top, CropBox? Bottom, double? SplitRatio)
+    {
+        public ShortformLayout ToLayout() => new(Mode, Top, Bottom, SplitRatio, Start, End);
     }
 }

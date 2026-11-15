@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Options;
 using TwitchDownloaderWeb.Data;
 using TwitchDownloaderWeb.Services.AudioRescue;
+using TwitchDownloaderWeb.Services.Segments;
 
 namespace TwitchDownloaderWeb.Services.Shortform
 {
@@ -238,6 +239,7 @@ namespace TwitchDownloaderWeb.Services.Shortform
             var output = RenderPath(entryId, renderId, "mp4")!;
             var temp = RenderPath(entryId, renderId, "part.mp4")!;
             var thumbnail = RenderPath(entryId, renderId, "jpg")!;
+            var partFiles = new List<string>();
             var acquired = false;
             try
             {
@@ -247,34 +249,31 @@ namespace TwitchDownloaderWeb.Services.Shortform
 
                 var ffmpegPath = _configuration["Ffmpeg:Path"] is { Length: > 0 } configured ? configured : "ffmpeg";
                 var duration = layout.GetDuration(clipLengthSeconds);
-                var args = new List<string> { "-hide_banner", "-y", "-nostats", "-progress", "pipe:1" };
-                var trimmed = layout.IsTrimmed;
-                if (trimmed)
+                var pieces = layout.Pieces();
+                if (pieces.Count == 1)
                 {
-                    // Input seeking is frame-accurate here because the video is re-encoded; the audio is re-encoded too
-                    // so it starts exactly at the cut instead of at the nearest copied packet
-                    args.AddRange(new[] { "-ss", Seconds(layout.GetStart()), "-t", Seconds(duration) });
+                    await RenderPieceAsync(ffmpegPath, sourcePath, pieces[0], pieces[0].GetDuration(clipLengthSeconds), temp, entryId, token,
+                        done => job.Progress = Math.Clamp(done / duration, 0, 0.99));
                 }
-
-                args.AddRange(new[]
+                else
                 {
-                    "-i", sourcePath,
-                    "-filter_complex", layout.BuildFilterGraph(),
-                    "-map", "[v]", "-map", "0:a?",
-                    // Drop the source's chapter track, which would otherwise keep the full clip's length after a trim
-                    "-map_chapters", "-1", "-dn",
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-                });
-                args.AddRange(trimmed ? new[] { "-c:a", "aac", "-b:a", "192k" } : new[] { "-c:a", "copy" });
-                args.AddRange(new[] { "-movflags", "+faststart", temp });
+                    // Each part with its own layout, then joined back to back. Every part is re-encoded the same way (1080x1920
+                    // libx264, AAC), so the join is a stream copy
+                    var done = 0.0;
+                    for (var i = 0; i < pieces.Count; i++)
+                    {
+                        var file = RenderPath(entryId, renderId, $"p{i}.mp4")!;
+                        partFiles.Add(file);
+                        var pieceLength = pieces[i].GetDuration(clipLengthSeconds);
+                        var before = done;
+                        await RenderPieceAsync(ffmpegPath, sourcePath, pieces[i], pieceLength, file, entryId, token,
+                            at => job.Progress = Math.Clamp((before + Math.Min(at, pieceLength)) / duration * 0.97, 0, 0.97));
+                        done += pieceLength;
+                    }
 
-                await FfmpegRunner.RunAsync(ffmpegPath, args, EntryFolder(entryId), _logger, token, line =>
-                {
-                    // "out_time_us=12345678" (also printed as out_time_ms, which is microseconds too)
-                    if (duration > 0 && line.StartsWith("out_time_us=", StringComparison.Ordinal)
-                        && long.TryParse(line.AsSpan("out_time_us=".Length), NumberStyles.Integer, CultureInfo.InvariantCulture, out var us))
-                        job.Progress = Math.Clamp(us / 1_000_000.0 / duration, 0, 0.99);
-                });
+                    await SegmentJoiner.JoinAsync(ffmpegPath, partFiles, temp, EntryFolder(entryId), "veryfast", 20, _logger, token);
+                    job.Progress = 0.99;
+                }
 
                 File.Move(temp, output, overwrite: true);
                 await TryMakeThumbnailAsync(ffmpegPath, output, thumbnail, duration, token);
@@ -284,7 +283,7 @@ namespace TwitchDownloaderWeb.Services.Shortform
                 await File.WriteAllTextAsync(RenderPath(entryId, renderId, "json")!, JsonSerializer.Serialize(info, JsonOptions), CancellationToken.None);
 
                 _jobs.TryRemove(new KeyValuePair<int, Job>(entryId, job));
-                await AuditAsync(entryId, AuditActions.ShortformRendered, $"{renderId} ({(layout.IsSplit ? "split" : "single")})");
+                await AuditAsync(entryId, AuditActions.ShortformRendered, $"{renderId} ({layout.Summary})");
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
@@ -306,8 +305,45 @@ namespace TwitchDownloaderWeb.Services.Shortform
                 if (acquired)
                     _gate.Release();
                 _storage.TryDelete(temp);
+                foreach (var file in partFiles)
+                    _storage.TryDelete(file);
+                _storage.TryDelete(Path.Combine(EntryFolder(entryId), "join.txt"));
                 job.Cancellation.Dispose();
             }
+        }
+
+        /// <summary>Renders one layout (with its trim) of the source into <paramref name="outputFile"/>, reporting seconds done.</summary>
+        private async Task RenderPieceAsync(string ffmpegPath, string sourcePath, ShortformLayout piece, double duration, string outputFile, int entryId,
+            CancellationToken token, Action<double> onProgress)
+        {
+            var args = new List<string> { "-hide_banner", "-y", "-nostats", "-progress", "pipe:1" };
+            var trimmed = piece.IsTrimmed;
+            if (trimmed)
+            {
+                // Input seeking is frame-accurate here because the video is re-encoded; the audio is re-encoded too
+                // so it starts exactly at the cut instead of at the nearest copied packet
+                args.AddRange(new[] { "-ss", Seconds(piece.GetStart()), "-t", Seconds(duration) });
+            }
+
+            args.AddRange(new[]
+            {
+                "-i", sourcePath,
+                "-filter_complex", piece.BuildFilterGraph(),
+                "-map", "[v]", "-map", "0:a?",
+                // Drop the source's chapter track, which would otherwise keep the full clip's length after a trim
+                "-map_chapters", "-1", "-dn",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            });
+            args.AddRange(trimmed ? new[] { "-c:a", "aac", "-b:a", "192k" } : new[] { "-c:a", "copy" });
+            args.AddRange(new[] { "-movflags", "+faststart", outputFile });
+
+            await FfmpegRunner.RunAsync(ffmpegPath, args, EntryFolder(entryId), _logger, token, line =>
+            {
+                // "out_time_us=12345678" (also printed as out_time_ms, which is microseconds too)
+                if (duration > 0 && line.StartsWith("out_time_us=", StringComparison.Ordinal)
+                    && long.TryParse(line.AsSpan("out_time_us=".Length), NumberStyles.Integer, CultureInfo.InvariantCulture, out var us))
+                    onProgress(us / 1_000_000.0);
+            });
         }
 
         private static string Seconds(double value) => value.ToString("0.###", CultureInfo.InvariantCulture);
