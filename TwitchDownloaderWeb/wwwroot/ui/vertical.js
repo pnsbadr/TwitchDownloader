@@ -9,8 +9,9 @@
 // Parts: the split tool (S) cuts the file at the playhead into parts, each with its own layout (face cam, split, gameplay).
 // The boxes on screen are always the layout of the part under the playhead. A part can be left out (Delete): it's skipped in
 // the preview and the render closes the gap (ripple). vx.parts is a partition of the whole file (part i runs from its start to
-// the next one's, the last to the end of the file); the trim range still cuts the start and end. Rendered parts are the kept
-// ones inside the trim, neighbors with the same layout joined; one part is sent as a plain layout, more as `parts`.
+// the next one's, the last to the end of the file). There are no trim handles: I / O leave out everything before / after the
+// playhead, and a render's trim becomes left-out parts at the ends (trimToParts; vx.trim stays the whole file). Rendered parts
+// are the kept ones, neighbors with the same layout joined; one part is sent as a plain layout (with its trim), more as `parts`.
 
 import { el, api, can, me, loadSetting, saveSetting, toast, formatDate, iconButton, withTooltip } from "./core.js";
 import { askText, confirmAction } from "./dialogs.js";
@@ -139,7 +140,7 @@ function applyLayout(layout, { trim = true } = {}) {
     applyOne(layout);
     vx.parts = [{ start: 0, removed: false, ...liveState() }];
     vx.part = 0;
-    if (trim) setTrim(layout?.trimStart ?? 0, layout?.trimEnd ?? Infinity);
+    if (trim) trimToParts(layout?.trimStart ?? 0, layout?.trimEnd ?? Infinity);
     return;
   }
   // The render's parts, with the gaps between them as left-out parts (they keep the layout before them)
@@ -151,7 +152,7 @@ function applyLayout(layout, { trim = true } = {}) {
     parts.push({ start: i ? part.start : 0, removed: false, ...liveState() });
   });
   vx.parts = parts;
-  if (trim) setTrim(list[0].start, list.at(-1).end);
+  if (trim) trimToParts(list[0].start, list.at(-1).end);
   loadPart(partAt(vx.dom?.video.currentTime || 0));
 }
 
@@ -523,37 +524,10 @@ function build() {
   const portrait = el("div", { class: "vx2-portrait" }, canvas, safe, leftOut, split, renderVideo);
   const previewWrap = el("div", { class: "vx2-preview-wrap" }, portrait, back);
 
-  // Bottom bar: play, time, trim, start/end at the playhead, volume, back to the player
+  // Bottom bar: play, time, what will be rendered, leave out before/after the playhead, volume, back to the player.
+  // No trim handles: the Player 2 timeline seeks, and leaving parts out does what a trim did
   const play = iconButton({ icon: "play", label: "Play / pause", keybind: "verticalPlay", onClick: togglePlay });
   const time = el("span", { class: "num vx2-time" }, "0:00.0");
-  const range = el("div", { class: "vx2-trim-range" });
-  const head = el("div", { class: "vx2-trim-head" });
-  const startHandle = el("div", { class: "vx2-trim-handle", tabindex: "0", role: "slider", "aria-label": "Render start", "data-edge": "start" });
-  const endHandle = el("div", { class: "vx2-trim-handle", tabindex: "0", role: "slider", "aria-label": "Render end", "data-edge": "end" });
-  const trim = el("div", { class: "vx2-trim" }, range, head, startHandle, endHandle);
-  trim.addEventListener("pointerdown", (event) => {
-    if (event.target.classList.contains("vx2-trim-handle")) return;
-    const rect = trim.getBoundingClientRect();
-    seek(clamp((event.clientX - rect.left) / rect.width, 0, 1) * duration_());
-  });
-  for (const handle of [startHandle, endHandle]) {
-    handle.addEventListener("pointerdown", startTrimDrag);
-    handle.addEventListener("keydown", (event) => {
-      const step = { ArrowLeft: -0.1, ArrowRight: 0.1 }[event.key];
-      if (!step) return;
-      event.preventDefault();
-      event.stopPropagation();
-      const delta = event.shiftKey ? step * 10 : step;
-      change(() => {
-        if (handle.dataset.edge === "start") setTrim(Math.min(vx.trim.start + delta, vx.trim.end - MIN_TRIM), vx.trim.end);
-        else setTrim(vx.trim.start, Math.max(vx.trim.end + delta, vx.trim.start + MIN_TRIM));
-      });
-    });
-  }
-  const trimText = el("span", { class: "num vx2-trim-text" });
-  const setStart = iconButton({ icon: "caret-line-left", label: "Start the render at the playhead", keybind: "verticalStart", onClick: () => trimAtPlayhead("start") });
-  const setEnd = iconButton({ icon: "caret-line-right", label: "End the render at the playhead", keybind: "verticalEnd", onClick: () => trimAtPlayhead("end") });
-  const reset = iconButton({ icon: "arrows-out-line-horizontal", label: "Render the whole clip", onClick: () => change(() => setTrim(0, Infinity)) });
   const mute = iconButton({ icon: "speaker-high", label: "Mute the preview", onClick: toggleMute });
   const volume = el("sl-range", { class: "volume", min: "0", max: "100", tooltip: "none", "aria-label": "Preview volume" });
   volume.addEventListener("sl-input", () => {
@@ -564,7 +538,11 @@ function build() {
   });
   const exit = iconButton({ icon: "device-mobile", label: "Back to the normal player", keybind: "verticalExit", onClick: () => vx.hooks.onExit?.() });
   exit.querySelector("sl-icon-button").toggleAttribute("data-active", true);
-  const bar = el("div", { class: "vx2-bar player-controls" }, play, time, trim, trimText, setStart, setEnd, reset, mute, volume, exit);
+  const trimText = el("span", { class: "num vx2-trim-text" });
+  const setStart = iconButton({ icon: "caret-line-left", label: "Leave out everything before the playhead", keybind: "verticalStart", onClick: () => leaveOutSide("before") });
+  const setEnd = iconButton({ icon: "caret-line-right", label: "Leave out everything after the playhead", keybind: "verticalEnd", onClick: () => leaveOutSide("after") });
+  const reset = iconButton({ icon: "arrows-out-line-horizontal", label: "Put every part back", onClick: putAllBack });
+  const bar = el("div", { class: "vx2-bar player-controls" }, play, time, el("span", { class: "vx2-bar-gap" }), trimText, setStart, setEnd, reset, mute, volume, exit);
 
   // Side panel: layout, safe zones, snapping, undo/redo, render, renders
   const one = iconButton({ icon: "square", label: "One box", keybind: "verticalOneBox", onClick: () => change(() => { vx.mode = "single"; select(null); }) });
@@ -613,7 +591,7 @@ function build() {
   const panel = el("div", { class: "vx2", tabindex: "-1", hidden: true }, stageWrap, previewWrap, side, bar);
   vx.dom = {
     panel, video, stage, stageWrap, boxNodes, guides, note, canvas, safe, renderVideo, split, back, portrait, previewWrap,
-    play, time, trim, range, head, startHandle, endHandle, trimText, mute, volume, one, two, presetMenu, safeButton, safeName,
+    play, time, trimText, mute, volume, one, two, presetMenu, safeButton, safeName,
     snapButton, undo: undoButton, redo: redoButton, render, progress, message, list, empty,
     leftOut, partInfo, joinButton, removeButton, allButton,
   };
@@ -960,59 +938,71 @@ function tenths(seconds) {
 }
 
 function renderTrim() {
-  const { range, startHandle, endHandle, trimText } = vx.dom;
   const duration = duration_();
-  const pct = (t) => (duration ? (t / duration) * 100 : 0);
-  range.style.left = `${pct(vx.trim.start)}%`;
-  range.style.width = `${pct(vx.trim.end - vx.trim.start)}%`;
-  startHandle.style.left = `${pct(vx.trim.start)}%`;
-  endHandle.style.left = `${pct(vx.trim.end)}%`;
-  startHandle.setAttribute("aria-valuetext", tenths(vx.trim.start));
-  endHandle.setAttribute("aria-valuetext", tenths(vx.trim.end));
   const kept = duration ? keptSeconds() : 0;
-  const shorter = isTrimmed() || Math.abs(kept - (vx.trim.end - vx.trim.start)) > 0.05;
-  trimText.textContent = duration ? `${tenths(kept)}${shorter ? " of " + tenths(duration) : ""}` : "";
-  trimText.title = duration ? `Renders ${tenths(vx.trim.start)} – ${tenths(vx.trim.end)} of the clip${shorter && vx.parts.length > 1 ? ", without the parts left out" : ""}` : "";
-  renderParts();
+  vx.dom.trimText.textContent = duration ? `${tenths(kept)}${kept < duration - 0.05 ? " of " + tenths(duration) : ""}` : "";
+  vx.dom.trimText.title = duration ? "Length of the vertical video (parts left out don't count)" : "";
   renderPlayer();
   renderMatches();
+  renderParts();
 }
 
-function startTrimDrag(event) {
-  const handle = event.currentTarget;
-  const edge = handle.dataset.edge;
-  const before = snapshot();
-  event.preventDefault();
-  event.stopPropagation();
-  handle.setPointerCapture(event.pointerId);
-  const video = vx.dom.video;
-  video.pause();
-  const onMove = (moveEvent) => {
-    const t = clamp(pointer(moveEvent, vx.dom.trim).x, 0, 1) * duration_();
-    if (edge === "start") setTrim(Math.min(t, vx.trim.end - MIN_TRIM), vx.trim.end);
-    else setTrim(vx.trim.start, Math.max(t, vx.trim.start + MIN_TRIM));
-    video.currentTime = edge === "start" ? vx.trim.start : Math.max(vx.trim.end - 0.05, 0);
-    renderTrim();
-  };
-  const onUp = () => {
-    handle.removeEventListener("pointermove", onMove);
-    handle.removeEventListener("pointerup", onUp);
-    handle.removeEventListener("pointercancel", onUp);
-    record(before);
-  };
-  handle.addEventListener("pointermove", onMove);
-  handle.addEventListener("pointerup", onUp);
-  handle.addEventListener("pointercancel", onUp);
-}
-
-function trimAtPlayhead(edge) {
+// I / O: leave out everything before / after the playhead (a split there, the parts on that side left out)
+function leaveOutSide(side) {
   if (!vx.ready) return;
   const t = vx.dom.video.currentTime;
-  change(() => {
-    // Moving one edge past the other pushes it out, keeping at least the minimum length
-    if (edge === "start") setTrim(t, Math.max(vx.trim.end, t + MIN_TRIM));
-    else setTrim(Math.min(vx.trim.start, t - MIN_TRIM), t);
+  const duration = duration_();
+  if ((side === "before" && t < MIN_PART) || (side === "after" && duration - t < MIN_PART)) {
+    toast(`Too close to the ${side === "before" ? "start" : "end"} of the clip.`);
+    return;
+  }
+  const before = snapshot();
+  cutAt(t);
+  const keep = vx.parts.some((part, i) => !part.removed && (side === "before" ? part.start >= t - 0.01 : partEnd(i) <= t + 0.01));
+  if (!keep) {
+    restore(before);
+    toast("That would leave nothing to render.");
+    return;
+  }
+  vx.parts.forEach((part, i) => {
+    if (side === "before" ? partEnd(i) <= t + 0.01 : part.start >= t - 0.01) part.removed = true;
   });
+  loadPart(partAt(t));
+  closePlayback();
+  renderAll();
+  record(before);
+}
+
+function putAllBack() {
+  if (!vx.parts.some((part) => part.removed)) return;
+  change(() => {
+    for (const part of vx.parts) part.removed = false;
+    setTrim(0, Infinity);
+  });
+}
+
+// A split at t unless one is (nearly) there; parts shorter than MIN_PART aren't made
+function cutAt(t) {
+  stash();
+  const i = partAt(t);
+  if (t - vx.parts[i].start < MIN_PART || partEnd(i) - t < MIN_PART) return;
+  vx.parts.splice(i + 1, 0, { ...structuredClone(vx.parts[i]), start: t });
+  loadPart(partAt(vx.dom.video.currentTime || 0));
+}
+
+// A render's trim (older renders, or a part list's first start / last end) becomes left-out parts at the ends
+function trimToParts(start, end) {
+  const duration = duration_();
+  if (start > 0.05) {
+    cutAt(start);
+    vx.parts.forEach((part, i) => { if (partEnd(i) <= start + 0.01) part.removed = true; });
+  }
+  if (Number.isFinite(end) && end < duration - 0.05) {
+    cutAt(end);
+    vx.parts.forEach((part) => { if (part.start >= end - 0.01) part.removed = true; });
+  }
+  setTrim(0, Infinity);
+  loadPart(partAt(vx.dom?.video.currentTime || 0));
 }
 
 // ---------- playback ----------
@@ -1049,10 +1039,9 @@ function seek(seconds) {
 
 function renderPlayer() {
   if (!vx.dom) return;
-  const { video, play, time, head } = vx.dom;
+  const { video, play, time } = vx.dom;
   play.querySelector("sl-icon-button").name = video.paused ? "play" : "pause";
   time.textContent = `${tenths(video.currentTime || 0)} / ${tenths(duration_())}`;
-  head.style.left = `${duration_() ? ((video.currentTime || 0) / duration_()) * 100 : 0}%`;
 }
 
 function loadVolume() {
@@ -1456,8 +1445,8 @@ export function handleVerticalKey(event) {
   const arrows = { ArrowLeft: [-big, 0], ArrowRight: [big, 0], ArrowUp: [0, -big], ArrowDown: [0, big] };
   const run = {
     verticalPlay: togglePlay,
-    verticalStart: () => trimAtPlayhead("start"),
-    verticalEnd: () => trimAtPlayhead("end"),
+    verticalStart: () => leaveOutSide("before"),
+    verticalEnd: () => leaveOutSide("after"),
     verticalOneBox: () => change(() => { vx.mode = "single"; select(null); }),
     verticalTwoBoxes: () => change(() => { vx.mode = "split"; select(null); }),
     verticalSafeZones: cycleSafeZone,

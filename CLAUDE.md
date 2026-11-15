@@ -465,7 +465,7 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
 - **Vertical editor in Player 2** (step 9, `ui/vertical.js`): a clip in Player 2 gets the 9:16 toggle (E). Player 2 then takes the whole
   width (`.vertical-mode`, Player 1 hidden) and shows the old page's editor on the clip's file (`/file?preview=true`, so cut-out parts are
   already left out and trim times are seconds into the file): one or two crop boxes on the landscape video, a live canvas preview with the
-  split pill, a trim bar, Render (`POST /shortform`, polled) and the clip's vertical versions (play in the 9:16 frame, download, "Use these
+  split pill, a bar (play, length, I/O, volume, back), Render (`POST /shortform`, polled) and the clip's vertical versions (play in the 9:16 frame, download, "Use these
   settings", delete; "Matches" on the one made from what's on screen). It opens with the newest render's layout. Added: **layouts** (built-in
   presets made for the video's shape, plus your own saved in `localStorage` `clipco.vertical.presets`; team-wide presets would need the
   backend), **safe zones** overlay (TikTok / Shorts / Reels, approximate; `clipco.vertical.safeZone`), **snapping** of boxes to the video's
@@ -474,7 +474,9 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   **Parts** (vertical part 2, badrfly 2026-11-15): S splits the file at the playhead into parts, each with its own layout (`vx.parts`, a
   partition of the whole file; the part under the playhead is live in `vx.mode/ratio/boxes`, `stash()` / `loadPart()`); presets, One/Two boxes
   and box edits change that part only ("Use this layout on every part" copies it). Delete leaves a part out (skipped in the preview, the render
-  closes the gap); J joins it with the part before (which keeps its layout). The trim range still cuts the ends.
+  closes the gap); J joins it with the part before (which keeps its layout). No trim
+  handles (badrfly): I / O leave out everything before / after the playhead (`leaveOutSide`), the bar's reset puts every part back, and a
+  render's `trimStart`/`trimEnd` opens as left-out parts at the ends (`trimToParts`); the bar shows the vertical video's length.
   `currentLayout()` sends kept parts inside the trim with same-looking neighbors joined: one → a plain layout as before, more → `parts`.
   The parts show in a **Layout row** under the clip in the Player 2 timeline (`hooks.onParts` → `Timeline.setVerticalParts`, file seconds
   mapped to the VOD with `fileToVod`; `hasLayoutRow` / `drawVerticalParts` / `layoutPartAt`): a white line at each split, "n · One box /
