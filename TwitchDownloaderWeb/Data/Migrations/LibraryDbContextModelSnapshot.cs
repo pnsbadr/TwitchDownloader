@@ -194,6 +194,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<string>("Quality")
                         .HasColumnType("TEXT");
 
+                    b.Property<int?>("RowId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<TimeSpan>("StartTime")
                         .HasColumnType("TEXT");
 
@@ -234,6 +237,8 @@ namespace TwitchDownloaderWeb.Data.Migrations
 
                     b.HasIndex("AddedAtUtc");
 
+                    b.HasIndex("RowId");
+
                     b.HasIndex("Status");
 
                     b.HasIndex("StreamDateUtc");
@@ -241,6 +246,32 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.HasIndex("TeamId");
 
                     b.ToTable("LibraryEntries", (string)null);
+                });
+
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.MemberVod", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("FirstOpenedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("TeamId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("VodId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TeamId", "UserId", "VodId")
+                        .IsUnique();
+
+                    b.ToTable("MemberVods");
                 });
 
             modelBuilder.Entity("TwitchDownloaderWeb.Data.RescuedAudioSegment", b =>
@@ -597,6 +628,43 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.ToTable("TeamRoles");
                 });
 
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.TimelineRow", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Name")
+                        .HasMaxLength(60)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Position")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("TeamId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("VodId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TeamId", "VodId", "UserId");
+
+                    b.ToTable("TimelineRows");
+                });
+
             modelBuilder.Entity("TwitchDownloaderWeb.Data.UserAccount", b =>
                 {
                     b.Property<int>("Id")
@@ -752,6 +820,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("TEXT");
 
+                    b.Property<int?>("RowId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<double>("Seconds")
                         .HasColumnType("REAL");
 
@@ -762,6 +833,8 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("RowId");
 
                     b.HasIndex("TeamId", "VodId");
 
@@ -780,10 +853,26 @@ namespace TwitchDownloaderWeb.Data.Migrations
 
             modelBuilder.Entity("TwitchDownloaderWeb.Data.LibraryEntry", b =>
                 {
+                    b.HasOne("TwitchDownloaderWeb.Data.TimelineRow", "Row")
+                        .WithMany()
+                        .HasForeignKey("RowId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("TwitchDownloaderWeb.Data.Team", null)
                         .WithMany()
                         .HasForeignKey("TeamId")
                         .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Row");
+                });
+
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.MemberVod", b =>
+                {
+                    b.HasOne("TwitchDownloaderWeb.Data.Team", null)
+                        .WithMany()
+                        .HasForeignKey("TeamId")
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });
 
@@ -859,13 +948,29 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .IsRequired();
                 });
 
-            modelBuilder.Entity("TwitchDownloaderWeb.Data.VodMarker", b =>
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.TimelineRow", b =>
                 {
                     b.HasOne("TwitchDownloaderWeb.Data.Team", null)
                         .WithMany()
                         .HasForeignKey("TeamId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.VodMarker", b =>
+                {
+                    b.HasOne("TwitchDownloaderWeb.Data.TimelineRow", "Row")
+                        .WithMany()
+                        .HasForeignKey("RowId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("TwitchDownloaderWeb.Data.Team", null)
+                        .WithMany()
+                        .HasForeignKey("TeamId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Row");
                 });
 
             modelBuilder.Entity("TwitchDownloaderWeb.Data.SegmentExport", b =>

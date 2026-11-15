@@ -20,7 +20,9 @@ namespace TwitchDownloaderWeb.Endpoints
     /// <param name="TrimMode">"Exact" (default) or "Safe".</param>
     /// <param name="StartTime">"h:mm:ss" offset from the start of the VOD. Blank is the start.</param>
     /// <param name="EndTime">"h:mm:ss" offset from the start of the VOD, not a duration. Blank is the end.</param>
-    public sealed record AddEntryRequest(string? VodId, string? Title, string? Quality, string? TrimMode, string? StartTime, string? EndTime);
+    /// <param name="RowId">One of the caller's clip rows on that VOD; blank = their first one (made if they have none).</param>
+    public sealed record AddEntryRequest(string? VodId, string? Title, string? Quality, string? TrimMode, string? StartTime, string? EndTime,
+        int? RowId = null);
 
     public sealed record RenameEntryRequest(string? Title);
 
@@ -91,7 +93,11 @@ namespace TwitchDownloaderWeb.Endpoints
             StartSeconds = entry.StartTime.TotalSeconds,
             EndSeconds = entry.EndTime?.TotalSeconds,
             FollowsMarkers = entry.FollowsMarkers,
+            RowId = entry.RowId,
         };
+
+        /// <summary>The clip row it sits on in the VOD's timeline (see <see cref="TimelineRow"/>).</summary>
+        public int? RowId { get; init; }
 
         /// <summary>The trim (or a clip's place in its VOD) in seconds, so the page can place the VOD's markers and segments on it.</summary>
         public double StartSeconds { get; init; }
@@ -174,6 +180,10 @@ namespace TwitchDownloaderWeb.Endpoints
             if (TeamChannelAccess.Refusal(await access.CheckVodAsync(team.TeamId, vodId, cancellationToken), vodId) is { } refused)
                 return refused;
 
+            if (request.RowId is { } rowId
+                && await TimelineEndpoints.CheckRowAsync(db, rowId, vodId, TimelineRowKind.Clip, team.UserId, cancellationToken) is { } rowProblem)
+                return rowProblem;
+
             if (!TrimTime.TryParse(request.StartTime, out var parsedStart))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["startTime"] = ["Use h:mm:ss, m:ss or seconds."] });
 
@@ -241,6 +251,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 UpdatedAtUtc = now,
                 ThumbnailUrl = vod.ThumbnailUrl,
                 Status = isStored ? EntryStatus.Queued : EntryStatus.ReferenceOnly,
+                RowId = request.RowId,
             };
 
             // Two saves because the audit event needs the new entry's ID; the transaction keeps them together
@@ -351,7 +362,10 @@ namespace TwitchDownloaderWeb.Endpoints
         private static async Task<IResult> GetEntry(int id, LibraryDbContext db, CancellationToken cancellationToken)
         {
             var entry = await db.Entries.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
-            return entry is null ? EntryNotFound(id) : Results.Ok(EntryDto.From(entry));
+            if (entry is null)
+                return EntryNotFound(id);
+            var names = await UsernamesAsync(db, [entry.AddedByUserId], cancellationToken);
+            return Results.Ok(EntryDto.From(entry) with { AddedBy = entry.AddedByUserId is { } u ? names.GetValueOrDefault(u) : null });
         }
 
         private static async Task<IResult> RenameEntry(int id, RenameEntryRequest request, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)

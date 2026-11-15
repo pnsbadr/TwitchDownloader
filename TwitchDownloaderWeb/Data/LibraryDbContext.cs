@@ -32,6 +32,8 @@ namespace TwitchDownloaderWeb.Data
         public DbSet<AccountLink> AccountLinks => Set<AccountLink>();
         public DbSet<TeamRole> TeamRoles => Set<TeamRole>();
         public DbSet<VodMarker> Markers => Set<VodMarker>();
+        public DbSet<TimelineRow> TimelineRows => Set<TimelineRow>();
+        public DbSet<MemberVod> MemberVods => Set<MemberVod>();
         public DbSet<SegmentExport> SegmentExports => Set<SegmentExport>();
         public DbSet<SegmentExportItem> SegmentExportItems => Set<SegmentExportItem>();
 
@@ -45,6 +47,7 @@ namespace TwitchDownloaderWeb.Data
                 entity.Property(x => x.GenerationStatus).HasConversion<string>().HasMaxLength(32);
                 entity.Property(x => x.TrimMode).HasConversion<string>().HasMaxLength(16);
                 entity.Property(x => x.Kind).HasConversion<string>().HasMaxLength(16);
+                entity.HasOne(x => x.Row).WithMany().HasForeignKey(x => x.RowId).OnDelete(DeleteBehavior.SetNull);
                 entity.Property(x => x.ClipSlug).HasMaxLength(200);
                 entity.HasIndex(x => x.StreamDateUtc);
                 entity.HasIndex(x => x.AddedAtUtc);
@@ -114,6 +117,24 @@ namespace TwitchDownloaderWeb.Data
                 entity.Property(x => x.Label).HasMaxLength(VodMarker.MaxLabelLength);
                 entity.Property(x => x.Color).HasMaxLength(16);
                 entity.HasIndex(x => new { x.TeamId, x.VodId });
+                entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
+                // A row is only deleted after its markers (TimelineEndpoints); SetNull is a safety net
+                entity.HasOne(x => x.Row).WithMany().HasForeignKey(x => x.RowId).OnDelete(DeleteBehavior.SetNull);
+                entity.HasQueryFilter(x => !ScopedToTeam || x.TeamId == ScopeTeamId);
+            });
+
+            modelBuilder.Entity<TimelineRow>(entity =>
+            {
+                entity.Property(x => x.Kind).HasConversion<string>().HasMaxLength(16);
+                entity.Property(x => x.Name).HasMaxLength(TimelineRow.MaxNameLength);
+                entity.HasIndex(x => new { x.TeamId, x.VodId, x.UserId });
+                entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasQueryFilter(x => !ScopedToTeam || x.TeamId == ScopeTeamId);
+            });
+
+            modelBuilder.Entity<MemberVod>(entity =>
+            {
+                entity.HasIndex(x => new { x.TeamId, x.UserId, x.VodId }).IsUnique();
                 entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
                 entity.HasQueryFilter(x => !ScopedToTeam || x.TeamId == ScopeTeamId);
             });
@@ -198,17 +219,27 @@ namespace TwitchDownloaderWeb.Data
         private async Task FillOwnershipAsync(CancellationToken cancellationToken)
         {
             var userId = _actor.UserId?.ToString();
-            foreach (var added in ChangeTracker.Entries().Where(x => x.State == EntityState.Added))
+            foreach (var added in ChangeTracker.Entries().Where(x => x.State == EntityState.Added).ToList())
             {
                 switch (added.Entity)
                 {
                     case LibraryEntry entry:
                         if (entry.TeamId == 0 && _actor.TeamId is { } entryTeam) entry.TeamId = entryTeam;
                         entry.AddedByUserId ??= userId;
+                        if (entry.RowId is null && entry.Row is null && entry.VodId > 0 && int.TryParse(entry.AddedByUserId, out var entryUser) && entryUser > 0)
+                            entry.Row = await DefaultRowAsync(entry.TeamId, entry.VodId, entryUser, TimelineRowKind.Clip, cancellationToken);
                         break;
                     case VodMarker marker:
                         if (marker.TeamId == 0 && _actor.TeamId is { } markerTeam) marker.TeamId = markerTeam;
                         if (marker.CreatedByUserId == 0 && _actor.UserId is { } markerUser) marker.CreatedByUserId = markerUser;
+                        if (marker.RowId is null && marker.Row is null && marker.CreatedByUserId > 0)
+                            marker.Row = await DefaultRowAsync(marker.TeamId, marker.VodId, marker.CreatedByUserId, TimelineRowKind.Video, cancellationToken);
+                        break;
+                    case TimelineRow row:
+                        if (row.TeamId == 0 && _actor.TeamId is { } rowTeam) row.TeamId = rowTeam;
+                        break;
+                    case MemberVod memberVod:
+                        if (memberVod.TeamId == 0 && _actor.TeamId is { } memberVodTeam) memberVod.TeamId = memberVodTeam;
                         break;
                     case SegmentExport export:
                         if (export.TeamId == 0 && _actor.TeamId is { } exportTeam) export.TeamId = exportTeam;
@@ -250,6 +281,37 @@ namespace TwitchDownloaderWeb.Data
                 if (audit.TeamId is null && audit.EntryId is { } id && teams.TryGetValue(id, out var team))
                     audit.TeamId = team;
             }
+        }
+
+        /// <summary>
+        /// The member's first row of <paramref name="kind"/> on the VOD (lowest position), made if they have none. Rows added in this
+        /// same save count too, so several new items share one new row.
+        /// </summary>
+        private async Task<TimelineRow> DefaultRowAsync(int teamId, long vodId, int userId, TimelineRowKind kind, CancellationToken cancellationToken)
+        {
+            bool Matches(TimelineRow r) => r.TeamId == teamId && r.VodId == vodId && r.UserId == userId && r.Kind == kind;
+
+            var local = TimelineRows.Local.Where(Matches).OrderBy(x => x.Position).ThenBy(x => x.Id).FirstOrDefault();
+            if (local is not null)
+                return local;
+
+            var existing = await TimelineRows.IgnoreQueryFilters()
+                .Where(x => x.TeamId == teamId && x.VodId == vodId && x.UserId == userId && x.Kind == kind)
+                .OrderBy(x => x.Position).ThenBy(x => x.Id)
+                .FirstOrDefaultAsync(cancellationToken);
+            if (existing is not null)
+                return existing;
+
+            var positions = await TimelineRows.IgnoreQueryFilters()
+                .Where(x => x.TeamId == teamId && x.VodId == vodId && x.UserId == userId)
+                .Select(x => (int?)x.Position).MaxAsync(cancellationToken);
+            var row = new TimelineRow
+            {
+                TeamId = teamId, VodId = vodId, UserId = userId, Kind = kind,
+                Position = (positions ?? -1) + 1, CreatedAtUtc = DateTime.UtcNow,
+            };
+            TimelineRows.Add(row);
+            return row;
         }
 
         protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
