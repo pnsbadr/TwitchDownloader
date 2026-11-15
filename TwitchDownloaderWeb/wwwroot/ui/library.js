@@ -4,7 +4,7 @@
 // VODs come only from the channels the app Owner assigned to the team (GET /api/channels, then /api/channels/{login}/vods).
 // Clips are the team's library entries (GET /api/entries); videos are segments linked on one row (GET /api/videos).
 
-import { $, el, api, me, can, formatDate, formatDuration, loadSetting, saveSetting, toast, iconButton, withTooltip } from "./core.js";
+import { $, el, api, me, can, formatDate, formatDuration, loadSetting, saveSetting, toast, iconButton, withTooltip, twitchThumb, thumbStyle } from "./core.js";
 import { draggable } from "./drag.js";
 import { dayRange, todayIn, viewerTimeZone } from "./dates.js";
 import { askText, confirmAction } from "./dialogs.js";
@@ -230,9 +230,10 @@ function renderChannelPicker() {
 }
 
 // A card: thumbnail with badges, title, meta lines, and icon actions. item.kind decides where it can be dropped.
+// thumb may be a list (first on top: see thumbStyle).
 function card({ kind, title, thumb, badges = [], meta = [], actions = [], dragData, menu }) {
   const node = el("div", { class: "card", role: "listitem", tabindex: "0", "aria-label": title },
-    el("div", { class: "card-thumb", style: thumb ? `background-image:url("${thumb}")` : null }, ...badges),
+    el("div", { class: "card-thumb", style: thumbStyle(thumb) }, ...badges),
     el("div", { class: "card-body" },
       el("div", { class: "card-title", title }, title),
       ...meta.filter(Boolean).map((line) => (line instanceof Node ? line : el("div", { class: "card-meta" }, line))),
@@ -270,7 +271,7 @@ const RESCUE_TEXT = {
 };
 
 function vodCard(vod) {
-  const thumb = vod.thumbnailUrl && !vod.thumbnailUrl.includes("404_processing") ? vod.thumbnailUrl.replace("%{width}", "320").replace("%{height}", "180") : null;
+  const thumb = twitchThumb(vod.thumbnailUrl);
   const badges = [
     vod.isLive ? el("span", { class: "card-badge live" }, "LIVE") : null,
     !vod.isLive && vod.length ? el("span", { class: "card-badge num" }, vod.length) : null,
@@ -337,7 +338,8 @@ function clipCard(entry) {
   return card({
     kind: "clip",
     title: entry.title,
-    thumb: entry.thumbnailUrl,
+    // A frame from the middle of the clip (Twitch clips: Twitch's own thumbnail)
+    thumb: [entry.frameUrl, twitchThumb(entry.thumbnailUrl)],
     badges,
     meta: [
       `VOD ${formatDate(entry.streamDateUtc, false)}`,
@@ -397,7 +399,7 @@ function videoCard(video) {
   return card({
     kind: "video",
     title: video.title,
-    thumb: video.thumbnailUrl,
+    thumb: [video.frameUrl, twitchThumb(video.thumbnailUrl)],
     badges: [el("span", { class: "card-badge num" }, formatDuration(video.lengthSeconds ?? 0))],
     meta: [video.streamDateUtc ? `VOD ${formatDate(video.streamDateUtc, false)}` : null, video.createdBy ? `by ${video.createdBy}` : null],
     actions: [exportButton({ kind: "video", data: item })],

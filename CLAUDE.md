@@ -496,6 +496,17 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   the file", `POST /generate`). While it's open only the timeline's tool and zoom keys still work.
 - `/?demo` fills sample cards (nothing is sent to the server) to try the shell.
 
+### Card thumbnails (`CardThumbnailService`, badrfly 2026-11-15)
+- Clip and video cards (and export list rows) show **a frame from the middle of what they play** (kept parts, so cut-out parts and
+  trims move it), drawn over the VOD's thumbnail, which shows while it loads or if it can't be made (`thumbStyle` in `ui/core.js`).
+  `frameUrl` on entries (`/api/entries/{id}/thumbnail?t=`) and videos (`/api/videos/{id}/thumbnail?t=`), `t` = tenths of a VOD second;
+  null for Twitch clip entries (they keep Twitch's own thumbnail). A re-trim changes `t`, so the URL changes (served `max-age` 7 days).
+- Made from the clip's file when it has one (stored or unexpired generated, at half its kept length), else from **one segment** of the
+  VOD's HLS: the smallest rendition ≥ 360p from `VodPlaybackService`, the segment holding the time (fMP4: its init segment in front),
+  ffmpeg output-side `-ss` (TS timestamps don't start at 0), 320 px wide jpg. Cached as `downloads/thumbs/{vodId}/{tenths}.jpg` (shared by
+  every clip/video with that frame); 3 at a time; failures remembered 10 min (→ 404). The cleanup service deletes ones not shown for 7 days
+  (write time = last shown, touched daily). Test: `CardThumbnailServiceTests` (fake HLS made with ffmpeg).
+
 ### Twitch clips (`ClipInfoService`, `ClipFileService`)
 - **No longer added** (2026-11-15, team channels): `POST /api/entries` refuses clip links and `/api/clips/info` is gone. Clip entries added
   before stay in the library and still generate files as below.

@@ -72,6 +72,19 @@ export function el(tag, props = {}, ...children) {
 
 // ---------- storage (per-viewer conveniences only; the page must work without it) ----------
 
+// A Twitch thumbnail URL at card size; null for templates Twitch hasn't filled yet ("404_processing" while live = a "?" picture)
+export function twitchThumb(url) {
+  if (!url || url.includes("404_processing")) return null;
+  return url.replace("%{width}", "320").replace("%{height}", "180");
+}
+
+// Inline style for a thumbnail from several images, first on top: a clip's own frame over the VOD's thumbnail, which shows while
+// the frame loads or if it can't be made. Null when there are none.
+export function thumbStyle(...urls) {
+  const list = urls.flat().filter(Boolean);
+  return list.length ? `background-image:${list.map((url) => `url("${url}")`).join(", ")}` : null;
+}
+
 export function loadSetting(key, fallback) {
   try {
     const value = localStorage.getItem(key);

@@ -10,7 +10,7 @@
 // segments or, when the team has "render as one" on, one file. Clips are horizontal and/or vertical; the vertical render is
 // picked from the team's (DownloadTeamVerticals) or is the member's own newest.
 
-import { $, el, api, me, can, toast, formatDate, formatDuration, loadSetting, saveSetting, iconButton } from "./core.js";
+import { $, el, api, me, can, toast, formatDate, formatDuration, loadSetting, saveSetting, iconButton, twitchThumb, thumbStyle } from "./core.js";
 import { dropTarget } from "./drag.js";
 import { MediaPlayer, formatClock } from "./media.js";
 import { timeBox } from "./timebox.js";
@@ -120,7 +120,7 @@ export function addToExport(item, { quiet = true } = {}) {
 function fromDrop(kind, data) {
   const base = {
     kind, id: data.id, vodId: String(data.vodId ?? ""), fileName: "", quality: "", horizontal: true, vertical: false, renderId: "",
-    joined: false, thumb: thumbOf(data.thumbnailUrl),
+    joined: false, thumb: thumbOf(data.thumbnailUrl), frame: data.frameUrl ?? null,
   };
   if (kind === "clip") {
     const start = data.startSeconds ?? 0;
@@ -153,15 +153,12 @@ function videoFields(video) {
     start: s.startSeconds, end: s.endSeconds, label: s.label, cuts: normalizeCuts([...(s.cuts ?? []), ...(s.videoCuts ?? [])], s.startSeconds, s.endSeconds),
   }));
   return {
-    title: video.title, vodDate: video.streamDateUtc, parts, length: video.lengthSeconds ?? parts.reduce((sum, p) => sum + keptSeconds(p.start, p.end, p.cuts), 0),
+    title: video.title, vodDate: video.streamDateUtc, parts, frame: video.frameUrl ?? null, length: video.lengthSeconds ?? parts.reduce((sum, p) => sum + keptSeconds(p.start, p.end, p.cuts), 0),
     start: parts.length ? Math.min(...parts.map((p) => p.start)) : 0, end: parts.length ? Math.max(...parts.map((p) => p.end)) : 0,
   };
 }
 
-function thumbOf(url) {
-  if (!url || url.includes("404_processing")) return null;
-  return url.replace("%{width}", "320").replace("%{height}", "180");
-}
+const thumbOf = twitchThumb;
 
 function remove(key) {
   list = list.filter((item) => item.key !== key);
@@ -237,7 +234,7 @@ function row(item) {
     "aria-label": item.title,
   },
   el("span", { class: "xl-handle", title: "Drag to change the order" }, el("sl-icon", { library: "ph", name: "dots-six-vertical" })),
-  el("div", { class: "xl-thumb", style: item.thumb ? `background-image:url("${item.thumb}")` : null },
+  el("div", { class: "xl-thumb", style: thumbStyle(item.frame, item.thumb) },
     el("span", { class: "xl-kind" }, el("sl-icon", { library: "ph", name: kind.icon }))),
   el("div", { class: "xl-main" },
     el("div", { class: "xl-title" }, el("span", { class: "xl-kind-label" }, kind.label), el("span", { class: "xl-name", title: item.title }, item.title)),
@@ -287,7 +284,7 @@ async function refreshItem(item) {
       const end = entry.endSeconds ?? entry.vodLengthSeconds ?? item.end;
       Object.assign(item, {
         title: entry.title, start, end, cuts: normalizeCuts(entry.cuts ?? [], start, end), length: entry.clipLengthSeconds,
-        reference: entry.isReferenceOnly, vodDate: entry.streamDateUtc, thumb: thumbOf(entry.thumbnailUrl) ?? item.thumb, gone: false,
+        reference: entry.isReferenceOnly, vodDate: entry.streamDateUtc, thumb: thumbOf(entry.thumbnailUrl) ?? item.thumb, frame: entry.frameUrl ?? null, gone: false,
       });
       loadRenders(item);
     } else if (item.kind === "video") {
