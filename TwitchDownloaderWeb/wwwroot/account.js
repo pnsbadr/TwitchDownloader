@@ -1,6 +1,6 @@
 "use strict";
 
-// Shared by login.html, join.html, team.html and admin.html. The main page (app.js) has its own copies.
+// Shared by login.html, join.html, team.html and admin.html. The editor (ui/core.js) has its own copies.
 
 const $ = (id) => document.getElementById(id);
 

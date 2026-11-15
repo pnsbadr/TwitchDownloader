@@ -8,11 +8,17 @@ let logOldestId = null;
 const ACTION_LABELS = {
   "entry.added": "added", "entry.renamed": "renamed", "entry.retrimmed": "re-cut", "entry.deleted": "deleted",
   "file.served": "downloaded", "generation.requested": "asked for a file", "shortform.requested": "started a vertical render",
-  "shortform.deleted": "deleted a vertical render", "channel.added": "saved a channel", "channel.removed": "removed a channel",
+  "shortform.deleted": "deleted a vertical render",
   "audio.rescue_started": "started saving audio", "team.member_joined": "joined", "team.member_removed": "removed a member",
   "team.member_role_changed": "changed a role", "role.created": "created a role", "role.changed": "changed a role", "role.deleted": "deleted a role",
   "link.created": "made a link", "link.revoked": "revoked a link", "team.settings_changed": "changed a setting", "team.created": "created the team",
   "team.owner_changed": "became the owner", "user.password_reset_link": "made a password reset link", "user.password_reset": "reset their password",
+  "channel.added": "got a channel", "channel.removed": "lost a channel",
+  "marker.added": "added a marker", "marker.changed": "changed a marker", "marker.deleted": "deleted a marker", "row.deleted": "deleted a timeline row",
+  "video.added": "made a video", "video.changed": "changed a video", "video.deleted": "deleted a video", "entry.moved_row": "moved a clip to another row",
+  "entry.followed_markers": "moved with the markers", "segments.requested": "asked for segment files", "segments.deleted": "deleted segment files",
+  "export.requested": "started an export", "export.ready": "export ready", "export.failed": "export failed", "export.deleted": "deleted an export",
+  "download.failed": "download failed", "shortform.rendered": "vertical render ready", "shortform.failed": "vertical render failed",
 };
 
 function has(permission) {
@@ -35,7 +41,7 @@ async function load() {
     return;
   }
   $("team-title").textContent = team.name;
-  document.title = `${team.name} · Clip Library`;
+  document.title = `${team.name} · Clipco`;
 
   $("members-panel").hidden = false;
   $("roles-panel").hidden = !(has("ManageRoles") || has("AssignRoles"));

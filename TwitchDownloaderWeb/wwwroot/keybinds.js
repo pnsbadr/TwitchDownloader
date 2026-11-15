@@ -3,71 +3,81 @@
 // ---------- every keyboard shortcut and mouse binding in the app ----------
 //
 // One list, so a new shortcut can be checked against the ones that exist (a duplicate in the same scope is reported in
-// the console when the page loads) and so a help screen can list them later. The player bar (player-bar.js) dispatches
-// its keys from here; other places handle their own keys but are still listed. Add new shortcuts HERE first.
+// the console when the page loads), and the shortcuts help screen (? on the editor) is built from it. The editor
+// dispatches its keys from here (keybindFor); a few places handle their own keys but are still listed. Add new
+// shortcuts HERE first.
 //
 // keys: what to press, written like "Space", "K", "Ctrl+Shift+Z", "ArrowLeft", "Shift+ArrowLeft", "Delete".
 //       Letters are upper case and work with or without Shift unless Ctrl/Alt is held too ("K" = k or K).
 //       "Ctrl" also means ⌘ on a Mac. Mouse bindings use names like "Wheel", "Click", "Right click".
-// scope: where it works. Two bindings may share keys only in different scopes.
-//   player        the Watch / Review player while it (or its control bar) has focus
-//   player-mouse  mouse on the player's timeline
-//   trim          a focused handle of the review dialog's trim bar (only with the Twitch player, which has no timeline of ours)
-//   vertical      the vertical (9:16) editor (new editor: Player 2's vertical mode; old page: a focused handle)
-//   vertical-box  the selected crop box in the new editor's vertical mode
-//   form          a text field in a small form (marker form, rename)
+// scope: where it works (KEYBIND_SCOPES). Two bindings may share keys only in different scopes.
+
+const KEYBIND_SCOPES = [
+  { id: "player", title: "Editor", description: "Anywhere on the Editor screen except while typing. They work on the player whose timeline tab is open." },
+  { id: "timeline-mouse", title: "Timeline (mouse)", description: "On the Player 1 and Player 2 timelines." },
+  { id: "library", title: "Cards and lists", description: "A focused card in the left panel or a row of the export list." },
+  { id: "vertical", title: "Vertical editor", description: "While Player 2 is the vertical (9:16) editor. The timeline's tool and zoom keys still work." },
+  { id: "vertical-box", title: "Vertical editor: selected box", description: "After clicking a crop box." },
+  { id: "form", title: "Titles and dialogs", description: "In the tools bar's title box and in pop-ups." },
+];
 
 const KEYBINDS = [
-  { id: "playPause", scope: "player", keys: ["Space", "K"], description: "Play / pause (a selected segment or card plays from its start to its end)" },
-  { id: "playEnd", scope: "player", keys: ["Shift+Space"], description: "Play the last 3 s of the selected segment or card (in a review: of the clip)" },
-  { id: "setStart", scope: "player", keys: ["I"], description: "Set the selected segment's or card's start to the playhead (in a review with nothing selected: the clip's)" },
-  { id: "setEnd", scope: "player", keys: ["O"], description: "Set the selected segment's or card's end to the playhead (in a review with nothing selected: the clip's)" },
+  { id: "playPause", scope: "player", keys: ["Space", "K"], description: "Play / pause (a selected item plays from its start to its end)" },
+  { id: "playEnd", scope: "player", keys: ["Shift+Space"], description: "Play the last 3 s of the selected item" },
+  { id: "setStart", scope: "player", keys: ["I"], description: "Move the selected item's start to the playhead" },
+  { id: "setEnd", scope: "player", keys: ["O"], description: "Move the selected item's end to the playhead" },
   { id: "back10", scope: "player", keys: ["J"], description: "Back 10 s" },
   { id: "fwd10", scope: "player", keys: ["L"], description: "Forward 10 s" },
   { id: "back5", scope: "player", keys: ["ArrowLeft"], description: "Back 5 s" },
   { id: "fwd5", scope: "player", keys: ["ArrowRight"], description: "Forward 5 s" },
   { id: "frameBack", scope: "player", keys: [","], description: "One frame back" },
   { id: "frameFwd", scope: "player", keys: ["."], description: "One frame forward" },
-  { id: "marker", scope: "player", keys: ["M"], description: "Add a marker here" },
-  { id: "segment", scope: "player", keys: ["S"], description: "Start a segment here, press again to end it" },
-  { id: "clip", scope: "player", keys: ["X"], description: "Start a clip here, press again to end it (up to 3 min); it becomes a library card" },
+  { id: "marker", scope: "player", keys: ["M"], description: "Add a moment marker at the playhead (Player 1)" },
+  { id: "segment", scope: "player", keys: ["S"], description: "Start a segment here, press again to end it (Player 1)" },
+  { id: "clip", scope: "player", keys: ["X"], description: "Start a clip here, press again to end it (up to 3 min; Player 1)" },
   { id: "fullscreen", scope: "player", keys: ["F"], description: "Fullscreen" },
   { id: "zoomIn", scope: "player", keys: ["+", "="], description: "Zoom the timeline in" },
   { id: "zoomOut", scope: "player", keys: ["-"], description: "Zoom the timeline out" },
-  { id: "fit", scope: "player", keys: ["0"], description: "Show the whole VOD (in a short clip's review: its 5-minute window)" },
-  { id: "toolPointer", scope: "player", keys: ["V"], description: "Pointer tool: click to seek, click a segment to select it" },
+  { id: "fit", scope: "player", keys: ["0"], description: "Fit the timeline (the whole VOD, or Player 2's item)" },
+  { id: "toolPointer", scope: "player", keys: ["V"], description: "Pointer tool: click to seek, click an item to select it" },
   { id: "toolCut", scope: "player", keys: ["C"], description: "Cut tool: click a segment to split it in two (Player 1), drag across a part to cut it out (Player 2)" },
   { id: "toolZoom", scope: "player", keys: ["Z"], description: "Zoom tool: click the timeline to zoom in, right click to zoom out" },
-  { id: "toggleSnap", scope: "player", keys: ["N"], description: "Snapping on/off: dragged edges stick to markers, segments, cards and the playhead" },
   { id: "toolHand", scope: "player", keys: ["H"], description: "Hand tool: drag the zoomed timeline to scroll it (only moves the view)" },
-  { id: "undo", scope: "player", keys: ["Ctrl+Z"], description: "Undo your last marker/segment change (up to 10)" },
+  { id: "toggleSnap", scope: "player", keys: ["N"], description: "Snapping on/off: dragged edges stick to markers, segments, clips, cut-out parts and the playhead" },
+  { id: "undo", scope: "player", keys: ["Ctrl+Z"], description: "Undo your last timeline change (up to 10)" },
   { id: "redo", scope: "player", keys: ["Ctrl+Shift+Z", "Ctrl+Y"], description: "Redo" },
-  { id: "deleteSelected", scope: "player", keys: ["Delete", "Backspace"], description: "Delete the selected segment (new editor: also a selected marker or clip)" },
+  { id: "deleteSelected", scope: "player", keys: ["Delete", "Backspace"], description: "Delete the selected item (in a video in Player 2: take it out of the video)" },
   { id: "verticalToggle", scope: "player", keys: ["E"], description: "Turn Player 2 into the vertical (9:16) editor (a clip in Player 2)" },
-  { id: "escape", scope: "player", keys: ["Escape"], description: "Cancel marking a segment or clip, or unselect the selected segment or card" },
+  { id: "shortcutsHelp", scope: "player", keys: ["?"], description: "Show this list of shortcuts" },
+  { id: "escape", scope: "player", keys: ["Escape"], description: "Cancel marking or linking, or unselect" },
 
-  { id: "wheelZoom", scope: "player-mouse", keys: ["Wheel"], description: "Zoom the timeline around the mouse" },
-  { id: "wheelPan", scope: "player-mouse", keys: ["Shift+Wheel"], description: "Scroll the zoomed timeline" },
-  { id: "clickSeek", scope: "player-mouse", keys: ["Click"], description: "Seek (pointer tool); select a segment, or a card on the purple lane; cut (cut tool); zoom in (zoom tool)" },
-  { id: "nudgeStart", scope: "player-mouse", keys: ["Shift+Click ±10s/±1s"], description: "With a segment or card selected: move its start (without Shift: its end)" },
-  { id: "rightClickZoomOut", scope: "player-mouse", keys: ["Right click"], description: "Zoom out (zoom tool)" },
-  { id: "dragEdge", scope: "player-mouse", keys: ["Drag"], description: "Drag a selected segment's edge to change its start or end" },
-  { id: "dragCardEdge", scope: "player-mouse", keys: ["Drag card edge"], description: "Drag a reference card's start or end (purple lane, or the reviewed/selected card's edges on the track)" },
-  { id: "handDrag", scope: "player-mouse", keys: ["Hand drag"], description: "Scroll the zoomed timeline (hand tool)" },
+  { id: "clickSeek", scope: "timeline-mouse", keys: ["Click"], description: "Seek; on an item, select it and go to its start (pointer tool). Split (cut tool), zoom in (zoom tool), pick segments for a video (link tool)" },
+  { id: "doubleClickItem", scope: "timeline-mouse", keys: ["Double-click"], description: "Change the item's title and color (a row's name: rename the row)" },
+  { id: "rightClickMenu", scope: "timeline-mouse", keys: ["Right click"], description: "The item's menu: title/color, make a copy, add to the export list, put cut parts back… (zoom tool: zoom out)" },
+  { id: "dragEdge", scope: "timeline-mouse", keys: ["Drag an edge"], description: "Change the selected item's start or end" },
+  { id: "dragItem", scope: "timeline-mouse", keys: ["Drag an item"], description: "Onto Player 2 to open it there, or onto another of your rows to move it" },
+  { id: "altDragCopy", scope: "timeline-mouse", keys: ["Alt+Drag"], description: "Copy instead of move; a clip dropped on a video row becomes a segment at the same times" },
+  { id: "cutDrag", scope: "timeline-mouse", keys: ["Cut tool drag"], description: "Cut that part out of Player 2's item (click a cut-out part to put it back)" },
+  { id: "wheelZoom", scope: "timeline-mouse", keys: ["Wheel"], description: "Zoom around the mouse" },
+  { id: "wheelPan", scope: "timeline-mouse", keys: ["Shift+Wheel"], description: "Scroll the zoomed timeline" },
+  { id: "handDrag", scope: "timeline-mouse", keys: ["Hand tool drag"], description: "Scroll the zoomed timeline" },
 
-  { id: "trimNudge", scope: "trim", keys: ["ArrowLeft", "ArrowRight"], description: "Move the focused handle 0.1 s" },
-  { id: "trimNudgeBig", scope: "trim", keys: ["Shift+ArrowLeft", "Shift+ArrowRight"], description: "Move the focused handle 1 s" },
+  { id: "cardLoad", scope: "library", keys: ["Enter", "Double-click"], description: "Load the card in its player (export list: show its settings)" },
+  { id: "cardMenu", scope: "library", keys: ["ContextMenu", "Shift+F10", "Right click"], description: "The card's menu: load, export, rename, delete" },
+  { id: "cardDrag", scope: "library", keys: ["Drag"], description: "Drop a card on a player, a timeline row or the export list" },
+  { id: "exportRemove", scope: "library", keys: ["Delete"], description: "Take the focused row off the export list" },
+  { id: "dragCancel", scope: "library", keys: ["Escape"], description: "Cancel a drag" },
 
   { id: "verticalTrim", scope: "vertical", keys: ["ArrowLeft", "ArrowRight"], description: "Move the focused trim handle 0.1 s" },
   { id: "verticalTrimBig", scope: "vertical", keys: ["Shift+ArrowLeft", "Shift+ArrowRight"], description: "Move the focused trim handle 1 s" },
-  { id: "verticalSplit", scope: "vertical", keys: ["ArrowUp", "ArrowDown"], description: "Move the top/bottom split" },
+  { id: "verticalSplit", scope: "vertical", keys: ["ArrowUp", "ArrowDown"], description: "Move the top/bottom split (the split pill focused)" },
   { id: "verticalPlay", scope: "vertical", keys: ["Space", "K"], description: "Play / pause the part that will be rendered" },
   { id: "verticalStart", scope: "vertical", keys: ["I"], description: "Start the render at the playhead" },
   { id: "verticalEnd", scope: "vertical", keys: ["O"], description: "End the render at the playhead" },
   { id: "verticalOneBox", scope: "vertical", keys: ["1"], description: "One box" },
   { id: "verticalTwoBoxes", scope: "vertical", keys: ["2"], description: "Two boxes (top and bottom)" },
   { id: "verticalSafeZones", scope: "vertical", keys: ["G"], description: "Safe zones: none, TikTok, Shorts, Reels" },
-  { id: "verticalSnap", scope: "vertical", keys: ["N"], description: "Snapping on/off: boxes stick to the video's edges and middle and to each other" },
+  { id: "verticalSnap", scope: "vertical", keys: ["N"], description: "Snapping on/off: boxes stick to the video's edges and middle and to each other (Alt while dragging: free)" },
   { id: "verticalUndo", scope: "vertical", keys: ["Ctrl+Z"], description: "Undo a box, layout or trim change" },
   { id: "verticalRedo", scope: "vertical", keys: ["Ctrl+Shift+Z", "Ctrl+Y"], description: "Redo" },
   { id: "verticalRender", scope: "vertical", keys: ["Ctrl+Enter"], description: "Render the vertical video" },
@@ -75,7 +85,7 @@ const KEYBINDS = [
   { id: "verticalNudge", scope: "vertical-box", keys: ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"], description: "Move the selected box a little" },
   { id: "verticalNudgeBig", scope: "vertical-box", keys: ["Shift+ArrowLeft", "Shift+ArrowRight", "Shift+ArrowUp", "Shift+ArrowDown"], description: "Move the selected box more" },
 
-  { id: "formSave", scope: "form", keys: ["Enter"], description: "Save" },
+  { id: "formSave", scope: "form", keys: ["Enter"], description: "Save (Edit original / Make a copy: Enter makes a copy)" },
   { id: "formCancel", scope: "form", keys: ["Escape"], description: "Cancel" },
 ];
 

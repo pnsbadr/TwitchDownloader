@@ -1,331 +1,294 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="sl-theme-dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Clip Library</title>
-  <link rel="stylesheet" href="app.css?v=vertical">
+  <title>Clipco</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.20.1/cdn/themes/dark.css">
+  <link rel="stylesheet" href="ui/theme.css">
+  <link rel="stylesheet" href="ui/editor.css">
+  <script src="https://cdn.jsdelivr.net/npm/split.js@1.6.5/dist/split.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/imask@7.6.1/dist/imask.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
+  <script src="keybinds.js"></script>
+  <script type="module" src="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.20.1/cdn/shoelace-autoloader.js"></script>
+  <script type="module" src="ui/editor.js"></script>
 </head>
 <body>
-  <header class="topbar">
-    <h1>Clip Library</h1>
-    <div class="tz" role="group" aria-label="Show times in">
-      <span class="tz-label">Times:</span>
-      <button type="button" class="seg" data-tz="local" aria-pressed="true">Local</button>
-      <button type="button" class="seg" data-tz="pacific" aria-pressed="false">Pacific</button>
-    </div>
-    <div class="account-bar" id="account-bar" hidden>
-      <label class="team-switch" id="team-switch-label" hidden>Team
-        <select id="team-switch"></select>
-      </label>
-      <span id="team-single" class="muted"></span>
-      <a class="button secondary small" id="team-link" href="/team.html" hidden>Team</a>
-      <a class="account-link" id="account-name" href="/account.html" title="Your account"></a>
-      <button type="button" class="secondary small" id="logout">Log out</button>
-    </div>
-  </header>
-  <!-- App staff viewing this team read-only ("view as support"); the server refuses every change -->
-  <div class="support-banner" id="support-banner" role="status" hidden>
-    <span>Viewing <strong id="support-team"></strong> as support (read-only). This visit is logged.</span>
-    <button type="button" class="secondary small" id="support-exit">Exit support view</button>
+  <!-- The editor needs room for two players and a timeline -->
+  <div class="narrow-note">
+    <h1 class="display">Clipco</h1>
+    <p>The editor needs a wider screen (at least 1100 px). Open it on a computer.</p>
   </div>
 
-  <!-- Shown instead of the library when the user can't use it yet (no team, or no permissions in this team) -->
-  <section class="panel gate" id="gate" hidden>
-    <h2 id="gate-heading">Waiting for access</h2>
-    <p id="gate-text"></p>
-  </section>
-
-  <main id="library-main" hidden>
-    <section class="panel" aria-labelledby="add-heading">
-      <h2 id="add-heading">Add a VOD or clip</h2>
-
-      <!-- Pick a VOD from a channel instead of pasting a link; fills the form below -->
-      <div id="browse" class="browse" aria-label="Browse a channel's VODs" role="region">
-        <div class="row">
-          <label>Saved channels
-            <select id="browse-saved">
-              <option value="">Choose…</option>
-            </select>
-          </label>
-          <label class="grow">Channel
-            <input id="browse-channel" placeholder="Channel name or twitch.tv link" autocomplete="off" spellcheck="false">
-          </label>
-          <button type="button" id="browse-save" class="secondary">Save channel</button>
-        </div>
-        <div class="row">
-          <div class="tz" role="group" aria-label="VOD type">
-            <span class="tz-label">Type:</span>
-            <button type="button" class="seg" data-vod-type="archive" aria-pressed="true">Past broadcasts</button>
-            <button type="button" class="seg" data-vod-type="highlight" aria-pressed="false">Highlights</button>
-            <button type="button" class="seg" data-vod-type="upload" aria-pressed="false">Uploads</button>
-            <button type="button" class="seg" data-vod-type="all" aria-pressed="false">All</button>
-          </div>
-          <button type="button" id="browse-show">Show VODs</button>
-          <button type="button" id="browse-hide" class="link" hidden>Hide list</button>
-        </div>
-        <p id="browse-message" class="message" role="status"></p>
-        <ul id="browse-list" class="vod-list" hidden></ul>
-        <div class="row">
-          <button type="button" id="browse-more" class="secondary" hidden>Load more</button>
-        </div>
+  <div class="app" id="app">
+    <header class="topbar">
+      <nav class="main-tabs" role="tablist" aria-label="Screens">
+        <button type="button" role="tab" class="main-tab display" data-view="editor" aria-selected="true">Editor</button>
+        <button type="button" role="tab" class="main-tab display" data-view="export" aria-selected="false">Export</button>
+      </nav>
+      <div class="topbar-right" data-tip-placement="bottom">
+        <sl-icon-button library="ph" name="keyboard" label="Keyboard shortcuts" data-keybind="shortcutsHelp" id="shortcuts-button"></sl-icon-button>
+        <div id="team-pill-slot"></div>
+        <sl-dropdown id="account-menu" placement="bottom-end" distance="6" hoist>
+          <button slot="trigger" type="button" class="avatar" id="avatar" aria-label="Account menu"></button>
+          <sl-menu id="account-items">
+            <sl-menu-label id="account-name"></sl-menu-label>
+            <sl-menu-item value="account"><sl-icon slot="prefix" library="ph" name="user-circle"></sl-icon>Account settings</sl-menu-item>
+            <sl-menu-item value="team" id="menu-team"><sl-icon slot="prefix" library="ph" name="users-three"></sl-icon>Team page</sl-menu-item>
+            <sl-menu-item value="shortcuts"><sl-icon slot="prefix" library="ph" name="keyboard"></sl-icon>Keyboard shortcuts</sl-menu-item>
+            <sl-divider></sl-divider>
+            <sl-menu-item value="logout" id="menu-logout"><sl-icon slot="prefix" library="ph" name="sign-out"></sl-icon>Log out</sl-menu-item>
+          </sl-menu>
+        </sl-dropdown>
       </div>
+    </header>
 
-      <form id="add-form" novalidate>
-        <div class="row">
-          <label class="grow">VOD or clip URL
-            <input id="vod" name="vod" required placeholder="https://www.twitch.tv/videos/123456789 or https://clips.twitch.tv/…" autocomplete="off">
-          </label>
-          <button type="button" id="get-info" class="secondary">Get Info</button>
-          <button type="button" id="watch-button" class="secondary">Watch</button>
-        </div>
+    <!-- App staff viewing this team read-only ("view as support"); the server refuses every change -->
+    <div class="support-banner" id="support-banner" role="status" hidden>
+      <span>Viewing <strong id="support-team"></strong> as support (read-only). This visit is logged.</span>
+      <sl-button size="small" id="support-exit">Exit support view</sl-button>
+    </div>
 
-        <div id="vod-info" class="vod-info" hidden>
-          <img id="vod-thumb" alt="" width="160" height="90">
-          <div>
-            <div id="vod-title" class="vod-title"></div>
-            <div id="vod-meta" class="muted"></div>
-          </div>
-        </div>
-
-        <!-- Plays the VOD from Twitch (app player, or the official embed) so start/end can be picked while watching -->
-        <div id="watch" class="watch" hidden>
-          <div id="watch-wrap" class="player-wrap" tabindex="-1">
-            <div class="player-frame"><div id="watch-player"></div></div>
-            <div id="watch-bar" class="vp-bar" hidden></div>
-          </div>
-          <div id="watch-source" class="player-source muted"></div>
-          <div class="row watch-controls">
-            <span class="watch-time">At <strong id="watch-time">–</strong></span>
-            <button type="button" id="watch-set-start" class="secondary">Set start here</button>
-            <button type="button" id="watch-set-end" class="secondary">Set end here</button>
-            <button type="button" id="watch-preview" class="secondary">Play clip</button>
-            <button type="button" id="watch-close" class="link">Close player</button>
-          </div>
-          <p class="muted">Streams from Twitch; nothing is downloaded. Parts Twitch muted stay muted unless clean audio was saved for them.</p>
-        </div>
-
-        <div class="grid">
-          <label class="span-2">Title
-            <input id="title" name="title" maxlength="500" placeholder="Leave blank to use the Twitch title">
-          </label>
-          <label>Quality
-            <select id="quality" name="quality">
-              <option value="">Best available</option>
-            </select>
-          </label>
-          <label class="vod-only">Trim mode
-            <select id="trim-mode" name="trimMode">
-              <option value="Exact">Exact</option>
-              <option value="Safe">Safe</option>
-            </select>
-          </label>
-          <label class="vod-only">Start
-            <input id="start" name="startTime" placeholder="0:00:00" autocomplete="off">
-          </label>
-          <label class="vod-only">End
-            <input id="end" name="endTime" placeholder="End of VOD" autocomplete="off">
-          </label>
-        </div>
-
-        <p id="rule-preview" class="muted" aria-live="polite"></p>
-        <div class="row">
-          <button type="submit" id="add-button">Add to library</button>
-          <span id="add-not-allowed" class="muted" hidden>Your role can watch VODs but not add them to the library.</span>
-          <span id="add-message" class="message" role="status"></span>
-        </div>
-      </form>
+    <!-- Shown instead of the editor when the user can't use it yet (no team, or no permissions in this team) -->
+    <section class="gate" id="gate" hidden>
+      <h2 class="display" id="gate-heading">Waiting for access</h2>
+      <p id="gate-text"></p>
+      <p id="gate-extra"></p>
     </section>
 
-    <section class="panel" aria-labelledby="library-heading">
-      <h2 id="library-heading">Library</h2>
+    <div class="workspace" id="workspace" hidden>
+      <!-- Left panel: the same lists on the Editor and Export screens -->
+      <aside class="side" id="side" aria-label="Library">
+        <div class="side-tabs" role="tablist" aria-label="Lists">
+          <button type="button" role="tab" class="side-tab display" data-list="vods" aria-selected="true">VODs</button>
+          <button type="button" role="tab" class="side-tab display" data-list="videos" aria-selected="false">Videos</button>
+          <button type="button" role="tab" class="side-tab display" data-list="clips" aria-selected="false">Clips</button>
+        </div>
+        <div class="side-tools" data-tip-placement="bottom">
+          <sl-select id="side-channel" size="small" hoist aria-label="Channel" hidden></sl-select>
+          <span class="side-count faint" id="side-count"></span>
+          <sl-dropdown id="filter-menu" placement="bottom-end" distance="4" hoist stay-open-on-select>
+            <sl-icon-button slot="trigger" library="ph" name="funnel-simple" label="Search, sort and filter" id="side-filter"></sl-icon-button>
+            <div class="filter-panel" id="filter-panel">
+              <sl-input id="filter-search" size="small" clearable placeholder="Search titles" aria-label="Search">
+                <sl-icon library="ph" name="magnifying-glass" slot="prefix"></sl-icon>
+              </sl-input>
+              <div class="filter-row" id="filter-type-row">
+                <sl-radio-group id="filter-type" size="small" label="Show" value="archive">
+                  <sl-radio-button value="archive">Broadcasts</sl-radio-button>
+                  <sl-radio-button value="highlight">Highlights</sl-radio-button>
+                  <sl-radio-button value="upload">Uploads</sl-radio-button>
+                </sl-radio-group>
+              </div>
+              <div class="filter-row" id="filter-sort-row">
+                <sl-select id="filter-sort" size="small" label="Sort by" hoist value="dateAdded">
+                  <sl-option value="dateAdded">Date added</sl-option>
+                  <sl-option value="streamDate">Stream date</sl-option>
+                </sl-select>
+                <sl-tooltip content="Newest first" hoist><sl-icon-button id="filter-order" library="ph" name="sort-descending" label="Newest first"></sl-icon-button></sl-tooltip>
+              </div>
+              <div class="filter-row filter-dates" id="filter-date-row">
+                <sl-switch id="filter-24h" size="small">Last 24 hours</sl-switch>
+                <div class="filter-day">
+                  <sl-input id="filter-day" type="date" size="small" label="Day" clearable></sl-input>
+                  <sl-button id="filter-today" size="small">Today</sl-button>
+                </div>
+                <p class="faint filter-note">Dates use the sort field and your time zone.</p>
+              </div>
+              <sl-button id="filter-clear" size="small" variant="text">Clear filters</sl-button>
+            </div>
+          </sl-dropdown>
+        </div>
+        <div class="side-list" id="side-list" role="list"></div>
+      </aside>
 
-      <!-- Hidden until the Calendar button opens it; sits above the search and filters -->
-      <div id="calendar" class="calendar" aria-labelledby="cal-title" hidden>
-        <div class="cal-head">
-          <div class="cal-nav">
-            <button type="button" class="link cal-arrow" id="cal-prev" aria-label="Previous month">&lsaquo;</button>
-            <h3 id="cal-title" aria-live="polite"></h3>
-            <button type="button" class="link cal-arrow" id="cal-next" aria-label="Next month">&rsaquo;</button>          </div>
-          <div class="tz" role="group" aria-label="Calendar is based on">
-            <span class="tz-label">Calendar by:</span>
-            <button type="button" class="seg" data-cal-field="streamDate" aria-pressed="true">Stream date</button>
-            <button type="button" class="seg" data-cal-field="dateAdded" aria-pressed="false">Date added</button>
+      <main class="views">
+        <section class="view view-editor" id="view-editor" aria-label="Editor">
+          <div class="players" id="players">
+            <section class="player" id="player1" aria-label="Player 1">
+              <header class="player-head">
+                <span class="player-name display">Player 1</span>
+                <span class="player-info" id="p1-info"></span>
+                <span class="player-clock num" id="p1-clock" hidden></span>
+                <sl-tooltip content="Go to the newest part" hoist>
+                  <button type="button" class="live-button" id="p1-live" hidden>LIVE</button>
+                </sl-tooltip>
+              </header>
+              <div class="player-screen" id="p1-screen">
+                <div class="player-media" id="p1-media" hidden></div>
+                <p class="player-note" id="p1-note" hidden></p>
+                <div class="drop-hint" id="p1-hint">
+                  <sl-icon library="ph" name="broadcast"></sl-icon>
+                  <p>Drag a VOD or live stream here</p>
+                  <p class="faint">or double-click its card</p>
+                </div>
+              </div>
+              <div class="player-controls" data-tip-placement="top">
+                <sl-icon-button library="ph" id="p1-play" name="play" label="Play / pause" data-keybind="playPause" disabled></sl-icon-button>
+                <sl-icon-button library="ph" id="p1-back" name="arrow-counter-clockwise" label="Back 10 s" data-keybind="back10" disabled></sl-icon-button>
+                <sl-icon-button library="ph" id="p1-fwd" name="arrow-clockwise" label="Forward 10 s" data-keybind="fwd10" disabled></sl-icon-button>
+                <span class="controls-gap"></span>
+                <sl-icon-button library="ph" id="p1-mute" name="speaker-high" label="Mute" disabled></sl-icon-button>
+                <sl-range id="p1-volume" class="volume" min="0" max="100" value="100" tooltip="none" aria-label="Volume" disabled></sl-range>
+                <sl-dropdown id="p1-quality-menu" placement="top-end" hoist distance="4">
+                  <sl-icon-button library="ph" slot="trigger" id="p1-quality" name="gear-six" label="Quality and player" disabled></sl-icon-button>
+                  <sl-menu id="p1-quality-items"></sl-menu>
+                </sl-dropdown>
+                <sl-icon-button library="ph" id="p1-full" name="corners-out" label="Fullscreen" data-keybind="fullscreen" disabled></sl-icon-button>
+              </div>
+            </section>
+
+            <section class="player" id="player2" aria-label="Player 2">
+              <header class="player-head">
+                <span class="player-name display">Player 2</span>
+                <span class="player-info p2-info" id="p2-info"></span>
+              </header>
+              <div class="player-screen" id="p2-screen">
+                <div class="player-media" id="p2-media" hidden></div>
+                <p class="player-note" id="p2-note" hidden></p>
+                <div class="drop-hint" id="p2-hint">
+                  <sl-icon library="ph" name="film-strip"></sl-icon>
+                  <p>Drag a video, clip or segment here</p>
+                  <p class="faint">New segments and clips open here by themselves</p>
+                </div>
+              </div>
+              <div class="player-controls" data-tip-placement="top">
+                <sl-icon-button library="ph" id="p2-play" name="play" label="Play / pause" data-keybind="playPause" disabled></sl-icon-button>
+                <sl-icon-button library="ph" id="p2-back" name="arrow-counter-clockwise" label="Back 10 s" data-keybind="back10" disabled></sl-icon-button>
+                <sl-icon-button library="ph" id="p2-fwd" name="arrow-clockwise" label="Forward 10 s" data-keybind="fwd10" disabled></sl-icon-button>
+                <span class="controls-gap"></span>
+                <sl-icon-button library="ph" id="p2-show" name="crosshair" label="Show in Player 1" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="device-mobile" label="Vertical (9:16) editor" data-keybind="verticalToggle" disabled hidden id="p2-vertical"></sl-icon-button>
+                <sl-icon-button library="ph" id="p2-rename" name="pencil-simple" label="Rename" disabled></sl-icon-button>
+                <sl-icon-button library="ph" id="p2-delete" name="trash" label="Delete" disabled></sl-icon-button>
+                <sl-icon-button library="ph" id="p2-mute" name="speaker-high" label="Mute" disabled></sl-icon-button>
+                <sl-range id="p2-volume" class="volume" min="0" max="100" value="100" tooltip="none" aria-label="Volume" disabled></sl-range>
+                <sl-icon-button library="ph" id="p2-full" name="corners-out" label="Fullscreen" data-keybind="fullscreen" disabled></sl-icon-button>
+              </div>
+            </section>
           </div>
-        </div>
-        <p id="cal-zone" class="muted cal-zone"></p>
-        <div id="cal-grid" class="cal-grid"></div>
-        <p id="cal-note" class="muted"></p>
-      </div>
 
-      <div class="controls">
-        <input id="search" type="search" placeholder="Search titles" aria-label="Search titles">
-        <!-- Shown while a day filter is active and the calendar is closed -->
-        <button type="button" id="day-chip" class="chip" hidden></button>
-        <select id="sort" aria-label="Sort by">
-          <option value="dateAdded">Date added</option>
-          <option value="streamDate">Stream date</option>
-        </select>
-        <select id="order" aria-label="Order">
-          <option value="desc">Newest first</option>
-          <option value="asc">Oldest first</option>
-        </select>
-        <button type="button" id="recent-toggle" class="secondary" aria-pressed="false">Last 24h</button>
-        <button type="button" id="cal-toggle" class="secondary" aria-expanded="false" aria-controls="calendar">Calendar</button>
-      </div>
+          <div class="lower" id="lower">
+            <!-- Tools in the middle; while a new segment, clip or video is being named, the title and color editor
+                 takes the right side and the tools slide to the left -->
+            <div class="toolsbar" id="toolsbar" data-tip-placement="top">
+              <div class="tools" id="tools">
+                <sl-icon-button library="ph" name="cursor" label="Pointer" data-keybind="toolPointer" data-tool="pointer" data-active disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="scissors" label="Cut" data-keybind="toolCut" data-tool="cut" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="magnifying-glass-plus" label="Zoom" data-keybind="toolZoom" data-tool="zoom" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="hand" label="Hand" data-keybind="toolHand" data-tool="hand" disabled></sl-icon-button>
+                <span class="tools-sep"></span>
+                <sl-icon-button library="ph" name="magnet" label="Snapping" data-keybind="toggleSnap" disabled></sl-icon-button>
+                <span class="tools-sep"></span>
+                <sl-icon-button library="ph" name="map-pin" label="Moment marker" data-keybind="marker" data-create="marker" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="brackets-square" label="Segment" data-keybind="segment" data-create="segment" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="film-strip" label="Clip" data-keybind="clip" data-create="clip" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="link-simple" label="Link segments into a video" data-create="video" disabled></sl-icon-button>
+                <span class="tools-sep"></span>
+                <sl-icon-button library="ph" name="arrow-u-up-left" label="Undo" data-keybind="undo" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="arrow-u-up-right" label="Redo" data-keybind="redo" disabled></sl-icon-button>
+              </div>
+              <div class="item-editor" id="item-editor" hidden>
+                <sl-input id="item-title" size="small" placeholder="Title" maxlength="200" aria-label="Title"></sl-input>
+                <div class="swatches" id="item-colors" role="radiogroup" aria-label="Color"></div>
+                <sl-icon-button library="ph" name="check" label="Apply" id="item-apply" hidden></sl-icon-button>
+              </div>
+            </div>
 
-      <div id="day-filter" class="day-filter" hidden>
-        <span id="day-filter-text"></span>
-        <button type="button" class="link" id="day-filter-clear">Clear</button>
-      </div>
-
-      <p id="library-message" class="message" role="status"></p>
-      <ul id="entries" class="entries"></ul>
-      <p id="empty" class="muted" hidden>No entries yet.</p>
-    </section>
-  </main>
-
-  <!-- Reviewing a library clip: plays it from Twitch and lets the cut be adjusted, then re-downloaded -->
-  <dialog id="clip-dialog" class="clip-dialog" aria-labelledby="clip-dialog-title">
-    <div class="dialog-head">
-      <h3 id="clip-dialog-title"></h3>
-      <button type="button" id="clip-close" class="link">Close</button>
-    </div>
-    <div id="clip-wrap" class="player-wrap" tabindex="-1">
-      <div class="player-frame"><div id="clip-player"></div></div>
-      <div id="clip-bar" class="vp-bar" hidden></div>
-    </div>
-    <div id="clip-source" class="player-source muted"></div>
-
-    <!-- Only with the Twitch player (no timeline of ours); the app player edits the clip on its timeline -->
-    <div id="review-classic">
-    <div id="trim-bar-wrap" class="trim-bar-wrap">
-      <div id="trim-bar" class="trim-bar" aria-label="Clip range. Drag the handles to adjust; click to seek.">
-        <div id="trim-range" class="trim-range"></div>
-        <div id="trim-markers" class="trim-markers"></div>
-        <button type="button" id="trim-handle-start" class="trim-handle" aria-label="Start handle"></button>
-        <button type="button" id="trim-handle-end" class="trim-handle" aria-label="End handle"></button>
-        <div id="trim-playhead" class="trim-playhead" hidden></div>
-      </div>
-      <div class="trim-scale muted"><span id="trim-scale-from"></span><span id="trim-scale-to"></span></div>
-    </div>
-
-    <div class="trim-edit">
-      <div class="trim-side">
-        <span class="trim-label">Start</span>
-        <div class="nudges">
-          <button type="button" class="nudge" data-edge="start" data-delta="-1">−1s</button>
-          <button type="button" class="nudge" data-edge="start" data-delta="-0.1">−0.1s</button>
-          <input id="trim-start" class="trim-value" autocomplete="off" spellcheck="false" aria-label="Start time">
-          <button type="button" class="nudge" data-edge="start" data-delta="0.1">+0.1s</button>
-          <button type="button" class="nudge" data-edge="start" data-delta="1">+1s</button>
-        </div>
-        <button type="button" class="link small" data-set-edge="start">Set to playhead</button>
-      </div>
-      <div class="trim-side">
-        <span class="trim-label">End</span>
-        <div class="nudges">
-          <button type="button" class="nudge" data-edge="end" data-delta="-1">−1s</button>
-          <button type="button" class="nudge" data-edge="end" data-delta="-0.1">−0.1s</button>
-          <input id="trim-end" class="trim-value" autocomplete="off" spellcheck="false" aria-label="End time">
-          <button type="button" class="nudge" data-edge="end" data-delta="0.1">+0.1s</button>
-          <button type="button" class="nudge" data-edge="end" data-delta="1">+1s</button>
-        </div>
-        <button type="button" class="link small" data-set-edge="end">Set to playhead</button>
-      </div>
-    </div>
-
-    <div class="row watch-controls">
-      <span class="watch-time">At <strong id="clip-time">–</strong></span>
-      <span id="trim-length" class="muted"></span>
-      <button type="button" id="clip-replay" class="secondary">Play clip</button>
-      <button type="button" id="clip-play-end" class="secondary">Play last 3s</button>
-    </div>
-    <div class="row">
-      <button type="button" id="trim-save" disabled>Save new cut</button>
-      <button type="button" id="trim-revert" class="link" disabled>Undo changes</button>
-      <span id="trim-message" class="message" role="status"></span>
-    </div>
-    <p class="muted">Plays from Twitch and pauses at the end. Saving re-downloads the clip with the new start and end.</p>
-    </div>
-  </dialog>
-
-  <!-- Vertical (9:16) editor: drag/resize boxes on the landscape video, like Twitch's portrait clip editor -->
-  <dialog id="vx" class="vx" aria-labelledby="vx-heading">
-    <div class="vx-head">
-      <h2 id="vx-heading">Make vertical</h2>
-      <button type="button" class="link" id="vx-close" aria-label="Close">✕</button>
-    </div>
-    <p id="vx-entry" class="muted vx-entry"></p>
-    <div class="vx-body">
-      <div class="vx-col vx-land">
-        <div class="vx-label">Landscape</div>
-        <div id="vx-stage" class="vx-stage">
-          <video id="vx-video" playsinline preload="auto"></video>
-          <div id="vx-box-top" class="vx-box vx-top" data-box="top"><span class="vx-tag">Top</span></div>
-          <div id="vx-box-bottom" class="vx-box vx-bottom" data-box="bottom"><span class="vx-tag">Bottom</span></div>
-        </div>
-        <div class="vx-player">
-          <button type="button" id="vx-play" class="secondary small" aria-label="Play">▶</button>
-          <input id="vx-seek" type="range" min="0" max="1000" value="0" aria-label="Seek">
-          <span id="vx-time" class="muted vx-time">0:00</span>
-          <!-- Preview volume only; the rendered file keeps the clip's original audio -->
-          <button type="button" id="vx-mute" class="link vx-mute" aria-label="Mute preview">🔊</button>
-          <input id="vx-volume" class="vx-volume" type="range" min="0" max="100" value="30" aria-label="Preview volume">
-        </div>
-        <!-- Trim: only the part between the two handles is rendered -->
-        <div class="vx-trim-row">
-          <span class="vx-trim-label">Trim</span>
-          <div id="vx-trim" class="vx-trim">
-            <div id="vx-trim-range" class="vx-trim-range"></div>
-            <div id="vx-trim-head" class="vx-trim-head"></div>
-            <span id="vx-trim-start" class="vx-trim-handle" data-edge="start" role="slider" tabindex="0" aria-label="Trim start"></span>
-            <span id="vx-trim-end" class="vx-trim-handle" data-edge="end" role="slider" tabindex="0" aria-label="Trim end"></span>
+            <section class="timeline" id="timeline" aria-label="Timeline">
+              <div class="tl-top">
+                <div class="tl-tabs" role="tablist" aria-label="Timeline">
+                  <button type="button" role="tab" class="tl-tab display" data-tl="p1" aria-selected="true">Player 1</button>
+                  <button type="button" role="tab" class="tl-tab display" data-tl="p2" aria-selected="false">Player 2</button>
+                </div>
+                <div class="tl-ruler" id="tl-ruler"></div>
+              </div>
+              <div class="tl-body">
+                <div class="tl-heads" id="tl-heads"></div>
+                <div class="tl-track" id="tl-track">
+                  <p class="tl-empty faint" id="tl-empty">Load a VOD in Player 1 to see the team's rows.</p>
+                </div>
+              </div>
+              <footer class="tl-foot" data-tip-placement="top">
+                <div class="tl-foot-left">
+                  <sl-icon-button library="ph" id="tl-add-video" name="rows-plus-bottom" label="Insert video row" disabled></sl-icon-button>
+                  <sl-icon-button library="ph" id="tl-add-clip" name="list-plus" label="Insert clip row" disabled></sl-icon-button>
+                  <sl-icon-button library="ph" id="tl-delete-rows" name="trash" label="Delete toggled rows" disabled></sl-icon-button>
+                </div>
+                <div class="tl-foot-right">
+                  <sl-icon-button library="ph" id="tl-zoom-out" name="magnifying-glass-minus" label="Zoom out" data-keybind="zoomOut" disabled></sl-icon-button>
+                  <sl-range id="tl-zoom" min="0" max="100" value="0" tooltip="none" aria-label="Timeline zoom" disabled></sl-range>
+                  <sl-icon-button library="ph" id="tl-zoom-in" name="magnifying-glass-plus" label="Zoom in" data-keybind="zoomIn" disabled></sl-icon-button>
+                  <sl-icon-button library="ph" id="tl-fit" name="arrows-out-line-horizontal" label="Fit" data-keybind="fit" disabled></sl-icon-button>
+                </div>
+              </footer>
+            </section>
           </div>
-        </div>
-        <div class="vx-trim-controls">
-          <button type="button" id="vx-set-start" class="secondary small">Start here</button>
-          <button type="button" id="vx-set-end" class="secondary small">End here</button>
-          <span id="vx-trim-text" class="muted vx-time"></span>
-          <button type="button" id="vx-trim-reset" class="link">Reset</button>
-        </div>
-        <p class="muted vx-hint">Drag a box to move it, drag a corner to resize it. In two-box mode, drag the bar in the portrait preview to change how much space each box gets. Drag the trim handles (or use Start here / End here at the playhead) to render only part of the clip; the preview loops over that part.</p>
-      </div>
-      <div class="vx-col vx-port">
-        <div class="vx-label">Portrait</div>
-        <div id="vx-preview-wrap" class="vx-preview-wrap">
-          <canvas id="vx-preview" width="270" height="480"></canvas>
-          <!-- Plays a finished render in place of the live preview -->
-          <video id="vx-render-video" class="vx-render-video" playsinline controls hidden></video>
-          <div id="vx-split" class="vx-split" role="slider" tabindex="0" aria-label="Split between top and bottom" aria-valuemin="20" aria-valuemax="80"><span></span></div>
-        </div>
-        <button type="button" id="vx-back" class="secondary small vx-back" hidden>Back to editor</button>
-        <div class="vx-modes" role="group" aria-label="Layout">
-          <button type="button" class="seg vx-mode" data-vx-mode="single" aria-pressed="false" title="One box">
-            <svg viewBox="0 0 20 28" width="16" height="22" aria-hidden="true"><rect x="2" y="2" width="16" height="24" rx="3" fill="none" stroke="currentColor" stroke-width="2"/></svg>
-            One box
-          </button>
-          <button type="button" class="seg vx-mode" data-vx-mode="split" aria-pressed="true" title="Two boxes stacked">
-            <svg viewBox="0 0 20 28" width="16" height="22" aria-hidden="true"><rect x="2" y="2" width="16" height="24" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><line x1="2" y1="11" x2="18" y2="11" stroke="currentColor" stroke-width="2"/></svg>
-            Two boxes
-          </button>
-        </div>
-      </div>
-    </div>
-    <div class="vx-foot">
-      <button type="button" id="vx-render">Render vertical</button>
-      <progress id="vx-progress" max="1" value="0" hidden></progress>
-      <span id="vx-message" class="message" role="status"></span>
-    </div>
-    <div class="vx-history">
-      <div class="vx-label">Renders <span class="muted vx-history-note">shared with the team · newest 5 kept for 72 h</span></div>
-      <ul id="vx-renders" class="vx-renders"></ul>
-      <p id="vx-renders-empty" class="muted" hidden>No renders yet. Set up the boxes and click Render vertical.</p>
-    </div>
-  </dialog>
+        </section>
 
-  <script src="keybinds.js"></script>
-  <script src="player-bar.js"></script>
-  <script src="app.js?v=vertical"></script>
+        <section class="view view-export" id="view-export" aria-label="Export" hidden>
+          <!-- ui/export.js: preview player and the selected item's settings on top, the drop list and your exports below -->
+          <section class="player export-player" id="export-player" aria-label="Preview">
+            <header class="player-head">
+              <span class="player-name display">Preview</span>
+              <span class="player-info" id="xp-info"></span>
+              <span class="player-clock num" id="xp-clock" hidden></span>
+            </header>
+            <div class="player-screen" id="xp-screen">
+              <div class="player-media" id="xp-media" hidden></div>
+              <p class="player-note" id="xp-note" hidden></p>
+              <div class="drop-hint" id="xp-hint">
+                <sl-icon library="ph" name="eye"></sl-icon>
+                <p>Click an item on the export list to preview it</p>
+                <p class="faint">Cut-out parts are skipped, like in the file</p>
+              </div>
+            </div>
+            <div class="xp-progress" id="xp-progress" aria-hidden="true"><div class="xp-progress-fill" id="xp-progress-fill"></div></div>
+            <div class="player-controls" data-tip-placement="top">
+              <sl-icon-button library="ph" id="xp-play" name="play" label="Play / pause" disabled></sl-icon-button>
+              <sl-icon-button library="ph" id="xp-restart" name="skip-back" label="From the start" disabled></sl-icon-button>
+              <span class="controls-gap"></span>
+              <sl-icon-button library="ph" id="xp-mute" name="speaker-high" label="Mute" disabled></sl-icon-button>
+              <sl-range id="xp-volume" class="volume" min="0" max="100" value="100" tooltip="none" aria-label="Volume" disabled></sl-range>
+              <sl-icon-button library="ph" id="xp-full" name="corners-out" label="Fullscreen" disabled></sl-icon-button>
+            </div>
+          </section>
+
+          <section class="export-panel export-settings" id="export-settings" aria-label="Item settings">
+            <header class="export-panel-head"><span class="display">Settings</span></header>
+            <div class="export-settings-body" id="export-settings-body">
+              <p class="faint export-empty-note">Select an item on the list to set its file name, quality and format.</p>
+            </div>
+          </section>
+
+          <section class="export-panel export-list-panel" id="export-list-panel" aria-label="Export list">
+            <header class="export-panel-head">
+              <span class="display">Export list</span>
+              <span class="faint export-count" id="export-count"></span>
+              <span class="controls-gap"></span>
+              <sl-icon-button library="ph" id="export-clear" name="broom" label="Clear the list" disabled></sl-icon-button>
+            </header>
+            <div class="export-list" id="export-list" role="list"></div>
+            <footer class="export-foot">
+              <span class="faint export-summary" id="export-summary"></span>
+              <sl-button variant="primary" size="large" id="export-button" disabled>Export</sl-button>
+            </footer>
+          </section>
+
+          <section class="export-panel export-history" id="export-history" aria-label="Your exports">
+            <header class="export-panel-head"><span class="display">Your exports</span></header>
+            <div class="export-batches" id="export-batches"></div>
+          </section>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- Right-click menu for cards (ui/library.js) -->
+  <sl-menu class="context-menu" id="context-menu" hidden></sl-menu>
 </body>
 </html>

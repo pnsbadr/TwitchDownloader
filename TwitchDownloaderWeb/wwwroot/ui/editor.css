@@ -1,4 +1,4 @@
-/* Layout of the editor page (editor.html). Colors and fonts come from theme.css. */
+/* Layout of the editor page (index.html). Colors and fonts come from theme.css. */
 
 .app {
   height: 100vh;
@@ -832,3 +832,32 @@ button.team-pill:hover { background: var(--bg-4); }
 .vx2-icon-link { color: var(--text); font-size: 18px; padding: 6px; display: inline-flex; border-radius: var(--radius-small); }
 .vx2-icon-link:hover { background: var(--bg-3); }
 .vx2:focus { outline: none; }
+
+/* ---------- keyboard shortcuts help (step 10, ui/shortcuts.js) ---------- */
+
+.shortcuts-dialog { --width: 760px; }
+.shortcuts-dialog::part(panel) { background: var(--bg-2); max-height: 86vh; }
+.shortcuts-dialog::part(body) { padding-top: 4px; }
+.kb-sections { margin-top: 12px; display: grid; gap: 18px; }
+.kb-section h3 { margin: 0; font-size: 17px; }
+.kb-section > p { margin: 2px 0 6px; font-size: 13px; }
+.kb-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.kb-table td { padding: 5px 8px 5px 0; border-top: 1px solid var(--line); vertical-align: top; }
+.kb-table tr:first-child td { border-top: none; }
+.kb-cell { width: 36%; }
+.kb-keys { display: inline-flex; align-items: center; gap: 2px; white-space: nowrap; }
+.kb-or { color: var(--text-faint); font-size: 12px; margin: 0 6px; }
+.kb-plus { color: var(--text-faint); font-size: 12px; }
+kbd {
+  display: inline-block;
+  min-width: 1.7em;
+  padding: 1px 6px;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-small);
+  background: var(--bg-3);
+  font: 600 12px/1.5 var(--font-ui);
+  text-align: center;
+  color: var(--text);
+}
+kbd.kb-mouse { font-weight: 500; background: transparent; border-style: dashed; border-bottom-width: 1px; }

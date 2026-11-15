@@ -1,5 +1,5 @@
 // Calendar days in the viewer's time zone (Local or Pacific, from the account setting), turned into UTC instants for the
-// API's from/to filters. Same method as the old page's calendar (zonedMidnightUtc in app.js).
+// API's from/to filters. Same method as the old page's calendar (zonedMidnightUtc in the removed app.js).
 
 import { me } from "./core.js";
 

@@ -1,0 +1,240 @@
+/* The account pages (login, join, account, team, admin), frontend rework step 10. Colors and fonts come from theme.css, so
+   they look like the editor. The pages keep their own plain HTML forms (no Shoelace), styled here. */
+
+html, body { height: auto; min-height: 100%; }
+body { overflow: auto; }
+
+a { color: var(--accent-strong); }
+
+/* ---------- top bar ---------- */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 0 16px;
+  min-height: 52px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+}
+.topbar h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 22px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.topbar .brand { color: var(--text-faint); font-weight: 600; margin-right: 4px; }
+.topbar-right { margin-left: auto; align-items: center; }
+
+/* the icon link back to the editor (left of the title) */
+a.back {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-small);
+  color: var(--text);
+}
+a.back:hover { background: var(--bg-4); }
+
+/* Phosphor bold icons without Shoelace: <span class="icon" style="--icon: url(…svg)"> takes the text color */
+.icon {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  background: currentColor;
+  -webkit-mask: var(--icon) center / contain no-repeat;
+  mask: var(--icon) center / contain no-repeat;
+  flex: none;
+}
+
+/* ---------- layout ---------- */
+main {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 20px 16px 40px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+main.narrow { max-width: 460px; padding-top: 48px; }
+.narrow-panel { max-width: 460px; }
+
+.panel {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 18px;
+}
+h2 {
+  margin: 0 0 12px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 20px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+h3 { margin: 0; font-size: 15px; font-weight: 600; }
+
+.row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.grow { flex: 1 1 260px; }
+.stack { display: grid; gap: 12px; }
+
+.muted { color: var(--text-dim); font-size: 13px; }
+.small-text { font-size: 13px; }
+.message { font-size: 14px; margin: 0; }
+.message:empty { display: none; }
+.message.error { color: var(--danger); }
+.message.ok { color: var(--ok); }
+
+/* ---------- forms ---------- */
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+input, select {
+  background: var(--bg-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-small);
+  padding: 7px 9px;
+  min-width: 0;
+  color: var(--text);
+}
+input::placeholder { color: var(--text-faint); }
+input:hover, select:hover { border-color: var(--text-faint); }
+input:focus, select:focus { border-color: var(--accent); outline: none; }
+input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; padding: 0; }
+
+button, a.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-decoration: none;
+  line-height: inherit;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  border-radius: var(--radius-small);
+  padding: 7px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+button:hover:not(:disabled), a.button:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+
+button.secondary {
+  background: var(--bg-3);
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+button.secondary:hover:not(:disabled) { background: var(--bg-4); border-color: var(--text-faint); }
+
+button.link {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-dim);
+  padding: 4px 6px;
+  font-weight: 500;
+}
+button.link:hover:not(:disabled) { background: var(--bg-3); border-color: transparent; color: var(--text); }
+button.danger, button.link.danger { color: var(--danger); }
+button.small { padding: 3px 9px; font-size: 13px; }
+button:disabled { opacity: 0.5; cursor: default; }
+
+/* segmented buttons (time zone, join mode, admin tabs) */
+.tz { display: flex; align-items: center; gap: 0; flex-wrap: wrap; }
+.tz-label { font-size: 13px; color: var(--text-dim); margin-right: 8px; }
+.seg {
+  background: var(--bg-3);
+  color: var(--text-dim);
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  padding: 5px 12px;
+  font-weight: 600;
+}
+.seg + .seg { margin-left: -1px; }
+.tz > .seg:first-of-type { border-radius: var(--radius-small) 0 0 var(--radius-small); }
+.tz > .seg:last-of-type { border-radius: 0 var(--radius-small) var(--radius-small) 0; }
+.seg:hover:not(:disabled) { background: var(--bg-4); border-color: var(--line-strong); color: var(--text); }
+.seg[aria-pressed="true"], .seg[aria-pressed="true"]:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--text);
+  position: relative;
+}
+
+.check-label { flex-direction: row; align-items: flex-start; gap: 8px; color: var(--text); font-size: 14px; }
+.check-label input { margin-top: 2px; flex: none; }
+.inline-label { flex-direction: row; align-items: center; gap: 8px; }
+
+/* ---------- lists ---------- */
+.plain-list { list-style: none; margin: 0; padding: 0; }
+.list-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.list-row:first-child { border-top: none; }
+.list-row .badge { margin-left: 8px; }
+
+.badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--bg-3);
+  color: var(--text);
+}
+.badge.ok { color: var(--ok); }
+.badge.error { color: var(--danger); }
+.badge.ref { color: var(--text-faint); }
+
+.link-box { margin: 12px 0; padding: 12px; border: 1px solid var(--accent); border-radius: var(--radius); background: var(--accent-soft); }
+.link-box input { font-family: ui-monospace, monospace; font-size: 13px; }
+
+.role-form { margin-top: 12px; padding: 14px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--bg-2); display: grid; gap: 12px; }
+.perm-groups { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.perm-groups fieldset, .staff-perms {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin: 0;
+  padding: 8px 12px 10px;
+  display: grid;
+  gap: 8px;
+}
+.staff-perms { margin: 0 0 8px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.perm-groups legend, .staff-perms legend { font-weight: 600; padding: 0 4px; color: var(--text); }
+.perm-desc { display: block; }
+
+.table-wrap { overflow-x: auto; }
+table.activity { border-collapse: collapse; width: 100%; font-size: 14px; }
+table.activity th, table.activity td { padding: 6px 8px; border-top: 1px solid var(--line); text-align: left; vertical-align: top; white-space: nowrap; }
+table.activity th { font-weight: 600; font-size: 13px; color: var(--text-dim); border-top: none; }
+table.activity td.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.activity tbody tr:hover { background: var(--bg-2); }
+
+.log-list .log-row { display: flex; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.log-list .log-row:first-child { border-top: none; }
+.log-time { min-width: 160px; }
+
+/* View as support: app staff looking at a team read-only (same look as the editor's banner) */
+.support-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 16px;
+  padding: 6px 16px;
+  background: #3b2f12;
+  border-bottom: 1px solid #6b5520;
+  font-size: 14px;
+}
+
+/* ---------- admin page ---------- */
+.admin-tabs { margin: 0; }
+.admin-row { align-items: flex-start; }
+.admin-actions { flex-wrap: wrap; gap: 6px 10px; }
+.admin-details { flex: 1 1 100%; min-width: 0; }

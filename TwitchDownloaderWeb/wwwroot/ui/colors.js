@@ -1,4 +1,4 @@
-// Marker/segment colors: same names and order as VodMarker.Colors on the server and MARKER_COLORS in player-bar.js
+// Marker/segment colors: same names and order as VodMarker.Colors on the server and the old page (now removed)
 // (add new ones at the end)
 export const MARKER_COLORS = {
   yellow: "#f2c230", blue: "#3d8bfd", pink: "#ff5fa2", orange: "#ff8a3d",

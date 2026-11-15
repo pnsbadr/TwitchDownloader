@@ -3,13 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Team · Clip Library</title>
-  <link rel="stylesheet" href="app.css">
+  <title>Team · Clipco</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="ui/theme.css">
+  <link rel="stylesheet" href="ui/pages.css">
 </head>
 <body>
   <header class="topbar">
+    <a class="back" href="/" aria-label="Back to the editor" title="Back to the editor"><span class="icon" style="--icon: url(https://cdn.jsdelivr.net/npm/@phosphor-icons/core@2.1.1/assets/bold/arrow-left-bold.svg)"></span></a>
     <h1 id="team-title">Team</h1>
-    <a class="button secondary" href="/">Back to the library</a>
   </header>
   <!-- App staff viewing this team read-only ("view as support"); the server refuses every change -->
   <div class="support-banner" id="support-banner" role="status" hidden>
