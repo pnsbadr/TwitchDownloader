@@ -2,6 +2,7 @@ using System.Net;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.EntityFrameworkCore;
 using TwitchDownloaderWeb.Data;
+using TwitchDownloaderWeb.Services;
 using TwitchDownloaderWeb.Services.Accounts;
 using TwitchDownloaderWeb.Services.Shortform;
 
@@ -15,8 +16,20 @@ namespace TwitchDownloaderWeb.Endpoints
 
     public sealed record StaffMeDto(int Id, string Username, bool IsOwner, IReadOnlyList<string> Permissions, IReadOnlyList<StaffPermissionInfo> PermissionCatalog);
 
+    /// <param name="Channels">The Twitch channels the team works on (only their VODs are open to it).</param>
     public sealed record AdminTeamDto(int Id, string Name, DateTime CreatedAtUtc, int? OwnerUserId, string? OwnerUsername, int MemberCount, int EntryCount,
-        DateTime? DisabledAtUtc, bool AutoSaveAudio, long DiskBytes, DateTime? LastActiveAtUtc, bool CombineSegmentDownloads);
+        DateTime? DisabledAtUtc, bool AutoSaveAudio, long DiskBytes, DateTime? LastActiveAtUtc, bool CombineSegmentDownloads,
+        IReadOnlyList<AdminChannelDto> Channels);
+
+    /// <param name="AccessEndedAtUtc">Removed with "keep existing work": only VODs the team already worked on stay open. Null = assigned.</param>
+    public sealed record AdminChannelDto(int Id, string Login, string DisplayName, DateTime AddedAtUtc, DateTime? AccessEndedAtUtc)
+    {
+        public static AdminChannelDto From(SavedChannel channel) =>
+            new(channel.Id, channel.Login, channel.DisplayName, channel.AddedAtUtc, channel.AccessEndedAtUtc);
+    }
+
+    /// <param name="Login">A Twitch login or twitch.tv/&lt;login&gt; link.</param>
+    public sealed record AssignChannelRequest(string? Login);
 
     /// <param name="CombineSegmentDownloads">Members may download picked segments joined into one file. Null leaves it as it is.</param>
     public sealed record TeamFeaturesRequest(bool? CombineSegmentDownloads);
@@ -51,7 +64,8 @@ namespace TwitchDownloaderWeb.Endpoints
     public sealed record StartSupportRequest(int TeamId);
 
     /// <param name="Kind">"registration" (new team) or "ownership" (owner of TeamId).</param>
-    public sealed record CreateStaffLinkRequest(string? Kind, int? TeamId, string? Note);
+    /// <param name="Channels">Twitch logins or links the team gets when the link is used (needs ManageTeamChannels).</param>
+    public sealed record CreateStaffLinkRequest(string? Kind, int? TeamId, string? Note, List<string>? Channels = null);
 
     /// <summary>
     /// The app staff API (/admin.html). Staff use their own cookie and tables; a staff login is never a team login. The app Owner sets up
@@ -85,6 +99,10 @@ namespace TwitchDownloaderWeb.Endpoints
             staff.MapPut("/teams/{id:int}/disabled", SetTeamDisabled).RequireStaff(StaffPermission.DisableTeams);
             // Features still being tried out: only the app Owner turns them on, per team (badrfly, 2026-11-14)
             staff.MapPut("/teams/{id:int}/features", SetTeamFeatures).RequireStaffOwner();
+            // Which Twitch channels a team works on (badrfly, 2026-11-15: members can't add channels, VODs or clip links any more)
+            staff.MapGet("/teams/{id:int}/channels", ListTeamChannels).RequireStaff(StaffPermission.ViewTeamsAndUsers | StaffPermission.ManageTeamChannels);
+            staff.MapPost("/teams/{id:int}/channels", AssignTeamChannel).RequireStaff(StaffPermission.ManageTeamChannels);
+            staff.MapDelete("/teams/{id:int}/channels/{channelId:int}", RemoveTeamChannel).RequireStaff(StaffPermission.ManageTeamChannels);
 
             staff.MapGet("/users", ListUsers)
                 .RequireStaff(StaffPermission.ViewTeamsAndUsers | StaffPermission.ResetUserPasswords | StaffPermission.DisableUsers);
@@ -244,9 +262,13 @@ namespace TwitchDownloaderWeb.Endpoints
             var lastActive = (await db.TeamMembers.AsNoTracking().Select(x => new { x.TeamId, x.User!.LastActiveAtUtc }).ToListAsync(cancellationToken))
                 .GroupBy(x => x.TeamId).ToDictionary(x => x.Key, x => x.Max(m => m.LastActiveAtUtc));
             var disk = await ActivityReport.TeamDiskAsync(db, shortform, cancellationToken);
+            var teamIds = teams.Select(x => x.Id).ToList();
+            var channels = (await db.Channels.IgnoreQueryFilters().AsNoTracking().Where(x => teamIds.Contains(x.TeamId)).ToListAsync(cancellationToken))
+                .GroupBy(x => x.TeamId)
+                .ToDictionary(x => x.Key, x => (IReadOnlyList<AdminChannelDto>)x.OrderBy(c => c.DisplayName, StringComparer.OrdinalIgnoreCase).Select(AdminChannelDto.From).ToList());
             return teams.Select(x => new AdminTeamDto(x.Id, x.Name, x.CreatedAtUtc, x.OwnerUserId, x.OwnerUsername, x.MemberCount, x.EntryCount,
                 x.DisabledAtUtc, x.AutoSaveAudio, disk.GetValueOrDefault(x.Id), lastActive.GetValueOrDefault(x.Id),
-                x.CombineSegmentDownloads)).ToList();
+                x.CombineSegmentDownloads, channels.GetValueOrDefault(x.Id) ?? [])).ToList();
         }
 
         private static async Task<IResult> ListTeams(LibraryDbContext db, ShortformService shortform, CancellationToken cancellationToken) =>
@@ -308,6 +330,166 @@ namespace TwitchDownloaderWeb.Endpoints
                 await db.SaveChangesAsync(cancellationToken);
             }
             return Results.NoContent();
+        }
+
+        // ---------- team channels ----------
+
+        /// <summary>At most this many channels on one team link.</summary>
+        internal const int MaxLinkChannels = 20;
+
+        private static async Task<IResult> ListTeamChannels(int id, LibraryDbContext db, CancellationToken cancellationToken)
+        {
+            if (!await db.Teams.AnyAsync(x => x.Id == id, cancellationToken))
+                return Results.Problem(detail: "Team not found.", statusCode: StatusCodes.Status404NotFound);
+
+            var channels = await db.Channels.IgnoreQueryFilters().AsNoTracking().Where(x => x.TeamId == id).ToListAsync(cancellationToken);
+            return Results.Ok(channels.OrderBy(x => x.DisplayName, StringComparer.OrdinalIgnoreCase).Select(AdminChannelDto.From));
+        }
+
+        private static async Task<IResult> AssignTeamChannel(int id, AssignChannelRequest request, StaffContext me, LibraryDbContext db, IChannelLookup lookup,
+            CancellationToken cancellationToken)
+        {
+            var team = await db.Teams.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+            if (team is null)
+                return Results.Problem(detail: "Team not found.", statusCode: StatusCodes.Status404NotFound);
+
+            if (ChannelService.NormalizeLogin(request.Login) is not { } login)
+                return ChannelEndpoints.InvalidLogin("login");
+
+            if (await db.Channels.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.TeamId == id && x.Login == login, cancellationToken) is { } existing)
+            {
+                if (existing.AccessEndedAtUtc is null)
+                    return Results.Problem(detail: $"{team.Name} already has {existing.DisplayName}.", statusCode: StatusCodes.Status409Conflict);
+
+                // Removed earlier with "keep existing work": assigning it again opens all its VODs again
+                Reassign(db, team, existing, $"by {me.Username}");
+                await db.SaveChangesAsync(cancellationToken);
+                TeamChannelAccess.Forget(team.Id);
+                return Results.Ok(AdminChannelDto.From(existing));
+            }
+
+            ChannelDetails? details;
+            try
+            {
+                details = await lookup.GetChannelAsync(login);
+            }
+            catch (HttpRequestException)
+            {
+                return ChannelEndpoints.TwitchUnreachable();
+            }
+            if (details is null)
+                return ChannelEndpoints.ChannelNotFound(login);
+
+            var channel = AddChannel(db, team, new LinkChannel(details.Login.ToLowerInvariant(), details.DisplayName, details.TwitchUserId), $"by {me.Username}");
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateException)
+            {
+                return Results.Problem(detail: $"{team.Name} already has {channel.DisplayName}.", statusCode: StatusCodes.Status409Conflict);
+            }
+
+            TeamChannelAccess.Forget(team.Id);
+            return Results.Created($"/api/admin/teams/{id}/channels/{channel.Id}", AdminChannelDto.From(channel));
+        }
+
+        /// <param name="mode">
+        /// "revoke" (the team loses every VOD of the channel at once, work on them included) or "future" (the team keeps the VODs it
+        /// already has entries or markers on, nothing else; badrfly, 2026-11-15). Required.
+        /// </param>
+        private static async Task<IResult> RemoveTeamChannel(int id, int channelId, string? mode, StaffContext me, LibraryDbContext db,
+            CancellationToken cancellationToken)
+        {
+            var revoke = mode?.Trim().ToLowerInvariant() switch
+            {
+                "revoke" => true,
+                "future" => (bool?)false,
+                _ => null,
+            };
+            if (revoke is null)
+                return Results.ValidationProblem(new Dictionary<string, string[]>
+                    { ["mode"] = ["Mode must be revoke (all access ends now) or future (only VODs already worked on stay open)."] });
+
+            var team = await db.Teams.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+            var channel = await db.Channels.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Id == channelId && x.TeamId == id, cancellationToken);
+            if (team is null || channel is null)
+                return Results.Problem(detail: "Channel not found.", statusCode: StatusCodes.Status404NotFound);
+
+            if (revoke.Value)
+            {
+                db.Channels.Remove(channel);
+                db.Audit(AuditActions.ChannelRemoved, null,
+                    $"{channel.DisplayName} ({channel.Login}) from \"{team.Name}\" by {me.Username}: access revoked now", teamId: team.Id);
+            }
+            else if (channel.AccessEndedAtUtc is null)
+            {
+                channel.AccessEndedAtUtc = DateTime.UtcNow;
+                db.Audit(AuditActions.ChannelRemoved, null,
+                    $"{channel.DisplayName} ({channel.Login}) from \"{team.Name}\" by {me.Username}: no new VODs, existing work kept", teamId: team.Id);
+            }
+            await db.SaveChangesAsync(cancellationToken);
+            TeamChannelAccess.Forget(team.Id);
+            return Results.NoContent();
+        }
+
+        /// <summary>Assigns a channel again that was removed with "keep existing work" (saved with the caller's next SaveChanges).</summary>
+        internal static void Reassign(LibraryDbContext db, Team team, SavedChannel channel, string how)
+        {
+            channel.AccessEndedAtUtc = null;
+            db.Audit(AuditActions.ChannelAdded, null, $"{channel.DisplayName} ({channel.Login}) to \"{team.Name}\" again {how}", teamId: team.Id);
+        }
+
+        /// <summary>Adds the channel to the team (saved with the caller's next SaveChanges) with its audit event.</summary>
+        internal static SavedChannel AddChannel(LibraryDbContext db, Team team, LinkChannel source, string how)
+        {
+            var channel = new SavedChannel
+            {
+                TeamId = team.Id,
+                Login = source.Login,
+                DisplayName = source.DisplayName,
+                TwitchUserId = source.TwitchUserId,
+                AddedAtUtc = DateTime.UtcNow,
+            };
+            db.Channels.Add(channel);
+            db.Audit(AuditActions.ChannelAdded, null, $"{channel.DisplayName} ({channel.Login}) to \"{team.Name}\" {how}", teamId: team.Id);
+            return channel;
+        }
+
+        /// <summary>Looks each login up on Twitch for a team link. Returns the channels or the API error to answer with.</summary>
+        private static async Task<(List<LinkChannel> Channels, IResult? Problem)> ResolveLinkChannelsAsync(IReadOnlyList<string>? logins, IChannelLookup lookup)
+        {
+            var result = new List<LinkChannel>();
+            var normalized = new List<string>();
+            foreach (var text in logins ?? [])
+            {
+                if (string.IsNullOrWhiteSpace(text))
+                    continue;
+                if (ChannelService.NormalizeLogin(text) is not { } login)
+                    return (result, ChannelEndpoints.InvalidLogin("channels"));
+                if (!normalized.Contains(login))
+                    normalized.Add(login);
+            }
+
+            if (normalized.Count > MaxLinkChannels)
+                return (result, Results.ValidationProblem(new Dictionary<string, string[]> { ["channels"] = [$"At most {MaxLinkChannels} channels per link."] }));
+
+            foreach (var login in normalized)
+            {
+                ChannelDetails? details;
+                try
+                {
+                    details = await lookup.GetChannelAsync(login);
+                }
+                catch (HttpRequestException)
+                {
+                    return (result, ChannelEndpoints.TwitchUnreachable());
+                }
+                if (details is null)
+                    return (result, ChannelEndpoints.ChannelNotFound(login));
+                result.Add(new LinkChannel(details.Login.ToLowerInvariant(), details.DisplayName, details.TwitchUserId));
+            }
+            return (result, null);
         }
 
         // ---------- users ----------
@@ -439,7 +621,7 @@ namespace TwitchDownloaderWeb.Endpoints
         }
 
         private static async Task<IResult> CreateLink(CreateStaffLinkRequest request, StaffContext me, HttpContext context, LibraryDbContext db,
-            CancellationToken cancellationToken)
+            IChannelLookup lookup, CancellationToken cancellationToken)
         {
             AccountLinkKind kind;
             Team? team = null;
@@ -458,13 +640,22 @@ namespace TwitchDownloaderWeb.Endpoints
                     return Results.ValidationProblem(new Dictionary<string, string[]> { ["kind"] = ["Kind must be registration or ownership."] });
             }
 
+            if (request.Channels is { Count: > 0 } && !me.Can(StaffPermission.ManageTeamChannels))
+                return Results.Problem(detail: "Assigning channels needs the \"Assign team channels\" permission.", statusCode: StatusCodes.Status403Forbidden);
+
+            var (channels, channelProblem) = await ResolveLinkChannelsAsync(request.Channels, lookup);
+            if (channelProblem is not null)
+                return channelProblem;
+
             var (link, token) = LinkUrls.New(kind, team?.Id, request.Note, DateTime.UtcNow);
             link.CreatedByStaffId = me.Id;
+            link.ChannelsJson = LinkChannel.Write(channels);
             db.AccountLinks.Add(link);
             await db.SaveChangesAsync(cancellationToken);
 
             db.Audit(AuditActions.LinkCreated, null,
-                $"{kind} link {link.Id}{(team is null ? "" : $" for \"{team.Name}\"")}{(link.Note is null ? "" : $" ({link.Note})")}", teamId: team?.Id);
+                $"{kind} link {link.Id}{(team is null ? "" : $" for \"{team.Name}\"")}{(link.Note is null ? "" : $" ({link.Note})")}"
+                + (channels.Count == 0 ? "" : $", channels: {string.Join(", ", channels.Select(x => x.Login))}"), teamId: team?.Id);
             await db.SaveChangesAsync(cancellationToken);
             return Results.Created($"/api/admin/links/{link.Id}", LinkUrls.ToDto(link, null, LinkUrls.Build(context.Request, token)));
         }

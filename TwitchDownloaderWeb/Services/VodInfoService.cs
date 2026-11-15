@@ -7,8 +7,10 @@ using TwitchDownloaderWeb.Services.AudioRescue;
 namespace TwitchDownloaderWeb.Services
 {
     /// <param name="IsLive">Still recording (Twitch's video status "RECORDING"); LengthSeconds is then what has been streamed so far.</param>
+    /// <param name="ChannelLogin">The channel's Twitch login (lower-case), for checking the team's assigned channels.</param>
+    /// <param name="ChannelUserId">The channel's Twitch user ID.</param>
     public sealed record VodDetails(long VodId, string Title, string? ChannelName, int LengthSeconds, DateTime StreamDateUtc, string? ThumbnailUrl,
-        bool IsLive = false);
+        bool IsLive = false, string? ChannelLogin = null, string? ChannelUserId = null);
 
     /// <summary>VOD details from Twitch. <see cref="VodInfoService"/> in the app; a fake in tests.</summary>
     public interface IVodDetailsSource
@@ -50,7 +52,7 @@ namespace TwitchDownloaderWeb.Services
             };
 
             return new VodDetails(vodId, video.title, video.owner?.displayName, video.lengthSeconds, streamDate, video.thumbnailURLs?.FirstOrDefault(),
-                string.Equals(video.status, "RECORDING", StringComparison.OrdinalIgnoreCase));
+                string.Equals(video.status, "RECORDING", StringComparison.OrdinalIgnoreCase), video.owner?.login?.ToLowerInvariant(), video.owner?.id);
         }
 
         /// <returns>The VOD's qualities, or null if the playlist is restricted (e.g. subscriber-only).</returns>

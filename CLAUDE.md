@@ -66,8 +66,8 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   (string, no FK yet — link to users in phase 3).
 - `LibraryEntries.Kind` (`Vod`/`Clip`, migration default `Vod`) + `ClipSlug`: see Twitch clips. For clips `VodId` is the source
   VOD (0 if Twitch didn't say) and `StartTime`/`EndTime` the clip's place in it (whole seconds).
-- `Channels` (`SavedChannel`): saved team channels for the VOD browser: login (unique, lower-case), display name,
-  Twitch user ID, `WatchMutedAudio` (for the planned muted-audio rescue), `AddedAtUtc`, `AddedByUserId`.
+- `Channels` (`SavedChannel`): the team's **assigned channels** (see Team channels): login (unique per team, lower-case), display name,
+  Twitch user ID, `WatchMutedAudio` (for the muted-audio rescue), `AddedAtUtc`, `AddedByUserId`.
 - `AudioRescues` (`VodAudioRescue`, key = VOD ID) + `RescuedAudioSegments` (unique VodId+Key): see Muted audio rescue.
   `LibraryEntries.AudioRestoredSeconds` = muted seconds replaced in the entry's last file; `AudioMutedSeconds` = muted seconds
   in it with no clean copy saved (only known when the VOD has a rescue; audited `audio.not_restored`).
@@ -104,6 +104,18 @@ Plan and badrfly's decisions: Claude Doc "Logins, teams and permissions plan". B
   login pages (`login.html` / `admin.html`). A staff login is never a team login or the other way round. badrfly has one of each.
 - **One account, many teams**: `TeamMembers` (unique TeamId+UserId). The page's team switcher sets the `clipco.team` cookie
   (`POST /api/auth/team`); without it the first team joined is used.
+- **Team channels** (badrfly, 2026-11-15, for the frontend rework): members can no longer add channels, VOD links or Twitch clip links.
+  The app Owner (or a moderator with `StaffPermission.ManageTeamChannels`) assigns each team its Twitch channels on team registration/owner
+  links (`AccountLinks.ChannelsJson`, checked on Twitch when the link is made, added when it's used) and on the Admin page's Teams tab
+  (`/api/admin/teams/{id}/channels`, audited `channel.added`/`channel.removed`). `TeamChannelAccess` decides which VODs a team may open,
+  **strictly**: the VOD's channel (GQL owner, cached 12 h; matched by Twitch user ID, then login) must be assigned; work already on a VOD
+  doesn't open it. Removing a channel takes a mode (badrfly): `?mode=revoke` deletes the row (every VOD closes now, work included) and
+  `?mode=future` sets `SavedChannel.AccessEndedAtUtc` (no new VODs and gone from the team's lists and audio watching; VODs the team has
+  entries or markers on stay open). Assigning it again (POST or a link) clears it. Every team endpoint taking a VOD ID from the
+  client declares `.RequireChannelVod()` (route `{vodId}`) or checks in the handler (`/api/vods/info`, `POST /api/entries`, channel VOD
+  lists); refused → 403 `code: "channel-not-assigned"`. Answers are cached 30 s per team+VOD; a channel change clears them
+  (`TeamChannelAccess.Forget`). `TeamPermission.ManageChannels` is no longer used (kept so the bit isn't reused, not in the catalog).
+  Twitch clip links → 403 `code: "clip-links-disabled"`; clip entries added before stay.
 - **Every `/api` request needs a team login** except `/api/auth/*`, `/api/links/*` and `/api/admin/*` (staff endpoints: see Staff below). `TeamScope` middleware (after `UseAuthentication`) checks membership, stores a `TeamContext`
   (bind it as an endpoint parameter) and fills the scoped `RequestActor`.
 - **Team scoping is a global query filter** on `LibraryEntries` and `Channels` (`TeamId == actor team`, active whenever `RequestActor.IsRequest`;
@@ -238,17 +250,16 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | Endpoint | Notes |
 |---|---|
 | `GET /api/vods/info?vod=` | Title, length, stream date, thumbnail, qualities, `restricted`, `maxStoredClipSeconds`, `isLive` (the page shows "● LIVE" instead of date and length) |
-| `POST /api/entries` | `{ vodId, title?, quality?, trimMode?, startTime?, endTime? }` → 201. `vodId` may be a clip link (see Twitch clips). Validates VOD, times, quality (unknown → 400 listing available) |
+| `POST /api/entries` | `{ vodId, title?, quality?, trimMode?, startTime?, endTime? }` → 201. VOD of the team's channels only; clip links → 403 `clip-links-disabled`. Validates VOD, times, quality (unknown → 400 listing available) |
 | `GET /api/entries?search=&sort=dateAdded\|streamDate&order=desc\|asc&limit=&from=&to=&dateField=dateAdded\|streamDate` | Search is a LIKE substring match (case-insensitive for ASCII only). `from` (inclusive) / `to` (exclusive) are ISO 8601 instants **with an offset** (bare dates/times → 400) and filter on `dateField` (default dateAdded) |
 | `GET /api/entries/{id}` | |
 | `PATCH /api/entries/{id}` | `{ title }` — audited as `entry.renamed` |
-| `GET /api/clips/info?clip=` | Clip title, channel, length, qualities, source VOD + `vodStart`/`vodEnd`, `audio: { mutedSeconds, restorableSeconds }` (null if the VOD has no audio rescue). VOD links → 400 |
 | `PUT /api/entries/{id}/trim` | `{ startTime, endTime }` (blank end = end of VOD; a time past the stored VOD length re-reads it from Twitch, for VODs that were live) — re-cuts the entry: cancels a running job (waits up to 20 s, else 409), deletes its files, re-applies the stored-vs-reference rule and re-queues a stored download. VodUnavailable → 410. Audited `entry.retrimmed` |
 | `DELETE /api/entries/{id}` | Removes entry + stored/generated files — audited. Phase 3: restrict who can delete |
 | `POST /api/entries/{id}/generate` | Reference-only: queue on-demand file (202) or 200 if ready. Failed stored entry: retry. VodUnavailable → 410 |
 | `GET /api/entries/{id}/file` | Streams the file (range requests supported); 409 if not ready; 410 if missing on disk (entry then becomes retryable). `?preview=true` (the vertical editor's player) isn't audited as a download |
-| `GET /api/channels` / `POST /api/channels` `{ login }` / `DELETE /api/channels/{id}` | Saved channels. POST checks the login exists on Twitch (404) and isn't saved (409); add/remove audited |
-| `GET /api/channels/{login}/vods?type=archive\|highlight\|upload\|all&cursor=&limit=` | Any channel's VODs, newest first, via Core's `GetGqlVideos`. `nextCursor` = last edge's cursor; `unmuteWindowOpen` = ended < 24 h ago. 502 if Twitch is unreachable |
+| `GET /api/channels` | The team's assigned channels (members can't add or remove them; see Team channels) |
+| `GET /api/channels/{login}/vods?type=archive\|highlight\|upload\|all&cursor=&limit=` | One of the team's channels' VODs (else 403 `channel-not-assigned`), newest first, via Core's `GetGqlVideos`. `nextCursor` = last edge's cursor; `unmuteWindowOpen` = ended < 24 h ago. 502 if Twitch is unreachable |
 | `GET /api/vods/{id}/rescue` / `POST /api/vods/{id}/rescue` | Audio rescue status (404 if none) / start one now (202; a Failed one is retried; one paused by `AudioRescue:Enabled` being off is resumed; others returned as is) |
 | `GET /api/entries/{id}/shortform` / `POST /api/entries/{id}/shortform` | Vertical (9:16) renders: `{ status: None\|Rendering\|Failed, progress, error, layout, renders: [{ id, createdAtUtc, expiresAtUtc, sizeBytes, layout, fileUrl, thumbnailUrl }] }` (newest first) / start a render (202) with `{ mode: single\|split, top: {x,y,width,height}, bottom?, splitRatio?, trimStart?, trimEnd? }` (fractions of the source video). 409 if the entry has no file |
 | `GET /api/entries/{id}/shortform/{renderId}/file[?inline=true]` / `.../thumbnail` / `DELETE .../{renderId}` | A render's mp4 (`<title> (vertical).mp4`, audited `file.served`; `inline` = the page's preview player, not audited), its jpg thumbnail, delete it. 404 if gone/expired |
@@ -270,6 +281,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `POST /api/vods/{id}/segment-downloads` `{ markerIds, combined?, quality?, entryId? }` | Segment download (202; `GenerateFiles`). `combined` without the team feature → 403 `code: "combine-not-enabled"`. Markers must be the team's segments on that VOD (400) |
 | `GET /api/segment-downloads?vodIds=` / `GET .../{id}` / `.../{id}/files/{position}` / `.../{id}/combined` / `.../{id}/zip` / `DELETE .../{id}` | `{ id, vodId, entryId, title, quality, combined, status: Queued\|Running\|Ready\|Failed, error, expiresAtUtc, combinedFileUrl, zipUrl, canDelete, items: [{ position, label, startSeconds, endSeconds, status, error, fileSizeBytes, audioRestoredSeconds, audioMutedSeconds, fileUrl }] }`; files audited `file.served`. Delete own (`GenerateFiles`) or anyone's (`DeleteAnyEntries`) |
 | `PUT /api/admin/teams/{id}/features` `{ combineSegmentDownloads }` | App Owner only: per-team features being tried out |
+| `GET,POST /api/admin/teams/{id}/channels` `{ login }` / `DELETE .../channels/{channelId}?mode=revoke\|future` | A team's channels (`accessEndedAtUtc` set = existing work only) (`ManageTeamChannels`; GET also `ViewTeamsAndUsers`). POST checks Twitch (404) and duplicates (409). Team links take `channels: [logins]` too; `GET /api/admin/teams` lists each team's `channels` |
 | `POST /api/vods/download` | Phase 1 dev endpoint: synchronous, writes `<title>.mp4` straight into `downloads/`, not part of the library |
 
 `canDownload` in entry responses checks the generated file's expiry itself, since cleanup runs periodically.
@@ -420,6 +432,8 @@ step next to the old page; `index.html` stays the old library until the new edit
 - `editor.html?demo` fills sample cards (nothing is sent to the server) to try the shell.
 
 ### Twitch clips (`ClipInfoService`, `ClipFileService`)
+- **No longer added** (2026-11-15, team channels): `POST /api/entries` refuses clip links and `/api/clips/info` is gone. Clip entries added
+  before stay in the library and still generate files as below.
 - clips.twitch.tv / `twitch.tv/{channel}/clip/` links (or slugs) are added through the same `POST /api/entries` (`vodId` field)
   and are **always reference-only**: Twitch keeps the clip, so nothing is stored (user's call, 2026-10-26). They exist in the
   library so muted audio can be replaced and the vertical editor can be used on them. Trim fields are ignored; `PUT /trim` → 409.
@@ -433,8 +447,7 @@ step next to the old page; `index.html` stays the old library until the new edit
   Audio and video stay in sync (same restore path as VOD entries).
 - `ClipInfoService.GetClipAsync` calls Core's `GetClipInfo` first: `GetShareClipRenderStatus` throws a NullReferenceException
   for a missing clip. `ReferenceVodCheckService` skips clips (a clip outlives its VOD).
-- Page: a non-VOD link makes Get Info call `/api/clips/info`, hides trim mode/start/end and Watch, and says before adding
-  whether the clip is muted and how much clean audio is saved. No Review for clips.
+- No Review for clips.
 
 ### Vertical (9:16) export (`Services/Shortform/`)
 - Like Twitch's portrait clip editor: **Make vertical** on an entry with a file opens a dialog with the landscape video,

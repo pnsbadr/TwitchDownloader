@@ -131,7 +131,7 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
         /// </summary>
         public static IQueryable<string> AutoWatchedLogins(LibraryDbContext db) =>
             db.Channels.IgnoreQueryFilters()
-                .Where(x => x.WatchMutedAudio && db.Teams.Any(t => t.Id == x.TeamId && t.AutoSaveAudio && t.DisabledAtUtc == null))
+                .Where(x => x.WatchMutedAudio && x.AccessEndedAtUtc == null && db.Teams.Any(t => t.Id == x.TeamId && t.AutoSaveAudio && t.DisabledAtUtc == null))
                 .Select(x => x.Login);
 
         /// <summary>Whether a rescue not started by hand is waiting because nothing automatic watches its channel.</summary>

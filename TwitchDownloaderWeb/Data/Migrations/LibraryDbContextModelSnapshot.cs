@@ -23,6 +23,10 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("ChannelsJson")
+                        .HasMaxLength(8000)
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("TEXT");
 
@@ -290,6 +294,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
+
+                    b.Property<DateTime?>("AccessEndedAtUtc")
+                        .HasColumnType("TEXT");
 
                     b.Property<DateTime>("AddedAtUtc")
                         .HasColumnType("TEXT");

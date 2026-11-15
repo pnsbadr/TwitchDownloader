@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.EntityFrameworkCore;
 using TwitchDownloaderWeb.Data;
+using TwitchDownloaderWeb.Services;
 using TwitchDownloaderWeb.Services.Accounts;
 
 namespace TwitchDownloaderWeb.Endpoints
@@ -34,7 +35,9 @@ namespace TwitchDownloaderWeb.Endpoints
 
     /// <param name="LoggedInAs">The user already logged in in this browser, if any, so the page can offer "join as …".</param>
     /// <param name="ForUsername">Password reset links: whose password it sets.</param>
-    public sealed record LinkInfoDto(string Kind, string? TeamName, DateTime ExpiresAtUtc, string? LoggedInAs, string? ForUsername);
+    /// <param name="Channels">Team links: names of the Twitch channels the team gets.</param>
+    public sealed record LinkInfoDto(string Kind, string? TeamName, DateTime ExpiresAtUtc, string? LoggedInAs, string? ForUsername,
+        IReadOnlyList<string> Channels);
 
     /// <summary>Team user login and one-time links (team registration, team ownership, team invites).</summary>
     public static class AuthEndpoints
@@ -195,7 +198,8 @@ namespace TwitchDownloaderWeb.Endpoints
                     ? await db.StaffAccounts.Where(x => x.Id == staffTarget).Select(x => x.Username).FirstOrDefaultAsync(cancellationToken)
                     : null;
             return Results.Ok(new LinkInfoDto(link.Kind.ToString(), link.Team?.Name, link.ExpiresAtUtc,
-                AuthSetup.GetId(context.User) is not null ? context.User.Identity?.Name : null, forUsername));
+                AuthSetup.GetId(context.User) is not null ? context.User.Identity?.Name : null, forUsername,
+                LinkChannel.Read(link.ChannelsJson).Select(x => x.DisplayName).ToList()));
         }
 
         /// <summary>
@@ -317,6 +321,26 @@ namespace TwitchDownloaderWeb.Endpoints
                 default:
                     team = await db.Teams.FirstAsync(x => x.Id == link.TeamId, cancellationToken);
                     break;
+            }
+
+            // Staff team links can carry the channels the team works on (badrfly, 2026-11-15)
+            var linkChannels = LinkChannel.Read(link.ChannelsJson);
+            if (linkChannels.Count > 0)
+            {
+                var existing = await db.Channels.IgnoreQueryFilters().Where(x => x.TeamId == team.Id).ToListAsync(cancellationToken);
+                foreach (var channel in linkChannels)
+                {
+                    if (existing.FirstOrDefault(x => x.Login == channel.Login) is { } known)
+                    {
+                        if (known.AccessEndedAtUtc is not null)
+                            AdminEndpoints.Reassign(db, team, known, $"({link.Kind} link {link.Id})");
+                    }
+                    else
+                    {
+                        AdminEndpoints.AddChannel(db, team, channel, $"({link.Kind} link {link.Id})");
+                    }
+                }
+                TeamChannelAccess.Forget(team.Id);
             }
 
             if (!await db.TeamMembers.AnyAsync(x => x.TeamId == team.Id && x.UserId == user.Id, cancellationToken))

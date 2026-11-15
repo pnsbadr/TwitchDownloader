@@ -51,7 +51,7 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal(HttpStatusCode.NoContent, await SetStaffPermissionsAsync(owner, moderatorId, "ViewTeamsAndUsers"));
             Assert.Equal(HttpStatusCode.OK, (await moderator.GetAsync("/api/admin/teams", ct)).StatusCode);
             Assert.Equal(HttpStatusCode.OK, (await moderator.GetAsync("/api/admin/users", ct)).StatusCode);
-            Assert.Equal(HttpStatusCode.Forbidden, (await moderator.PostAsJsonAsync("/api/admin/links", new { kind = "registration" }, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await moderator.PostAsJsonAsync("/api/admin/links", new { kind = "registration", channels = new[] { "arky" } }, ct)).StatusCode);
             Assert.Equal(HttpStatusCode.Forbidden, (await moderator.PostAsJsonAsync("/api/admin/support", new { teamId = 1 }, ct)).StatusCode);
             Assert.Equal(HttpStatusCode.Forbidden, (await moderator.GetAsync("/api/admin/audit", ct)).StatusCode);
 

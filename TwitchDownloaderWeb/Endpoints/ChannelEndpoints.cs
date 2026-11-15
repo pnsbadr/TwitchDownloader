@@ -8,8 +8,6 @@ using TwitchDownloaderWeb.Services.Accounts;
 
 namespace TwitchDownloaderWeb.Endpoints
 {
-    /// <param name="Login">A Twitch login or twitch.tv/&lt;login&gt; URL.</param>
-    public sealed record AddChannelRequest(string? Login);
 
     public sealed record ChannelDto(int Id, string Login, string DisplayName, bool WatchMutedAudio, DateTime AddedAtUtc, string? AddedByUserId)
     {
@@ -29,9 +27,9 @@ namespace TwitchDownloaderWeb.Endpoints
         public static IEndpointRouteBuilder MapChannelEndpoints(this IEndpointRouteBuilder app)
         {
             var channels = app.MapGroup("/api/channels");
+            // The team's channels are assigned by the app Owner (Admin page, registration links); members can't add or remove them
+            // (badrfly, 2026-11-15). See AdminEndpoints' /api/admin/teams/{id}/channels.
             channels.MapGet("/", ListChannels).RequireTeam(TeamPermission.ViewLibrary);
-            channels.MapPost("/", AddChannel).RequireTeam(TeamPermission.ManageChannels);
-            channels.MapDelete("/{id:int}", DeleteChannel).RequireTeam(TeamPermission.ManageChannels);
             channels.MapGet("/{login}/vods", ListChannelVods).RequireTeam(TeamPermission.ViewLibrary);
 
             return app;
@@ -39,75 +37,21 @@ namespace TwitchDownloaderWeb.Endpoints
 
         private static async Task<IResult> ListChannels(LibraryDbContext db, CancellationToken cancellationToken)
         {
-            var channels = await db.Channels.AsNoTracking().OrderBy(x => x.DisplayName).ToListAsync(cancellationToken);
+            var channels = await db.Channels.AsNoTracking().Where(x => x.AccessEndedAtUtc == null).OrderBy(x => x.DisplayName).ToListAsync(cancellationToken);
             return Results.Ok(channels.Select(ChannelDto.From));
         }
 
-        private static async Task<IResult> AddChannel(AddChannelRequest request, LibraryDbContext db, ChannelService channelService, CancellationToken cancellationToken)
-        {
-            if (ChannelService.NormalizeLogin(request.Login) is not { } login)
-                return InvalidLogin("login");
-
-            if (await db.Channels.AsNoTracking().FirstOrDefaultAsync(x => x.Login == login, cancellationToken) is { } existing)
-                return Results.Problem(detail: $"{existing.DisplayName} is already saved.", statusCode: StatusCodes.Status409Conflict);
-
-            ChannelDetails? details;
-            try
-            {
-                details = await channelService.GetChannelAsync(login);
-            }
-            catch (HttpRequestException)
-            {
-                return TwitchUnreachable();
-            }
-
-            if (details is null)
-                return ChannelNotFound(login);
-
-            var channel = new SavedChannel
-            {
-                Login = details.Login.ToLowerInvariant(),
-                DisplayName = details.DisplayName,
-                TwitchUserId = details.TwitchUserId,
-                AddedAtUtc = DateTime.UtcNow,
-            };
-
-            db.Channels.Add(channel);
-            db.Audit(AuditActions.ChannelAdded, null, $"{channel.DisplayName} ({channel.Login})");
-            try
-            {
-                await db.SaveChangesAsync(cancellationToken);
-            }
-            catch (DbUpdateException)
-            {
-                // Saved by another request between the check and the insert
-                return Results.Problem(detail: $"{channel.DisplayName} is already saved.", statusCode: StatusCodes.Status409Conflict);
-            }
-
-            return Results.Created($"/api/channels/{channel.Id}", ChannelDto.From(channel));
-        }
-
-        private static async Task<IResult> DeleteChannel(int id, LibraryDbContext db, CancellationToken cancellationToken)
-        {
-            var channel = await db.Channels.FindAsync([id], cancellationToken);
-            if (channel is null)
-                return Results.Problem(detail: $"Saved channel {id} was not found.", statusCode: StatusCodes.Status404NotFound);
-
-            db.Channels.Remove(channel);
-            db.Audit(AuditActions.ChannelRemoved, null, $"{channel.DisplayName} ({channel.Login})");
-            await db.SaveChangesAsync(cancellationToken);
-
-            return Results.NoContent();
-        }
-
-        /// <param name="login">Any channel, saved or not.</param>
+        /// <param name="login">One of the team's channels.</param>
         /// <param name="type">"archive" (past broadcasts, default), "highlight", "upload" or "all".</param>
         /// <param name="cursor">nextCursor from the previous page.</param>
         private static async Task<IResult> ListChannelVods(string login, string? type, string? cursor, int? limit, ChannelService channelService,
-            LibraryDbContext db, IOptions<AudioRescueSettings> rescueSettings, CancellationToken cancellationToken)
+            LibraryDbContext db, TeamChannelAccess access, IOptions<AudioRescueSettings> rescueSettings, CancellationToken cancellationToken)
         {
             if (ChannelService.NormalizeLogin(login) is not { } normalizedLogin)
                 return InvalidLogin("login");
+
+            if (!await access.IsAssignedAsync(normalizedLogin, cancellationToken))
+                return NotAssigned(normalizedLogin);
 
             if (!ChannelService.TryParseVodType(type, out var vodType))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["type"] = ["Type must be archive, highlight, upload or all."] });
@@ -147,13 +91,17 @@ namespace TwitchDownloaderWeb.Endpoints
             return Results.Ok(new ChannelVodPageDto(normalizedLogin, vodType.ToString().ToLowerInvariant(), items, page.NextCursor, page.TotalCount));
         }
 
-        private static IResult InvalidLogin(string field) =>
+        internal static IResult NotAssigned(string login) =>
+            Results.Problem(detail: $"\"{login}\" isn't one of your team's channels.", statusCode: StatusCodes.Status403Forbidden,
+                extensions: new Dictionary<string, object?> { ["code"] = "channel-not-assigned" });
+
+        internal static IResult InvalidLogin(string field) =>
             Results.ValidationProblem(new Dictionary<string, string[]> { [field] = ["Enter a Twitch channel name (letters, numbers and underscores) or a twitch.tv link."] });
 
-        private static IResult TwitchUnreachable() =>
+        internal static IResult TwitchUnreachable() =>
             Results.Problem(detail: "Couldn't reach Twitch. Try again in a moment.", statusCode: StatusCodes.Status502BadGateway);
 
-        private static IResult ChannelNotFound(string login) =>
+        internal static IResult ChannelNotFound(string login) =>
             Results.Problem(detail: $"Twitch channel \"{login}\" was not found.", statusCode: StatusCodes.Status404NotFound);
     }
 }

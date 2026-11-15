@@ -21,6 +21,9 @@ namespace TwitchDownloaderWeb.Services.Accounts
 
         internal void Store(HttpContext context) => context.Items[ItemKey] = this;
 
+        /// <summary>The request's team, or null outside the team scope.</summary>
+        public static TeamContext? Of(HttpContext context) => context.Items[ItemKey] as TeamContext;
+
         public bool Can(TeamPermission permission) => (Permissions & permission) == permission;
 
         public string UserIdText => UserId.ToString();

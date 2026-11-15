@@ -38,12 +38,12 @@ namespace TwitchDownloaderWeb.Endpoints
     {
         public static IEndpointRouteBuilder MapTimelineEndpoints(this IEndpointRouteBuilder app)
         {
-            app.MapGet("/api/vods/{vodId:long}/timeline", GetTimeline).RequireTeam(TeamPermission.ViewLibrary);
+            app.MapGet("/api/vods/{vodId:long}/timeline", GetTimeline).RequireTeam(TeamPermission.ViewLibrary).RequireChannelVod();
             // Markers and segments of several VODs at once, for the library and the VOD browser cards
             app.MapGet("/api/markers", ListMarkers).RequireTeam(TeamPermission.ViewLibrary);
             // The team's library entries on several VODs at once (where they sit), for the same cards
             app.MapGet("/api/timeline/entries", ListEntryRanges).RequireTeam(TeamPermission.ViewLibrary);
-            app.MapPost("/api/vods/{vodId:long}/markers", AddMarker).RequireTeam(TeamPermission.AddEntries);
+            app.MapPost("/api/vods/{vodId:long}/markers", AddMarker).RequireTeam(TeamPermission.AddEntries).RequireChannelVod();
             // Own markers need AddEntries (as when they were made); anyone's need EditAnyEntries / DeleteAnyEntries. Checked in the handler.
             app.MapPut("/api/markers/{id:int}", UpdateMarker).RequireTeam(TeamPermission.AddEntries | TeamPermission.EditAnyEntries);
             app.MapDelete("/api/markers/{id:int}", DeleteMarker).RequireTeam(TeamPermission.AddEntries | TeamPermission.DeleteAnyEntries);

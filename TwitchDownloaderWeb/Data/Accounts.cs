@@ -159,6 +159,12 @@ namespace TwitchDownloaderWeb.Data
         /// <summary>A label for whoever made it (e.g. who it's for). Shown in link lists only.</summary>
         public string? Note { get; set; }
 
+        /// <summary>
+        /// Team registration and owner links: the Twitch channels the team gets when the link is used (JSON list of
+        /// <see cref="LinkChannel"/>, checked on Twitch when the link was made). Null = none.
+        /// </summary>
+        public string? ChannelsJson { get; set; }
+
         public DateTime CreatedAtUtc { get; set; }
         public DateTime ExpiresAtUtc { get; set; }
         public int? CreatedByStaffId { get; set; }
@@ -170,5 +176,15 @@ namespace TwitchDownloaderWeb.Data
         /// <summary>Staff links: the staff account that used it.</summary>
         public int? UsedByStaffId { get; set; }
         public DateTime? RevokedAtUtc { get; set; }
+    }
+
+    /// <summary>A channel a staff link assigns to its team (see <see cref="AccountLink.ChannelsJson"/>).</summary>
+    public sealed record LinkChannel(string Login, string DisplayName, string? TwitchUserId)
+    {
+        public static IReadOnlyList<LinkChannel> Read(string? json) =>
+            string.IsNullOrEmpty(json) ? [] : System.Text.Json.JsonSerializer.Deserialize<List<LinkChannel>>(json) ?? [];
+
+        public static string? Write(IReadOnlyCollection<LinkChannel> channels) =>
+            channels.Count == 0 ? null : System.Text.Json.JsonSerializer.Serialize(channels);
     }
 }

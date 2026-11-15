@@ -4,8 +4,9 @@ using TwitchDownloaderWeb.Services.Accounts;
 namespace TwitchDownloaderWeb.Endpoints
 {
     /// <param name="Url">Only returned when the link is made: the token isn't stored, so it can't be shown again.</param>
+    /// <param name="Channels">Display names of the Twitch channels the team gets when it's used (staff team links).</param>
     public sealed record LinkDto(int Id, string Kind, int? TeamId, string? TeamName, string? Note, DateTime CreatedAtUtc, DateTime ExpiresAtUtc,
-        DateTime? UsedAtUtc, string? UsedBy, DateTime? RevokedAtUtc, string? Url);
+        DateTime? UsedAtUtc, string? UsedBy, DateTime? RevokedAtUtc, string? Url, IReadOnlyList<string> Channels);
 
     public sealed record CreateInviteRequest(string? Note);
 
@@ -32,6 +33,7 @@ namespace TwitchDownloaderWeb.Endpoints
         }
 
         public static LinkDto ToDto(AccountLink link, string? usedBy, string? url = null) => new(link.Id, link.Kind.ToString(), link.TeamId, link.Team?.Name,
-            link.Note, link.CreatedAtUtc, link.ExpiresAtUtc, link.UsedAtUtc, usedBy, link.RevokedAtUtc, url);
+            link.Note, link.CreatedAtUtc, link.ExpiresAtUtc, link.UsedAtUtc, usedBy, link.RevokedAtUtc, url,
+            LinkChannel.Read(link.ChannelsJson).Select(x => x.DisplayName).ToList());
     }
 }

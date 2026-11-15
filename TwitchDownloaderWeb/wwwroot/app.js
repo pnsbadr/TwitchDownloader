@@ -1362,7 +1362,7 @@ function currentSavedChannel() {
 function renderSavedChannels() {
   const select = $("browse-saved");
   const current = currentSavedChannel();
-  select.replaceChildren(el("option", { value: "" }, savedChannels.length ? "Choose…" : "None saved yet"),
+  select.replaceChildren(el("option", { value: "" }, savedChannels.length ? "Choose…" : "No channels assigned yet"),
     ...savedChannels.map((c) => el("option", { value: c.login }, c.displayName)));
   select.value = current?.login ?? "";
 

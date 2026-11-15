@@ -20,8 +20,8 @@ namespace TwitchDownloaderWeb.Endpoints
     {
         public static IEndpointRouteBuilder MapAudioRescueEndpoints(this IEndpointRouteBuilder app)
         {
-            app.MapGet("/api/vods/{vodId:long}/rescue", GetRescue).RequireTeam(TeamPermission.ViewLibrary);
-            app.MapPost("/api/vods/{vodId:long}/rescue", StartRescue).RequireTeam(TeamPermission.SaveAudio);
+            app.MapGet("/api/vods/{vodId:long}/rescue", GetRescue).RequireTeam(TeamPermission.ViewLibrary).RequireChannelVod();
+            app.MapPost("/api/vods/{vodId:long}/rescue", StartRescue).RequireTeam(TeamPermission.SaveAudio).RequireChannelVod();
             return app;
         }
 
