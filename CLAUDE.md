@@ -310,7 +310,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/channels` | The team's assigned channels (members can't add or remove them; see Team channels) |
 | `GET /api/channels/{login}/vods?type=archive\|highlight\|upload\|all&cursor=&limit=` | One of the team's channels' VODs (else 403 `channel-not-assigned`), newest first, via Core's `GetGqlVideos`. `nextCursor` = last edge's cursor; `unmuteWindowOpen` = ended < 24 h ago. 502 if Twitch is unreachable |
 | `GET /api/vods/{id}/rescue` / `POST /api/vods/{id}/rescue` | Audio rescue status (404 if none) / start one now (202; a Failed one is retried; one paused by `AudioRescue:Enabled` being off is resumed; others returned as is) |
-| `GET /api/entries/{id}/shortform` / `POST /api/entries/{id}/shortform` | Vertical (9:16) renders: `{ status: None\|Rendering\|Failed, progress, error, layout, renders: [{ id, createdAtUtc, expiresAtUtc, sizeBytes, layout, fileUrl, thumbnailUrl }] }` (newest first) / start a render (202) with `{ mode: single\|split, top: {x,y,width,height}, bottom?, splitRatio?, trimStart?, trimEnd?, parts? }` (fractions of the source video; `parts: [{ start, end, mode, top, bottom?, splitRatio? }]` in file seconds, in order, no overlap, each ≥ 0.5 s, at most 40: rendered one by one and joined, the plain fields are then set from them). 409 if the entry has no file |
+| `GET /api/entries/{id}/shortform` / `POST /api/entries/{id}/shortform` | Vertical (9:16) renders: `{ status: None\|Rendering\|Failed, progress, error, layout, renders: [{ id, createdAtUtc, expiresAtUtc, sizeBytes, layout, fileUrl, thumbnailUrl }] }` (newest first) / start a render (202) with `{ mode: single\|split, top: {x,y,width,height}, bottom?, splitRatio?, trimStart?, trimEnd?, parts?, keys? }` (fractions of the source video; `parts: [{ start, end, mode, top, bottom?, splitRatio?, keys? }]` in file seconds, in order, no overlap, each ≥ 0.5 s, at most 40: rendered one by one and joined, the plain fields are then set from them). 409 if the entry has no file |
 | `GET /api/entries/{id}/shortform/{renderId}/file[?inline=true]` / `.../thumbnail` / `DELETE .../{renderId}` | A render's mp4 (`<title> (vertical).mp4`, audited `file.served`; `inline` = the page's preview player, not audited), its jpg thumbnail, delete it. 404 if gone/expired |
 | `GET /api/vods/{id}/play.m3u8[?segments=proxy]` / `.../play/{n}.m3u8` / `.../play/{n}/{segment}` | HLS for the page's player (see Watching VODs), plus `.../play/{n}/clean/{key}.ts` (muted segment with saved audio swapped in). 403 sub-only, 404 gone, 502 Twitch unreachable. Playlists `no-store` |
 | `POST /api/auth/login` / `logout` / `GET /api/auth/me` / `POST /api/auth/team` `{ teamId }` | Team user session; `me` = `{ id, username, teams: [{ id, name, isOwner }], currentTeamId, permissions, timeZone, support, combineSegmentDownloads }` |
@@ -490,7 +490,13 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   Two boxes / Left out" labels, the part under the playhead with a white bar, left-out parts hatched; click seeks. Dragging a split line moves it, dragging a part
   slides it (keeps its length, pushes into its neighbors; the file's start/end stay put; parts ≥ 0.5 s; snaps like other edges; one
   undo step): `layoutGrab` / `dragLayout` in `ui/timeline-edit.js` → `hooks.onLayoutParts` → `setVerticalPartStarts`. `vx.trim` is always the
-  whole file (a longer new file used to stay cut at the old end, drawn dark and not rendered). The Player 2
+  whole file (a longer new file used to stay cut at the old end, drawn dark and not rendered). **Moving boxes** (keyframes, badrfly
+  2026-11-15): a part can have `keys` (`[{ t, boxes }]`, file seconds; at most 30); its boxes glide between them with smoothstep easing
+  (`boxesAt`, the same curve as the server's `ShortformLayout.Ease`) and hold before the first / after the last; mode and split ratio stay
+  fixed. F adds a keyframe at the playhead or removes the one there, `[` / `]` go to the previous / next; once a part has one, moving a box
+  (drag, arrows, a preset) sets the keyframe at the playhead (`keyHere`). Splitting keeps each side's keyframes plus the nearest one past
+  the split, so motion doesn't change; J keeps the earlier part's; "Use this layout on every part" drops them. Diamonds on the Layout row
+  (click = go there). The Player 2
   timeline stays below and follows the preview (`fileToVod` / `vodToFile` in `ui/editor.js` map file seconds over the clip's kept parts);
   trimming or cutting the clip there reloads the file (`verticalEntryChanged`), and a clip without a file says why (long clips get "Make
   the file", `POST /generate`). While it's open only the timeline's tool and zoom keys still work.
@@ -553,6 +559,10 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   `TrimEnd` = last end), so the stored layout works for anything that reads one layout. `ShortformService` renders each part like a trimmed
   render into `{renderId}.p{n}.mp4` (AAC audio, same 1080x1920 libx264) and joins them with `SegmentJoiner` (stream copy); part files and
   `join.txt` are deleted after. Progress is split by part length. Audit details say "n parts". Test: `ShortformPartsTests` (needs ffmpeg).
+- **Moving boxes** (`ShortformKey`, `Keys` on a layout or part: `keys: [{ time, top, bottom? }]`, file seconds, in order, ≤ 30): from 2 keys
+  the box's crop follows eased expressions of t (`Ease`, nested `if(lt(t,..))`; t counts from the piece's start). The union of a box's keyed
+  boxes is cropped first; same-size boxes pan with crop x/y expressions, a changing size uses `scale=...:eval=frame` then a fixed crop.
+  Audit summary adds ", moving boxes". Tests in `ShortformPartsTests` (one renders a pan and a zoom).
 - **Who made a render** (badrfly, 2026-11-15, frontend rework): the `.json` keeps `createdByUserId` (null for older renders); renders in
   `GET /shortform` carry `createdByUserId`/`createdBy`. Exporting a clip as vertical uses the member's **own newest** render, or with
   `TeamPermission.DownloadTeamVerticals` ("Download team vertical entries", bit 18) any of the team's renders of that clip they pick; neither

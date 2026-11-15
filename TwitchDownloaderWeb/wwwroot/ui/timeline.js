@@ -744,6 +744,7 @@ export class Timeline {
     const part = hover.canvas === this.track ? this.layoutPartAt(hover.x, hover.y, hover.width) : null;
     if (part) {
       lines.push(`Part ${part.number} · ${part.removed ? "left out of the render" : part.label}`);
+      if (part.keys?.length) lines.push(`${part.keys.length} keyframe${part.keys.length === 1 ? "" : "s"} (moving boxes) · click a diamond to go to it · F adds or removes one`);
       lines.push("Drag a split line to move it · drag a part to slide it");
       lines.push("S splits at the playhead · Delete leaves a part out · J joins");
     }
@@ -940,6 +941,7 @@ export class Timeline {
     const top = y + 6;
     const h = ROW_HEIGHT - 12;
     const x = (t) => this.timeToX(t, width);
+    const now = this.getPosition();
     ctx.save();
     parts.forEach((part, i) => {
       const x1 = x(part.start);
@@ -971,6 +973,23 @@ export class Timeline {
         ctx.lineTo(x1, y + 6);
         ctx.closePath();
         ctx.fill();
+      }
+      // keyframes of moving boxes: small diamonds along the bottom, the one at the playhead filled
+      for (const key of part.keys ?? []) {
+        const kx = x(key);
+        if (kx < -6 || kx > width + 6) continue;
+        const on = now != null && Math.abs(now - key) < 0.06;
+        ctx.beginPath();
+        ctx.moveTo(kx, top + h - 11);
+        ctx.lineTo(kx + 5, top + h - 6);
+        ctx.lineTo(kx, top + h - 1);
+        ctx.lineTo(kx - 5, top + h - 6);
+        ctx.closePath();
+        ctx.fillStyle = on ? "#fff" : "#1b1d22";
+        ctx.fill();
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
       }
       const text = `${i + 1} · ${part.removed ? "Left out" : part.label}`;
       ctx.font = "600 11px Barlow, system-ui, sans-serif";

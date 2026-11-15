@@ -381,6 +381,10 @@ export const editing = {
 
     // The vertical editor's Layout row: drag a split line to move it, drag a part to slide it
     const grab = this.tool === "pointer" ? this.layoutGrab(x, y, rect.width) : null;
+    if (grab?.grab === "key") {
+      this.seekTo(grab.t);
+      return;
+    }
     if (grab) {
       this.press = { kind: "layout", ...grab, startX: event.clientX, from: t, moved: false, rect };
       canvas.setPointerCapture(event.pointerId);
@@ -431,7 +435,7 @@ export const editing = {
       if (this.tool === "pointer" && this.hover?.canvas === this.track) {
         const grab = this.layoutGrab(this.hover.x, this.hover.y, this.hover.width);
         if (grab) {
-          this.updateCursor(grab.grab === "edge" ? true : "grab");
+          this.updateCursor(grab.grab === "edge" ? true : grab.grab === "key" ? false : "grab");
           return;
         }
         const selected = this.selectedItem();
@@ -718,7 +722,14 @@ export const editing = {
   // What a press at x/y in the Layout row takes hold of: a split line ("edge", its index) or a part's body ("slide")
   layoutGrab(x, y, width) {
     const part = this.layoutPartAt(x, y, width);
-    if (!part || this.verticalParts.parts.length < 2) return null;
+    if (!part) return null;
+    // A keyframe diamond (along the bottom of the row): a click goes to it
+    const rowTop = this.rows.length * this.rowHeight;
+    if (y - rowTop > this.rowHeight / 2) {
+      const key = (part.keys ?? []).find((k) => Math.abs(x - this.timeToX(k, width)) <= 6);
+      if (key != null) return { grab: "key", t: key };
+    }
+    if (this.verticalParts.parts.length < 2) return null;
     const edges = this.layoutEdges();
     let best = null;
     for (let k = 1; k < edges.length - 1; k++) {
