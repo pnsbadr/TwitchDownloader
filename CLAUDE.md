@@ -516,13 +516,22 @@ step next to the old page; `index.html` stays the old library until the new edit
   cuts) and title; icons Show in Player 1 (opens the VOD there if needed, selects and zooms to the item), rename, delete, volume,
   fullscreen. Only one player plays at a time. The tools bar and keys work on the player whose timeline tab is open; clicking a player
   with something loaded opens its tab. In Player 2 the create tools and the cut tool are off (step 7 makes it the cut-out tool). Undo/redo
-  history is shared by both timelines. Videos load in Player 2 from step 6; old Twitch clips without a VOD can't.
+  history is shared by both timelines. Old Twitch clips without a VOD can't.
 - **Dropping on rows** (step 5, `dropPlan` / `runDrop` in `ui/timeline-edit.js`): the Player 1 track is a drop target for timeline items and
   clip cards of the same VOD, on the member's **own, unlocked** rows only. Own segment/moment on another own video row → moved (`PUT /api/markers/{id}`
   with `rowId`); own clip on another own clip row → moved (`PUT /api/entries/{id}/row`); someone else's (or own with Alt) → copied there
   (`POST .../copy`); **Alt + a VOD clip on a video row** → a segment at its times (`copy-as-segment`). Segments and moments never go on clip
   rows, clips go on video rows only with Alt, Twitch clips aren't copied. The row is highlighted and a tip says what letting go does;
   moves and copies are undo steps (`clipRow` for clip moves).
+- **Videos** (step 6): the tools bar's **link** tool (Player 1, `startLinking` / `toggleLink` / `saveLink` in `ui/timeline-edit.js`): click
+  segments on one of your own rows in play order (numbered badges; clicking again takes one out), type a title, press ✓ →
+  `POST /api/vods/{id}/videos`; the video shows in VIDEOS and loads in Player 2. Player 1 marks segments that are in a video with their
+  position (tip: "In video "x" (n of m)"). In Player 2 a video is laid out in **video time** (`isVideoLayout`, `videoItems`: parts back to
+  back, each with its VOD offset); `p2Position` / `p2Seek` / `p2Tick` in `ui/editor.js` map video time to the VOD and jump to the next part
+  while playing. Dragging a part's edge trims the segment itself (`PUT /api/markers/{id}`, so every video using it changes); its right-click menu
+  = title/color, Move earlier/later and Take out of the video (Del too) (`PUT /api/videos/{id}` with the whole `markerIds`), Make a copy.
+  Others' videos: view only, or with `EditAnyEntries` the Edit original / Make a copy choice (`POST /api/videos/{id}/copy`). Rename and
+  delete on Player 2's icons and the card's menu.
 - `editor.html?demo` fills sample cards (nothing is sent to the server) to try the shell.
 
 ### Twitch clips (`ClipInfoService`, `ClipFileService`)
