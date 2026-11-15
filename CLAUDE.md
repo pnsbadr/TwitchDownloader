@@ -76,7 +76,7 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   put tokens in details**.
 - `VodMarkers` (`VodMarker`): team markers on a VOD's player timeline: TeamId (team query filter, cascade), VodId, Seconds, `EndSeconds`
   (null = a moment; set = a **segment**, ≥ 0.5 s long), Label (≤ 200, may be blank), Color (`VodMarker.Colors`: yellow, blue, pink, orange,
-  red, lime, teal, violet, gray; same order as `MARKER_COLORS` in player-bar.js, add new ones at the end), CreatedByUserId,
+  red, lime, teal, violet, gray; same order as `MARKER_COLORS` in `ui/colors.js`, add new ones at the end), CreatedByUserId,
   CreatedAtUtc. Audited `marker.added` / `marker.changed` / `marker.deleted`.
 - `LibraryEntries.FollowsMarkers`: a **live markers entry** (`LiveMarkerEntryService`, badrfly 2026-11-10). The first marker/segment a team
   adds on a VOD that is still live (GQL video `status == "RECORDING"`, `VodDetails.IsLive`) makes a reference-only entry (always reference,
@@ -244,10 +244,9 @@ Plan and badrfly's decisions: Claude Doc "Logins, teams and permissions plan". B
   and orphaned folders in `segments/`. Disk use counts for the team and the member who started it (`ActivityReport`).
 - Limits (`Downloads:`): `MaxSegmentsPerDownload` (50), `MaxSegmentDownloadSeconds` (3 h, all segments together), `MaxActiveSegmentDownloadsPerTeam` (3).
   A segment ending after what a live VOD has streamed is refused (400). `IVodQualitySource` (VodInfoService) checks quality/restricted; faked in tests.
-- Page: on library and VOD cards, members with `GenerateFiles` click segments (strip boxes or chips) to pick them (`makePickable` in player-bar.js;
-  picks are per card, in the page only), then **Download** (or **Download as one file** when `me.combineSegmentDownloads`). The card lists the team's
-  segment downloads it started (polled while running): joined file, All (.zip), each file, ×. The zip (`/zip`) is streamed, stored without compression.
-  The Admin page's Teams tab has "Allow joined segments" (Owner only). No new shortcuts.
+- Page: the old library page picked segments on its cards for this; that page was removed in frontend rework step 10 and the editor's
+  Export tab sends segments and videos through `/api/exports` instead. The endpoints stay (no page uses them now). The Admin page's Teams
+  tab has "Allow joined segments" (Owner only), which also gates joined videos in exports.
 
 ### Muted audio rescue (`Services/AudioRescue/`)
 Twitch mutes segments (`123-muted.ts`) and keeps the clean copy (`123.ts`) for a limited time (Core assumes 24 h and
@@ -334,136 +333,49 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 
 `canDownload` in entry responses checks the generated file's expiry itself, since cleanup runs periodically.
 
-### Web page
-- **Keyboard shortcuts live in `wwwroot/keybinds.js`** (`KEYBINDS`: id, scope, keys, description; badrfly 2026-11-10). Check it before
-  adding a shortcut and add the new one there first: the page logs a console error when two bindings in one scope share a key, and the list
-  is meant to feed a shortcuts/help screen later. The player bar dispatches its keys through `keybindFor("player", event)`; other
-  handlers (trim handles, vertical editor, forms) still handle their own keys but are listed.
-- Not logged in → `login.html`; account bar (team switcher when in 2+ teams, Team page link for members with any Team permission,
-  username → `account.html` (time zone, password), Log out). `team.html` = members/roles/activity/log/invites/audio setting,
-  `join.html` = opening any link (staff links go to `admin.html` after), `admin.html` = staff (tabs Teams/Users/Links/Moderators/App log, shown by
-  permission; tab saved in `localStorage` key `clipAdmin.tab`). The page hides buttons the user's permissions (`me.permissions`) don't allow.
-- Time zone toggle (Local / Pacific `America/Los_Angeles`) saved per user on the server and cached in `localStorage` key `clipLibrary.timeZone`. Formatting only — the API always returns UTC (`...Z`).
+### Web pages
+The old library page (`app.js`, `player-bar.js`, `app.css`) was removed in frontend rework step 10; the editor below is the main page
+(`index.html`; `editor.html` only redirects to `/`, keeping `?demo`). Its old features live on in the editor (git history has the old code).
+- **Keyboard shortcuts live in `wwwroot/keybinds.js`** (`KEYBINDS`: id, scope, keys, description; `KEYBIND_SCOPES`: the scopes with a title
+  and where they work; badrfly 2026-11-10). Check it before adding a shortcut and add the new one there first: the page logs a console error
+  when two bindings in one scope share a key, and the **shortcuts help** (`ui/shortcuts.js`: `?`, the keyboard icon in the top bar, or the
+  account menu) is built from it, so mouse bindings and keys handled elsewhere are listed too.
+- Account pages (`login.html`, `join.html`, `account.html`, `team.html` + `team.js`, `admin.html` + `admin.js`, helpers in `account.js`) are
+  plain HTML forms (no Shoelace) styled by `ui/theme.css` + `ui/pages.css` (same gray theme and fonts as the editor; back arrow to the editor).
+  Not logged in → `login.html`; after login → `/`. `team.html` = members/roles/activity/log/invites/audio setting (`ACTION_LABELS` in team.js
+  names audit actions; add new team-visible ones there), `join.html` = opening any link (staff links go to `admin.html` after),
+  `admin.html` = staff (tabs Teams/Users/Links/Moderators/App log, shown by permission; tab saved in `localStorage` key `clipAdmin.tab`).
+  Pages hide buttons the user's permissions (`me.permissions`) don't allow.
+- Time zone (Local / Pacific `America/Los_Angeles`) is set on the Account page, saved per user on the server and cached in `localStorage` key
+  `clipLibrary.timeZone`. Formatting only — the API always returns UTC (`...Z`). Days for date filters are computed in the shown time zone
+  (`ui/dates.js`: the zone's midnights converted to UTC and sent as `from`/`to`).
 - `Intl.DateTimeFormat` throws if `dateStyle`/`timeStyle` are combined with `timeZoneName`; format parts explicitly.
-- The list polls every 3 s while any entry is queued/downloading/generating.
-- Static files are served with `Cache-Control: no-cache` (no build step, no versioned names), so a normal reload always picks up a new `app.js`.
-- Calendar (plain JS, no library): month view of clip counts per day, by stream date or date added (saved in
-  `localStorage` key `clipLibrary.calendarField`). **Days are computed in the shown time zone**: the page converts
-  that zone's midnights to UTC (`zonedMidnightUtc`, via `Intl` parts) and sends them as `from`/`to`, so the
-  calendar counts and the day-filtered list use the same server-side filter. Counts come from the month's
-  entries (limit 1000) grouped client-side. Clicking a day filters the list; Clear or clicking it again removes it.
-- The calendar is hidden by default behind a **Calendar** button in the search/filter row and opens above that
-  row; open/closed is saved in `localStorage` key `clipLibrary.calendarOpen`. Counts aren't fetched while closed.
-  A day filter survives closing the calendar and is then shown as a chip ("Oct 12 ✕") next to the search box.
-  The selected day itself is not persisted across reloads.
-- **Last 24h** button (left of Calendar): rolling `from = now − 24h` filter on the date chosen in the
-  **sort dropdown** next to the search box (Date added / Stream date), not the calendar's switch; recomputed on every load. It and a calendar day filter are mutually exclusive.
-  Not persisted. There is no "jump to today" button in the calendar (removed on request).
-
-- **VOD browser** (top of the Add panel): saved-channels dropdown + free-text channel (login or twitch.tv link), type
-  toggle, Show VODs / Load more. Clicking a card fills the VOD field and the title (only replacing a title the page
-  filled itself), then runs Get Info. Last channel and type are saved in `localStorage` keys `clipLibrary.browseChannel`
-  / `clipLibrary.browseType`. Cards use `formatDate`, so they follow the time zone toggle. Cards show the rescue
-  status and a **Save audio now** button (live or unmute window open, no rescue yet or paused) or **Retry saving audio** (failed).
-  Library entries with restored audio show an "Audio restored" badge, and "Still muted" when muted parts had no clean copy;
-  VOD cards show "Muted parts not saved" when a rescue got 403s for muted segments.
-- **Watching VODs** (`VodPlayer` in app.js, `Services/Playback/`): VODs play in the app's own `<video>` player with hls.js
+- Static files are served with `Cache-Control: no-cache` (no build step, no versioned names), so a normal reload always picks up new scripts.
+- **Watching VODs** (`ui/media.js`, `Services/Playback/`): VODs play in the app's own `<video>` player with hls.js
   (`cdn.jsdelivr.net/npm/hls.js@1.6.16`, loaded lazily). The server gets the access token + master playlist like Core's downloader
   (`VodPlaybackService`, master cached 10 min) and serves `GET /api/vods/{id}/play.m3u8`: landscape video renditions only (no audio-only,
   no portrait), pointing at our `/play/{n}.m3u8`, which is Twitch's media playlist with segment URLs rewritten. Segments load straight
   from Twitch's CDN; if that fails while starting, the page retries with `?segments=proxy` (segments through `/play/{n}/{segment}`,
   only file names in the rendition's folder) and keeps that for the visit. Tokens never reach the browser or the logs.
-  The video's `currentTime` is the offset into the VOD (hls.js maps the playlist start to 0), so Set start/end and previews are exact.
-  A quality menu (Auto + renditions) sits under the player. **Fallback:** if the app player can't play a VOD (403 sub-only, 404, hls.js
-  missing, unsupported codec, no first frame in 20 s) the official Twitch embed (`player.twitch.tv/js/embed/v1.js`) is used, and the
-  line under the player says why; its link switches players (choice saved in `localStorage` key `clipLibrary.playerMode`, `app`/`twitch`;
-  if the chosen one fails the other is tried). Volume is saved in `clipLibrary.playerVolume`. The embed needs `parent` =
-  `location.hostname`, so open the page as `localhost` (Twitch may reject a bare IP); sub-only VODs play there only if the browser is
-  logged in to Twitch with access.
+  The video's `currentTime` is the offset into the VOD (hls.js maps the playlist start to 0). **Fallback:** if the app player can't play a
+  VOD (403 sub-only, 404, hls.js missing, unsupported codec, no first frame in 20 s) the official Twitch embed
+  (`player.twitch.tv/js/embed/v1.js`) is used (choice saved in `localStorage` key `clipLibrary.playerMode`, `app`/`twitch`; if the chosen one
+  fails the other is tried). Volume is saved in `clipLibrary.playerVolume`. The embed needs `parent` = `location.hostname`, so open the page
+  as `localhost` (Twitch may reject a bare IP); sub-only VODs play there only if the browser is logged in to Twitch with access. With the
+  embed, `getCurrentTime()` is a cache refreshed about once a second, so `EmbedBackend.position()` estimates the live offset (last refresh or
+  seek target + time played since).
   **Clean audio in the player** (`PlaybackAudioSwap`): the media playlist rewrite points every `{key}-muted.ts` that has saved
   clean audio (`RescuedAudioSegments` with a file) at `/play/{n}/clean/{key}.ts`, in either segment mode. That endpoint fetches the
   muted segment, and ffmpeg swaps its audio for the saved one with `-copyts -mpegts_copyts 1` (video and audio copied, so both keep
   their PTS; the audio-only rendition shares the stream's clock, so it lines up as in RestorePlanner). If the saved audio's sample
   rate/channels differ from the segment's (`AdtsFormat`), audio is re-encoded to match (~21 ms AAC priming). Results are cached in
   `downloads/work/play/{vodId}/{n}/{key}.ts` for 2 h (work/ is cleared at startup); any failure serves the muted segment. The master
-  sends `X-Clean-Audio-Segments` (count) and the page shows "Saved audio plays over muted parts". fMP4 (`.mp4`) segments aren't swapped.
-  **Control bar** (`wwwroot/player-bar.js`, `PlayerBar`; app player only, the Twitch embed keeps its own controls): replaces the
-  native controls on the Watch and Review players. A canvas timeline shows buffered/played, Twitch's **muted parts in red** and parts
-  with **saved clean audio in green** (read from hls.js `LEVEL_LOADED`/`LEVEL_UPDATED` fragments: `-muted.ts` vs `/clean/` URLs, so a
-  live VOD updates as it grows; both drawn at 50 % opacity), the team's library clips from the VOD (purple lane on top), team markers
-  (colored lines with a triangle) and **segments** (hatched boxes with brackets at both ends; chips under the bar seek, × deletes).
-  Hover shows time + what's there (segment title and range). **[ Segment** / S marks a segment's start, pressing again its end
-  (dashed preview meanwhile, Esc cancels), then the form names it; its Start/End can also be typed. **+ Marker** (M) opens the form with one time ("At") and no End. The 👆 button inside a time box puts the playhead's time in it. While the form is open, what it would save is drawn on the timeline in the picked color (`formDraft()`, also a snap point) and follows typed times. **LIVE** button (badrfly, 2026-11-11) right of the timeline while the VOD is still live (hls.js `details.live`, no `#EXT-X-ENDLIST`): jumps to the newest part (`liveSyncPosition`) and plays; solid red while within `liveMargin()` of the end, outlined (»)
-  when behind; gone once the stream ends. **[ Clip** / X (badrfly, 2026-11-11) marks a clip like a segment (start, then end; dashed purple preview
-  that stops at the stored-clip limit, `maxStoredClipSeconds` from `/timeline`, 180 s), then the form (kind `clip`: Start/End, title, no colors,
-  **Make clip**) posts `POST /api/entries` (Exact) so it becomes a stored library card on the purple lane. Zoom (wheel, +/−, Fit; min 10 s) with an
-  overview strip while zoomed; the view follows the playhead. `GET /api/vods/{id}/timeline` feeds clips and markers; it's reloaded
-  after adding/re-trimming/deleting an entry. Keys (not while typing): Space/K play, J/L ±10 s, ←/→ ±5 s, `,`/`.` one frame,
-  M marker, S segment start/end, X clip start/end, I/O set the selection's start/end at the playhead, Shift+Space play its last 3 s, F fullscreen, +/−/0 zoom,
-  V/C/Z/H tools, Ctrl+Z / Ctrl+Shift+Z (Ctrl+Y) undo/redo, Del (see keybinds.js).
-  **Editing** (badrfly, 2026-11-10): a vertical **tools bar** right of the video (`.vp-stage` wraps the frame and `.vp-tools`; shown only
-  with the app player): **Pointer** (V), **Cut** (C: click a segment to split it at that point into "Name 1"/"Name 2", or "Segment A1"/"A2" when the last
-  word is one character; each part ≥ 0.5 s), **Zoom** (Z: click zooms in, right click out),
-  **Hand** (H: drag the zoomed timeline to scroll it; only the view moves, no seek/select; after a hand or Shift+wheel scroll the view stops
-  following the playhead until it comes back into view or the user seeks), **Undo/Redo**. Every opening of Watch/Review starts with the
-  pointer tool, and the player takes the keyboard focus when it attaches (unless the user is typing in a field), so keys work at once. With the pointer, clicking a
-  segment **selects** it and zooms to it (20 % margin, ≥ 2 s; selecting another one while playing jumps to its start and plays it to its end);
-  then Play plays only it (stops at its end, also after it was made longer), −10s/−1s/+1s/+10s move its **end** (Shift-click: its start;
-  presses within 0.6 s are one change), the selection row's Start/End can be typed, Start here / End here (I/O) and Last 3s (Shift+Space), its edges can be dragged (only the selected one, against misclicks; while dragging only the timeline redraws and the tip shows just the edge's time, chips and the selection row update on release), × (placed 14 px past its end,
-  away from the edge grip) or Del deletes it, and the row under the bar renames/recolors it. Clicking outside segments unselects; so do Esc, the overview strip and a click anywhere else in the Watch/Review window (except the parts that work on the selection: its row, chips, tools, play and ±10s/±1s).
-  **Snapping** (badrfly, 2026-11-10; magnet button at the top of the tools bar, N; on by default, saved in `localStorage` key `clipLibrary.snap`):
-  a dragged edge sticks to any time within 8 px from `PlayerBar.snapPoints()` (markers, segment edges, library cards' start/end, the
-  reviewed clip, the playhead; dashed guide while stuck); dragging further passes it. **New kinds of timeline items must add their times
-  to `snapPoints()`.** **Reference cards on the timeline**: the start/end of reference-only VOD entries the member may edit (`canEdit` from
-  `/timeline`) can be dragged on the purple lane, and in Review the reviewed entry's edges anywhere on the track; it saves right away with
-  `PUT /trim` (one undo step; the review dialog follows, `onEntryChanged`/`syncReviewEntry`, also when the server moves a reviewed live markers card; a live markers card dragged by hand stops following). Stored entries keep
-  their trim bar outside Review. **Cards are selectable like segments** (badrfly, 2026-11-11; `selectedCardId`, `selectedRange()` = the
-  selected segment or card): click one on the purple lane (or press on its edge without dragging; a click inside it on the track never selects it, badrfly; it only keeps an already selected card selected); then Play, ±10s/±1s (Shift: start),
-  I/O, typed Start/End, Last 3s and title (PATCH rename) work on it, and its edges can be dragged on the track too. Edits go through
-  `editCard` → `cardEdit` → `commitCard` (PUT /trim, one undo step `trim`): reference cards 0.6 s after the last change (drag: at once),
-  the reviewed **stored** clip `STORED_SAVE_DELAY_MS` (3 s) after, since it downloads again; unselecting, closing or switching players
-  (`detach`) saves what's waiting. Stored cards are only editable in their own Review (`editableClip`). The page-wide deselect listener
-  runs on `click` with `composedPath()` (a pointerdown deselect shifted the centered dialog, so Close missed its click).
-  In Review the reviewed entry's card on the purple lane and its vertical lines on the track are **one object**
-  (`syncFocusClip`: the card always has `focus`'s range, also unsaved field edits), so either drags and snaps both. A segment changed (drag, nudge) so it reaches past a reference card it was on **stretches the card** to cover it
-  (`cardStretchesFor`; not live markers cards, which the server moves itself); undo reverts both in one step.
-  **Automatic zoom never cuts off the selected segment** (badrfly): every zoom the app makes by itself goes through `PlayerBar.zoomTo`, which
-  always shows the whole range, and while `autoView` is set (cleared by wheel, zoom tool, +/−/0, panning) `update()` widens the view
-  when the segment grows past it or the playhead leaves it, instead of panning. Only the user's own zooming may go deeper than a segment.
-  Changes go through `PUT /api/markers/{id}` (whole marker). **Undo/redo** keeps the last 10 steps per VOD in this tab only (`markerHistory`,
-  not shared or persisted): add, delete, change, split; steps hold refs so a marker re-made by undo (new ID) is still found. A step that
-  fails (someone changed or deleted it) is dropped with a message. Undoing a delete re-adds it as the current user.
-  **VOD cards** show the VOD's markers and segments in a small strip (`segmentStrip`; hover = title and times); **reference-only VOD
-  entries** get the same strip over their range; **stored entries and Twitch clips** list the ones inside their range as chips like the
-  player's (`markerChips`; badrfly: a strip is too much for a short clip). Both load with
-  `GET /api/markers?vodIds=`. Markers need `AddEntries` to add (and delete own) and `DeleteAnyEntries` for anyone's;
-  view as support sees them read-only.
-  **Watch** next to Get Info / on VOD cards opens an inline player with **Set start here / Set end here** (fills the trim
-  fields from the position below, hundredths of a second) and **Play clip** (seeks to start, pauses at end). The review dialog
-  starts at the clip start and pauses at its end (not shown for VodUnavailable). Closing a player
-  removes the video/iframe so playback stops.
-  **Short clip review** (badrfly, 2026-11-11): Review of a stored VOD entry passes `bounds: clipWindow(...)` (a 5-minute window, the clip in
-  the middle, ≥ 1 min each side; `CLIP_WINDOW_SECONDS`) and `capFocus`: the timeline, Fit, zoom, seeks, the overview and playback stay
-  inside it (`PlayerBar.extent()`), segments can be made there, and `limitCard` stops the clip's moved edge at the stored-clip limit or
-  the window's edge (message / drag tip "max"). Only the reviewed clip's edges can be dragged there. In any Review the reviewed card is drawn on top of the purple lane and other cards faded (same for a selected card), so an overlapping card doesn't look like the clip's bar staying behind. Reference entries still get the whole VOD.
-  **Card strips**: `segmentStrip(markers, from, to, { clips, self })` also draws the team's clips (stored entries and Twitch clips, from
-  `GET /api/timeline/entries?vodIds=`, loaded with the markers) as a purple line above the strip, on VOD cards and reference cards. A stored
-  clip's card shows the strip of its 5-minute window (its own range highlighted) when segments are in that window, else chips.
-  **Review** (badrfly, 2026-11-11: the timeline does the work) on a library entry (and automatically right after Add to library) opens the
-  clip review dialog: the player with the full VOD timeline zoomed in on the entry (stored or reference; no compact mode any more), the
-  entry's card **selected** (`configure({ focus, focusEntryId, selectFocus, zoom, onEntryChanged, onFocusEdited, onAttached })`), edited
-  as above and saved by itself; the dialog follows saves (`syncReviewEntry`, also renames). **Only with the Twitch embed** (no bar;
-  `onAttached(false)`) the old controls show (`#review-classic`): a trim bar spanning the clip ± a margin (25% of its length, 5–60 s,
-  widened when a handle leaves it) with draggable handles (arrow keys nudge 0.1 s, Shift 1 s), a playhead, click-to-seek, ±1 s / ±0.1 s
-  buttons, Set to playhead, Play clip / Play last 3s, and **Save new cut** (`PUT /trim`; closes the dialog on success, result shown above
-  the library). Unsaved changes there ask before closing (`reviewNeedsConfirm`).
-  With the Twitch embed, `getCurrentTime()` is a cache refreshed about once a second (and stale right after a seek), so `EmbedBackend.position()`
-  estimates the live offset (last refresh or seek target + time played since, via PLAYING/PAUSE/SEEK events; refreshes are caught on the iframe's `message` events) and a 40 ms tick
-  pauses previews at the end. Using the raw value made Set end land up to ~1 s early and previews stop up to ~1 s late.
+  sends `X-Clean-Audio-Segments` (count). fMP4 (`.mp4`) segments aren't swapped. The timeline shows Twitch's muted parts in red and parts
+  with saved clean audio in green (from hls.js fragments: `-muted.ts` vs `/clean/` URLs).
 
-### New editor (frontend rework, `editor.html` + `wwwroot/ui/`)
+### Editor (frontend rework, `index.html` + `wwwroot/ui/`)
 Plan and badrfly's decisions: Claude Doc "Frontend rework plan" (10 steps; backend items B1–B7 are built in a separate thread). Built step by
-step next to the old page; `index.html` stays the old library until the new editor covers everything (step 10), then the old page moves aside.
+step next to the old page, which step 10 removed; the editor is now `index.html`.
 - Libraries from jsDelivr, pinned: Shoelace 2.20.1 (web components, dark theme), Phosphor icons 2.1.1 **bold** (registered as the Shoelace icon
   library `ph`: `<sl-icon library="ph" name="scissors">`), Split.js 1.6.5 (resizable panels, sizes in `localStorage` `clipco.layout.*`),
   IMask 7.6.1 (time boxes), SortableJS 1.15.6. Fonts: Barlow Condensed (headings, `.display`) and Barlow (Google Fonts).
@@ -562,7 +474,7 @@ step next to the old page; `index.html` stays the old library until the new edit
   timeline stays below and follows the preview (`fileToVod` / `vodToFile` in `ui/editor.js` map file seconds over the clip's kept parts);
   trimming or cutting the clip there reloads the file (`verticalEntryChanged`), and a clip without a file says why (long clips get "Make
   the file", `POST /generate`). While it's open only the timeline's tool and zoom keys still work.
-- `editor.html?demo` fills sample cards (nothing is sent to the server) to try the shell.
+- `/?demo` fills sample cards (nothing is sent to the server) to try the shell.
 
 ### Twitch clips (`ClipInfoService`, `ClipFileService`)
 - **No longer added** (2026-11-15, team channels): `POST /api/entries` refuses clip links and `/api/clips/info` is gone. Clip entries added

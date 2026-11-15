@@ -11,6 +11,7 @@ import { MediaPlayer, formatClock } from "./media.js";
 import { Timeline } from "./timeline.js";
 import { skipCut, keptSeconds, keptParts } from "./cuts.js";
 import { setUpExport, addToExport, exportShown, pausePreview } from "./export.js";
+import { showShortcuts } from "./shortcuts.js";
 import { setUpVertical, openVertical, closeVertical, verticalOpen, verticalEntryId, pauseVertical, verticalEntryChanged, handleVerticalKey, verticalTime, verticalSeek } from "./vertical.js";
 
 // Phosphor icons, bold weight, as <sl-icon library="ph" name="…">
@@ -83,7 +84,7 @@ $("account-items").addEventListener("sl-select", async (event) => {
   switch (event.detail.item.value) {
     case "account": location.href = "/account.html"; break;
     case "team": location.href = "/team.html"; break;
-    case "classic": location.href = "/"; break;
+    case "shortcuts": showShortcuts(); break;
     case "logout":
       await fetch("/api/auth/logout", { method: "POST" });
       location.href = "/login.html";
@@ -91,6 +92,7 @@ $("account-items").addEventListener("sl-select", async (event) => {
   }
 });
 $("support-exit").addEventListener("click", exitSupport);
+$("shortcuts-button").addEventListener("click", showShortcuts);
 
 // ---------- tabs ----------
 
@@ -863,7 +865,14 @@ const VERTICAL_PASS_KEYS = new Set(["toolPointer", "toolCut", "toolZoom", "toolH
 
 function setUpKeys() {
   document.addEventListener("keydown", (event) => {
-    if ($("view-editor").hidden || isTyping(event) || document.querySelector("sl-dialog[open]")) return;
+    if (isTyping(event) || document.querySelector("sl-dialog[open]")) return;
+    // ? works on both screens
+    if (keybindFor("player", event) === "shortcutsHelp") {
+      event.preventDefault();
+      showShortcuts();
+      return;
+    }
+    if ($("view-editor").hidden) return;
     // The vertical editor has its own keys; of the player's, only the timeline's tools and zoom still work
     if (handleVerticalKey(event)) return;
     const id = keybindFor("player", event);
