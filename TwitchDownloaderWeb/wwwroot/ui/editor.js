@@ -9,7 +9,8 @@ import { setUpLibrary, showList, refreshClips, refreshVideos } from "./library.j
 import { MARKER_COLORS } from "./colors.js";
 import { MediaPlayer, formatClock } from "./media.js";
 import { Timeline } from "./timeline.js";
-import { skipCut } from "./cuts.js";
+import { skipCut, keptSeconds } from "./cuts.js";
+import { setUpExport, addToExport, exportShown, pausePreview } from "./export.js";
 
 // Phosphor icons, bold weight, as <sl-icon library="ph" name="…">
 registerIconLibrary("ph", {
@@ -124,6 +125,13 @@ let timelineTabs = null;
 function showScreen(view) {
   $("view-editor").hidden = view !== "editor";
   $("view-export").hidden = view !== "export";
+  // Only one player plays at a time: the screen left behind is paused
+  if (view === "export") {
+    for (const player of [player1, player2]) if (player?.ready && player.playing()) player.pause();
+    exportShown();
+  } else {
+    pausePreview();
+  }
 }
 
 // ---------- layout: resizable borders (Split.js), sizes kept per browser ----------
@@ -146,9 +154,32 @@ function setUpLayout() {
 
 // ---------- left panel (ui/library.js) ----------
 
+// A card's download icon or "Export": the item goes on the export list (a VOD opens the range pop-up)
 function openExport(item) {
   screenTabs.pick("export");
-  if (DEMO) toast(`"${item.data?.title ?? item.label}" would be added to the export list (step 8).`);
+  addToExport(item);
+}
+
+// Player 1's right-click "Add to the export list" on a segment or clip (stays on the Editor screen)
+function exportFromTimeline(item) {
+  const vod = p1Vod ?? {};
+  if (item.kind === "segment") {
+    addToExport({
+      kind: "segment",
+      data: { ...item.data, vodId: timeline.vodId, vodTitle: vod.title, vodDate: vod.createdAtUtc, thumbnailUrl: vod.thumbnailUrl },
+    }, { quiet: false });
+    return;
+  }
+  const start = item.start;
+  const end = item.end;
+  addToExport({
+    kind: "clip",
+    data: {
+      id: item.id, kind: item.data.kind, vodId: timeline.vodId, title: item.title, startSeconds: start, endSeconds: end, cuts: item.cuts ?? [],
+      clipLengthSeconds: keptSeconds(start, end, item.cuts ?? []), streamDateUtc: vod.createdAtUtc, thumbnailUrl: vod.thumbnailUrl,
+      isReferenceOnly: Boolean(item.reference),
+    },
+  }, { quiet: false });
 }
 
 // ---------- players ----------
@@ -509,6 +540,7 @@ function setUpPlayer1() {
     onChange: renderTools,
     onClipsChanged: refreshClips,
     onVideosChanged: refreshVideos,
+    onExport: exportFromTimeline,
     onCreated: (item) => openInPlayer2({ kind: item.kind, data: { ...item.data, vodId: timeline.vodId, vodLengthSeconds: timeline.length() } }, { show: false }),
     onEdited: () => {
       if (timeline2.vodId && timeline2.vodId === timeline.vodId) timeline2.load();
@@ -925,6 +957,7 @@ async function start() {
   $("workspace").hidden = false;
   wireIconButtons();
   setUpLayout();
+  setUpExport({ demo: DEMO, otherPlayers: () => [player1, player2] });
   screenTabs = tabs(document.querySelector(".main-tabs"), "data-view", showScreen, "clipco.editor.screen");
   setUpLibrary({ onLoad: load, onExport: openExport, sample: DEMO ? demoSample() : null });
   if (DEMO) wireDemoTools();

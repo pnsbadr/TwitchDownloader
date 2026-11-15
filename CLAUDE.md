@@ -540,6 +540,16 @@ step next to the old page; `index.html` stays the old library until the new edit
   through Edit original / Make a copy. Cut parts are drawn faded on both timelines (tip: "Cut out … · left out of files") and their edges are
   snap points. Playback skips them (`skipCut` / `jumpCuts` in `ui/editor.js`): Player 2 always, a video part by part, Player 1 while a selected
   segment or clip plays on its own. Lengths in Player 2's header count what's left.
+- **Export screen** (step 8, `ui/export.js`, EXPORT tab): same left panel; a view-only preview player (plays the selected item's kept parts
+  in order, skipping cut-out parts; a video part by part), settings for the selected item (file name, quality from `/api/vods/info`, clip
+  Horizontal/Vertical checkboxes: vertical uses the member's own newest render, or with `DownloadTeamVerticals` a picked team render, grayed
+  out with neither; video `.zip` of separate files or joined, grayed out unless `me.combineSegmentDownloads`), the **drop list** (clip / video
+  / segment cards and Player 1 items via right-click "Add to the export list"; reorder by the handle with SortableJS; kept in `localStorage`
+  `clipco.export.list`; Twitch clips and moments refused) and the caller's exports (`GET /api/exports`, polled every 2 s while running;
+  download, delete). Dropping a **VOD** opens a pop-up (own `MediaPlayer`, title, start/end time boxes): a one-off range, never an entry.
+  Export = one `POST /api/exports` for the whole list; a one-item export downloads by itself when ready. A refused request (400) marks the
+  rows named in `errors["items[i]"]` (`api` errors carry the response body as `error.problem`). Items re-read their card when selected
+  (a deleted one is marked gone).
 - `editor.html?demo` fills sample cards (nothing is sent to the server) to try the shell.
 
 ### Twitch clips (`ClipInfoService`, `ClipFileService`)

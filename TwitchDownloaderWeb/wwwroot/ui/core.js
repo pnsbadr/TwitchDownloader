@@ -43,6 +43,7 @@ export async function api(method, url, body) {
     const error = new Error(problemMessage(data, response.status));
     error.status = response.status;
     error.code = data?.code ?? null;
+    error.problem = data;
     throw error;
   }
   return data;
