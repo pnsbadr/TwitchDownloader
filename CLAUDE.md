@@ -401,6 +401,24 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
   estimates the live offset (last refresh or seek target + time played since, via PLAYING/PAUSE/SEEK events; refreshes are caught on the iframe's `message` events) and a 40 ms tick
   pauses previews at the end. Using the raw value made Set end land up to ~1 s early and previews stop up to ~1 s late.
 
+### New editor (frontend rework, `editor.html` + `wwwroot/ui/`)
+Plan and badrfly's decisions: Claude Doc "Frontend rework plan" (10 steps; backend items B1–B7 are built in a separate thread). Built step by
+step next to the old page; `index.html` stays the old library until the new editor covers everything (step 10), then the old page moves aside.
+- Libraries from jsDelivr, pinned: Shoelace 2.20.1 (web components, dark theme), Phosphor icons 2.1.1 **bold** (registered as the Shoelace icon
+  library `ph`: `<sl-icon library="ph" name="scissors">`), Split.js 1.6.5 (resizable panels, sizes in `localStorage` `clipco.layout.*`),
+  IMask 7.6.1 (time boxes), SortableJS 1.15.6. Fonts: Barlow Condensed (headings, `.display`) and Barlow (Google Fonts).
+- `ui/theme.css`: gray theme, all text white, one accent (`--accent`, violet) for selection, focus and drop targets. `ui/editor.css`: layout.
+- `ui/core.js`: `api`, `el`, `me`/`can`, settings, date/length formatting, toasts, and **icon buttons**: every button is icon-only (except the
+  EDITOR/EXPORT, VODS/VIDEOS/CLIPS, Player 1/Player 2 tabs and the Export button) with a screen-reader `label` and a tooltip showing the
+  shortcut from keybinds.js (`data-keybind="toolCut"` in HTML, `iconButton({ keybind })` in JS). New shortcuts still go in keybinds.js first.
+- `ui/drag.js`: one drag and drop for everything (pointer events, so canvas items can use `startDrag` too): `draggable`, `dropTarget({ accepts,
+  onDrop })`. While dragging, a shade darkens the page except the dragged item and the accepting target under the pointer (clip-path holes).
+  `info.altKey` is passed to targets (Alt + drag = copy). Esc cancels.
+- `ui/timebox.js`: `timeBox({ seconds, fraction })` with a fixed `hh:mm:ss(.ff)` mask; `.seconds` reads/writes.
+- Tools bar title/color editor (`openItemEditor` in `ui/editor.js`): tools slide left, title + the 9 marker colors on the right; applies on a
+  click anywhere else or Enter (linking a video needs the ✓ button), Esc cancels.
+- `editor.html?demo` fills sample cards (nothing is sent to the server) to try the shell.
+
 ### Twitch clips (`ClipInfoService`, `ClipFileService`)
 - clips.twitch.tv / `twitch.tv/{channel}/clip/` links (or slugs) are added through the same `POST /api/entries` (`vodId` field)
   and are **always reference-only**: Twitch keeps the clip, so nothing is stored (user's call, 2026-10-26). They exist in the

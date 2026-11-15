@@ -1,0 +1,175 @@
+/* Look of the new editor (frontend rework, step 1). Gray based, white text, one accent color for selection and focus.
+   Shoelace components read the --sl-* variables, so they follow the same colors and fonts. */
+
+:root {
+  color-scheme: dark;
+
+  /* grays, darkest first */
+  --bg-0: #141518;      /* page */
+  --bg-1: #1b1d21;      /* panels */
+  --bg-2: #23262b;      /* bars and headers */
+  --bg-3: #2c3036;      /* inputs, hover */
+  --bg-4: #373b42;      /* pressed, selected tab */
+  --line: #33373e;
+  --line-strong: #474c55;
+
+  --text: #f4f5f7;
+  --text-dim: #b4b9c2;
+  --text-faint: #7a808a;
+
+  /* selection, focus, drop targets */
+  --accent: #8b7cf6;
+  --accent-strong: #a597ff;
+  --accent-soft: rgb(139 124 246 / 0.18);
+
+  --danger: #f05252;
+  --live: #eb0400;
+  --ok: #3ccf7a;
+
+  --radius: 6px;
+  --radius-small: 4px;
+  --font-ui: "Barlow", system-ui, sans-serif;
+  --font-display: "Barlow Condensed", "Barlow", system-ui, sans-serif;
+
+  /* Shoelace */
+  --sl-font-sans: var(--font-ui);
+  --sl-color-neutral-0: var(--bg-1);
+  --sl-input-background-color: var(--bg-3);
+  --sl-input-background-color-hover: var(--bg-4);
+  --sl-input-background-color-focus: var(--bg-3);
+  --sl-input-border-color: var(--line-strong);
+  --sl-input-border-color-hover: var(--text-faint);
+  --sl-input-color: var(--text);
+  --sl-input-placeholder-color: var(--text-faint);
+  --sl-panel-background-color: var(--bg-2);
+  --sl-panel-border-color: var(--line-strong);
+  --sl-tooltip-background-color: #f4f5f7;
+  --sl-tooltip-color: #141518;
+  --sl-tooltip-font-size: 13px;
+  --sl-focus-ring-color: var(--accent);
+  --sl-color-primary-50: #f1efff;
+  --sl-color-primary-100: #e2deff;
+  --sl-color-primary-200: #c8c0ff;
+  --sl-color-primary-300: #ada1ff;
+  --sl-color-primary-400: #a597ff;
+  --sl-color-primary-500: #8b7cf6;
+  --sl-color-primary-600: #7666e8;
+  --sl-color-primary-700: #6152cc;
+  --sl-color-primary-800: #4c3fa6;
+  --sl-color-primary-900: #382e7d;
+  --sl-color-primary-950: #251e55;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg-0);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.4;
+  overflow: hidden;
+}
+
+button, input, select, textarea { font: inherit; color: inherit; }
+
+[hidden] { display: none !important; }
+
+/* times and lengths: fixed-width digits so a running clock doesn't jump */
+.num { font-variant-numeric: tabular-nums; }
+
+.display {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.muted { color: var(--text-dim); }
+.faint { color: var(--text-faint); }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* icon buttons (Shoelace) everywhere: white icons, gray hover */
+sl-icon-button {
+  font-size: 20px;
+  color: var(--text);
+}
+sl-icon-button::part(base) {
+  color: inherit;
+  padding: 6px;
+  border-radius: var(--radius-small);
+}
+sl-icon-button::part(base):hover:not(.icon-button--disabled) { color: var(--text); background: var(--bg-4); }
+sl-icon-button[data-active]::part(base) { background: var(--accent-soft); color: var(--accent-strong); }
+sl-icon-button[disabled] { opacity: 0.35; }
+
+sl-menu { background: var(--bg-2); border-color: var(--line-strong); }
+sl-menu-item::part(base) { color: var(--text); }
+sl-menu-item::part(base):hover { background: var(--bg-4); color: var(--text); }
+sl-menu-label::part(base) { color: var(--text-faint); }
+
+/* small toast messages (bottom center) */
+.toasts {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 2000;
+  pointer-events: none;
+}
+.toast {
+  background: var(--bg-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 8px 14px;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.4);
+  max-width: 520px;
+}
+.toast.error { border-color: var(--danger); }
+
+/* ---------- drag and drop (ui/drag.js) ---------- */
+
+/* darkens the whole page; holes are cut for the dragged item and the valid drop target under the pointer */
+.drag-shade {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 0.62);
+  pointer-events: none;
+  z-index: 1500;
+}
+.drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  z-index: 1600;
+  opacity: 0.92;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.55);
+  border-radius: var(--radius);
+}
+.drop-hover { outline: 2px dashed var(--accent-strong); outline-offset: -2px; }
+body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select: none; }
+body.is-dragging.drop-refused, body.is-dragging.drop-refused * { cursor: no-drop !important; }
+
+/* ---------- time box (ui/timebox.js) ---------- */
+.timebox {
+  font-variant-numeric: tabular-nums;
+  background: var(--bg-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-small);
+  padding: 4px 8px;
+  width: 7.5em;
+  color: var(--text);
+}
+.timebox.fraction { width: 9em; }
+.timebox:focus { border-color: var(--accent); outline: none; }
+.timebox.invalid { border-color: var(--danger); }

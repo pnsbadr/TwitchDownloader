@@ -1,0 +1,217 @@
+// Drag and drop for the whole editor: cards onto players, timeline items onto Player 2 or other rows, items onto the
+// export list. Pointer events, not HTML5 drag and drop, so canvas items (timeline bars) can be dragged the same way.
+//
+// While dragging, the page is darkened except for the dragged item and the drop target under the pointer, if that
+// target accepts the item. The shade is one fixed layer with holes cut in it (clip-path), so it works whatever the
+// stacking of the panels underneath.
+//
+//   dropTarget(element, { accepts(item, info) -> bool, onDrop(item, info) })
+//   draggable(element, () => item, { ghost?: () => Element })      item = { kind: "vod" | "clip" | ..., label, data }
+//   startDrag(pointerEvent, item, { sourceRect?: () => DOMRect, ghost?: Element })   for canvas items
+//
+// info = { altKey, shiftKey, x, y }: Alt + drag makes copies (e.g. a clip dropped on a video row becomes a segment).
+
+const START_DISTANCE = 5;
+const targets = new WeakMap();
+let active = null;
+
+export function dropTarget(element, options) {
+  targets.set(element, options);
+  element.dataset.dropTarget = "";
+}
+
+export function removeDropTarget(element) {
+  targets.delete(element);
+  delete element.dataset.dropTarget;
+}
+
+export function isDragging() {
+  return active !== null;
+}
+
+// Starts a drag after the pointer has moved a few pixels with the button held, so clicks and double-clicks still work
+export function draggable(element, getItem, { ghost } = {}) {
+  element.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || active) return;
+    if (event.target.closest("sl-icon-button, button, input, a")) return;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const move = (moveEvent) => {
+      if (Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) < START_DISTANCE) return;
+      cleanup();
+      const item = getItem();
+      if (item) startDrag(moveEvent, item, { sourceRect: () => element.getBoundingClientRect(), ghost: ghost ? ghost() : cloneGhost(element) });
+    };
+    const cleanup = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", cleanup);
+      window.removeEventListener("pointercancel", cleanup);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", cleanup);
+    window.addEventListener("pointercancel", cleanup);
+  });
+}
+
+function cloneGhost(element) {
+  const rect = element.getBoundingClientRect();
+  const ghost = element.cloneNode(true);
+  ghost.removeAttribute("id");
+  ghost.style.width = `${Math.min(rect.width, 320)}px`;
+  return ghost;
+}
+
+export function startDrag(event, item, { sourceRect = null, ghost = null } = {}) {
+  if (active) return;
+  const shade = document.createElement("div");
+  shade.className = "drag-shade";
+  const ghostBox = document.createElement("div");
+  ghostBox.className = "drag-ghost";
+  if (ghost) ghostBox.append(ghost);
+  else ghostBox.append(defaultGhost(item));
+  document.body.append(shade, ghostBox);
+  document.body.classList.add("is-dragging");
+
+  active = {
+    item,
+    sourceRect,
+    shade,
+    ghostBox,
+    target: null,       // { element, options } under the pointer that accepts the item
+    refused: false,     // a target is under the pointer but doesn't take this item
+    x: event.clientX,
+    y: event.clientY,
+    altKey: event.altKey,
+    shiftKey: event.shiftKey,
+  };
+  window.addEventListener("pointermove", onMove, true);
+  window.addEventListener("pointerup", onUp, true);
+  window.addEventListener("pointercancel", cancel, true);
+  window.addEventListener("keydown", onKey, true);
+  window.addEventListener("keyup", onKey, true);
+  window.addEventListener("blur", cancel);
+  update();
+}
+
+function defaultGhost(item) {
+  const box = document.createElement("div");
+  box.className = "drag-ghost-label";
+  box.textContent = item.label || item.kind;
+  return box;
+}
+
+function swallowClick(event) {
+  event.stopPropagation();
+  event.preventDefault();
+}
+
+function onMove(event) {
+  active.x = event.clientX;
+  active.y = event.clientY;
+  active.altKey = event.altKey;
+  active.shiftKey = event.shiftKey;
+  update();
+}
+
+function onKey(event) {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    cancel();
+    return;
+  }
+  // Holding or letting go of Alt can change what a target accepts (copy vs move)
+  if (event.key === "Alt" || event.key === "Shift") {
+    event.preventDefault();
+    active.altKey = event.altKey;
+    active.shiftKey = event.shiftKey;
+    update();
+  }
+}
+
+function info() {
+  return { altKey: active.altKey, shiftKey: active.shiftKey, x: active.x, y: active.y };
+}
+
+function findTarget() {
+  for (const element of document.elementsFromPoint(active.x, active.y)) {
+    const host = element.closest("[data-drop-target]");
+    if (!host) continue;
+    const options = targets.get(host);
+    if (!options) continue;
+    return { element: host, options, ok: Boolean(options.accepts?.(active.item, info())) };
+  }
+  return null;
+}
+
+function update() {
+  const { ghostBox } = active;
+  ghostBox.style.transform = `translate(${active.x + 14}px, ${active.y + 12}px)`;
+
+  const found = findTarget();
+  const target = found?.ok ? found : null;
+  if (active.target?.element !== target?.element) {
+    active.target?.element.classList.remove("drop-hover");
+    target?.element.classList.add("drop-hover");
+    active.target?.options.onLeave?.(active.item);
+  }
+  if (target) target.options.onOver?.(active.item, info());
+  active.target = target;
+  active.refused = Boolean(found && !found.ok);
+  document.body.classList.toggle("drop-refused", active.refused);
+
+  const holes = [];
+  const source = active.sourceRect?.();
+  if (source) holes.push(source);
+  if (target) holes.push(target.element.getBoundingClientRect());
+  active.shade.style.clipPath = shadePath(holes);
+}
+
+// The whole window minus each hole (even-odd fill)
+function shadePath(holes) {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  let path = `M0 0H${w}V${h}H0Z`;
+  for (const r of holes) {
+    const x = Math.max(0, r.left);
+    const y = Math.max(0, r.top);
+    const right = Math.min(w, r.right);
+    const bottom = Math.min(h, r.bottom);
+    if (right <= x || bottom <= y) continue;
+    path += `M${x} ${y}H${right}V${bottom}H${x}Z`;
+  }
+  return `path(evenodd, "${path}")`;
+}
+
+function onUp(event) {
+  active.x = event.clientX;
+  active.y = event.clientY;
+  update();
+  const { target, item } = active;
+  const dropInfo = info();
+  finish();
+  if (target) target.options.onDrop(item, dropInfo);
+}
+
+function cancel() {
+  if (!active) return;
+  active.target?.options.onLeave?.(active.item);
+  finish();
+}
+
+function finish() {
+  // The click that follows the pointerup would land on whatever is under the pointer
+  window.addEventListener("click", swallowClick, { capture: true, once: true });
+  setTimeout(() => window.removeEventListener("click", swallowClick, { capture: true }), 0);
+  active.target?.element.classList.remove("drop-hover");
+  active.shade.remove();
+  active.ghostBox.remove();
+  document.body.classList.remove("is-dragging", "drop-refused");
+  window.removeEventListener("pointermove", onMove, true);
+  window.removeEventListener("pointerup", onUp, true);
+  window.removeEventListener("pointercancel", cancel, true);
+  window.removeEventListener("keydown", onKey, true);
+  window.removeEventListener("keyup", onKey, true);
+  window.removeEventListener("blur", cancel);
+  active = null;
+}
