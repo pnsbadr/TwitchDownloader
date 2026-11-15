@@ -34,6 +34,9 @@ namespace TwitchDownloaderWeb.Data
         /// <summary>The clip this segment was made from (Alt+drag of a clip onto a video row). No FK.</summary>
         public int? CopiedFromEntryId { get; set; }
 
+        /// <summary>Cut-out parts (<see cref="CutOuts"/>), JSON in VOD seconds; null = none.</summary>
+        public string? Cuts { get; set; }
+
         public const int MaxLabelLength = 200;
         // New colors go at the end (the page lists them in this order); the first is the default
         public static readonly IReadOnlyList<string> Colors = ["yellow", "blue", "pink", "orange", "red", "lime", "teal", "violet", "gray"];

@@ -6,8 +6,8 @@ using TwitchDownloaderWeb.Data;
 namespace TwitchDownloaderWeb.Services.Segments
 {
     /// <summary>
-    /// Makes segment downloads, one at a time: each segment is cut from the VOD like a library entry (<see cref="IVodCutter"/>: Exact, saved
-    /// clean audio in muted parts) into its own file, then for a combined download the files are joined (<see cref="SegmentJoiner"/>).
+    /// Makes segment downloads, one at a time: each segment is cut from the VOD like a library entry (<see cref="KeptPartsCutter"/>: Exact, saved
+    /// clean audio in muted parts, cut-out parts skipped) into its own file, then for a combined download the files are joined (<see cref="SegmentJoiner"/>).
     /// Segments already made are kept when the app restarts in the middle, so the job picks up where it stopped.
     /// </summary>
     public sealed class SegmentExportWorker : BackgroundService
@@ -16,14 +16,14 @@ namespace TwitchDownloaderWeb.Services.Segments
 
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly SegmentExportQueue _queue;
-        private readonly IVodCutter _cutter;
+        private readonly KeptPartsCutter _cutter;
         private readonly IVodDetailsSource _vods;
         private readonly LibraryStorage _storage;
         private readonly IConfiguration _configuration;
         private readonly IOptions<DownloadSettings> _settings;
         private readonly ILogger<SegmentExportWorker> _logger;
 
-        public SegmentExportWorker(IServiceScopeFactory scopeFactory, SegmentExportQueue queue, IVodCutter cutter, IVodDetailsSource vods, LibraryStorage storage,
+        public SegmentExportWorker(IServiceScopeFactory scopeFactory, SegmentExportQueue queue, KeptPartsCutter cutter, IVodDetailsSource vods, LibraryStorage storage,
             IConfiguration configuration, IOptions<DownloadSettings> settings, ILogger<SegmentExportWorker> logger)
         {
             _scopeFactory = scopeFactory;
@@ -201,7 +201,7 @@ namespace TwitchDownloaderWeb.Services.Segments
 
             try
             {
-                var restore = await _cutter.CutAsync(db, cut, fullPath, _logger,
+                var restore = await _cutter.CutAsync(db, cut, CutOuts.Read(item.Cuts), item.EndSeconds, fullPath, _logger,
                     error => db.Audit(AuditActions.AudioRestoreFailed, export.EntryId, $"Segment download {export.Id}, segment {item.Position}: {error}", teamId: export.TeamId),
                     token);
                 item.Status = SegmentExportItemStatus.Ready;

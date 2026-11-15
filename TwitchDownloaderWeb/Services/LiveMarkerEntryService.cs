@@ -154,7 +154,7 @@ namespace TwitchDownloaderWeb.Services
             storage.TryDelete(entry.GeneratedFilePath);
             entry.StartTime = start;
             entry.EndTime = end;
-            entry.ClipLengthSeconds = (end - start).TotalSeconds;
+            entry.ClipLengthSeconds = CutOuts.KeptSeconds(start.TotalSeconds, end.TotalSeconds, CutOuts.Read(entry.Cuts));
             entry.VodLengthSeconds = Math.Max(entry.VodLengthSeconds, vodLength);
             entry.Error = null;
             entry.GenerationStatus = GenerationStatus.None; // a queued job skips the entry

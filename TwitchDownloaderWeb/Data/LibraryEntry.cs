@@ -120,5 +120,8 @@ namespace TwitchDownloaderWeb.Data
 
         /// <summary>The clip this is a copy of (a member copied someone else's clip to their own row). No FK: the original may be deleted.</summary>
         public int? CopiedFromEntryId { get; set; }
+
+        /// <summary>Cut-out parts (<see cref="CutOuts"/>), JSON in VOD seconds; null = none.</summary>
+        public string? Cuts { get; set; }
     }
 }

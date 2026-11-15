@@ -42,6 +42,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 EndSeconds = source.EndSeconds,
                 Label = source.Label,
                 Color = source.Color,
+                Cuts = source.Cuts,
                 RowId = request.RowId,
                 CopiedFromMarkerId = source.Id,
                 CreatedAtUtc = DateTime.UtcNow,
@@ -93,6 +94,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 Status = source.Status == EntryStatus.ReferenceOnly ? EntryStatus.ReferenceOnly : EntryStatus.Queued,
                 RowId = request.RowId,
                 CopiedFromEntryId = source.Id,
+                Cuts = source.Cuts,
             };
 
             await using (var transaction = await db.Database.BeginTransactionAsync(cancellationToken))
@@ -159,6 +161,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 EndSeconds = Math.Round(end, 2),
                 Label = label.Length > VodMarker.MaxLabelLength ? label[..VodMarker.MaxLabelLength] : label,
                 Color = VodMarker.Colors[0],
+                Cuts = CutOuts.Write(CutOuts.Normalize(CutOuts.Read(source.Cuts), Math.Round(source.StartTime.TotalSeconds, 2), Math.Round(end, 2))),
                 RowId = request.RowId,
                 CopiedFromEntryId = source.Id,
                 CreatedAtUtc = DateTime.UtcNow,

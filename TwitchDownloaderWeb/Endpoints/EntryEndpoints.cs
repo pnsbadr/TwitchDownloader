@@ -21,15 +21,17 @@ namespace TwitchDownloaderWeb.Endpoints
     /// <param name="StartTime">"h:mm:ss" offset from the start of the VOD. Blank is the start.</param>
     /// <param name="EndTime">"h:mm:ss" offset from the start of the VOD, not a duration. Blank is the end.</param>
     /// <param name="RowId">One of the caller's clip rows on that VOD; blank = their first one (made if they have none).</param>
+    /// <param name="Cuts">Cut-out parts in VOD seconds (see <see cref="CutOuts"/>); the stored-clip limit counts what's left.</param>
     public sealed record AddEntryRequest(string? VodId, string? Title, string? Quality, string? TrimMode, string? StartTime, string? EndTime,
-        int? RowId = null);
+        int? RowId = null, IReadOnlyList<CutRange>? Cuts = null);
 
     public sealed record RenameEntryRequest(string? Title);
 
     /// <param name="StartTime">"h:mm:ss" offset from the start of the VOD. Blank is the start.</param>
     /// <param name="EndTime">"h:mm:ss" offset from the start of the VOD, not a duration. Blank is the end.</param>
     /// <param name="FollowMarkers">True = the live markers entry follows its markers again (undo of a hand re-cut). Ignored for other entries.</param>
-    public sealed record RetrimEntryRequest(string? StartTime, string? EndTime, bool? FollowMarkers = null);
+    /// <param name="Cuts">Cut-out parts in VOD seconds (see <see cref="CutOuts"/>): null keeps the ones it has (clipped to the new range), [] removes them.</param>
+    public sealed record RetrimEntryRequest(string? StartTime, string? EndTime, bool? FollowMarkers = null, IReadOnlyList<CutRange>? Cuts = null);
 
     public sealed record EntryDto(
         int Id,
@@ -95,7 +97,13 @@ namespace TwitchDownloaderWeb.Endpoints
             FollowsMarkers = entry.FollowsMarkers,
             RowId = entry.RowId,
             CopiedFromEntryId = entry.CopiedFromEntryId,
+            Cuts = entry.Kind == EntryKind.Vod
+                ? CutOuts.Normalize(CutOuts.Read(entry.Cuts), entry.StartTime.TotalSeconds, entry.EndTime?.TotalSeconds ?? entry.VodLengthSeconds)
+                : [],
         };
+
+        /// <summary>Cut-out parts (VOD seconds, inside the trim); the file skips them and <see cref="ClipLengthSeconds"/> is what's left.</summary>
+        public IReadOnlyList<CutRange> Cuts { get; init; } = [];
 
         /// <summary>The clip this one was copied from (see <see cref="CopyEndpoints"/>).</summary>
         public int? CopiedFromEntryId { get; init; }
@@ -234,8 +242,13 @@ namespace TwitchDownloaderWeb.Endpoints
                 }
             }
 
-            // The stored-vs-reference rule is decided here from the trim times, never by the client
-            var clipLength = (endTime ?? TimeSpan.FromSeconds(vod.LengthSeconds)) - startTime;
+            var rangeEnd = endTime?.TotalSeconds ?? vod.LengthSeconds;
+            if (CutOuts.Validate(request.Cuts, startTime.TotalSeconds, rangeEnd) is { } cutError)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["cuts"] = [cutError] });
+
+            // The stored-vs-reference rule is decided here from the trim times (minus cut-out parts), never by the client
+            var cuts = CutOuts.Normalize(request.Cuts, startTime.TotalSeconds, rangeEnd);
+            var clipLength = TimeSpan.FromSeconds(CutOuts.KeptSeconds(startTime.TotalSeconds, rangeEnd, cuts));
             var isStored = clipLength.TotalSeconds <= settings.Value.MaxStoredClipSeconds;
             var now = DateTime.UtcNow;
 
@@ -256,6 +269,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 ThumbnailUrl = vod.ThumbnailUrl,
                 Status = isStored ? EntryStatus.Queued : EntryStatus.ReferenceOnly,
                 RowId = request.RowId,
+                Cuts = CutOuts.Write(cuts),
             };
 
             // Two saves because the audit event needs the new entry's ID; the transaction keeps them together
@@ -265,7 +279,8 @@ namespace TwitchDownloaderWeb.Endpoints
                 await db.SaveChangesAsync(cancellationToken);
 
                 db.Audit(AuditActions.EntryAdded, entry.Id,
-                    $"VOD {vodId}, {TrimTime.Format(startTime)}-{TrimTime.Format(endTime) ?? "end"}, {clipLength.TotalSeconds:0.###}s, {(isStored ? "stored" : "reference-only")}");
+                    $"VOD {vodId}, {TrimTime.Format(startTime)}-{TrimTime.Format(endTime) ?? "end"}, {clipLength.TotalSeconds:0.###}s, {(isStored ? "stored" : "reference-only")}"
+                    + (cuts.Count > 0 ? $", {cuts.Count} cut-out part(s)" : ""));
                 await db.SaveChangesAsync(cancellationToken);
 
                 await transaction.CommitAsync(cancellationToken);
@@ -441,9 +456,16 @@ namespace TwitchDownloaderWeb.Endpoints
                     return Results.ValidationProblem(stillWrong);
             }
 
+            var rangeEnd = endTime?.TotalSeconds ?? entry.VodLengthSeconds;
+            var requestedCuts = request.Cuts ?? CutOuts.Read(entry.Cuts);
+            if (CutOuts.Validate(requestedCuts, startTime.TotalSeconds, rangeEnd) is { } cutError)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["cuts"] = [cutError] });
+            var cuts = CutOuts.Normalize(requestedCuts, startTime.TotalSeconds, rangeEnd);
+            var cutsJson = CutOuts.Write(cuts);
+
             // Saving a cut by hand (even the same one) means "keep this cut"; undoing that makes a live markers entry follow again
             var follow = request.FollowMarkers == true && entry.MadeFromMarkers;
-            if (startTime == entry.StartTime && endTime == entry.EndTime)
+            if (startTime == entry.StartTime && endTime == entry.EndTime && cutsJson == entry.Cuts)
             {
                 if (entry.FollowsMarkers != follow)
                 {
@@ -472,7 +494,8 @@ namespace TwitchDownloaderWeb.Endpoints
             }
 
             var oldRange = $"{TrimTime.Format(entry.StartTime)}-{TrimTime.Format(entry.EndTime) ?? "end"}";
-            var clipLength = (endTime ?? TimeSpan.FromSeconds(entry.VodLengthSeconds)) - startTime;
+            var oldCuts = CutOuts.Read(entry.Cuts).Count;
+            var clipLength = TimeSpan.FromSeconds(CutOuts.KeptSeconds(startTime.TotalSeconds, rangeEnd, cuts));
             // A live markers entry is always a reference while it follows (it would be re-downloaded on every marker change)
             var isStored = !follow && clipLength.TotalSeconds <= settings.Value.MaxStoredClipSeconds;
 
@@ -481,6 +504,7 @@ namespace TwitchDownloaderWeb.Endpoints
 
             entry.StartTime = startTime;
             entry.EndTime = endTime;
+            entry.Cuts = cutsJson;
             entry.ClipLengthSeconds = clipLength.TotalSeconds;
             entry.FollowsMarkers = follow; // a cut picked by hand stays put
             entry.Status = isStored ? EntryStatus.Queued : EntryStatus.ReferenceOnly;
@@ -496,6 +520,7 @@ namespace TwitchDownloaderWeb.Endpoints
             entry.UpdatedAtUtc = DateTime.UtcNow;
             db.Audit(AuditActions.EntryRetrimmed, id,
                 $"{oldRange} -> {TrimTime.Format(startTime)}-{TrimTime.Format(endTime) ?? "end"}, {clipLength.TotalSeconds:0.###}s, {(isStored ? "stored" : "reference-only")}"
+                + (oldCuts != cuts.Count ? $", cut-out parts {oldCuts} -> {cuts.Count}" : cuts.Count > 0 ? $", {cuts.Count} cut-out part(s)" : "")
                 + (follow ? ", follows markers again" : ""));
             await db.SaveChangesAsync(cancellationToken);
 
