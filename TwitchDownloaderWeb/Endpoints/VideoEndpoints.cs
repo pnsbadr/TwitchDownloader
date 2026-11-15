@@ -6,11 +6,20 @@ using TwitchDownloaderWeb.Services.Accounts;
 namespace TwitchDownloaderWeb.Endpoints
 {
     /// <param name="MarkerIds">The segments in the order they play. All on one video row of the video's owner, on the video's VOD.</param>
-    public sealed record VideoRequest(string? Title, List<int>? MarkerIds);
+    /// <param name="Cuts">Parts cut out of some of its segments in this video only (the segment itself keeps its range), by segment;
+    /// segments not listed keep the ones they have, an empty list removes them.</param>
+    public sealed record VideoRequest(string? Title, List<int>? MarkerIds, List<VideoCutsRequest>? Cuts = null);
 
-    public sealed record VideoSegmentDto(int MarkerId, int Position, double StartSeconds, double EndSeconds, string Label, string Color);
+    /// <param name="Cuts">VOD seconds, inside the segment (see <see cref="CutOuts"/>).</param>
+    public sealed record VideoCutsRequest(int MarkerId, IReadOnlyList<CutRange>? Cuts);
 
-    /// <param name="LengthSeconds">All its segments together.</param>
+    /// <param name="Cuts">The segment's own cut-out parts (it skips them everywhere).</param>
+    /// <param name="VideoCuts">Parts cut out of it in this video only.</param>
+    /// <param name="KeptSeconds">What the video plays of it: its range without either.</param>
+    public sealed record VideoSegmentDto(int MarkerId, int Position, double StartSeconds, double EndSeconds, string Label, string Color,
+        IReadOnlyList<CutRange> Cuts, IReadOnlyList<CutRange> VideoCuts, double KeptSeconds);
+
+    /// <param name="LengthSeconds">All its segments together, without their cut-out parts.</param>
     public sealed record VideoDto(int Id, long VodId, int RowId, int UserId, string? CreatedBy, string Title, string? ChannelName, DateTime StreamDateUtc,
         string? ThumbnailUrl, double LengthSeconds, IReadOnlyList<VideoSegmentDto> Segments, int? CopiedFromVideoId, DateTime CreatedAtUtc,
         DateTime UpdatedAtUtc, bool CanEdit, bool CanDelete);
@@ -47,12 +56,56 @@ namespace TwitchDownloaderWeb.Endpoints
             return videos.Select(video =>
             {
                 var segments = video.Segments.Where(x => x.Marker is { EndSeconds: not null }).OrderBy(x => x.Position)
-                    .Select(x => new VideoSegmentDto(x.MarkerId, x.Position, x.Marker!.Seconds, x.Marker.EndSeconds!.Value, x.Marker.Label, x.Marker.Color))
+                    .Select(x =>
+                    {
+                        var (start, end) = (x.Marker!.Seconds, x.Marker.EndSeconds!.Value);
+                        return new VideoSegmentDto(x.MarkerId, x.Position, start, end, x.Marker.Label, x.Marker.Color,
+                            CutOuts.Normalize(CutOuts.Read(x.Marker.Cuts), start, end), CutOuts.Normalize(CutOuts.Read(x.Cuts), start, end),
+                            Math.Round(KeptParts(x).Sum(p => p.End - p.Start), 2));
+                    })
                     .ToList();
                 return new VideoDto(video.Id, video.VodId, video.RowId, video.UserId, names.GetValueOrDefault(video.UserId), video.Title, video.ChannelName,
-                    video.StreamDateUtc, video.ThumbnailUrl, Math.Round(segments.Sum(x => x.EndSeconds - x.StartSeconds), 2), segments,
+                    video.StreamDateUtc, video.ThumbnailUrl, Math.Round(segments.Sum(x => x.KeptSeconds), 2), segments,
                     video.CopiedFromVideoId, video.CreatedAtUtc, video.UpdatedAtUtc, CanEdit(team, video), CanDelete(team, video));
             }).ToList();
+        }
+
+        /// <summary>What a video plays of one of its segments: the segment's range without its own cut-out parts or the video's.</summary>
+        internal static IReadOnlyList<(double Start, double End)> KeptParts(VideoSegment link) =>
+            link.Marker is { EndSeconds: { } end } marker
+                ? CutOuts.Kept(marker.Seconds, end, CutOuts.Read(marker.Cuts).Concat(CutOuts.Read(link.Cuts)))
+                : [];
+
+        /// <summary>
+        /// Applies <see cref="VideoRequest.Cuts"/> to the video's links (markers loaded). Each listed segment must be in the video, and something
+        /// of it must be left.
+        /// </summary>
+        private static IResult? ApplyCuts(IReadOnlyList<VideoSegment> links, List<VideoCutsRequest>? cuts, List<string> changes)
+        {
+            if (cuts is null)
+                return null;
+            if (cuts.Select(x => x.MarkerId).Distinct().Count() != cuts.Count)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["cuts"] = ["List each segment once."] });
+
+            foreach (var request in cuts)
+            {
+                var link = links.FirstOrDefault(x => x.MarkerId == request.MarkerId);
+                if (link?.Marker is not { EndSeconds: { } end } marker)
+                    return Results.ValidationProblem(new Dictionary<string, string[]> { ["cuts"] = ["Cut parts out of segments in this video."] });
+
+                var combined = CutOuts.Read(marker.Cuts).Concat(request.Cuts ?? []).ToList();
+                if ((CutOuts.Validate(request.Cuts, marker.Seconds, end) ?? CutOuts.Validate(combined, marker.Seconds, end)) is { } error)
+                    return Results.ValidationProblem(new Dictionary<string, string[]> { ["cuts"] = [error] });
+
+                var json = CutOuts.Write(CutOuts.Normalize(request.Cuts, marker.Seconds, end));
+                if (json != link.Cuts)
+                {
+                    link.Cuts = json;
+                    changes.Add($"cut-out parts of segment {marker.Id}: {CutOuts.Read(json).Count}");
+                }
+            }
+
+            return null;
         }
 
         /// <param name="vodIds">Only these VODs (comma separated); blank = all of the team's videos, newest first.</param>
@@ -145,8 +198,10 @@ namespace TwitchDownloaderWeb.Endpoints
             {
                 VodId = vodId, RowId = markers[0].RowId!.Value, UserId = team.UserId, Title = title!, ChannelName = vod?.ChannelName,
                 StreamDateUtc = vod?.StreamDateUtc ?? default, ThumbnailUrl = vod?.ThumbnailUrl, CreatedAtUtc = now, UpdatedAtUtc = now,
-                Segments = markers.Select((m, i) => new VideoSegment { MarkerId = m.Id, Position = i }).ToList(),
+                Segments = markers.Select((m, i) => new VideoSegment { MarkerId = m.Id, Marker = m, Position = i }).ToList(),
             };
+            if (ApplyCuts(video.Segments, request.Cuts, []) is { } cutProblem)
+                return cutProblem;
             db.Videos.Add(video);
             await db.SaveChangesAsync(cancellationToken);
             db.Audit(AuditActions.VideoAdded, null, $"VOD {vodId} video {video.Id} \"{video.Title}\", {markers.Count} segment{(markers.Count == 1 ? "" : "s")}");
@@ -178,11 +233,19 @@ namespace TwitchDownloaderWeb.Endpoints
 
             if (request.MarkerIds is not null && !request.MarkerIds.SequenceEqual(video.Segments.OrderBy(x => x.Position).Select(x => x.MarkerId)))
             {
+                // A segment that stays keeps the parts cut out of it in this video
+                var keptCuts = video.Segments.ToDictionary(x => x.MarkerId, x => x.Cuts);
                 db.VideoSegments.RemoveRange(video.Segments);
                 await db.SaveChangesAsync(cancellationToken); // the unique (video, marker) index needs the old links gone first
-                video.Segments = markers.Select((m, i) => new VideoSegment { VideoId = video.Id, MarkerId = m.Id, Position = i }).ToList();
+                video.Segments = markers.Select((m, i) => new VideoSegment
+                {
+                    VideoId = video.Id, MarkerId = m.Id, Marker = m, Position = i, Cuts = keptCuts.GetValueOrDefault(m.Id),
+                }).ToList();
                 changes.Add($"{markers.Count} segment{(markers.Count == 1 ? "" : "s")}");
             }
+
+            if (ApplyCuts(video.Segments, request.Cuts, changes) is { } cutProblem)
+                return cutProblem;
 
             if (changes.Count > 0)
             {
@@ -227,8 +290,9 @@ namespace TwitchDownloaderWeb.Endpoints
             var copies = source.Segments.Where(x => x.Marker is { EndSeconds: not null }).OrderBy(x => x.Position).Select(x => new VodMarker
             {
                 VodId = source.VodId, Seconds = x.Marker!.Seconds, EndSeconds = x.Marker.EndSeconds, Label = x.Marker.Label, Color = x.Marker.Color,
-                RowId = request.RowId, CopiedFromMarkerId = x.MarkerId, CreatedAtUtc = now,
+                Cuts = x.Marker.Cuts, RowId = request.RowId, CopiedFromMarkerId = x.MarkerId, CreatedAtUtc = now,
             }).ToList();
+            var linkCuts = source.Segments.Where(x => x.Marker is { EndSeconds: not null }).OrderBy(x => x.Position).Select(x => x.Cuts).ToList();
             if (copies.Count == 0)
                 return Results.Problem(detail: "This video has no segments left.", statusCode: StatusCodes.Status409Conflict);
 
@@ -240,7 +304,7 @@ namespace TwitchDownloaderWeb.Endpoints
             {
                 VodId = source.VodId, RowId = copies[0].RowId!.Value, UserId = team.UserId, Title = source.Title, ChannelName = source.ChannelName,
                 StreamDateUtc = source.StreamDateUtc, ThumbnailUrl = source.ThumbnailUrl, CopiedFromVideoId = source.Id, CreatedAtUtc = now, UpdatedAtUtc = now,
-                Segments = copies.Select((m, i) => new VideoSegment { MarkerId = m.Id, Position = i }).ToList(),
+                Segments = copies.Select((m, i) => new VideoSegment { MarkerId = m.Id, Position = i, Cuts = linkCuts[i] }).ToList(),
             };
             db.Videos.Add(video);
             await db.SaveChangesAsync(cancellationToken);

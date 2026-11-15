@@ -46,5 +46,8 @@ namespace TwitchDownloaderWeb.Data
 
         /// <summary>Order in the video (0 first).</summary>
         public int Position { get; set; }
+
+        /// <summary>Parts cut out of the segment in this video only (<see cref="CutOuts"/>), on top of the segment's own; null = none.</summary>
+        public string? Cuts { get; set; }
     }
 }

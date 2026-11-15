@@ -157,6 +157,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<int?>("CopiedFromEntryId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("Cuts")
+                        .HasColumnType("TEXT");
+
                     b.Property<TimeSpan?>("EndTime")
                         .HasColumnType("TEXT");
 
@@ -439,6 +442,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
 
                     b.Property<double?>("AudioRestoredSeconds")
                         .HasColumnType("REAL");
+
+                    b.Property<string>("Cuts")
+                        .HasColumnType("TEXT");
 
                     b.Property<double>("EndSeconds")
                         .HasColumnType("REAL");
@@ -781,6 +787,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("Cuts")
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("MarkerId")
                         .HasColumnType("INTEGER");
 
@@ -896,6 +905,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
 
                     b.Property<int>("CreatedByUserId")
                         .HasColumnType("INTEGER");
+
+                    b.Property<string>("Cuts")
+                        .HasColumnType("TEXT");
 
                     b.Property<double?>("EndSeconds")
                         .HasColumnType("REAL");

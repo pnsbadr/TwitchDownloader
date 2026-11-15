@@ -72,6 +72,9 @@ namespace TwitchDownloaderWeb.Data
         public double StartSeconds { get; set; }
         public double EndSeconds { get; set; }
 
+        /// <summary>The segment's cut-out parts when it was picked (<see cref="CutOuts"/>); its file skips them.</summary>
+        public string? Cuts { get; set; }
+
         public SegmentExportItemStatus Status { get; set; }
         public string? Error { get; set; }
         public string? FilePath { get; set; }

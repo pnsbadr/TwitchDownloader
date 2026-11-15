@@ -16,14 +16,14 @@ namespace TwitchDownloaderWeb.Services
 
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly DownloadQueue _queue;
-        private readonly VodInfoService _vodInfo;
-        private readonly IVodCutter _cutter;
+        private readonly IVodDetailsSource _vodInfo;
+        private readonly KeptPartsCutter _cutter;
         private readonly ClipFileService _clipFiles;
         private readonly LibraryStorage _storage;
         private readonly IOptions<DownloadSettings> _settings;
         private readonly ILogger<DownloadWorker> _logger;
 
-        public DownloadWorker(IServiceScopeFactory scopeFactory, DownloadQueue queue, VodInfoService vodInfo, IVodCutter cutter, ClipFileService clipFiles, LibraryStorage storage, IOptions<DownloadSettings> settings, ILogger<DownloadWorker> logger)
+        public DownloadWorker(IServiceScopeFactory scopeFactory, DownloadQueue queue, IVodDetailsSource vodInfo, KeptPartsCutter cutter, ClipFileService clipFiles, LibraryStorage storage, IOptions<DownloadSettings> settings, ILogger<DownloadWorker> logger)
         {
             _scopeFactory = scopeFactory;
             _queue = queue;
@@ -249,11 +249,12 @@ namespace TwitchDownloaderWeb.Services
         }
 
         /// <summary>
-        /// Downloads a VOD entry's cut (saved clean audio swapped into muted parts when there is any). We own this path, so any
-        /// leftover from an earlier attempt is overwritten.
+        /// Downloads a VOD entry's cut (saved clean audio swapped into muted parts when there is any; cut-out parts skipped). We own this
+        /// path, so any leftover from an earlier attempt is overwritten.
         /// </summary>
         private Task<AudioRestoreResult?> DownloadVodCutAsync(LibraryDbContext db, LibraryEntry entry, string fullPath, CancellationToken cancellationToken) =>
-            _cutter.CutAsync(db, entry, fullPath, _logger, error => db.Audit(AuditActions.AudioRestoreFailed, entry.Id, error), cancellationToken);
+            _cutter.CutAsync(db, entry, CutOuts.Read(entry.Cuts), entry.VodLengthSeconds, fullPath, _logger,
+                error => db.Audit(AuditActions.AudioRestoreFailed, entry.Id, error), cancellationToken);
 
         /// <summary>Twitch no longer has what the entry's file would be made from.</summary>
         private static async Task MarkUnavailableAsync(LibraryDbContext db, LibraryEntry entry, string message, CancellationToken cancellationToken)

@@ -44,6 +44,7 @@ builder.Services.AddSingleton<PlaybackAudioSwap>();
 builder.Services.AddSingleton<VodDownloadRunner>();
 builder.Services.AddSingleton<ExactTrimService>();
 builder.Services.AddSingleton<IVodCutter, VodCutService>();
+builder.Services.AddSingleton<KeptPartsCutter>();
 builder.Services.AddSingleton<ClipFileService>();
 builder.Services.AddSingleton<LibraryStorage>();
 builder.Services.AddSingleton<DownloadQueue>();

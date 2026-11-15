@@ -20,6 +20,12 @@ namespace TwitchDownloaderWeb.Endpoints
         public string? CreatedBy { get; init; }
 
         public int? CopiedFromEntryId { get; init; }
+
+        /// <summary>Cut-out parts (VOD seconds, inside Start..End); the file skips them.</summary>
+        public IReadOnlyList<CutRange> Cuts { get; init; } = [];
+
+        /// <summary>What's left after the cut-out parts (the length the stored-clip limit counts).</summary>
+        public double LengthSeconds { get; init; }
     }
 
     /// <param name="UserId">The member who owns it and everything on it.</param>
@@ -54,6 +60,12 @@ namespace TwitchDownloaderWeb.Endpoints
         /// <summary>The clip it was made from (Alt+drag).</summary>
         public int? CopiedFromEntryId { get; init; }
 
+        /// <summary>A segment's cut-out parts (VOD seconds, inside its range); a moment has none.</summary>
+        public IReadOnlyList<CutRange> Cuts { get; init; } = [];
+
+        /// <summary>A segment's length without its cut-out parts; null for a moment.</summary>
+        public double? KeptSeconds { get; init; }
+
         /// <summary>Whether this user may move, resize, split, recolor or retitle it (own with AddEntries, anyone's with EditAnyEntries).</summary>
         public bool CanEdit { get; init; }
 
@@ -76,7 +88,10 @@ namespace TwitchDownloaderWeb.Endpoints
 
     /// <param name="RowId">Adding: one of the caller's video rows on the VOD (blank = their first, made if needed). Changing: another video row
     /// of the marker's creator on the VOD (blank = stays where it is).</param>
-    public sealed record AddMarkerRequest(double? Seconds, double? EndSeconds, string? Label, string? Color, int? RowId = null);
+    /// <param name="Cuts">A segment's cut-out parts in VOD seconds (see <see cref="CutOuts"/>). Changing: null keeps the ones it has (clipped
+    /// to the new range), [] removes them.</param>
+    public sealed record AddMarkerRequest(double? Seconds, double? EndSeconds, string? Label, string? Color, int? RowId = null,
+        IReadOnlyList<CutRange>? Cuts = null);
 
     /// <summary>
     /// What the player's timeline shows besides Twitch's muted parts (which the page reads from the playlist itself): the team's
@@ -122,7 +137,8 @@ namespace TwitchDownloaderWeb.Endpoints
             var clips = await db.Entries.AsNoTracking()
                 .Where(x => x.VodId == vodId)
                 .OrderBy(x => x.AddedAtUtc)
-                .Select(x => new { x.Id, x.Title, x.Kind, x.StartTime, x.EndTime, x.Status, x.FollowsMarkers, x.AddedByUserId, x.RowId, x.CopiedFromEntryId })
+                .Select(x => new { x.Id, x.Title, x.Kind, x.StartTime, x.EndTime, x.Status, x.FollowsMarkers, x.AddedByUserId, x.RowId, x.CopiedFromEntryId, x.Cuts,
+                    x.ClipLengthSeconds, x.VodLengthSeconds })
                 .ToListAsync(cancellationToken);
 
             var markers = await db.Markers.AsNoTracking().Where(x => x.VodId == vodId).ToListAsync(cancellationToken);
@@ -142,6 +158,8 @@ namespace TwitchDownloaderWeb.Endpoints
                     AddedByUserId = x.AddedByUserId,
                     CreatedBy = int.TryParse(x.AddedByUserId, out var u) ? names.GetValueOrDefault(u) : null,
                     CopiedFromEntryId = x.CopiedFromEntryId,
+                    Cuts = x.Kind == EntryKind.Vod ? CutOuts.Normalize(CutOuts.Read(x.Cuts), x.StartTime.TotalSeconds, x.EndTime?.TotalSeconds ?? x.VodLengthSeconds) : [],
+                    LengthSeconds = x.ClipLengthSeconds,
                 }).ToList(),
                 markers.OrderBy(x => x.Seconds).Select(x => ToDto(x, names, team)).ToList(),
                 settings.Value.MaxStoredClipSeconds,
@@ -387,6 +405,14 @@ namespace TwitchDownloaderWeb.Endpoints
                 && (!double.IsFinite(end) || end > 7 * 24 * 3600 || request.Seconds is not { } start || end < start + MinSegmentSeconds))
                 errors["endSeconds"] = [$"A segment must end at least {MinSegmentSeconds} s after it starts."];
 
+            if (request.Cuts is { Count: > 0 } cuts)
+            {
+                if (request.EndSeconds is not { } cutEnd || request.Seconds is not { } cutStart)
+                    errors["cuts"] = ["Only segments have cut-out parts."];
+                else if (!errors.ContainsKey("endSeconds") && CutOuts.Validate(cuts, cutStart, cutEnd) is { } cutError)
+                    errors["cuts"] = [cutError];
+            }
+
             var label = request.Label?.Trim() ?? "";
             if (label.Length > VodMarker.MaxLabelLength)
                 errors["label"] = [$"Keep the label to {VodMarker.MaxLabelLength} characters."];
@@ -423,6 +449,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 Color = color,
                 CreatedAtUtc = DateTime.UtcNow,
             };
+            marker.Cuts = NormalizedCuts(marker, request.Cuts);
             db.Markers.Add(marker);
             db.Audit(AuditActions.MarkerAdded, null, $"VOD {vodId} {Describe(marker)}");
             await db.SaveChangesAsync(cancellationToken);
@@ -462,10 +489,16 @@ namespace TwitchDownloaderWeb.Endpoints
             }
 
             var before = $"{Describe(marker)} ({marker.Color})";
-            marker.Seconds = Math.Round(request.Seconds!.Value, 2);
+            var cuts = request.Cuts ?? CutOuts.Read(marker.Cuts);
+            var seconds = Math.Round(request.Seconds!.Value, 2);
+            if (request.EndSeconds is { } newEnd && CutOuts.Validate(cuts, seconds, Math.Round(newEnd, 2)) is { } cutError)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["cuts"] = [cutError] });
+
+            marker.Seconds = seconds;
             marker.EndSeconds = request.EndSeconds is { } endSeconds ? Math.Round(endSeconds, 2) : null;
             marker.Label = label;
             marker.Color = color;
+            marker.Cuts = NormalizedCuts(marker, cuts);
             var after = $"{Describe(marker)} ({marker.Color})";
             LiveEntryChange? liveEntry = null;
             if (db.ChangeTracker.HasChanges())
@@ -498,6 +531,10 @@ namespace TwitchDownloaderWeb.Endpoints
             return Results.NoContent();
         }
 
+        /// <summary>The marker's cut-out parts as stored: none for a moment, otherwise clipped to its range and merged.</summary>
+        private static string? NormalizedCuts(VodMarker marker, IReadOnlyList<CutRange>? cuts) =>
+            marker.EndSeconds is { } end ? CutOuts.Write(CutOuts.Normalize(cuts, marker.Seconds, end)) : null;
+
         internal static MarkerDto ToDto(VodMarker x, IReadOnlyDictionary<int, string> names, TeamContext team) =>
             new(x.Id, x.VodId, x.Seconds, x.EndSeconds, x.Label, x.Color, x.CreatedByUserId, names.GetValueOrDefault(x.CreatedByUserId), x.CreatedAtUtc,
                 !team.IsSupport && CanDelete(team, x))
@@ -506,6 +543,8 @@ namespace TwitchDownloaderWeb.Endpoints
                 RowId = x.RowId,
                 CopiedFromMarkerId = x.CopiedFromMarkerId,
                 CopiedFromEntryId = x.CopiedFromEntryId,
+                Cuts = x.EndSeconds is { } end ? CutOuts.Normalize(CutOuts.Read(x.Cuts), x.Seconds, end) : [],
+                KeptSeconds = x.EndSeconds is { } e ? Math.Round(CutOuts.KeptSeconds(x.Seconds, e, CutOuts.Read(x.Cuts)), 2) : null,
             };
 
         internal static async Task<Dictionary<int, string>> UserNamesAsync(LibraryDbContext db, IEnumerable<int> userIds, CancellationToken cancellationToken)
@@ -518,7 +557,8 @@ namespace TwitchDownloaderWeb.Endpoints
 
         internal static string Describe(VodMarker marker) =>
             (marker.EndSeconds is { } end ? $"from {FormatTime(marker.Seconds)} to {FormatTime(end)}" : $"at {FormatTime(marker.Seconds)}")
-            + (marker.Label.Length > 0 ? $": \"{marker.Label}\"" : "");
+            + (marker.Label.Length > 0 ? $": \"{marker.Label}\"" : "")
+            + (CutOuts.Read(marker.Cuts).Count is > 0 and var cuts ? $", {cuts} cut-out part{(cuts == 1 ? "" : "s")}" : "");
 
         private static string FormatTime(double seconds)
         {

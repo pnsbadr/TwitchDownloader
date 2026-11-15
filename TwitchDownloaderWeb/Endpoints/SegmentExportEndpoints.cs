@@ -18,7 +18,11 @@ namespace TwitchDownloaderWeb.Endpoints
     public sealed record SegmentExportRequest(int[]? MarkerIds, bool Combined = false, string? Quality = null, int? EntryId = null);
 
     public sealed record SegmentExportItemDto(int Position, int? MarkerId, string Label, double StartSeconds, double EndSeconds, string Status, string? Error,
-        long? FileSizeBytes, double? AudioRestoredSeconds, double? AudioMutedSeconds, string? FileUrl);
+        long? FileSizeBytes, double? AudioRestoredSeconds, double? AudioMutedSeconds, string? FileUrl)
+    {
+        /// <summary>The segment's cut-out parts when it was picked; its file skips them.</summary>
+        public IReadOnlyList<CutRange> Cuts { get; init; } = [];
+    }
 
     /// <param name="ZipUrl">All ready segment files in one .zip (no compression), once the download is finished.</param>
     public sealed record SegmentExportDto(int Id, long VodId, int? EntryId, string Title, string? Quality, bool Combined, string Status, string? Error,
@@ -101,7 +105,7 @@ namespace TwitchDownloaderWeb.Endpoints
                         : $"Segment \"{Name(marker)}\" ends after the end of the VOD.");
             }
 
-            var totalSeconds = ordered.Sum(x => Math.Min(x.EndSeconds!.Value, vod.LengthSeconds) - x.Seconds);
+            var totalSeconds = ordered.Sum(x => CutOuts.KeptSeconds(x.Seconds, Math.Min(x.EndSeconds!.Value, vod.LengthSeconds), CutOuts.Read(x.Cuts)));
             if (totalSeconds > settings.MaxSegmentDownloadSeconds)
                 return Invalid("markerIds", $"Those segments add up to {TrimTime.Format(TimeSpan.FromSeconds(totalSeconds))}; one download can be at most "
                     + $"{TrimTime.Format(TimeSpan.FromSeconds(settings.MaxSegmentDownloadSeconds))}.");
@@ -139,6 +143,7 @@ namespace TwitchDownloaderWeb.Endpoints
                     Label = m.Label,
                     StartSeconds = m.Seconds,
                     EndSeconds = Math.Min(m.EndSeconds!.Value, vod.LengthSeconds),
+                    Cuts = CutOuts.Write(CutOuts.Normalize(CutOuts.Read(m.Cuts), m.Seconds, Math.Min(m.EndSeconds!.Value, vod.LengthSeconds))),
                     Status = SegmentExportItemStatus.Queued,
                 }).ToList(),
             };
@@ -330,7 +335,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 CanDelete(team, x),
                 x.Items.OrderBy(i => i.Position).Select(i => new SegmentExportItemDto(i.Position, i.MarkerId, i.Label, i.StartSeconds, i.EndSeconds,
                     i.Status.ToString(), i.Error, i.FileSizeBytes, i.AudioRestoredSeconds, i.AudioMutedSeconds,
-                    i.Status == SegmentExportItemStatus.Ready ? $"{url}/files/{i.Position}" : null)).ToList());
+                    i.Status == SegmentExportItemStatus.Ready ? $"{url}/files/{i.Position}" : null) { Cuts = CutOuts.Read(i.Cuts) }).ToList());
         }
     }
 }
