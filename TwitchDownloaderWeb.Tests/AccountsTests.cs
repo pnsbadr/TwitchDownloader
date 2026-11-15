@@ -310,11 +310,11 @@ namespace TwitchDownloaderWeb.Tests
         private static async Task<HttpStatusCode> AssignAsync(HttpClient client, int userId, int? roleId) =>
             (await client.PutAsJsonAsync($"/api/team/members/{userId}/role", new { roleId }, TestContext.Current.CancellationToken)).StatusCode;
 
-        private int AddEntry(int teamId, int? addedBy, string title)
+        private int AddEntry(int teamId, int? addedBy, string title, long vodId = 1)
         {
             using var scope = _factory.Services.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
-            var entry = new LibraryEntry { TeamId = teamId, Title = title, VodId = 1, Status = EntryStatus.ReferenceOnly, AddedAtUtc = DateTime.UtcNow,
+            var entry = new LibraryEntry { TeamId = teamId, Title = title, VodId = vodId, Status = EntryStatus.ReferenceOnly, AddedAtUtc = DateTime.UtcNow,
                 AddedByUserId = addedBy?.ToString() };
             db.Entries.Add(entry);
             db.SaveChanges();

@@ -9,11 +9,43 @@ namespace TwitchDownloaderWeb.Endpoints
     /// <param name="ReferenceOnly">Not stored: a range of the VOD (re-cutting it doesn't download anything unless it gets short).</param>
     /// <param name="CanEdit">The player may move its start/end (PUT /trim): a VOD entry, still on Twitch, that this member may edit.</param>
     public sealed record TimelineClipDto(int Id, string Title, string Kind, double Start, double? End,
-        bool ReferenceOnly = false, bool FollowsMarkers = false, bool CanEdit = false);
+        bool ReferenceOnly = false, bool FollowsMarkers = false, bool CanEdit = false)
+    {
+        /// <summary>The clip row it sits on; null for clips without a known adder (made before accounts).</summary>
+        public int? RowId { get; init; }
+
+        public string? AddedByUserId { get; init; }
+
+        /// <summary>The adder's username.</summary>
+        public string? CreatedBy { get; init; }
+    }
+
+    /// <param name="UserId">The member who owns it and everything on it.</param>
+    /// <param name="Kind">"Video" (segments and moments) or "Clip".</param>
+    /// <param name="Position">Order among the owner's rows on this VOD.</param>
+    /// <param name="CanEdit">The caller may put items on it, rename, move and delete it (their own row).</param>
+    public sealed record TimelineRowDto(int Id, int UserId, string? Username, string Kind, int Position, string? Name, bool CanEdit)
+    {
+        public static TimelineRowDto From(TimelineRow row, IReadOnlyDictionary<int, string> names, TeamContext team) =>
+            new(row.Id, row.UserId, names.GetValueOrDefault(row.UserId), row.Kind.ToString(), row.Position, row.Name,
+                !team.IsSupport && row.UserId == team.UserId && team.Can(TeamPermission.AddEntries));
+    }
+
+    /// <param name="Kind">"video" or "clip".</param>
+    public sealed record AddRowRequest(string? Kind, string? Name);
+
+    /// <param name="Name">New name (blank clears it); null leaves it.</param>
+    /// <param name="Position">New place among the owner's rows on the VOD (0 first); null leaves it.</param>
+    public sealed record UpdateRowRequest(string? Name, int? Position);
+
+    public sealed record MoveToRowRequest(int? RowId);
 
     public sealed record MarkerDto(int Id, long VodId, double Seconds, double? EndSeconds, string Label, string Color, int CreatedByUserId, string? CreatedBy,
         DateTime CreatedAtUtc, bool CanDelete)
     {
+        /// <summary>The creator's video row it sits on.</summary>
+        public int? RowId { get; init; }
+
         /// <summary>Whether this user may move, resize, split, recolor or retitle it (own with AddEntries, anyone's with EditAnyEntries).</summary>
         public bool CanEdit { get; init; }
 
@@ -23,12 +55,16 @@ namespace TwitchDownloaderWeb.Endpoints
 
     /// <param name="MaxStoredClipSeconds">The stored-clip limit (Downloads:MaxStoredClipSeconds): the player's clip tool and a clip's
     /// review never make a clip longer than this.</param>
-    public sealed record TimelineDto(IReadOnlyList<TimelineClipDto> Clips, IReadOnlyList<MarkerDto> Markers, int MaxStoredClipSeconds);
+    /// <param name="Rows">Every member's rows on the VOD (see <see cref="TimelineRow"/>), by owner then position.</param>
+    public sealed record TimelineDto(IReadOnlyList<TimelineClipDto> Clips, IReadOnlyList<MarkerDto> Markers, int MaxStoredClipSeconds,
+        IReadOnlyList<TimelineRowDto> Rows);
 
     /// <summary>A library entry's place on its VOD, for the strips on library and VOD cards.</summary>
     public sealed record EntryRangeDto(int Id, long VodId, string Title, string Kind, double Start, double? End, bool ReferenceOnly);
 
-    public sealed record AddMarkerRequest(double? Seconds, double? EndSeconds, string? Label, string? Color);
+    /// <param name="RowId">Adding: one of the caller's video rows on the VOD (blank = their first, made if needed). Changing: another video row
+    /// of the marker's creator on the VOD (blank = stays where it is).</param>
+    public sealed record AddMarkerRequest(double? Seconds, double? EndSeconds, string? Label, string? Color, int? RowId = null);
 
     /// <summary>
     /// What the player's timeline shows besides Twitch's muted parts (which the page reads from the playlist itself): the team's
@@ -47,6 +83,11 @@ namespace TwitchDownloaderWeb.Endpoints
             // Own markers need AddEntries (as when they were made); anyone's need EditAnyEntries / DeleteAnyEntries. Checked in the handler.
             app.MapPut("/api/markers/{id:int}", UpdateMarker).RequireTeam(TeamPermission.AddEntries | TeamPermission.EditAnyEntries);
             app.MapDelete("/api/markers/{id:int}", DeleteMarker).RequireTeam(TeamPermission.AddEntries | TeamPermission.DeleteAnyEntries);
+            // Rows (badrfly, 2026-11-15): members add, rename, reorder and delete their own; DeleteAnyEntries may delete anyone's
+            app.MapPost("/api/vods/{vodId:long}/rows", AddRow).RequireTeam(TeamPermission.AddEntries).RequireChannelVod();
+            app.MapPut("/api/rows/{id:int}", UpdateRow).RequireTeam(TeamPermission.AddEntries);
+            app.MapDelete("/api/rows/{id:int}", DeleteRow).RequireTeam(TeamPermission.AddEntries | TeamPermission.DeleteAnyEntries);
+            app.MapPut("/api/entries/{id:int}/row", MoveEntryToRow).RequireTeam(TeamPermission.EditOwnEntries | TeamPermission.EditAnyEntries);
             return app;
         }
 
@@ -56,25 +97,213 @@ namespace TwitchDownloaderWeb.Endpoints
         private static bool CanEdit(TeamContext team, VodMarker marker) =>
             team.CanOnOwnOrAny(marker.CreatedByUserId.ToString(), TeamPermission.AddEntries, TeamPermission.EditAnyEntries);
 
+        /// <summary>
+        /// The team's clips, markers and rows on the VOD. A member who may add things (AddEntries) and opens the VOD for the first time
+        /// gets one video row and one clip row on it here.
+        /// </summary>
         private static async Task<IResult> GetTimeline(long vodId, TeamContext team, LibraryDbContext db, IOptions<DownloadSettings> settings,
             CancellationToken cancellationToken)
         {
+            if (!team.IsSupport && team.Can(TeamPermission.AddEntries))
+                await EnsureFirstRowsAsync(db, team, vodId, cancellationToken);
+
             var clips = await db.Entries.AsNoTracking()
                 .Where(x => x.VodId == vodId)
                 .OrderBy(x => x.AddedAtUtc)
-                .Select(x => new { x.Id, x.Title, x.Kind, x.StartTime, x.EndTime, x.Status, x.FollowsMarkers, x.AddedByUserId })
+                .Select(x => new { x.Id, x.Title, x.Kind, x.StartTime, x.EndTime, x.Status, x.FollowsMarkers, x.AddedByUserId, x.RowId })
                 .ToListAsync(cancellationToken);
 
             var markers = await db.Markers.AsNoTracking().Where(x => x.VodId == vodId).ToListAsync(cancellationToken);
-            var names = await UserNamesAsync(db, markers.Select(x => x.CreatedByUserId), cancellationToken);
+            var rows = await db.TimelineRows.AsNoTracking().Where(x => x.VodId == vodId).ToListAsync(cancellationToken);
+            var names = await UserNamesAsync(db, markers.Select(x => x.CreatedByUserId).Concat(rows.Select(x => x.UserId))
+                .Concat(clips.Select(x => int.TryParse(x.AddedByUserId, out var u) ? u : 0)), cancellationToken);
 
             return Results.Ok(new TimelineDto(
                 clips.Select(x => new TimelineClipDto(x.Id, x.Title, x.Kind.ToString(), x.StartTime.TotalSeconds, x.EndTime?.TotalSeconds,
                     x.Status == EntryStatus.ReferenceOnly, x.FollowsMarkers,
                     x.Kind == EntryKind.Vod && x.Status != EntryStatus.VodUnavailable
-                        && team.CanOnOwnOrAny(x.AddedByUserId, TeamPermission.EditOwnEntries, TeamPermission.EditAnyEntries))).ToList(),
+                        && team.CanOnOwnOrAny(x.AddedByUserId, TeamPermission.EditOwnEntries, TeamPermission.EditAnyEntries))
+                {
+                    RowId = x.RowId,
+                    AddedByUserId = x.AddedByUserId,
+                    CreatedBy = int.TryParse(x.AddedByUserId, out var u) ? names.GetValueOrDefault(u) : null,
+                }).ToList(),
                 markers.OrderBy(x => x.Seconds).Select(x => ToDto(x, names, team)).ToList(),
-                settings.Value.MaxStoredClipSeconds));
+                settings.Value.MaxStoredClipSeconds,
+                // The caller's rows first, then the others' by name
+                rows.OrderBy(x => x.UserId != team.UserId).ThenBy(x => names.GetValueOrDefault(x.UserId), StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(x => x.UserId).ThenBy(x => x.Position).ThenBy(x => x.Id)
+                    .Select(x => TimelineRowDto.From(x, names, team)).ToList()));
+        }
+
+        /// <summary>The first time a member opens a VOD they get one video row and one clip row on it (unless they already have one of that kind).</summary>
+        private static async Task EnsureFirstRowsAsync(LibraryDbContext db, TeamContext team, long vodId, CancellationToken cancellationToken)
+        {
+            if (await db.MemberVods.AnyAsync(x => x.UserId == team.UserId && x.VodId == vodId, cancellationToken))
+                return;
+
+            var kinds = await db.TimelineRows.Where(x => x.VodId == vodId && x.UserId == team.UserId).Select(x => x.Kind).Distinct()
+                .ToListAsync(cancellationToken);
+            var next = await db.TimelineRows.Where(x => x.VodId == vodId && x.UserId == team.UserId).Select(x => (int?)x.Position)
+                .MaxAsync(cancellationToken) ?? -1;
+            var now = DateTime.UtcNow;
+            db.MemberVods.Add(new MemberVod { UserId = team.UserId, VodId = vodId, FirstOpenedAtUtc = now });
+            foreach (var kind in new[] { TimelineRowKind.Video, TimelineRowKind.Clip }.Where(x => !kinds.Contains(x)))
+                db.TimelineRows.Add(new TimelineRow { VodId = vodId, UserId = team.UserId, Kind = kind, Position = ++next, CreatedAtUtc = now });
+
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateException)
+            {
+                // Another request of the same member got there first (unique MemberVod); its rows count
+                db.ChangeTracker.Clear();
+            }
+        }
+
+        /// <summary>Checks that an item may go on the row. Returns the problem to answer with, or null.</summary>
+        internal static async Task<IResult?> CheckRowAsync(LibraryDbContext db, int rowId, long vodId, TimelineRowKind kind, int ownerUserId,
+            CancellationToken cancellationToken)
+        {
+            var row = await db.TimelineRows.AsNoTracking().FirstOrDefaultAsync(x => x.Id == rowId, cancellationToken);
+            if (row is null || row.VodId != vodId)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["rowId"] = ["That row isn't on this VOD."] });
+            if (row.Kind != kind)
+                return Results.ValidationProblem(new Dictionary<string, string[]>
+                    { ["rowId"] = [kind == TimelineRowKind.Clip ? "Clips go on clip rows." : "Segments and moments go on video rows."] });
+            if (row.UserId != ownerUserId)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["rowId"] = ["Items can only go on their creator's own rows."] });
+            return null;
+        }
+
+        private static (TimelineRowKind? Kind, string? Name, Dictionary<string, string[]> Errors) ValidateRow(string? kindText, string? nameText, bool kindRequired)
+        {
+            var errors = new Dictionary<string, string[]>();
+            TimelineRowKind? kind = kindText?.Trim().ToLowerInvariant() switch
+            {
+                "video" => TimelineRowKind.Video,
+                "clip" => TimelineRowKind.Clip,
+                _ => null,
+            };
+            if (kind is null && (kindRequired || !string.IsNullOrWhiteSpace(kindText)))
+                errors["kind"] = ["Kind must be video or clip."];
+
+            var name = string.IsNullOrWhiteSpace(nameText) ? null : nameText.Trim();
+            if (name is { Length: > TimelineRow.MaxNameLength })
+                errors["name"] = [$"Keep the name to {TimelineRow.MaxNameLength} characters."];
+            return (kind, name, errors);
+        }
+
+        private static async Task<IResult> AddRow(long vodId, AddRowRequest request, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
+        {
+            var (kind, name, errors) = ValidateRow(request.Kind, request.Name, kindRequired: true);
+            if (errors.Count > 0)
+                return Results.ValidationProblem(errors);
+
+            var mine = await db.TimelineRows.Where(x => x.VodId == vodId && x.UserId == team.UserId).Select(x => x.Position).ToListAsync(cancellationToken);
+            if (mine.Count >= TimelineRow.MaxRowsPerMember)
+                return Results.Problem(detail: $"You can have at most {TimelineRow.MaxRowsPerMember} rows on a VOD.", statusCode: StatusCodes.Status409Conflict);
+
+            var row = new TimelineRow
+            {
+                VodId = vodId, UserId = team.UserId, Kind = kind!.Value, Name = name, Position = mine.Count == 0 ? 0 : mine.Max() + 1,
+                CreatedAtUtc = DateTime.UtcNow,
+            };
+            db.TimelineRows.Add(row);
+            await db.SaveChangesAsync(cancellationToken);
+
+            var names = await UserNamesAsync(db, [team.UserId], cancellationToken);
+            return Results.Created($"/api/rows/{row.Id}", TimelineRowDto.From(row, names, team));
+        }
+
+        /// <summary>Renames the caller's row or moves it among their rows on the VOD.</summary>
+        private static async Task<IResult> UpdateRow(int id, UpdateRowRequest request, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
+        {
+            var row = await db.TimelineRows.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+            if (row is null)
+                return Results.Problem(detail: "That row is gone.", statusCode: StatusCodes.Status404NotFound);
+            if (row.UserId != team.UserId)
+                return Results.Problem(detail: "Only the row's owner can change it.", statusCode: StatusCodes.Status403Forbidden);
+
+            var (_, name, errors) = ValidateRow(null, request.Name, kindRequired: false);
+            if (errors.Count > 0)
+                return Results.ValidationProblem(errors);
+
+            if (request.Name is not null)
+                row.Name = name;
+
+            if (request.Position is { } position)
+            {
+                var mine = await db.TimelineRows.Where(x => x.VodId == row.VodId && x.UserId == row.UserId && x.Id != row.Id)
+                    .OrderBy(x => x.Position).ThenBy(x => x.Id).ToListAsync(cancellationToken);
+                mine.Insert(Math.Clamp(position, 0, mine.Count), row);
+                for (var i = 0; i < mine.Count; i++)
+                    mine[i].Position = i;
+            }
+
+            await db.SaveChangesAsync(cancellationToken);
+            var names = await UserNamesAsync(db, [row.UserId], cancellationToken);
+            return Results.Ok(TimelineRowDto.From(row, names, team));
+        }
+
+        /// <summary>
+        /// Deletes a row with its segments and moments (own row, or anyone's with DeleteAnyEntries). A clip row that still holds clips is
+        /// refused (409 <c>row-has-clips</c>): clips are library entries with files, deleted one by one.
+        /// </summary>
+        private static async Task<IResult> DeleteRow(int id, TeamContext team, LibraryDbContext db, LiveMarkerEntryService liveEntries,
+            CancellationToken cancellationToken)
+        {
+            var row = await db.TimelineRows.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+            if (row is null)
+                return Results.Problem(detail: "That row is gone.", statusCode: StatusCodes.Status404NotFound);
+
+            var own = row.UserId == team.UserId && team.Can(TeamPermission.AddEntries);
+            if (!own && !team.Can(TeamPermission.DeleteAnyEntries))
+                return Results.Problem(detail: "Your role only lets you delete your own rows.", statusCode: StatusCodes.Status403Forbidden);
+
+            var clipCount = await db.Entries.CountAsync(x => x.RowId == row.Id, cancellationToken);
+            if (clipCount > 0)
+                return Results.Problem(detail: $"This row still has {clipCount} clip{(clipCount == 1 ? "" : "s")}. Delete or move them first.",
+                    statusCode: StatusCodes.Status409Conflict, extensions: new Dictionary<string, object?> { ["code"] = "row-has-clips" });
+
+            var markers = await db.Markers.Where(x => x.RowId == row.Id).ToListAsync(cancellationToken);
+            db.Markers.RemoveRange(markers);
+            db.TimelineRows.Remove(row);
+            var names = await UserNamesAsync(db, [row.UserId], cancellationToken);
+            db.Audit(AuditActions.RowDeleted, null,
+                $"VOD {row.VodId} {row.Kind.ToString().ToLowerInvariant()} row{(row.Name is null ? "" : $" \"{row.Name}\"")} of {names.GetValueOrDefault(row.UserId)}"
+                + (markers.Count > 0 ? $" with {markers.Count} segment{(markers.Count == 1 ? "" : "s")}/moment{(markers.Count == 1 ? "" : "s")}" : ""));
+            await db.SaveChangesAsync(cancellationToken);
+
+            if (markers.Count > 0)
+                await liveEntries.MarkersChangedAsync(db, row.VodId, cancellationToken, mayCreate: false);
+            return Results.NoContent();
+        }
+
+        /// <summary>Moves a clip to another clip row of the member who added it, on the same VOD.</summary>
+        private static async Task<IResult> MoveEntryToRow(int id, MoveToRowRequest request, TeamContext team, LibraryDbContext db,
+            CancellationToken cancellationToken)
+        {
+            var entry = await db.Entries.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+            if (entry is null)
+                return Results.Problem(detail: $"Entry {id} was not found.", statusCode: StatusCodes.Status404NotFound);
+            if (!team.CanOnOwnOrAny(entry.AddedByUserId, TeamPermission.EditOwnEntries, TeamPermission.EditAnyEntries))
+                return Results.Problem(detail: "Your role only lets you edit entries you added.", statusCode: StatusCodes.Status403Forbidden);
+            if (request.RowId is not { } rowId)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["rowId"] = ["Pick a row."] });
+            if (!int.TryParse(entry.AddedByUserId, out var owner))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["rowId"] = ["This clip has no owner to put it under."] });
+            if (await CheckRowAsync(db, rowId, entry.VodId, TimelineRowKind.Clip, owner, cancellationToken) is { } problem)
+                return problem;
+
+            if (entry.RowId != rowId)
+            {
+                entry.RowId = rowId;
+                db.Audit(AuditActions.EntryMovedRow, entry.Id, $"to row {rowId}");
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            return Results.NoContent();
         }
 
         public const int MaxVodIdsPerRequest = 200;
@@ -161,8 +390,13 @@ namespace TwitchDownloaderWeb.Endpoints
             if (errors.Count > 0)
                 return Results.ValidationProblem(errors);
 
+            if (request.RowId is { } rowId
+                && await CheckRowAsync(db, rowId, vodId, TimelineRowKind.Video, team.UserId, cancellationToken) is { } rowProblem)
+                return rowProblem;
+
             var marker = new VodMarker
             {
+                RowId = request.RowId,
                 VodId = vodId,
                 Seconds = Math.Round(request.Seconds!.Value, 2),
                 EndSeconds = request.EndSeconds is { } endSeconds ? Math.Round(endSeconds, 2) : null,
@@ -195,6 +429,13 @@ namespace TwitchDownloaderWeb.Endpoints
             var (errors, label, color) = Validate(request);
             if (errors.Count > 0)
                 return Results.ValidationProblem(errors);
+
+            if (request.RowId is { } rowId && rowId != marker.RowId)
+            {
+                if (await CheckRowAsync(db, rowId, marker.VodId, TimelineRowKind.Video, marker.CreatedByUserId, cancellationToken) is { } rowProblem)
+                    return rowProblem;
+                marker.RowId = rowId;
+            }
 
             var before = $"{Describe(marker)} ({marker.Color})";
             marker.Seconds = Math.Round(request.Seconds!.Value, 2);
@@ -237,6 +478,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 !team.IsSupport && CanDelete(team, x))
             {
                 CanEdit = !team.IsSupport && CanEdit(team, x),
+                RowId = x.RowId,
             };
 
         internal static async Task<Dictionary<int, string>> UserNamesAsync(LibraryDbContext db, IEnumerable<int> userIds, CancellationToken cancellationToken)

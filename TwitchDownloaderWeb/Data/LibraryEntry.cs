@@ -110,5 +110,12 @@ namespace TwitchDownloaderWeb.Data
 
         /// <summary>The team whose library this is in. Requests only see their own team's entries (query filter in <see cref="LibraryDbContext"/>).</summary>
         public int TeamId { get; set; }
+
+        /// <summary>
+        /// The clip row (of the member who added it) it sits on in the VOD's timeline. Filled by SaveChanges with the adder's first clip
+        /// row on the VOD when not set; null for entries without a known adder or VOD.
+        /// </summary>
+        public int? RowId { get; set; }
+        public TimelineRow? Row { get; set; }
     }
 }

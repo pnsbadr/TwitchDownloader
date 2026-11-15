@@ -24,6 +24,10 @@ namespace TwitchDownloaderWeb.Data
         public int CreatedByUserId { get; set; }
         public DateTime CreatedAtUtc { get; set; }
 
+        /// <summary>The creator's video row it sits on. Filled by SaveChanges with their first video row on the VOD when not set.</summary>
+        public int? RowId { get; set; }
+        public TimelineRow? Row { get; set; }
+
         public const int MaxLabelLength = 200;
         // New colors go at the end (the page lists them in this order); the first is the default
         public static readonly IReadOnlyList<string> Colors = ["yellow", "blue", "pink", "orange", "red", "lime", "teal", "violet", "gray"];
