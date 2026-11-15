@@ -5,7 +5,7 @@
 import { registerIconLibrary } from "https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.20.1/cdn/utilities/icon-library.js";
 import { $, el, api, me, can, loadMe, sessionHandlers, TEAM_PAGE_PERMISSIONS, wireIconButtons, loadSetting, saveSetting, toast, formatDuration } from "./core.js";
 import { dropTarget } from "./drag.js";
-import { setUpLibrary, showList, refreshClips } from "./library.js";
+import { setUpLibrary, showList, refreshClips, refreshVideos } from "./library.js";
 import { MARKER_COLORS } from "./colors.js";
 import { MediaPlayer, formatClock } from "./media.js";
 import { Timeline } from "./timeline.js";
@@ -152,8 +152,9 @@ function openExport(item) {
 
 // ---------- players ----------
 //
-// Player 1 plays VODs with every member's rows on its timeline. Player 2 plays one segment or clip, locked to it: its
-// timeline (the Player 2 tab) shows only that item, and playback stays inside it. Both edit the same items, so a change
+// Player 1 plays VODs with every member's rows on its timeline. Player 2 plays one segment, clip or video, locked to it:
+// its timeline (the Player 2 tab) shows only that item, and playback stays inside it. A video plays its segments one after
+// the other; its timeline is in video time, so Player 2's position is mapped between VOD and video time (p2Position). Both edit the same items, so a change
 // in one is read again by the other. The keys and the tools bar work on the player whose timeline tab is open; clicking
 // a player that has something loaded opens its tab.
 
@@ -165,7 +166,8 @@ let player2 = null;
 let timeline = null;   // Player 1's
 let timeline2 = null;  // Player 2's
 let p1Vod = null;
-let p2Item = null;     // { type: "marker" | "clip", id, vodId, kind: "segment" | "clip", title }
+let p2Item = null;     // { type: "marker" | "clip" | "video", id, vodId, kind: "segment" | "clip" | "video", title }
+let p2Part = 0;        // a video: the index of the part playing
 let activePlayer = "p1";
 
 function pair(which = activePlayer) {
@@ -224,17 +226,15 @@ async function openInPlayer2({ kind, data }, { show = true } = {}) {
     toast("Playback isn't available in the demo.");
     return;
   }
-  if (kind === "video") {
-    toast("Videos open in Player 2 once linking segments into videos is built (step 6).");
-    return;
-  }
   const vodId = data.vodId != null ? String(data.vodId) : "";
   if (!vodId || vodId === "0") {
     toast("Twitch didn't say which VOD this clip is from, so it can't play here.", "error");
     return;
   }
-  const type = kind === "clip" ? "clip" : "marker";
-  const start = kind === "clip" ? (data.startSeconds ?? data.start ?? 0) : data.seconds;
+  const type = { clip: "clip", video: "video" }[kind] ?? "marker";
+  const firstPart = kind === "video" ? [...(data.segments ?? [])].sort((a, b) => a.position - b.position)[0] : null;
+  const start = kind === "clip" ? (data.startSeconds ?? data.start ?? 0) : kind === "video" ? (firstPart?.startSeconds ?? 0) : data.seconds;
+  p2Part = 0;
   const target = { type, id: data.id, vodId, kind, title: data.title ?? data.label ?? "" };
   p2Item = target;
   $("p2-hint").hidden = true;
@@ -285,6 +285,56 @@ function showNote(which, text, hideAfter = 0) {
   if (text && hideAfter) noteTimers[which] = setTimeout(() => { note.hidden = true; }, hideAfter);
 }
 
+// ---------- a video in Player 2: VOD seconds <-> video time ----------
+
+function videoParts() {
+  return p2Item?.type === "video" ? timeline2.videoParts() : [];
+}
+
+// Player 2's position on its timeline: VOD seconds, or for a video the time into the video
+function p2Position() {
+  if (!player2.ready) return null;
+  const position = player2.position();
+  if (position == null || p2Item?.type !== "video") return position;
+  const parts = videoParts();
+  if (!parts.length) return null;
+  const inPart = (part) => position >= part.vodStart - 0.05 && position <= part.vodEnd + 0.05;
+  if (!parts[p2Part] || !inPart(parts[p2Part])) {
+    const found = parts.findIndex(inPart);
+    if (found >= 0) p2Part = found;
+  }
+  const part = parts[Math.min(p2Part, parts.length - 1)];
+  return part.offset + Math.min(Math.max(position - part.vodStart, 0), part.vodEnd - part.vodStart);
+}
+
+function p2Seek(seconds) {
+  if (p2Item?.type !== "video") {
+    player2.seek(seconds);
+    return;
+  }
+  const parts = videoParts();
+  if (!parts.length) return;
+  let index = parts.findIndex((part) => seconds < part.offset + (part.vodEnd - part.vodStart));
+  if (index < 0) index = parts.length - 1;
+  p2Part = index;
+  const part = parts[index];
+  player2.seek(part.vodStart + Math.min(Math.max(seconds - part.offset, 0), part.vodEnd - part.vodStart));
+}
+
+// While a video plays, the end of one part jumps to the start of the next; the last one stops
+function p2Tick(position) {
+  if (p2Item?.type !== "video" || !player2.playing() || player2.stopAt != null) return;
+  const parts = videoParts();
+  const part = parts[p2Part];
+  if (!part || position < part.vodEnd - 0.04) return;
+  if (p2Part + 1 < parts.length) {
+    p2Part++;
+    player2.seek(parts[p2Part].vodStart);
+  } else {
+    player2.pause();
+  }
+}
+
 // Play / pause / volume / fullscreen buttons of player n (1 or 2)
 function renderPlayerButtons(n, player) {
   const ready = player.ready;
@@ -311,6 +361,14 @@ function renderPlayer1() {
 
 function renderPlayer2() {
   renderPlayerButtons(2, player2);
+  if (p2Item?.type === "video") {
+    const video = timeline2.video;
+    const editable = Boolean(video) && !me?.support;
+    $("p2-show").disabled = !video;
+    $("p2-rename").disabled = !editable || !video.canEdit;
+    $("p2-delete").disabled = !editable || !video.canDelete;
+    return;
+  }
   const item = p2Item ? timeline2.focusItem() : null;
   $("p2-show").disabled = !item;
   $("p2-rename").disabled = !item || !timeline2.canEditItem(item);
@@ -324,14 +382,10 @@ function renderP2Info() {
     info.replaceChildren();
     return;
   }
-  const item = timeline2.focusItem();
-  const kind = p2Item.kind === "clip" ? "Clip" : "Segment";
-  const title = (item ? item.title : p2Item.title) || (kind === "Clip" ? "Untitled clip" : "Untitled segment");
-  let length = null;
-  if (item && item.end != null) {
-    const cut = (item.cuts ?? []).reduce((sum, c) => sum + Math.max(0, Math.min(c.end, item.end) - Math.max(c.start, item.start)), 0);
-    length = item.end - item.start - cut;
-  }
+  const focus = timeline2.focusInfo();
+  const kind = { clip: "Clip", video: "Video" }[p2Item.kind] ?? "Segment";
+  const title = (focus ? focus.title : p2Item.title) || `Untitled ${kind.toLowerCase()}`;
+  const length = focus?.length ?? null;
   info.replaceChildren(...[
     el("span", { class: "p2-kind" }, kind),
     length != null ? el("span", { class: "p2-length num" }, formatDuration(Math.round(length))) : null,
@@ -341,10 +395,10 @@ function renderP2Info() {
 }
 
 // The range Player 2 plays changed (trimmed here or on Player 1): a running preview stops at the new end
-function onP2FocusChanged(item) {
-  if (!p2Item || !item) return;
-  p2Item.title = item.title;
-  if (player2.stopAt != null && item.end != null) player2.stopAt = item.end;
+function onP2FocusChanged(info) {
+  if (!p2Item || !info) return;
+  p2Item.title = info.title;
+  if (p2Item.type !== "video" && player2.stopAt != null && info.end != null) player2.stopAt = info.end;
   renderP2Info();
   renderPlayer2();
 }
@@ -414,6 +468,7 @@ function setUpPlayer1() {
     closeItemEditor: () => closeItemEditor(false),
     onChange: renderTools,
     onClipsChanged: refreshClips,
+    onVideosChanged: refreshVideos,
     onCreated: (item) => openInPlayer2({ kind: item.kind, data: { ...item.data, vodId: timeline.vodId, vodLengthSeconds: timeline.length() } }, { show: false }),
     onEdited: () => {
       if (timeline2.vodId && timeline2.vodId === timeline.vodId) timeline2.load();
@@ -444,6 +499,7 @@ function setUpPlayer1() {
 
 function setUpPlayer2() {
   player2 = new MediaPlayer($("p2-media"), {
+    onTick: p2Tick,
     onState: () => {
       playAlone(player2, player1);
       renderPlayer2();
@@ -452,8 +508,8 @@ function setUpPlayer2() {
   });
   timeline2 = new Timeline({
     mode: "item",
-    onSeek: (seconds) => player2.seek(seconds),
-    getPosition: () => (player2.ready ? player2.position() : null),
+    onSeek: p2Seek,
+    getPosition: p2Position,
     openItemEditor,
     closeItemEditor: () => closeItemEditor(false),
     onChange: () => {
@@ -462,10 +518,15 @@ function setUpPlayer2() {
       renderPlayer2();
     },
     onClipsChanged: refreshClips,
+    onVideosChanged: refreshVideos,
     onEdited: () => {
       if (timeline.vodId && timeline.vodId === timeline2.vodId) timeline.load();
     },
     onFocusChanged: onP2FocusChanged,
+    // The first change to someone else's item made a copy: Player 2 goes on with it
+    onFocusMoved: (focus) => {
+      if (p2Item) Object.assign(p2Item, { type: focus.type, id: focus.id });
+    },
     onFocusGone: (message) => {
       if (p2Item) closePlayer2(message);
     },
@@ -473,10 +534,18 @@ function setUpPlayer2() {
   wirePlayerButtons(2, "p2");
   $("p2-show").addEventListener("click", showInPlayer1);
   $("p2-rename").addEventListener("click", () => {
+    if (p2Item?.type === "video") {
+      timeline2.editVideoTitle();
+      return;
+    }
     const item = timeline2.focusItem();
     if (item) timeline2.editTitle(item);
   });
   $("p2-delete").addEventListener("click", () => {
+    if (p2Item?.type === "video") {
+      timeline2.deleteVideo();
+      return;
+    }
     const item = timeline2.focusItem();
     if (item) timeline2.deleteItem(item);
   });
@@ -485,9 +554,14 @@ function setUpPlayer2() {
 
 // Player 2's crosshair: Player 1 opens the item's VOD (if it isn't open already), goes to the item and selects it
 async function showInPlayer1() {
-  const item = timeline2.focusItem();
-  if (!p2Item || !item) return;
-  const focus = { ...timeline2.focus };
+  if (!p2Item) return;
+  // A video: its first part selected, all its parts in view
+  const parts = videoParts();
+  const item = p2Item.type === "video"
+    ? (parts.length ? { start: parts[0].vodStart, range: { start: Math.min(...parts.map((p) => p.vodStart)), end: Math.max(...parts.map((p) => p.vodEnd)) } } : null)
+    : timeline2.focusItem();
+  if (!item) return;
+  const focus = p2Item.type === "video" ? { type: "marker", id: parts[0].id } : { ...timeline2.focus };
   const vodId = p2Item.vodId;
   player2.pause();
   if (!p1Vod || String(p1Vod.vodId) !== vodId) {
@@ -504,7 +578,7 @@ async function showInPlayer1() {
     player1.seek(item.start);
   }
   timelineTabs.pick("p1");
-  timeline.reveal(focus);
+  timeline.reveal(focus, item.range ?? null);
 }
 
 // ---------- tools bar (works on the timeline whose tab is open) ----------
@@ -523,8 +597,8 @@ function renderTools() {
   snap.toggleAttribute("data-active", on && t.snap);
   for (const button of document.querySelectorAll("#tools [data-create]")) {
     const kind = button.dataset.create;
-    button.disabled = !canCreate || kind === "video"; // linking videos comes in step 6
-    button.toggleAttribute("data-active", canCreate && t.marking?.kind === kind);
+    button.disabled = !canCreate;
+    button.toggleAttribute("data-active", canCreate && (kind === "video" ? Boolean(t.linking) : t.marking?.kind === kind));
   }
   document.querySelector('#tools [data-keybind="undo"]').disabled = !t.canUndo();
   document.querySelector('#tools [data-keybind="redo"]').disabled = !t.canRedo();
@@ -542,6 +616,7 @@ function setUpTools() {
     marker: () => activeTimeline().addMoment(),
     segment: () => activeTimeline().mark("segment"),
     clip: () => activeTimeline().mark("clip"),
+    video: () => activeTimeline().startLinking(),
   };
   for (const button of document.querySelectorAll("#tools [data-create]")) {
     button.addEventListener("click", () => create[button.dataset.create]?.());
@@ -553,6 +628,18 @@ function setUpTools() {
 function playPause(which = activePlayer) {
   const { player, timeline: t } = pair(which);
   if (!player.ready) return;
+  // A video plays on from where it is (from the start once it has ended)
+  if (which === "p2" && p2Item?.type === "video") {
+    if (player.playing()) {
+      player.pause();
+      return;
+    }
+    player.stopAt = null;
+    const now = p2Position();
+    if (now == null || now >= t.length() - 0.05) p2Seek(0);
+    player.play();
+    return;
+  }
   const range = t.selectedRange();
   if (range && !player.playing()) {
     const now = player.position();
@@ -565,7 +652,7 @@ function playPause(which = activePlayer) {
 
 function playLastSeconds(which = activePlayer) {
   const { player, timeline: t } = pair(which);
-  const range = t.selectedRange();
+  const range = t.selectedVodRange();
   if (!player.ready || !range) return;
   player.playRange(Math.max(range.start, range.end - 3), range.end);
 }
@@ -573,10 +660,10 @@ function playLastSeconds(which = activePlayer) {
 // Seeking stays inside what the timeline can show (Player 2: the window around its item)
 function skip(which, delta) {
   const { player, timeline: t } = pair(which);
-  const now = player.position();
+  const now = t.getPosition();
   if (!player.ready || now == null) return;
   const extent = t.extent();
-  player.seek(Math.min(Math.max(now + delta, extent.start), extent.end));
+  t.onSeek(Math.min(Math.max(now + delta, extent.start), extent.end));
 }
 
 function setActivePlayer(which) {

@@ -12,6 +12,11 @@
 // Alt + a clip on a video row makes a segment at exactly its times. Segments and markers only go on video rows, clips on
 // clip rows.
 //
+// Videos (step 6): the link tool (tools bar) takes a title and the segments clicked on one of the member's rows, in order.
+// In Player 2 a video is laid out in video time (Timeline.videoItems): dragging a part's edge trims that segment (in VOD
+// seconds, via toVod), the right-click menu reorders parts or takes one out of the video. Someone else's video asks
+// "Edit original / Make a copy" first (copying the whole video).
+//
 // Every time a new kind of item gets drawn here, add its times to snapPoints().
 
 import { api, me, can, toast } from "./core.js";
@@ -96,6 +101,7 @@ export const editing = {
     this.histories = HISTORIES;
     this.pendingTrim = null;  // { id, start, end, before, timer }: a stored clip's new range, saved after a pause
     this.dropRowId = null;    // the row a dragged item would land on (drawn highlighted)
+    this.linking = null;      // link tool: { rowId, ids } (segments picked in order) while the title editor is open
     if (this.mode === "vod") {
       dropTarget(this.track, {
         accepts: (item, info) => Boolean(this.dropPlan(item, info)),
@@ -128,6 +134,7 @@ export const editing = {
     this.selected = null;
     this.marking = null;
     this.draft = null;
+    this.linking = null;
     this.preview = null;
     this.press = null;
     this.activeRowId = null;
@@ -200,6 +207,7 @@ export const editing = {
 
   // Someone else's item that this member may edit: "Edit original" or "Make a copy" (Enter). Returns { id, copied } or null.
   async editTarget(item) {
+    if (this.isVideoLayout()) return (await this.videoEditTarget()) ? { id: item.id, copied: false } : null;
     if (this.isOwn(item) || !this.canCopyItem(item)) return { id: item.id, copied: false };
     const choice = await chooseEditTarget({ what: this.whatIs(item), owner: item.by });
     if (!choice) return null;
@@ -258,8 +266,8 @@ export const editing = {
   },
 
   select(item) {
-    // Player 2's item stays selected
-    if (this.mode === "item") this.selected = this.focus ? { ...this.focus } : null;
+    // Player 2's item stays selected (a video's parts can be selected one by one)
+    if (this.mode === "item" && !this.isVideoLayout()) this.selected = this.focus ? { ...this.focus } : null;
     else this.selected = item ? { type: item.kind === "clip" ? "clip" : "marker", id: item.id } : null;
     this.changed();
   },
@@ -267,8 +275,10 @@ export const editing = {
   // Player 2 switches to another item of the same VOD (a copy made by the first change)
   focusOn(focus) {
     this.focus = focus;
-    this.selected = { ...focus };
+    this.selected = focus.type === "video" ? null : { ...focus };
+    if (focus.type === "video") this.video = null;
     this.load();
+    this.hooks.onFocusMoved?.(focus);
   },
 
   selectedItem() {
@@ -285,6 +295,24 @@ export const editing = {
     const item = this.selectedItem();
     if (!item || item.end == null) return null;
     return { start: item.start, end: item.end };
+  },
+
+  // The same in VOD seconds (a video's part is shown in video time)
+  selectedVodRange() {
+    const item = this.selectedItem();
+    if (!item || item.end == null) return null;
+    return { start: this.toVod(item, item.start), end: this.toVod(item, item.end) };
+  },
+
+  // A time on this timeline as VOD seconds, for one item (only a video's parts differ)
+  toVod(item, t) {
+    return item.offset != null ? round(item.vodStart + (t - item.offset)) : t;
+  },
+
+  // How far an item's edges can go, in this timeline's time: the start and end of the VOD
+  edgeBounds(item) {
+    if (item.offset != null) return { min: item.offset - item.vodStart, max: item.offset + (this.vodLength() - item.vodStart) };
+    return { min: 0, max: this.vodLength() };
   },
 
   // ---------- pointer ----------
@@ -328,6 +356,11 @@ export const editing = {
     if (row && row.userId === me?.id) this.activeRowId = row.id;
     const item = this.itemAt(x, y, rect.width);
 
+    if (this.linking && this.tool === "pointer") {
+      if (item) this.toggleLink(item);
+      return;
+    }
+
     if (this.tool === "cut") {
       if (item?.kind === "segment") this.split(item, t);
       else toast("Click a segment to cut it in two.");
@@ -346,7 +379,7 @@ export const editing = {
     // Player 1: a click on an item goes to its start; Player 2 (one item) goes where it's clicked
     this.seekTo(item && this.mode === "vod" ? item.start : t);
     // Dragging the item's body takes it somewhere else (onto Player 2, ...)
-    if (item) {
+    if (item && this.mode === "vod") {
       this.press = { kind: "item", item, startX: event.clientX, startY: event.clientY, canvas, pointerId: event.pointerId };
       canvas.setPointerCapture(event.pointerId);
     }
@@ -411,8 +444,9 @@ export const editing = {
       let start = item.start;
       let end = item.end;
       const limit = this.clipLimit(item);
-      if (edge === "start") start = Math.max(0, end - limit, Math.min(t, end - MIN_LENGTH));
-      else end = Math.min(this.length(), start + limit, Math.max(t, start + MIN_LENGTH));
+      const bounds = this.edgeBounds(item);
+      if (edge === "start") start = Math.max(bounds.min, end - limit, Math.min(t, end - MIN_LENGTH));
+      else end = Math.min(bounds.max, start + limit, Math.max(t, start + MIN_LENGTH));
       this.preview = { type: item.kind === "clip" ? "clip" : "marker", id: item.id, start, end };
       this.edgeTip = { time: edge === "start" ? start : end, clientX: event.clientX, clientY: event.clientY };
       this.dirty = true;
@@ -447,6 +481,10 @@ export const editing = {
     const item = this.itemAt(x, event.clientY - rect.top, rect.width);
     if (!item) return;
     this.select(item);
+    if (this.isVideoLayout()) {
+      openMenu(event.clientX, event.clientY, this.videoPartMenu(item));
+      return;
+    }
     const entries = [];
     if (this.canEditItem(item)) {
       entries.push({ icon: "pencil-simple", label: item.kind === "clip" ? "Rename" : "Edit title and color", run: () => this.editTitle(item) });
@@ -570,6 +608,16 @@ export const editing = {
   // Every time on the timeline a dragged edge can stick to. New kinds of timeline items must add theirs here.
   snapPoints(skip) {
     const points = [];
+    if (this.isVideoLayout()) {
+      // A video's parts, in video time
+      for (const item of this.videoItems(this.rows[0])) {
+        if (!(skip?.id === item.id && skip.edge === "start")) points.push(item.start);
+        if (!(skip?.id === item.id && skip.edge === "end")) points.push(item.end);
+      }
+      const now = this.getPosition();
+      if (now != null) points.push(now);
+      return points;
+    }
     for (const marker of this.markers) {
       if (!(skip?.type === "marker" && skip.id === marker.id && skip.edge === "start")) points.push(marker.seconds);
       if (marker.endSeconds != null && !(skip?.type === "marker" && skip.id === marker.id && skip.edge === "end")) points.push(marker.endSeconds);
@@ -728,7 +776,7 @@ export const editing = {
         this.selected = { type: "clip", id: target.id };
       } else {
         const before = markerBody(item.data);
-        const after = { ...before, seconds: start, endSeconds: end, cuts: null };
+        const after = { ...before, seconds: this.toVod(item, start), endSeconds: this.toVod(item, end), cuts: null };
         await this.putMarker(target.id, after);
         this.remember({ type: "change", ref: { id: target.id }, before, after });
         this.selected = { type: "marker", id: target.id };
@@ -965,6 +1013,10 @@ export const editing = {
   deleteSelected() {
     const item = this.selectedItem();
     if (!item) return;
+    if (this.isVideoLayout()) {
+      this.removeFromVideo(item);
+      return;
+    }
     if (!this.canDeleteItem(item)) {
       toast(`You can't delete this ${this.whatIs(item)}.`);
       return;
@@ -975,6 +1027,12 @@ export const editing = {
   // Esc: stop marking, close the title editor, or unselect
   escape() {
     if (this.mode === "item") return false;
+    if (this.linking) {
+      this.hooks.closeItemEditor?.();
+      this.linking = null;
+      this.changed();
+      return true;
+    }
     if (this.marking) {
       this.marking = null;
       this.changed();
@@ -985,6 +1043,193 @@ export const editing = {
       return true;
     }
     return false;
+  },
+
+  // ---------- videos (step 6) ----------
+
+  // Link tool: the title editor opens with an apply button; segments clicked on one of the member's rows are linked in
+  // the order they're clicked (click one again to take it out)
+  startLinking() {
+    if (!this.canCreate()) return;
+    if (this.linking) {
+      this.escape();
+      return;
+    }
+    this.marking = null;
+    this.linking = { rowId: null, ids: [] };
+    this.select(null);
+    this.openLinkEditor("");
+  },
+
+  openLinkEditor(title) {
+    this.changed();
+    this.hooks.openItemEditor({
+      title,
+      colors: false,
+      needsApply: true,
+      placeholder: "Video title, then click its segments in order",
+      onApply: (text) => this.saveLink(text),
+      onCancel: () => {
+        this.linking = null;
+        this.changed();
+      },
+    });
+  },
+
+  toggleLink(item) {
+    const link = this.linking;
+    if (item.kind !== "segment") {
+      toast(item.kind === "clip" ? "Only segments can be linked into a video." : "Only segments can be linked, not moments.");
+      return;
+    }
+    if (item.row.userId !== me?.id) {
+      toast("Link segments on your own rows.");
+      return;
+    }
+    if (link.ids.length && link.rowId !== item.row.id) {
+      toast("A video links segments from one row.");
+      return;
+    }
+    const at = link.ids.indexOf(item.id);
+    if (at >= 0) link.ids.splice(at, 1);
+    else link.ids.push(item.id);
+    link.rowId = link.ids.length ? item.row.id : null;
+    this.changed();
+  },
+
+  async saveLink(title) {
+    const link = this.linking;
+    if (!link) return;
+    if (!link.ids.length || !title) {
+      // The editor closed: open it again with what was typed
+      toast(!title ? "Give the video a title." : "Click the segments to link, in order.");
+      this.openLinkEditor(title);
+      return;
+    }
+    this.linking = null;
+    this.changed();
+    try {
+      const video = await api("POST", `/api/vods/${encodeURIComponent(this.vodId)}/videos`, { title, markerIds: link.ids });
+      this.hooks.onVideosChanged?.();
+      await this.load();
+      this.edited();
+      toast(`Made the video "${video.title}".`);
+      this.hooks.onCreated?.({ kind: "video", data: video });
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  },
+
+  // Someone else's video: view only, or with "edit anyone's entries" Edit original / Make a copy (the copy opens instead)
+  async videoEditTarget() {
+    const video = this.video;
+    if (!video || me?.support) return false;
+    if (!video.canEdit) {
+      toast(this.canAdd() ? "This video is view only. Right-click a part to make a copy on your row." : "This video is view only.");
+      return false;
+    }
+    if (video.userId === me?.id || !this.canAdd()) return true;
+    const choice = await chooseEditTarget({ what: "video", owner: video.createdBy });
+    if (!choice) return false;
+    if (choice === "original") return true;
+    await this.copyVideo();
+    return false;
+  },
+
+  async copyVideo() {
+    try {
+      const copy = await api("POST", `/api/videos/${this.video.id}/copy`, {});
+      this.hooks.onVideosChanged?.();
+      this.focusOn({ type: "video", id: copy.id });
+      toast("Copied the video to your row. Make the change on the copy.");
+      return copy;
+    } catch (error) {
+      toast(error.message, "error");
+      return null;
+    }
+  },
+
+  videoMarkerIds() {
+    return [...this.video.segments].sort((a, b) => a.position - b.position).map((s) => s.markerId);
+  },
+
+  async saveVideo(body) {
+    try {
+      await api("PUT", `/api/videos/${this.video.id}`, body);
+      this.hooks.onVideosChanged?.();
+    } catch (error) {
+      toast(error.message, "error");
+    }
+    await this.load();
+    this.edited();
+  },
+
+  videoPartMenu(item) {
+    const ids = this.videoMarkerIds();
+    const index = ids.indexOf(item.id);
+    const entries = [];
+    const editable = Boolean(this.video?.canEdit) && !me?.support;
+    if (this.canEditItem(item)) entries.push({ icon: "pencil-simple", label: "Edit title and color", run: () => this.editTitle(item) });
+    if (editable && index > 0) entries.push({ icon: "arrow-left", label: "Move earlier", run: () => this.moveVideoPart(item, -1) });
+    if (editable && index < ids.length - 1) entries.push({ icon: "arrow-right", label: "Move later", run: () => this.moveVideoPart(item, 1) });
+    if (editable && ids.length > 1) entries.push({ icon: "link-break", label: "Take out of the video", danger: true, run: () => this.removeFromVideo(item) });
+    if (!editable && this.canAdd() && this.video?.userId !== me?.id) entries.push({ icon: "copy", label: "Make a copy on my row", run: () => this.copyVideo() });
+    if (!entries.length) entries.push({ icon: "eye", label: "View only", run: () => {} });
+    return entries;
+  },
+
+  async moveVideoPart(item, step) {
+    if (!(await this.videoEditTarget())) return;
+    const ids = this.videoMarkerIds();
+    const index = ids.indexOf(item.id);
+    const to = index + step;
+    if (index < 0 || to < 0 || to >= ids.length) return;
+    [ids[index], ids[to]] = [ids[to], ids[index]];
+    await this.saveVideo({ markerIds: ids });
+  },
+
+  async removeFromVideo(item) {
+    const ids = this.videoMarkerIds();
+    if (ids.length < 2) {
+      toast("This is the video's only segment. Delete the video instead.");
+      return;
+    }
+    if (!(await this.videoEditTarget())) return;
+    await this.saveVideo({ markerIds: ids.filter((id) => id !== item.id) });
+  },
+
+  // Player 2's rename and delete for a video
+  editVideoTitle() {
+    if (!this.video) return;
+    this.hooks.openItemEditor({
+      title: this.video.title,
+      colors: false,
+      placeholder: "Video title",
+      onApply: async (title) => {
+        if (!title || title === this.video?.title) return;
+        if (!(await this.videoEditTarget())) return;
+        await this.saveVideo({ title });
+      },
+    });
+  },
+
+  async deleteVideo() {
+    const video = this.video;
+    if (!video?.canDelete || me?.support) return;
+    const ok = await confirmAction({
+      heading: "Delete this video?",
+      text: `"${video.title}" is deleted for the whole team. Its segments stay on the row.`,
+      confirm: "Delete",
+    });
+    if (!ok) return;
+    try {
+      await api("DELETE", `/api/videos/${video.id}`);
+      this.hooks.onVideosChanged?.();
+    } catch (error) {
+      toast(error.message, "error");
+    }
+    await this.load();
+    this.edited();
   },
 
   // ---------- server calls ----------
