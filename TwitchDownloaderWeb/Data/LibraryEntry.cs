@@ -117,5 +117,8 @@ namespace TwitchDownloaderWeb.Data
         /// </summary>
         public int? RowId { get; set; }
         public TimelineRow? Row { get; set; }
+
+        /// <summary>The clip this is a copy of (a member copied someone else's clip to their own row). No FK: the original may be deleted.</summary>
+        public int? CopiedFromEntryId { get; set; }
     }
 }

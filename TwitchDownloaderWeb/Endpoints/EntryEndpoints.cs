@@ -94,7 +94,11 @@ namespace TwitchDownloaderWeb.Endpoints
             EndSeconds = entry.EndTime?.TotalSeconds,
             FollowsMarkers = entry.FollowsMarkers,
             RowId = entry.RowId,
+            CopiedFromEntryId = entry.CopiedFromEntryId,
         };
+
+        /// <summary>The clip this one was copied from (see <see cref="CopyEndpoints"/>).</summary>
+        public int? CopiedFromEntryId { get; init; }
 
         /// <summary>The clip row it sits on in the VOD's timeline (see <see cref="TimelineRow"/>).</summary>
         public int? RowId { get; init; }

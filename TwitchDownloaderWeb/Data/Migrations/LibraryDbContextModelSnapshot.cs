@@ -154,6 +154,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("TEXT");
 
+                    b.Property<int?>("CopiedFromEntryId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<TimeSpan?>("EndTime")
                         .HasColumnType("TEXT");
 
@@ -805,6 +808,12 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .IsRequired()
                         .HasMaxLength(16)
                         .HasColumnType("TEXT");
+
+                    b.Property<int?>("CopiedFromEntryId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("CopiedFromMarkerId")
+                        .HasColumnType("INTEGER");
 
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("TEXT");
