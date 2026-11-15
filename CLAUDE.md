@@ -550,6 +550,18 @@ step next to the old page; `index.html` stays the old library until the new edit
   Export = one `POST /api/exports` for the whole list; a one-item export downloads by itself when ready. A refused request (400) marks the
   rows named in `errors["items[i]"]` (`api` errors carry the response body as `error.problem`). Items re-read their card when selected
   (a deleted one is marked gone).
+- **Vertical editor in Player 2** (step 9, `ui/vertical.js`): a clip in Player 2 gets the 9:16 toggle (E). Player 2 then takes the whole
+  width (`.vertical-mode`, Player 1 hidden) and shows the old page's editor on the clip's file (`/file?preview=true`, so cut-out parts are
+  already left out and trim times are seconds into the file): one or two crop boxes on the landscape video, a live canvas preview with the
+  split pill, a trim bar, Render (`POST /shortform`, polled) and the clip's vertical versions (play in the 9:16 frame, download, "Use these
+  settings", delete; "Matches" on the one made from what's on screen). It opens with the newest render's layout. Added: **layouts** (built-in
+  presets made for the video's shape, plus your own saved in `localStorage` `clipco.vertical.presets`; team-wide presets would need the
+  backend), **safe zones** overlay (TikTok / Shorts / Reels, approximate; `clipco.vertical.safeZone`), **snapping** of boxes to the video's
+  edges, middle and each other (shares `clipLibrary.snap`; Alt drags freely, dashed guides), a selected box moves with the arrow keys,
+  **undo/redo** of box/layout/split/trim changes (50 steps, page only), keys in keybinds.js scopes `vertical` / `vertical-box`. The Player 2
+  timeline stays below and follows the preview (`fileToVod` / `vodToFile` in `ui/editor.js` map file seconds over the clip's kept parts);
+  trimming or cutting the clip there reloads the file (`verticalEntryChanged`), and a clip without a file says why (long clips get "Make
+  the file", `POST /generate`). While it's open only the timeline's tool and zoom keys still work.
 - `editor.html?demo` fills sample cards (nothing is sent to the server) to try the shell.
 
 ### Twitch clips (`ClipInfoService`, `ClipFileService`)

@@ -9,8 +9,9 @@ import { setUpLibrary, showList, refreshClips, refreshVideos } from "./library.j
 import { MARKER_COLORS } from "./colors.js";
 import { MediaPlayer, formatClock } from "./media.js";
 import { Timeline } from "./timeline.js";
-import { skipCut, keptSeconds } from "./cuts.js";
+import { skipCut, keptSeconds, keptParts } from "./cuts.js";
 import { setUpExport, addToExport, exportShown, pausePreview } from "./export.js";
+import { setUpVertical, openVertical, closeVertical, verticalOpen, verticalEntryId, pauseVertical, verticalEntryChanged, handleVerticalKey, verticalTime, verticalSeek } from "./vertical.js";
 
 // Phosphor icons, bold weight, as <sl-icon library="ph" name="…">
 registerIconLibrary("ph", {
@@ -128,6 +129,7 @@ function showScreen(view) {
   // Only one player plays at a time: the screen left behind is paused
   if (view === "export") {
     for (const player of [player1, player2]) if (player?.ready && player.playing()) player.pause();
+    pauseVertical();
     exportShown();
   } else {
     pausePreview();
@@ -268,6 +270,7 @@ async function openInPlayer2({ kind, data }, { show = true } = {}) {
   const start = kind === "clip" ? (data.startSeconds ?? data.start ?? 0) : kind === "video" ? (firstPart?.startSeconds ?? 0) : data.seconds;
   p2Part = 0;
   const target = { type, id: data.id, vodId, kind, title: data.title ?? data.label ?? "" };
+  if (verticalOpen() && !(type === "clip" && verticalEntryId() === data.id)) toggleVertical(false);
   p2Item = target;
   $("p2-hint").hidden = true;
   $("p2-media").hidden = false;
@@ -295,6 +298,7 @@ async function openInPlayer2({ kind, data }, { show = true } = {}) {
 }
 
 function closePlayer2(message) {
+  toggleVertical(false);
   const kind = p2Item?.kind;
   p2Item = null;
   player2.close();
@@ -325,6 +329,10 @@ function videoParts() {
 
 // Player 2's position on its timeline: VOD seconds, or for a video the time into the video
 function p2Position() {
+  if (verticalOpen()) {
+    const t = verticalTime();
+    return t == null ? null : fileToVod(t);
+  }
   if (!player2.ready) return null;
   const position = player2.position();
   if (position == null || p2Item?.type !== "video") return position;
@@ -340,6 +348,11 @@ function p2Position() {
 }
 
 function p2Seek(seconds) {
+  if (verticalOpen()) {
+    const t = vodToFile(seconds);
+    if (t != null) verticalSeek(t);
+    return;
+  }
   if (p2Item?.type !== "video") {
     player2.seek(seconds);
     return;
@@ -351,6 +364,35 @@ function p2Seek(seconds) {
   p2Part = index;
   const part = parts[index];
   player2.seek(part.vodStart + Math.min(Math.max(seconds - part.offset, 0), part.vodEnd - part.vodStart));
+}
+
+// The vertical editor plays the clip's file: its kept parts back to back. Seconds into the file <-> VOD seconds, so the
+// Player 2 timeline below shows (and seeks) where the vertical preview is.
+function clipParts() {
+  const item = timeline2.focusItem();
+  return item && item.end != null ? keptParts(item.start, item.end, item.cuts ?? []) : [];
+}
+
+function fileToVod(t) {
+  const parts = clipParts();
+  let left = t;
+  for (const part of parts) {
+    const length = part.end - part.start;
+    if (left <= length) return part.start + left;
+    left -= length;
+  }
+  return parts.length ? parts[parts.length - 1].end : null;
+}
+
+function vodToFile(seconds) {
+  const parts = clipParts();
+  if (!parts.length) return null;
+  let offset = 0;
+  for (const part of parts) {
+    if (seconds < part.end) return offset + Math.max(seconds - part.start, 0);
+    offset += part.end - part.start;
+  }
+  return offset;
 }
 
 // Cut-out parts are skipped while playing: jumps over the one at position (or stops when it runs to end). true = jumped.
@@ -429,6 +471,9 @@ function renderPlayer1() {
 
 function renderPlayer2() {
   renderPlayerButtons(2, player2);
+  // The vertical editor works on a clip's file
+  $("p2-vertical").hidden = p2Item?.kind !== "clip";
+  $("p2-vertical").disabled = p2Item?.kind !== "clip" || DEMO;
   if (p2Item?.type === "video") {
     const video = timeline2.video;
     const editable = Boolean(video) && !me?.support;
@@ -465,6 +510,7 @@ function renderP2Info() {
 // The range Player 2 plays changed (trimmed here or on Player 1): a running preview stops at the new end
 function onP2FocusChanged(info) {
   if (!p2Item || !info) return;
+  verticalEntryChanged();
   p2Item.title = info.title;
   if (p2Item.type !== "video" && player2.stopAt != null && info.end != null) player2.stopAt = info.end;
   renderP2Info();
@@ -593,17 +639,22 @@ function setUpPlayer2() {
     onVideosChanged: refreshVideos,
     onEdited: () => {
       if (timeline.vodId && timeline.vodId === timeline2.vodId) timeline.load();
+      verticalEntryChanged();
     },
     onFocusChanged: onP2FocusChanged,
     // The first change to someone else's item made a copy: Player 2 goes on with it
     onFocusMoved: (focus) => {
-      if (p2Item) Object.assign(p2Item, { type: focus.type, id: focus.id });
+      if (!p2Item) return;
+      Object.assign(p2Item, { type: focus.type, id: focus.id });
+      if (verticalOpen() && focus.type === "clip") openVertical(focus.id);
     },
     onFocusGone: (message) => {
       if (p2Item) closePlayer2(message);
     },
   });
   wirePlayerButtons(2, "p2");
+  setUpVertical($("player2"), { onExit: () => toggleVertical(false) });
+  $("p2-vertical").addEventListener("click", () => toggleVertical(true));
   $("p2-show").addEventListener("click", showInPlayer1);
   $("p2-rename").addEventListener("click", () => {
     if (p2Item?.type === "video") {
@@ -651,6 +702,30 @@ async function showInPlayer1() {
   }
   timelineTabs.pick("p1");
   timeline.reveal(focus, item.range ?? null);
+}
+
+// ---------- vertical (9:16) editor in Player 2 (ui/vertical.js) ----------
+//
+// A clip in Player 2 can turn the player into the vertical editor: Player 2 takes the whole width and shows the crop
+// boxes, the 9:16 preview and the renders; the Player 2 timeline stays below (trims and cut-out parts there change the
+// clip's file, which the editor reloads).
+
+function toggleVertical(on = !verticalOpen()) {
+  if (!on) {
+    if (!verticalOpen()) return;
+    closeVertical();
+    $("view-editor").classList.remove("vertical-mode");
+    return;
+  }
+  if (p2Item?.kind !== "clip") {
+    toast("Load a clip in Player 2 to make a vertical version of it.");
+    return;
+  }
+  player1.pause();
+  player2.pause();
+  $("view-editor").classList.add("vertical-mode");
+  timelineTabs.pick("p2");
+  openVertical(p2Item.id);
 }
 
 // ---------- tools bar (works on the timeline whose tab is open) ----------
@@ -784,11 +859,16 @@ function isTyping(event) {
   });
 }
 
+const VERTICAL_PASS_KEYS = new Set(["toolPointer", "toolCut", "toolZoom", "toolHand", "zoomIn", "zoomOut", "fit", "escape"]);
+
 function setUpKeys() {
   document.addEventListener("keydown", (event) => {
     if ($("view-editor").hidden || isTyping(event) || document.querySelector("sl-dialog[open]")) return;
+    // The vertical editor has its own keys; of the player's, only the timeline's tools and zoom still work
+    if (handleVerticalKey(event)) return;
     const id = keybindFor("player", event);
     if (!id) return;
+    if (verticalOpen() && !VERTICAL_PASS_KEYS.has(id)) return;
     const { player, timeline: t } = pair();
     const ready = player.ready;
     const on = Boolean(t.vodId);
@@ -824,6 +904,7 @@ function setUpKeys() {
       redo: () => on && t.redo(),
       deleteSelected: () => on && t.deleteSelected(),
       escape: () => on && t.escape(),
+      verticalToggle: () => toggleVertical(),
     }[id];
     if (!run) return;
     // Space on a focused button would also click it

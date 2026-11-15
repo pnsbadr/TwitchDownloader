@@ -13,7 +13,8 @@
 //   player        the Watch / Review player while it (or its control bar) has focus
 //   player-mouse  mouse on the player's timeline
 //   trim          a focused handle of the review dialog's trim bar (only with the Twitch player, which has no timeline of ours)
-//   vertical      a focused handle in the vertical (9:16) editor
+//   vertical      the vertical (9:16) editor (new editor: Player 2's vertical mode; old page: a focused handle)
+//   vertical-box  the selected crop box in the new editor's vertical mode
 //   form          a text field in a small form (marker form, rename)
 
 const KEYBINDS = [
@@ -42,6 +43,7 @@ const KEYBINDS = [
   { id: "undo", scope: "player", keys: ["Ctrl+Z"], description: "Undo your last marker/segment change (up to 10)" },
   { id: "redo", scope: "player", keys: ["Ctrl+Shift+Z", "Ctrl+Y"], description: "Redo" },
   { id: "deleteSelected", scope: "player", keys: ["Delete", "Backspace"], description: "Delete the selected segment (new editor: also a selected marker or clip)" },
+  { id: "verticalToggle", scope: "player", keys: ["E"], description: "Turn Player 2 into the vertical (9:16) editor (a clip in Player 2)" },
   { id: "escape", scope: "player", keys: ["Escape"], description: "Cancel marking a segment or clip, or unselect the selected segment or card" },
 
   { id: "wheelZoom", scope: "player-mouse", keys: ["Wheel"], description: "Zoom the timeline around the mouse" },
@@ -59,6 +61,19 @@ const KEYBINDS = [
   { id: "verticalTrim", scope: "vertical", keys: ["ArrowLeft", "ArrowRight"], description: "Move the focused trim handle 0.1 s" },
   { id: "verticalTrimBig", scope: "vertical", keys: ["Shift+ArrowLeft", "Shift+ArrowRight"], description: "Move the focused trim handle 1 s" },
   { id: "verticalSplit", scope: "vertical", keys: ["ArrowUp", "ArrowDown"], description: "Move the top/bottom split" },
+  { id: "verticalPlay", scope: "vertical", keys: ["Space", "K"], description: "Play / pause the part that will be rendered" },
+  { id: "verticalStart", scope: "vertical", keys: ["I"], description: "Start the render at the playhead" },
+  { id: "verticalEnd", scope: "vertical", keys: ["O"], description: "End the render at the playhead" },
+  { id: "verticalOneBox", scope: "vertical", keys: ["1"], description: "One box" },
+  { id: "verticalTwoBoxes", scope: "vertical", keys: ["2"], description: "Two boxes (top and bottom)" },
+  { id: "verticalSafeZones", scope: "vertical", keys: ["G"], description: "Safe zones: none, TikTok, Shorts, Reels" },
+  { id: "verticalSnap", scope: "vertical", keys: ["N"], description: "Snapping on/off: boxes stick to the video's edges and middle and to each other" },
+  { id: "verticalUndo", scope: "vertical", keys: ["Ctrl+Z"], description: "Undo a box, layout or trim change" },
+  { id: "verticalRedo", scope: "vertical", keys: ["Ctrl+Shift+Z", "Ctrl+Y"], description: "Redo" },
+  { id: "verticalRender", scope: "vertical", keys: ["Ctrl+Enter"], description: "Render the vertical video" },
+  { id: "verticalExit", scope: "vertical", keys: ["E"], description: "Back to the normal player" },
+  { id: "verticalNudge", scope: "vertical-box", keys: ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"], description: "Move the selected box a little" },
+  { id: "verticalNudgeBig", scope: "vertical-box", keys: ["Shift+ArrowLeft", "Shift+ArrowRight", "Shift+ArrowUp", "Shift+ArrowDown"], description: "Move the selected box more" },
 
   { id: "formSave", scope: "form", keys: ["Enter"], description: "Save" },
   { id: "formCancel", scope: "form", keys: ["Escape"], description: "Cancel" },
