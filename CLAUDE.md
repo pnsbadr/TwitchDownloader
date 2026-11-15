@@ -514,6 +514,10 @@ step next to the old page; `index.html` stays the old library until the new edit
   deletes older/expired ones, leftovers, and folders of deleted entries. One render at a time; job state is in memory
   (an interrupted render is just gone). Deleting the entry deletes its folder. The editor reopens with the newest render's layout.
   Audited `shortform.rendered` / `shortform.failed`. No chat overlay yet.
+- **Who made a render** (badrfly, 2026-11-15, frontend rework): the `.json` keeps `createdByUserId` (null for older renders); renders in
+  `GET /shortform` carry `createdByUserId`/`createdBy`. Exporting a clip as vertical uses the member's **own newest** render, or with
+  `TeamPermission.DownloadTeamVerticals` ("Download team vertical entries", bit 18) any of the team's renders of that clip they pick; neither
+  → the page grays the checkbox out. Downloading a render from the editor's list is still `ViewLibrary`.
 
 ### Gotchas
 - Core silently falls back to the best quality when the requested one doesn't exist — always validate first.
