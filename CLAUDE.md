@@ -152,7 +152,14 @@ Plan and badrfly's decisions: Claude Doc "Logins, teams and permissions plan". B
   links (`AccountLinks.ChannelsJson`, checked on Twitch when the link is made, added when it's used) and on the Admin page's Teams tab
   (`/api/admin/teams/{id}/channels`, audited `channel.added`/`channel.removed`). `TeamChannelAccess` decides which VODs a team may open,
   **strictly**: the VOD's channel (GQL owner, cached 12 h; matched by Twitch user ID, then login) must be assigned; work already on a VOD
-  doesn't open it. Removing a channel takes a mode (badrfly): `?mode=revoke` deletes the row (every VOD closes now, work included) and
+  doesn't open it. Removing a channel takes a mode (badrfly): `?mode=revoke` deletes the row (every VOD closes now, work included) **and hides
+  the team's work on its VODs** (badrfly 2026-11-15, "Hide it all": `RevokedChannels` + `HiddenVods`, the VODs the team had entries, markers,
+  rows, videos or exports on, found per VOD via Twitch (`TeamChannelAccess.GetVodChannelAsync`; a VOD gone from Twitch goes by the channel
+  name on its entries/videos; Twitch unreachable → 502, nothing changes). The team query filters on entries, markers, rows, videos, segment
+  downloads and exports leave out hidden VODs (an export with any hidden item is hidden whole; old Twitch clips with `VodId` 0 by
+  `ChannelName`), so lists drop them and by-ID calls 404; background jobs still see them. Nothing is deleted: assigning the channel again
+  (POST or a link, `AdminEndpoints.Unhide`) deletes the `RevokedChannels` row and its `HiddenVods`. `GET /api/admin/teams` lists
+  `revokedChannels` (Admin page: "Revoked" with an Assign again button)) and
   `?mode=future` sets `SavedChannel.AccessEndedAtUtc` (no new VODs and gone from the team's lists and audio watching; VODs the team has
   entries or markers on stay open). Assigning it again (POST or a link) clears it. Every team endpoint taking a VOD ID from the
   client declares `.RequireChannelVod()` (route `{vodId}`) or checks in the handler (`/api/vods/info`, `POST /api/entries`, channel VOD

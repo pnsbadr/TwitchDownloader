@@ -129,6 +129,70 @@ namespace TwitchDownloaderWeb.Tests
         }
 
         [Fact]
+        public async Task RevokeHidesTheTeamsWorkUntilTheChannelIsAssignedAgain()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            var (owner, _, teamId, _) = await TeamWithMemberAsync("ch4");
+            var staff = await StaffClientAsync();
+            _vods.Vods[401] = new VodDetails(401, "Ellsya stream", "Ellsya", 3600, DateTime.UtcNow.AddDays(-1), null, ChannelLogin: "ellsya");
+            var added = await staff.PostAsJsonAsync($"/api/admin/teams/{teamId}/channels", new { login = "ellsya" }, ct);
+            var channelId = (await added.Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("id").GetInt32();
+
+            // Work on an Ellsya VOD (a segment in a video, a clip), on a deleted Ellsya VOD, an old Ellsya Twitch clip, and on an Arky VOD
+            var segment = await (await owner.PostAsJsonAsync("/api/vods/401/markers", new { seconds = 5, endSeconds = 20, label = "bit" }, ct))
+                .Content.ReadFromJsonAsync<JsonElement>(ct);
+            var segmentId = segment.GetProperty("id").GetInt32();
+            var video = await owner.PostAsJsonAsync("/api/vods/401/videos", new { title = "Ellsya video", markerIds = new[] { segmentId } }, ct);
+            Assert.Equal(HttpStatusCode.Created, video.StatusCode);
+            var videoId = (await video.Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("id").GetInt32();
+            var ellsyaClip = AddEntry(teamId, null, "Ellsya clip", 401);
+            var goneVodClip = AddEntry(teamId, null, "Clip of a deleted VOD", FakeVodDetails.MissingFrom + 1);
+            var twitchClip = AddEntry(teamId, null, "Old Twitch clip", 0);
+            var arkyClip = AddEntry(teamId, null, "Arky clip", 400);
+            using (var scope = _factory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+                foreach (var entry in db.Entries.Where(x => x.Id == goneVodClip || x.Id == twitchClip))
+                {
+                    entry.ChannelName = "Ellsya";
+                    if (entry.Id == twitchClip)
+                        entry.Kind = EntryKind.Clip;
+                }
+                db.SaveChanges();
+            }
+
+            async Task<List<string>> Titles() =>
+                (await GetJsonAsync(owner, "/api/entries")).EnumerateArray().Select(x => x.GetProperty("title").GetString()!).ToList();
+            Assert.Equal(4, (await Titles()).Count(x => x != "Old clip"));
+
+            Assert.Equal(HttpStatusCode.NoContent, (await staff.DeleteAsync($"/api/admin/teams/{teamId}/channels/{channelId}?mode=revoke", ct)).StatusCode);
+
+            // Everything from Ellsya is gone for the team; Arky's work stays
+            Assert.Equal(["Arky clip"], await Titles());
+            Assert.Equal(HttpStatusCode.NotFound, (await owner.GetAsync($"/api/entries/{ellsyaClip}", ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, (await owner.GetAsync($"/api/entries/{ellsyaClip}/file", ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, (await owner.PostAsync($"/api/entries/{ellsyaClip}/generate", null, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, (await owner.GetAsync($"/api/videos/{videoId}", ct)).StatusCode);
+            Assert.Empty((await GetJsonAsync(owner, "/api/videos")).EnumerateArray());
+            Assert.Empty((await GetJsonAsync(owner, "/api/markers?vodIds=401")).EnumerateArray());
+            Assert.Equal(HttpStatusCode.NotFound, (await owner.DeleteAsync($"/api/markers/{segmentId}", ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await owner.GetAsync("/api/vods/401/timeline", ct)).StatusCode);
+
+            var team = (await GetJsonAsync(staff, "/api/admin/teams")).EnumerateArray().Single(x => x.GetProperty("id").GetInt32() == teamId);
+            var revoked = Assert.Single(team.GetProperty("revokedChannels").EnumerateArray());
+            Assert.Equal("ellsya", revoked.GetProperty("login").GetString());
+            Assert.Equal(2, revoked.GetProperty("hiddenVods").GetInt32()); // 401 and the deleted VOD
+
+            // Nothing was deleted: assigning the channel again brings it all back
+            Assert.Equal(HttpStatusCode.Created, (await staff.PostAsJsonAsync($"/api/admin/teams/{teamId}/channels", new { login = "ellsya" }, ct)).StatusCode);
+            Assert.Equal(4, (await Titles()).Count(x => x != "Old clip"));
+            Assert.Equal(HttpStatusCode.OK, (await owner.GetAsync($"/api/videos/{videoId}", ct)).StatusCode);
+            Assert.Single((await GetJsonAsync(owner, "/api/markers?vodIds=401")).EnumerateArray());
+            team = (await GetJsonAsync(staff, "/api/admin/teams")).EnumerateArray().Single(x => x.GetProperty("id").GetInt32() == teamId);
+            Assert.Empty(team.GetProperty("revokedChannels").EnumerateArray());
+        }
+
+        [Fact]
         public async Task OnlyStaffWithThePermissionAssignChannels()
         {
             var ct = TestContext.Current.CancellationToken;

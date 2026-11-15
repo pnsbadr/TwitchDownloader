@@ -260,6 +260,30 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.ToTable("ExportItems");
                 });
 
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.HiddenVod", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("RevokedChannelId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("TeamId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("VodId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RevokedChannelId");
+
+                    b.HasIndex("TeamId", "VodId");
+
+                    b.ToTable("HiddenVods");
+                });
+
             modelBuilder.Entity("TwitchDownloaderWeb.Data.LibraryEntry", b =>
                 {
                     b.Property<int>("Id")
@@ -458,6 +482,39 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("RescuedAudioSegments");
+                });
+
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.RevokedChannel", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Login")
+                        .IsRequired()
+                        .HasMaxLength(25)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("RevokedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("TeamId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("TwitchUserId")
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TeamId");
+
+                    b.ToTable("RevokedChannels");
                 });
 
             modelBuilder.Entity("TwitchDownloaderWeb.Data.SavedChannel", b =>
@@ -1100,6 +1157,15 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.HiddenVod", b =>
+                {
+                    b.HasOne("TwitchDownloaderWeb.Data.RevokedChannel", null)
+                        .WithMany("HiddenVods")
+                        .HasForeignKey("RevokedChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("TwitchDownloaderWeb.Data.LibraryEntry", b =>
                 {
                     b.HasOne("TwitchDownloaderWeb.Data.TimelineRow", "Row")
@@ -1117,6 +1183,15 @@ namespace TwitchDownloaderWeb.Data.Migrations
                 });
 
             modelBuilder.Entity("TwitchDownloaderWeb.Data.MemberVod", b =>
+                {
+                    b.HasOne("TwitchDownloaderWeb.Data.Team", null)
+                        .WithMany()
+                        .HasForeignKey("TeamId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.RevokedChannel", b =>
                 {
                     b.HasOne("TwitchDownloaderWeb.Data.Team", null)
                         .WithMany()
@@ -1257,6 +1332,11 @@ namespace TwitchDownloaderWeb.Data.Migrations
             modelBuilder.Entity("TwitchDownloaderWeb.Data.ExportBatch", b =>
                 {
                     b.Navigation("Items");
+                });
+
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.RevokedChannel", b =>
+                {
+                    b.Navigation("HiddenVods");
                 });
 
             modelBuilder.Entity("TwitchDownloaderWeb.Data.SegmentExport", b =>
