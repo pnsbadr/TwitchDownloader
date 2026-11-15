@@ -35,7 +35,7 @@ const KEYBINDS = [
   { id: "zoomOut", scope: "player", keys: ["-"], description: "Zoom the timeline out" },
   { id: "fit", scope: "player", keys: ["0"], description: "Show the whole VOD (in a short clip's review: its 5-minute window)" },
   { id: "toolPointer", scope: "player", keys: ["V"], description: "Pointer tool: click to seek, click a segment to select it" },
-  { id: "toolCut", scope: "player", keys: ["C"], description: "Cut tool: click a segment to split it in two" },
+  { id: "toolCut", scope: "player", keys: ["C"], description: "Cut tool: click a segment to split it in two (Player 1), drag across a part to cut it out (Player 2)" },
   { id: "toolZoom", scope: "player", keys: ["Z"], description: "Zoom tool: click the timeline to zoom in, right click to zoom out" },
   { id: "toggleSnap", scope: "player", keys: ["N"], description: "Snapping on/off: dragged edges stick to markers, segments, cards and the playhead" },
   { id: "toolHand", scope: "player", keys: ["H"], description: "Hand tool: drag the zoomed timeline to scroll it (only moves the view)" },

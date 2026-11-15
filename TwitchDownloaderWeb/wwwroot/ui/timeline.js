@@ -273,10 +273,12 @@ export class Timeline {
       const vodEnd = marker?.endSeconds ?? segment.endSeconds;
       const length = vodEnd - vodStart;
       const shift = (cut) => ({ start: offset + cut.start - vodStart, end: offset + cut.end - vodStart });
+      const ownCutsVod = marker?.cuts ?? segment.cuts ?? [];
+      const videoCutsVod = segment.videoCuts ?? [];
       let item = {
         kind: "segment", id: segment.markerId, start: offset, end: offset + length, offset, vodStart, vodEnd,
         title: marker?.label ?? segment.label, color: marker?.color ?? segment.color, by: marker?.createdBy ?? video.createdBy,
-        cuts: [...(segment.cuts ?? []), ...(segment.videoCuts ?? [])].map(shift), row, videoIndex: index + 1,
+        cuts: [...ownCutsVod, ...videoCutsVod].map(shift), ownCutsVod, videoCutsVod, row, videoIndex: index + 1,
         data: marker ?? { id: segment.markerId, seconds: vodStart, endSeconds: vodEnd, label: segment.label, color: segment.color, canEdit: false, canDelete: false },
       };
       if (preview && preview.type === "marker" && preview.id === item.id) item = { ...item, start: preview.start, end: preview.end };
@@ -287,7 +289,9 @@ export class Timeline {
 
   // The video's parts in play order, in VOD seconds (Player 2 plays them one after the other)
   videoParts() {
-    return this.isVideoLayout() ? this.videoItems(this.rows[0]).map((item) => ({ id: item.id, offset: item.offset, vodStart: item.vodStart, vodEnd: item.vodEnd })) : [];
+    return this.isVideoLayout() ? this.videoItems(this.rows[0]).map((item) => ({
+      id: item.id, offset: item.offset, vodStart: item.vodStart, vodEnd: item.vodEnd, cuts: [...item.ownCutsVod, ...item.videoCutsVod],
+    })) : [];
   }
 
   // Player 2's item as drawn (with an edge being dragged or a trim waiting to be saved)
@@ -681,7 +685,7 @@ export class Timeline {
     if (this.isVideoLayout()) return this.videoItems(row);
     const preview = this.preview ?? (this.pendingTrim ? { type: "clip", ...this.pendingTrim } : null);
     const moved = (type, item) => (preview && preview.type === type && preview.id === item.id
-      ? { ...item, start: preview.start, end: preview.end }
+      ? { ...item, start: preview.start, end: preview.end, ...(preview.cuts !== undefined ? { cuts: preview.cuts ?? [] } : {}) }
       : item);
     if (/clip/i.test(row.kind)) {
       return this.clips.filter((c) => c.rowId === row.id).map((c) => moved("clip", {
@@ -711,7 +715,7 @@ export class Timeline {
     const tip = this.tip;
     // While an edge is dragged the tip shows only that edge's time
     if (this.edgeTip) {
-      tip.replaceChildren(el("div", { class: "num" }, formatClock(this.edgeTip.time)));
+      tip.replaceChildren(el("div", { class: "num" }, this.edgeTip.text ?? formatClock(this.edgeTip.time)));
       tip.hidden = false;
       tip.style.left = `${this.edgeTip.clientX + 12}px`;
       tip.style.top = `${this.edgeTip.clientY + 16}px`;
@@ -730,6 +734,8 @@ export class Timeline {
     if (item) {
       const range = item.end != null ? `${formatDuration(item.start, { short: false })} – ${formatDuration(item.end, { short: false })}` : `at ${formatDuration(item.start, { short: false })}`;
       lines.push(`${item.title || { clip: "Clip", segment: "Segment", moment: "Marker" }[item.kind]} · ${range}`);
+      const cut = (item.cuts ?? []).find((c) => t >= c.start && t < c.end);
+      if (cut) lines.push(`Cut out ${formatDuration(cut.start, { short: false })} – ${formatDuration(cut.end, { short: false })} · left out of files`);
       if (item.videoIndex) lines.push(`Part ${item.videoIndex} · VOD ${formatDuration(item.vodStart, { short: false })} – ${formatDuration(item.vodEnd, { short: false })}`);
       for (const video of item.videos ?? []) lines.push(`In video "${video.title}" (${video.position} of ${video.count})`);
       if (item.by) lines.push(`by ${item.by}${this.canEditItem(item) ? "" : " · view only"}`);
@@ -838,6 +844,7 @@ export class Timeline {
       ctx.globalAlpha = 1;
     });
     this.drawPending(ctx, width, now);
+    if (this.cutDrag) this.drawCutDrag(ctx, width);
     // The row a dragged item would land on
     const dropIndex = this.dropRowId == null ? -1 : this.rows.findIndex((row) => row.id === this.dropRowId);
     if (dropIndex >= 0) {
@@ -895,6 +902,20 @@ export class Timeline {
         ctx.fillRect(x - 2, y + ROW_HEIGHT / 2 - 7, 4, 14);
       }
     }
+    ctx.restore();
+  }
+
+  // Player 2's cut tool: the part being dragged across (dark, red dashed outline)
+  drawCutDrag(ctx, width) {
+    const x1 = this.timeToX(this.cutDrag.start, width);
+    const x2 = this.timeToX(this.cutDrag.end, width);
+    ctx.save();
+    ctx.fillStyle = "rgb(0 0 0 / 0.55)";
+    ctx.fillRect(x1, 4, Math.max(1, x2 - x1), ROW_HEIGHT - 8);
+    ctx.strokeStyle = "#ff6b6b";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 4]);
+    ctx.strokeRect(x1, 4, Math.max(1, x2 - x1), ROW_HEIGHT - 8);
     ctx.restore();
   }
 
