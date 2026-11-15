@@ -2,7 +2,7 @@
 // menu and the export icon. The same panel is used on the Editor and Export screens.
 //
 // VODs come only from the channels the app Owner assigned to the team (GET /api/channels, then /api/channels/{login}/vods).
-// Clips are the team's library entries (GET /api/entries). Videos (linked segments) arrive with backend B4.
+// Clips are the team's library entries (GET /api/entries); videos are segments linked on one row (GET /api/videos).
 
 import { $, el, api, me, can, formatDate, formatDuration, loadSetting, saveSetting, toast, iconButton, withTooltip } from "./core.js";
 import { draggable } from "./drag.js";
@@ -27,6 +27,8 @@ const state = {
   clipsError: "",
   clipFilter: { search: "", sort: loadSetting("clipco.library.sort", "dateAdded"), order: "desc", last24h: false, day: "" },
   videos: [],
+  videosLoaded: false,
+  videosError: "",
 };
 
 let handlers = { onLoad: () => {}, onExport: () => {} };
@@ -54,6 +56,7 @@ function showSample(sample) {
   state.clips = sample.clips;
   state.clipsLoaded = true;
   state.videos = sample.videos;
+  state.videosLoaded = true;
   renderChannelPicker();
   render();
 }
@@ -64,6 +67,7 @@ export function showList(list) {
   renderFilter();
   render();
   if (list === "clips" && !state.clipsLoaded) loadClips();
+  if (list === "videos" && !state.videosLoaded) loadVideos();
 }
 
 // ---------- loading ----------
@@ -163,6 +167,22 @@ function schedulePoll() {
   if (busy) pollTimer = setTimeout(loadClips, POLL_MS);
 }
 
+// The team's videos (segments linked on one row), newest first
+async function loadVideos() {
+  try {
+    state.videos = await api("GET", "/api/videos?limit=500");
+    state.videosError = "";
+  } catch (error) {
+    state.videosError = error.message;
+  }
+  state.videosLoaded = true;
+  if (state.list === "videos") render();
+}
+
+export function refreshVideos() {
+  return loadVideos();
+}
+
 export function refreshClips() {
   return loadClips();
 }
@@ -173,7 +193,7 @@ const EMPTY = {
   vods: () => state.vodsError || (state.channels.length
     ? (state.vodsLoading ? "Loading VODs…" : "No VODs here yet.")
     : "Your team has no channels yet. The app owner assigns them."),
-  videos: () => "Videos you link from segments will be listed here.",
+  videos: () => state.videosError || (state.videosLoaded ? "No videos yet. Link segments on a VOD's timeline to make one." : "Loading videos…"),
   clips: () => state.clipsError || (state.clipsLoaded ? (filtersOn() ? "No clips match the filter." : "No clips yet.") : "Loading clips…"),
 };
 
@@ -370,7 +390,7 @@ export async function deleteClip(entry) {
   }
 }
 
-// --- videos (backend B4) ---
+// --- videos: segments linked on one row (length, the VOD's date, who made it) ---
 
 function videoCard(video) {
   const item = { ...video, kind: "video" };
@@ -385,8 +405,37 @@ function videoCard(video) {
     menu: () => [
       { label: "Load in Player 2", icon: "film-strip", run: () => handlers.onLoad({ kind: "video", data: item }) },
       { label: "Export", icon: "download-simple", run: () => handlers.onExport({ kind: "video", data: item }) },
-    ],
+      video.canEdit && { label: "Rename", icon: "pencil-simple", run: () => renameVideo(item) },
+      video.canDelete && { label: "Delete", icon: "trash", danger: true, run: () => deleteVideo(item) },
+    ].filter(Boolean),
   });
+}
+
+export async function renameVideo(video) {
+  const title = await askText({ heading: "Rename video", label: "Title", value: video.title, confirm: "Rename", maxLength: 200 });
+  if (title === null || title.trim() === video.title) return;
+  try {
+    await api("PUT", `/api/videos/${video.id}`, { title: title.trim() });
+    await loadVideos();
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+export async function deleteVideo(video) {
+  const ok = await confirmAction({
+    heading: "Delete video?",
+    text: `"${video.title}" is deleted for the whole team. Its segments stay on the timeline.`,
+    confirm: "Delete",
+  });
+  if (!ok) return;
+  try {
+    await api("DELETE", `/api/videos/${video.id}`);
+    toast(`Deleted "${video.title}".`);
+    await loadVideos();
+  } catch (error) {
+    toast(error.message, "error");
+  }
 }
 
 // ---------- filter popover ----------

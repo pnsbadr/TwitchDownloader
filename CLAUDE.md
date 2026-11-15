@@ -433,7 +433,7 @@ step next to the old page; `index.html` stays the old library until the new edit
   20 per page, more on scroll; a channel picker when the team has 2+, saved in `clipco.library.channel`). GQL lists have no live flag, so the
   newest VOD (if under 2 days old) is checked with `/api/vods/info` (`isLive` → LIVE badge). VOD cards show only Twitch's info plus the
   Save audio icon (same rule as the old page) or the audio status icon. CLIPS = the team's library entries (`GET /api/entries`, polled while
-  downloading): title, length, VOD date, creator; old Twitch clips get a "Twitch" tag and reference-only entries "Long". VIDEOS waits on B4.
+  downloading): title, length, VOD date, creator; old Twitch clips get a "Twitch" tag and reference-only entries "Long". VIDEOS = `GET /api/videos` (rename / delete by `canEdit`/`canDelete`).
   Filter popover (funnel icon): VODs = search loaded titles + broadcasts/highlights/uploads; clips = server search, sort field + order, Last
   24 hours or one day (`ui/dates.js`, midnights in the viewer's time zone, filtered on the sort field). Double-click/Enter loads a card in its
   player; right-click (or the Menu key) opens Load / Export / Rename / Delete (by permission; `ui/dialogs.js` `askText`/`confirmAction`).
