@@ -494,7 +494,17 @@ step next to the old page; `index.html` stays the old library until the new edit
   rows; row headers are DOM (delete checkbox when allowed, kind icon, name (double-click renames own, `PUT /api/rows/{id}`), owner, hide / solo /
   lock (page only)). Footer: add video row / clip row (`POST /api/vods/{id}/rows`), delete checked rows, zoom slider (log scale, min 10 s), Fit.
   Click seeks (on an item: to its start), wheel zooms, Shift+wheel pans; the view follows the playhead until panned. Segments hatched with
-  brackets, moments a line + triangle, clips solid violet bars (reference ones translucent). Editing is step 3b.
+  brackets, moments a line + triangle, clips solid violet bars (reference ones translucent), cut-out parts darker.
+- **Timeline editing** (`ui/timeline-edit.js`, mixed into `Timeline`, step 3b): tools bar tools Pointer / Cut / Zoom / Hand (V/C/Z/H), snapping (N,
+  `clipLibrary.snap`, 8 px; **new kinds of timeline items must add their times to `snapPoints()`**), undo/redo (last 10 per VOD, this tab:
+  marker add/delete/change/split and clip re-trims). Pointer: click selects (white outline) and seeks; only the selected item's edges drag
+  (segments, and reference-only VOD clips via `PUT /trim`; stored clips are trimmed in Player 2); I/O set them at the playhead; Space plays the
+  selection, Shift+Space its last 3 s; Del deletes; double-click or right-click → title/color. S / X mark a segment / clip (start, then end,
+  dashed preview; clips capped at `maxStoredClipSeconds`), M a moment; the tools bar's title/color editor names it and it's saved on the
+  member's own row clicked last (else their first; locked rows are skipped). Others' items: view only; with `EditAnyEntries` every change asks
+  **Edit original / Make a copy** (`chooseEditTarget`, Enter = copy); right-click → "Make a copy on my row" (`POST .../copy`). Locked rows
+  (page only) can't be edited. Hooks to `editor.js`: `openItemEditor` (`colors: false` for clips, `onColor` live preview), `onChange`
+  (`renderTools`), `onClipsChanged` (library refresh), `onCreated` (Player 2, step 4). The right-click menu is `ui/menu.js` (shared with cards).
 - `editor.html?demo` fills sample cards (nothing is sent to the server) to try the shell.
 
 ### Twitch clips (`ClipInfoService`, `ClipFileService`)

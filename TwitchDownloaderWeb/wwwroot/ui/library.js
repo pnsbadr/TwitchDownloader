@@ -8,6 +8,7 @@ import { $, el, api, me, can, formatDate, formatDuration, loadSetting, saveSetti
 import { draggable } from "./drag.js";
 import { dayRange, todayIn, viewerTimeZone } from "./dates.js";
 import { askText, confirmAction } from "./dialogs.js";
+import { openMenu } from "./menu.js";
 
 const POLL_MS = 3000;
 const NEAR_BOTTOM_PX = 300;
@@ -43,7 +44,6 @@ export function setUpLibrary(options) {
   });
   $("side-channel").addEventListener("sl-change", (event) => pickChannel(event.target.value));
   setUpFilter();
-  setUpContextMenu();
   if (options.sample) showSample(options.sample);
   else loadChannels();
 }
@@ -530,41 +530,4 @@ function renderFilter() {
   order.parentElement.content = order.label;
   $("filter-24h").checked = state.clipFilter.last24h;
   $("filter-day").value = state.clipFilter.day;
-}
-
-// ---------- right-click menu ----------
-
-function setUpContextMenu() {
-  const menu = $("context-menu");
-  menu.addEventListener("sl-select", (event) => {
-    const run = event.detail.item.run;
-    closeMenu();
-    run?.();
-  });
-  document.addEventListener("pointerdown", (event) => {
-    if (!menu.hidden && !event.composedPath().includes(menu)) closeMenu();
-  }, true);
-  document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeMenu(); });
-  window.addEventListener("blur", closeMenu);
-  $("side-list").addEventListener("scroll", closeMenu);
-}
-
-function openMenu(x, y, items) {
-  const menu = $("context-menu");
-  menu.replaceChildren(...items.map((item) => {
-    const entry = el("sl-menu-item", { class: item.danger ? "danger" : "" },
-      el("sl-icon", { slot: "prefix", library: "ph", name: item.icon }), item.label);
-    entry.run = item.run;
-    return entry;
-  }));
-  menu.hidden = false;
-  // Keep it on screen
-  const rect = menu.getBoundingClientRect();
-  menu.style.left = `${Math.min(x, window.innerWidth - rect.width - 8)}px`;
-  menu.style.top = `${Math.min(y, window.innerHeight - rect.height - 8)}px`;
-  menu.querySelector("sl-menu-item")?.focus();
-}
-
-function closeMenu() {
-  $("context-menu").hidden = true;
 }

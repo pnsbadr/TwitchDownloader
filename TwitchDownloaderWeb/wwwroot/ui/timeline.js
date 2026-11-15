@@ -9,6 +9,8 @@
 import { $, el, api, me, can, toast, formatDuration, withTooltip } from "./core.js";
 import { askText, confirmAction } from "./dialogs.js";
 import { MARKER_COLORS } from "./colors.js";
+import { formatClock } from "./media.js";
+import { editing } from "./timeline-edit.js";
 
 const ROW_HEIGHT = 36;
 const MIN_SPAN = 10;
@@ -19,8 +21,9 @@ const CLEAN_COLOR = "rgb(60 207 122 / 0.5)";
 const TICK_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400];
 
 export class Timeline {
-  constructor({ onSeek, getPosition }) {
+  constructor({ onSeek, getPosition, ...hooks }) {
     this.onSeek = onSeek;
+    this.rowHeight = ROW_HEIGHT;
     this.getPosition = getPosition;
     this.ruler = el("canvas", { class: "tl-ruler-canvas" });
     this.track = el("canvas", { class: "tl-track-canvas" });
@@ -46,6 +49,7 @@ export class Timeline {
     this.refreshTimer = null;
     this.loading = false;
     this.tab = "p1";
+    this.initEditing(hooks);
 
     this.bindPointer();
     this.bindFooter();
@@ -71,6 +75,7 @@ export class Timeline {
     this.videos = [];
     this.audio = [];
     this.rowState.clear();
+    this.resetEditing();
     this.follow = true;
     this.view = { start: 0, end: Math.max(MIN_SPAN, this.length()) };
     this.renderHeads();
@@ -103,6 +108,7 @@ export class Timeline {
       this.markers = timeline.markers ?? [];
       this.clips = timeline.clips ?? [];
       this.videos = timeline.videos ?? [];
+      if (timeline.maxStoredClipSeconds) this.maxStoredClipSeconds = timeline.maxStoredClipSeconds;
       if (rowsChanged) {
         this.renderHeads();
         this.renderFooter();
@@ -332,23 +338,27 @@ export class Timeline {
 
   bindPointer() {
     for (const canvas of [this.ruler, this.track]) {
-      canvas.addEventListener("pointerdown", (event) => {
-        if (!this.vodId || event.button !== 0) return;
-        const rect = canvas.getBoundingClientRect();
-        const item = canvas === this.track ? this.itemAt(event.clientX - rect.left, event.clientY - rect.top, rect.width) : null;
-        const seconds = item ? item.start : this.xToTime(event.clientX - rect.left, rect.width);
-        this.follow = true;
-        this.onSeek(Math.max(0, Math.min(seconds, this.length())));
-      });
+      canvas.addEventListener("pointerdown", (event) => this.pointerDown(event, canvas));
       canvas.addEventListener("pointermove", (event) => {
         const rect = canvas.getBoundingClientRect();
         this.hover = { canvas, x: event.clientX - rect.left, y: event.clientY - rect.top, width: rect.width, clientX: event.clientX, clientY: event.clientY };
+        this.pointerMove(event);
         this.renderTip();
+      });
+      canvas.addEventListener("pointerup", (event) => this.pointerUp(event));
+      canvas.addEventListener("pointercancel", () => {
+        this.press = null;
+        this.preview = null;
+        this.snapAt = null;
+        this.edgeTip = null;
+        this.dirty = true;
       });
       canvas.addEventListener("pointerleave", () => {
         this.hover = null;
         this.renderTip();
       });
+      canvas.addEventListener("contextmenu", (event) => this.contextMenu(event, canvas));
+      canvas.addEventListener("dblclick", (event) => this.doubleClick(event, canvas));
       canvas.addEventListener("wheel", (event) => {
         if (!this.vodId) return;
         event.preventDefault();
@@ -365,14 +375,16 @@ export class Timeline {
     }
   }
 
-  // The item drawn under a point of the rows canvas: { kind, start, end?, title, by, row }
+  // The item drawn under a point of the rows canvas: { kind, id, start, end?, title, by, row, data }
   itemAt(x, y, width) {
     const row = this.rows[Math.floor(y / ROW_HEIGHT)];
     if (!row || this.stateOf(row).hidden) return null;
     const t = this.xToTime(x, width);
     const pad = (4 / width) * this.span();
     const items = this.itemsOf(row);
-    // moments first (thin), then ranges, topmost (last drawn) first
+    // the selected item first, then moments (thin), then ranges, topmost (last drawn) first
+    const selected = items.find((item) => this.isSelected(item));
+    if (selected && (selected.end == null ? Math.abs(selected.start - t) <= pad * 1.5 : t >= selected.start - pad && t <= selected.end + pad)) return selected;
     for (const item of [...items].reverse()) {
       if (item.end == null && Math.abs(item.start - t) <= pad * 1.5) return item;
     }
@@ -383,22 +395,34 @@ export class Timeline {
   }
 
   itemsOf(row) {
+    const preview = this.preview;
+    const moved = (type, item) => (preview && preview.type === type && preview.id === item.id
+      ? { ...item, start: preview.start, end: preview.end }
+      : item);
     if (/clip/i.test(row.kind)) {
-      return this.clips.filter((c) => c.rowId === row.id).map((c) => ({
+      return this.clips.filter((c) => c.rowId === row.id).map((c) => moved("clip", {
         kind: "clip", id: c.id, start: c.startSeconds ?? c.start, end: c.endSeconds ?? c.end ?? this.length(), title: c.title,
-        by: c.createdBy, reference: c.referenceOnly, row,
+        by: c.createdBy, reference: c.referenceOnly, cuts: c.cuts ?? [], row, data: c,
       }));
     }
-    return this.markers.filter((m) => m.rowId === row.id).map((m) => ({
-      kind: m.endSeconds == null ? "moment" : "segment", id: m.id, start: m.seconds, end: m.endSeconds,
-      title: m.label, color: m.color, by: m.createdBy, row,
+    return this.markers.filter((m) => m.rowId === row.id).map((m) => moved("marker", {
+      kind: m.endSeconds == null ? "moment" : "segment", id: m.id, start: m.seconds, end: m.endSeconds, title: m.label,
+      color: m.color, by: m.createdBy, cuts: m.cuts ?? [], row, data: m,
     }));
   }
 
   renderTip() {
     const tip = this.tip;
+    // While an edge is dragged the tip shows only that edge's time
+    if (this.edgeTip) {
+      tip.replaceChildren(el("div", { class: "num" }, formatClock(this.edgeTip.time)));
+      tip.hidden = false;
+      tip.style.left = `${this.edgeTip.clientX + 12}px`;
+      tip.style.top = `${this.edgeTip.clientY + 16}px`;
+      return;
+    }
     const hover = this.hover;
-    if (!hover || !this.vodId) {
+    if (!hover || !this.vodId || this.press) {
       tip.hidden = true;
       return;
     }
@@ -408,7 +432,7 @@ export class Timeline {
     if (item) {
       const range = item.end != null ? `${formatDuration(item.start, { short: false })} – ${formatDuration(item.end, { short: false })}` : `at ${formatDuration(item.start, { short: false })}`;
       lines.push(`${item.title || { clip: "Clip", segment: "Segment", moment: "Marker" }[item.kind]} · ${range}`);
-      if (item.by) lines.push(`by ${item.by}`);
+      if (item.by) lines.push(`by ${item.by}${this.canEditItem(item) ? "" : " · view only"}`);
     }
     tip.replaceChildren(...lines.map((line, i) => el("div", { class: i ? "" : "num" }, line)));
     tip.hidden = false;
@@ -502,11 +526,89 @@ export class Timeline {
       ctx.fillStyle = css.getPropertyValue("--line");
       ctx.fillRect(0, y + ROW_HEIGHT - 1, width, 1);
       if (state.hidden) return;
-      ctx.globalAlpha = anySolo && !state.solo ? 0.25 : 1;
-      for (const item of this.itemsOf(row)) this.drawItem(ctx, item, y, width);
+      ctx.globalAlpha = anySolo && !state.solo ? 0.25 : state.locked ? 0.7 : 1;
+      const items = this.itemsOf(row);
+      // the selected item on top
+      const selected = items.find((item) => this.isSelected(item));
+      for (const item of items) if (item !== selected) this.drawItem(ctx, item, y, width);
+      if (selected) {
+        this.drawItem(ctx, selected, y, width);
+        this.drawSelection(ctx, selected, y, width);
+      }
       ctx.globalAlpha = 1;
     });
+    this.drawPending(ctx, width, now);
+    if (this.snapAt != null) {
+      const x = Math.round(this.timeToX(this.snapAt, width)) + 0.5;
+      ctx.save();
+      ctx.strokeStyle = "#fff";
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, height);
+      ctx.stroke();
+      ctx.restore();
+    }
     this.drawPlayhead(ctx, width, height, now, false);
+  }
+
+  // White outline around the selected item, with grips on edges that can be dragged
+  drawSelection(ctx, item, y, width) {
+    const x1 = this.timeToX(item.start, width);
+    ctx.save();
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 2;
+    if (item.kind === "moment") {
+      ctx.strokeRect(Math.round(x1) - 4, y + 2, 8, ROW_HEIGHT - 4);
+      ctx.restore();
+      return;
+    }
+    const x2 = this.timeToX(item.end, width);
+    ctx.strokeRect(x1, y + 4, Math.max(2, x2 - x1), ROW_HEIGHT - 8);
+    if (this.canMoveEdges(item)) {
+      ctx.fillStyle = "#fff";
+      for (const x of [x1, x2]) {
+        if (x < -4 || x > width + 4) continue;
+        ctx.fillRect(x - 2, y + ROW_HEIGHT / 2 - 7, 4, 14);
+      }
+    }
+    ctx.restore();
+  }
+
+  // A segment or clip being marked (S / X pressed once: start to playhead) and the item the title editor is naming
+  drawPending(ctx, width, now) {
+    let pending = null;
+    if (this.draft) pending = this.draft;
+    else if (this.marking && now != null) {
+      let end = now;
+      if (this.marking.kind === "clip") end = Math.min(Math.max(end, this.marking.start - this.maxStoredClipSeconds), this.marking.start + this.maxStoredClipSeconds);
+      pending = { kind: this.marking.kind, start: Math.min(this.marking.start, end), end: Math.max(this.marking.start, end), color: this.lastColor };
+    }
+    if (!pending) return;
+    const row = this.targetRow(pending.kind === "clip" ? "clip" : "video");
+    const index = row ? this.rows.indexOf(row) : -1;
+    if (index < 0 || this.stateOf(row).hidden) return; // no own row yet: the server makes one when it's saved
+    const y = index * ROW_HEIGHT;
+    const color = pending.kind === "clip" ? CLIP_COLOR : MARKER_COLORS[pending.color] ?? MARKER_COLORS.yellow;
+    const x1 = this.timeToX(pending.start, width);
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 4]);
+    if (pending.kind === "moment") {
+      ctx.beginPath();
+      ctx.moveTo(x1, y + 3);
+      ctx.lineTo(x1, y + ROW_HEIGHT - 3);
+      ctx.stroke();
+    } else {
+      const x2 = this.timeToX(pending.end, width);
+      ctx.globalAlpha = 0.25;
+      ctx.fillRect(x1, y + 6, Math.max(2, x2 - x1), ROW_HEIGHT - 12);
+      ctx.globalAlpha = 1;
+      ctx.strokeRect(x1, y + 6, Math.max(2, x2 - x1), ROW_HEIGHT - 12);
+    }
+    ctx.restore();
   }
 
   drawItem(ctx, item, y, width) {
@@ -555,6 +657,14 @@ export class Timeline {
         ctx.lineTo(x + 5 * dir, top + h);
         ctx.stroke();
       }
+    }
+    // cut-out parts: darker (they're left out of files)
+    for (const cut of item.cuts ?? []) {
+      const c1 = Math.max(this.timeToX(cut.start, width), left);
+      const c2 = Math.min(this.timeToX(cut.end, width), right);
+      if (c2 <= c1) continue;
+      ctx.fillStyle = "rgb(16 17 20 / 0.7)";
+      ctx.fillRect(c1, top, c2 - c1, h);
     }
     // title inside when there's room
     const room = right - left - 12;
@@ -624,3 +734,5 @@ function hatch(ctx, color) {
   hatches.set(color, pattern);
   return pattern;
 }
+
+Object.assign(Timeline.prototype, editing);
