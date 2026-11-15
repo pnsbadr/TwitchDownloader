@@ -48,6 +48,12 @@ namespace TwitchDownloaderWeb.Services.Shortform
             if (length < MinTrimSeconds)
                 return $"The trimmed part must be at least {MinTrimSeconds:0} second long.";
 
+            return ValidateBoxes();
+        }
+
+        /// <summary>Checks the mode, boxes and split ratio only (a part's length is checked by <see cref="ValidateParts"/>).</summary>
+        private string? ValidateBoxes()
+        {
             if (!IsSplit && !string.Equals(Mode, "single", StringComparison.OrdinalIgnoreCase))
                 return "Mode must be \"single\" or \"split\".";
 
@@ -85,7 +91,8 @@ namespace TwitchDownloaderWeb.Services.Shortform
                     return "Parts must be in order and must not overlap.";
                 if (part.Start >= clipLengthSeconds)
                     return $"Part {i + 1} starts after the end of the clip.";
-                if (part.ToLayout().Validate(clipLengthSeconds) is { } error)
+                // Parts have their own minimum (MinPartSeconds), shorter than a whole render's MinTrimSeconds
+                if (part.ToLayout().ValidateBoxes() is { } error)
                     return $"Part {i + 1}: {error}";
                 previousEnd = part.End;
             }
