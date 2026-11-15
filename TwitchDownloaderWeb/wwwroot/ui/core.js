@@ -134,6 +134,11 @@ export function wireIconButtons(root = document) {
   for (const button of root.querySelectorAll("sl-icon-button[label]")) {
     if (!button.hasAttribute("library")) button.setAttribute("library", "ph");
     if (button.parentElement?.localName === "sl-tooltip") continue;
+    if (button.hasAttribute("slot")) {
+      // A dropdown trigger can't be wrapped (it must stay a direct child with its slot); a plain title shows the name
+      button.title = button.getAttribute("label");
+      continue;
+    }
     const placement = button.closest("[data-tip-placement]")?.dataset.tipPlacement || "top";
     const tip = el("sl-tooltip", { content: tooltipText(button.getAttribute("label"), button.dataset.keybind), placement, hoist: true });
     button.replaceWith(tip);

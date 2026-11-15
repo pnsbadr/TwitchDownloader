@@ -3,8 +3,9 @@
 // cards (nothing is sent to the server).
 
 import { registerIconLibrary } from "https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.20.1/cdn/utilities/icon-library.js";
-import { $, el, api, me, can, loadMe, sessionHandlers, TEAM_PAGE_PERMISSIONS, wireIconButtons, iconButton, loadSetting, saveSetting, toast } from "./core.js";
-import { draggable, dropTarget } from "./drag.js";
+import { $, el, api, me, can, loadMe, sessionHandlers, TEAM_PAGE_PERMISSIONS, wireIconButtons, loadSetting, saveSetting, toast, formatDuration } from "./core.js";
+import { dropTarget } from "./drag.js";
+import { setUpLibrary, showList } from "./library.js";
 
 // Phosphor icons, bold weight, as <sl-icon library="ph" name="…">
 registerIconLibrary("ph", {
@@ -144,65 +145,35 @@ function setUpLayout() {
   split([$("player1"), $("player2")], "clipco.layout.p1p2", { sizes: [50, 50], minSize: [320, 320] });
 }
 
-// ---------- left panel ----------
-
-const lists = { vods: [], videos: [], clips: [] };
-let currentList = "vods";
-
-const EMPTY_TEXT = {
-  vods: "Your team's VODs and live streams will be listed here.",
-  videos: "Videos you link from segments will be listed here.",
-  clips: "Your team's clips will be listed here.",
-};
-
-function renderList() {
-  const items = lists[currentList];
-  $("side-count").textContent = items.length ? `${items.length} ${currentList}` : "";
-  if (!items.length) {
-    $("side-list").replaceChildren(el("p", { class: "side-empty" }, EMPTY_TEXT[currentList]));
-    return;
-  }
-  $("side-list").replaceChildren(...items.map(card));
-}
-
-// A card in the left panel. item = { kind: "vod" | "video" | "clip", title, meta: [..], thumb?, live?, length? }
-function card(item) {
-  const node = el("div", { class: "card", role: "listitem", tabindex: "0", "aria-label": `${item.kind}: ${item.title}` },
-    el("div", { class: "card-thumb", style: item.thumb ? `background-image:url("${item.thumb}")` : null },
-      item.live ? el("span", { class: "card-badge live" }, "LIVE") : null,
-      item.length ? el("span", { class: "card-badge num" }, item.length) : null),
-    el("div", { class: "card-body" },
-      el("div", { class: "card-title" }, item.title),
-      ...item.meta.map((line) => el("div", { class: "card-meta" }, line)),
-      el("div", { class: "card-actions" },
-        iconButton({ icon: "download-simple", label: "Export", onClick: () => openExport(item) }))));
-  draggable(node, () => ({ kind: item.kind, label: item.title, data: item }));
-  node.addEventListener("dblclick", () => load(item));
-  node.addEventListener("keydown", (event) => { if (event.key === "Enter" && event.target === node) load(item); });
-  return node;
-}
+// ---------- left panel (ui/library.js) ----------
 
 function openExport(item) {
   screenTabs.pick("export");
-  if (DEMO) toast(`"${item.title}" would be added to the export list (step 8).`);
+  if (DEMO) toast(`"${item.data?.title ?? item.label}" would be added to the export list (step 8).`);
 }
 
 // ---------- players (filled in steps 3 and 4) ----------
 
 const PLAYER_KINDS = { p1: ["vod"], p2: ["video", "clip", "segment"] };
 
+// item = { kind, data } from a card or a drop. Playback comes in steps 3 (Player 1) and 4 (Player 2).
 function load(item) {
+  const data = item.data;
   const player = PLAYER_KINDS.p1.includes(item.kind) ? "p1" : "p2";
-  $(`${player}-info`).textContent = player === "p1" ? item.title : `${item.kind.toUpperCase()} · ${item.length ?? ""} · ${item.title}`;
+  if (player === "p1") {
+    $("p1-info").textContent = data.title;
+  } else {
+    const length = data.clipLengthSeconds ?? data.lengthSeconds;
+    $("p2-info").textContent = [item.kind.toUpperCase(), length !== undefined ? formatDuration(length) : null, data.title].filter(Boolean).join(" · ");
+  }
   timelineTabs.pick(player);
-  if (DEMO) toast(`Loaded "${item.title}" in ${player === "p1" ? "Player 1" : "Player 2"} (demo).`);
 }
 
 function setUpPlayers() {
   for (const player of ["p1", "p2"]) {
     dropTarget($(`${player}-screen`), {
       accepts: (item) => PLAYER_KINDS[player].includes(item.kind),
-      onDrop: (item) => load(item.data),
+      onDrop: (item) => load(item),
     });
   }
 }
@@ -268,22 +239,28 @@ function setUpItemEditor() {
   });
 }
 
-// ---------- demo (?demo): sample cards to try dragging, tabs and the title editor ----------
+// ---------- demo (?demo): sample cards to try dragging, menus and the title editor, nothing sent ----------
 
-function fillDemo() {
-  lists.vods = [
-    { kind: "vod", title: "🔶 qsmp @ARKY X @ELLSYA 🔶 !qsmp !comm !socials", meta: ["arky · Nov 14, 2026"], length: "6:12:40", live: false },
-    { kind: "vod", title: "yellow! !comm !socials !discord !oscs", meta: ["arky · Nov 15, 2026"], live: true },
-    { kind: "vod", title: "NMS BOXING INSTIGATOR 🔶 !oscs !comm !socials", meta: ["arky · Nov 12, 2026"], length: "4:03:11" },
-  ];
-  lists.videos = [
-    { kind: "video", title: "Boxing highlights", meta: ["VOD Nov 12, 2026", "by badrfly"], length: "3:41" },
-  ];
-  lists.clips = [
-    { kind: "clip", title: "chose to like it", meta: ["VOD Nov 14, 2026", "by badrfly"], length: "0:48" },
-    { kind: "clip", title: "the instigator", meta: ["VOD Nov 12, 2026", "by badrfly"], length: "1:12" },
-  ];
-  renderList();
+function demoSample() {
+  const now = Date.now();
+  const iso = (hoursAgo) => new Date(now - hoursAgo * 3600_000).toISOString();
+  return ({
+    channels: [{ login: "arky", displayName: "Arky" }, { login: "ellsya", displayName: "Ellsya" }],
+    vods: [
+      { vodId: 3, title: "yellow! !comm !socials !discord !oscs", createdAtUtc: iso(3), length: "3:02:11", lengthSeconds: 10931, game: "Minecraft", isLive: true, unmuteWindowOpen: true },
+      { vodId: 2, title: "🔶 qsmp @ARKY X @ELLSYA 🔶 !qsmp !comm !socials", createdAtUtc: iso(30), length: "6:12:40", lengthSeconds: 22360, game: "Minecraft", rescueStatus: "Pruned" },
+      { vodId: 1, title: "🔶QSMP？🔶 NMS BOXING INSTIGATOR 🔶 !oscs !comm !socials", createdAtUtc: iso(80), length: "4:03:11", lengthSeconds: 14591, game: "No Man's Sky" },
+    ],
+    clips: [
+      { id: 11, kind: "Vod", title: "chose to like it", clipLengthSeconds: 48, streamDateUtc: iso(30), addedBy: "badrfly", addedByUserId: "1", status: "Ready" },
+      { id: 12, kind: "Vod", title: "the instigator", clipLengthSeconds: 72, streamDateUtc: iso(80), addedBy: "editor2", addedByUserId: "2", status: "Downloading" },
+      { id: 13, kind: "Clip", title: "old twitch clip", clipLengthSeconds: 30, streamDateUtc: iso(200), addedBy: "badrfly", addedByUserId: "1", status: "ReferenceOnly", isReferenceOnly: true },
+    ],
+    videos: [{ id: 21, title: "Boxing highlights", lengthSeconds: 221, streamDateUtc: iso(80), createdBy: "badrfly" }],
+  });
+}
+
+function wireDemoTools() {
   for (const button of document.querySelectorAll("#tools [data-create]")) {
     button.disabled = false;
     button.addEventListener("click", () => openItemEditor({
@@ -321,11 +298,12 @@ async function start() {
   wireIconButtons();
   setUpLayout();
   screenTabs = tabs(document.querySelector(".main-tabs"), "data-view", showScreen, "clipco.editor.screen");
-  listTabs = tabs(document.querySelector(".side-tabs"), "data-list", (value) => { currentList = value; renderList(); }, "clipco.editor.list");
+  setUpLibrary({ onLoad: load, onExport: openExport, sample: DEMO ? demoSample() : null });
+  if (DEMO) wireDemoTools();
+  listTabs = tabs(document.querySelector(".side-tabs"), "data-list", showList, "clipco.editor.list");
   timelineTabs = tabs(document.querySelector(".tl-tabs"), "data-tl", () => {}, null);
   setUpPlayers();
   setUpItemEditor();
-  if (DEMO) fillDemo();
 }
 
 start();
