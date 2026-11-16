@@ -481,13 +481,13 @@ function renderPlayer2() {
     const editable = Boolean(video) && !me?.support;
     $("p2-show").disabled = !video;
     $("p2-rename").disabled = !editable || !video.canEdit;
-    $("p2-delete").disabled = !editable || !video.canDelete;
+    $("p2-delete").disabled = false;
     return;
   }
   const item = p2Item ? timeline2.focusItem() : null;
   $("p2-show").disabled = !item;
   $("p2-rename").disabled = !item || !timeline2.canEditItem(item);
-  $("p2-delete").disabled = !item || !timeline2.canDeleteItem(item);
+  $("p2-delete").disabled = !p2Item;
 }
 
 // Top right of Player 2: type, length (what's left after cut-out parts) and title
@@ -628,6 +628,8 @@ function setUpPlayer2() {
   });
   timeline2 = new Timeline({
     mode: "item",
+    // Delete / "Unload from Player 2" only clears Player 2; nothing is deleted
+    onUnload: () => closePlayer2(),
     // Split lines dragged in the Layout row (VOD seconds -> seconds into the clip's file)
     onLayoutParts: (starts) => setVerticalPartStarts(starts.map(vodToFile)),
     onSeek: p2Seek,
@@ -675,14 +677,7 @@ function setUpPlayer2() {
     const item = timeline2.focusItem();
     if (item) timeline2.editTitle(item);
   });
-  $("p2-delete").addEventListener("click", () => {
-    if (p2Item?.type === "video") {
-      timeline2.deleteVideo();
-      return;
-    }
-    const item = timeline2.focusItem();
-    if (item) timeline2.deleteItem(item);
-  });
+  $("p2-delete").addEventListener("click", () => closePlayer2());
   renderPlayer2();
 }
 

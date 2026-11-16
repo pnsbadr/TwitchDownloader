@@ -432,8 +432,10 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   **stored clips are trimmed only here**, capped at the stored-clip limit (plus cut-out parts), and saved 3 s after the last change
   (`scheduleTrim`; "saving…" in the header; flushed when something else loads and on `pagehide` with a keepalive fetch). After any save
   each timeline calls `onEdited` and the other one reads the VOD again, so Player 1 moves too. Header: type, length (what's left after
-  cuts) and title; icons Show in Player 1 (opens the VOD there if needed, selects and zooms to the item), rename, delete, volume,
-  fullscreen. Only one player plays at a time. The tools bar and keys work on the player whose timeline tab is open; clicking a player
+  cuts) and title; icons Show in Player 1 (opens the VOD there if needed, selects and zooms to the item), rename, **unload** (eject),
+  volume, fullscreen. **Nothing is deleted from Player 2** (badrfly 2026-11-16: deleting there used to delete the clip/segment for good):
+  its Delete key, eject icon and right-click "Unload from Player 2" only clear it (`hooks.onUnload` → `closePlayer2`); real deletes are on
+  Player 1's timeline and the library cards. Only one player plays at a time. The tools bar and keys work on the player whose timeline tab is open; clicking a player
   with something loaded opens its tab. In Player 2 the create tools are off and the cut tool cuts parts out (step 7). Undo/redo
   history is shared by both timelines. Old Twitch clips without a VOD can't.
 - **Dropping on rows** (step 5, `dropPlan` / `runDrop` in `ui/timeline-edit.js`): the Player 1 track is a drop target for timeline items and
@@ -449,8 +451,8 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   back, each with its VOD offset); `p2Position` / `p2Seek` / `p2Tick` in `ui/editor.js` map video time to the VOD and jump to the next part
   while playing. Dragging a part's edge trims the segment itself (`PUT /api/markers/{id}`, so every video using it changes); its right-click menu
   = title/color, Move earlier/later and Take out of the video (Del too) (`PUT /api/videos/{id}` with the whole `markerIds`), Make a copy.
-  Others' videos: view only, or with `EditAnyEntries` the Edit original / Make a copy choice (`POST /api/videos/{id}/copy`). Rename and
-  delete on Player 2's icons and the card's menu.
+  Others' videos: view only, or with `EditAnyEntries` the Edit original / Make a copy choice (`POST /api/videos/{id}/copy`). Rename on
+  Player 2's icon and the card's menu; delete on the card's menu.
 - **Cut-out parts** (step 7, `ui/cuts.js` mirrors the server's `CutOuts` rules; `cutTarget` / `cutOut` / `saveCuts` / `cutOutOfVideo` in
   `ui/timeline-edit.js`): Player 2's cut tool (C) dragged across its item cuts that part out: a segment's own cuts (`PUT /api/markers/{id}`),
   a reference clip's (`PUT /trim` with `cuts`), a stored clip's (`PUT /trim`, waiting 3 s like its trims, and refused past the stored-clip limit

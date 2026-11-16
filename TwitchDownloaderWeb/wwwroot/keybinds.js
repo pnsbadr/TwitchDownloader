@@ -46,7 +46,7 @@ const KEYBINDS = [
   { id: "toggleSnap", scope: "player", keys: ["N"], description: "Snapping on/off: dragged edges stick to markers, segments, clips, cut-out parts and the playhead" },
   { id: "undo", scope: "player", keys: ["Ctrl+Z"], description: "Undo your last timeline change (up to 10)" },
   { id: "redo", scope: "player", keys: ["Ctrl+Shift+Z", "Ctrl+Y"], description: "Redo" },
-  { id: "deleteSelected", scope: "player", keys: ["Delete", "Backspace"], description: "Delete the selected item (in a video in Player 2: take it out of the video)" },
+  { id: "deleteSelected", scope: "player", keys: ["Delete", "Backspace"], description: "Player 1: delete the selected item. Player 2: unload it (nothing is deleted)" },
   { id: "verticalToggle", scope: "player", keys: ["E"], description: "Turn Player 2 into the vertical (9:16) editor (a clip in Player 2)" },
   { id: "shortcutsHelp", scope: "player", keys: ["?"], description: "Show this list of shortcuts" },
   { id: "escape", scope: "player", keys: ["Escape"], description: "Cancel marking or linking, or unselect" },
