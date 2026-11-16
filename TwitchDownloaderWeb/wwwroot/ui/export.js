@@ -26,6 +26,7 @@ const KINDS = {
   video: { icon: "film-slate", label: "Video" },
   segment: { icon: "brackets-square", label: "Segment" },
 };
+const kindLabel = (item) => (item.editId ? `${KINDS[item.kind].label} edit` : KINDS[item.kind].label);
 const ITEM_KIND_ICON = { VodRange: "broadcast", Clip: "film-strip", ClipVertical: "device-mobile", Video: "film-slate", Segment: "brackets-square" };
 
 let list = [];
@@ -102,7 +103,7 @@ export function addToExport(item, { quiet = true } = {}) {
     toast("Twitch clips can't be exported here.", "error");
     return;
   }
-  const made = fromDrop(item.kind, data);
+  const made = item.kind === "edit" ? fromEdit(data) : fromDrop(item.kind, data);
   if (!made) return;
   const existing = list.find((x) => x.key === made.key);
   if (existing) {
@@ -146,6 +147,41 @@ function fromDrop(kind, data) {
     };
   }
   return null;
+}
+
+// A saved edit from Player 2: data = { edit (as GET /api/edits/{id} returns it), itemTitle, editName, thumbnailUrl?, frameUrl?, vodDate? }.
+// The list item keeps the item's kind (for its settings) plus editId; the export sends { kind: "edit", editId }.
+function fromEdit(data) {
+  const edit = data.edit;
+  if (!edit?.id) return null;
+  return {
+    kind: edit.kind, id: edit.entryId ?? edit.markerId ?? edit.videoId, vodId: String(edit.vodId ?? ""), editId: edit.id,
+    key: `edit:${edit.id}`, itemTitle: data.itemTitle ?? "", editName: data.editName ?? edit.title ?? "Edit",
+    fileName: "", quality: "", horizontal: true, vertical: false, renderId: "", joined: false,
+    thumb: thumbOf(data.thumbnailUrl), frame: data.frameUrl ?? null, vodDate: data.vodDate ?? null, reference: Boolean(data.reference),
+    ...editFields(edit, data.itemTitle, data.editName),
+  };
+}
+
+// What an edit plays: a clip/segment's whole range less the edit's cut parts; a video's segments with their own cut-out parts
+// plus the edit's (a segment the edit cuts out whole is left out)
+function editFields(edit, itemTitle, editName) {
+  const name = edit.title || editName || "Edit";
+  const title = `${itemTitle || edit.itemTitle || "Untitled"} · ${name}`;
+  if (edit.kind === "video") {
+    const own = new Map((edit.parts ?? []).map((p) => [p.markerId, p.cuts ?? []]));
+    const parts = (edit.sourceParts ?? []).map((s) => ({
+      start: s.start, end: s.end, label: s.label, cuts: normalizeCuts([...(s.cuts ?? []), ...(own.get(s.markerId) ?? [])], s.start, s.end),
+    })).filter((p) => keptSeconds(p.start, p.end, p.cuts) > 0);
+    return {
+      title, editName: name, parts, length: edit.keptSeconds ?? parts.reduce((sum, p) => sum + keptSeconds(p.start, p.end, p.cuts), 0),
+      start: parts.length ? Math.min(...parts.map((p) => p.start)) : 0, end: parts.length ? Math.max(...parts.map((p) => p.end)) : 0,
+    };
+  }
+  const start = edit.sourceStart ?? 0;
+  const end = edit.sourceEnd ?? start;
+  const cuts = normalizeCuts(edit.cuts ?? [], start, end);
+  return { title, editName: name, start, end, cuts, length: edit.keptSeconds ?? keptSeconds(start, end, cuts) };
 }
 
 function videoFields(video) {
@@ -237,7 +273,7 @@ function row(item) {
   el("div", { class: "xl-thumb", style: thumbStyle(item.frame, item.thumb) },
     el("span", { class: "xl-kind" }, el("sl-icon", { library: "ph", name: kind.icon }))),
   el("div", { class: "xl-main" },
-    el("div", { class: "xl-title" }, el("span", { class: "xl-kind-label" }, kind.label), el("span", { class: "xl-name", title: item.title }, item.title)),
+    el("div", { class: "xl-title" }, el("span", { class: "xl-kind-label" }, kindLabel(item)), el("span", { class: "xl-name", title: item.title }, item.title)),
     el("div", { class: "xl-meta num" }, [
       item.vodDate ? `VOD ${formatDate(item.vodDate, false)}` : null,
       range,
@@ -278,7 +314,20 @@ function changed(item, { list: relist = true, settings = false, preview: replay 
 // Reads the item again (it may have been trimmed, cut or deleted since it was put on the list)
 async function refreshItem(item) {
   try {
-    if (item.kind === "clip") {
+    if (item.editId) {
+      const edit = await api("GET", `/api/edits/${item.editId}`);
+      Object.assign(item, editFields(edit, item.itemTitle, edit.title || item.editName), { gone: false });
+      if (!item.thumb || !item.vodDate) {
+        try {
+          const info = await vodInfo(item.vodId);
+          item.thumb ??= thumbOf(info.thumbnailUrl);
+          item.vodDate ??= info.streamDateUtc;
+        } catch {
+          // the VOD's picture stays out
+        }
+      }
+      if (item.kind === "clip") loadRenders(item);
+    } else if (item.kind === "clip") {
       const entry = await api("GET", `/api/entries/${item.id}`);
       const start = entry.startSeconds ?? item.start;
       const end = entry.endSeconds ?? entry.vodLengthSeconds ?? item.end;
@@ -337,7 +386,7 @@ async function loadRenders(item) {
 
 // The renders this member may export: anyone's with "Download team vertical entries", else only their own newest
 function usableRenders(item) {
-  const renders = renderLists.get(item.id) ?? [];
+  const renders = rendersOf(item);
   if (can("DownloadTeamVerticals")) return renders;
   const own = renders.filter((r) => r.createdByUserId === me?.id).sort((a, b) => b.createdAtUtc.localeCompare(a.createdAtUtc));
   return own.slice(0, 1);
@@ -353,7 +402,7 @@ function renderSettings() {
     return;
   }
   const fields = [
-    el("div", { class: "xs-title" }, el("span", { class: "xl-kind-label" }, KINDS[item.kind].label), el("span", { class: "xs-name" }, item.title)),
+    el("div", { class: "xs-title" }, el("span", { class: "xl-kind-label" }, kindLabel(item)), el("span", { class: "xs-name" }, item.title)),
     fileNameField(item),
     qualityField(item),
   ];
@@ -414,7 +463,7 @@ function setRange(item, start, end) {
 }
 
 function clipFormat(item) {
-  const renders = renderLists.get(item.id);
+  const renders = renderLists.has(item.id) ? rendersOf(item) : undefined;
   const usable = usableRenders(item);
   const horizontal = el("sl-checkbox", { checked: item.horizontal }, "Horizontal");
   const vertical = el("sl-checkbox", { checked: item.vertical, disabled: !usable.length }, "Vertical (9:16)");
@@ -432,7 +481,9 @@ function clipFormat(item) {
   } else if (!usable.length) {
     parts.push(el("p", { class: "faint xs-note" }, renders.length
       ? "Only the team's vertical versions exist, and your role can only export your own. Make one in the vertical editor."
-      : "No vertical version yet. Make one in the vertical editor first."));
+      : item.editId
+        ? "No vertical version of this edit yet. Load the edit in Player 2 and make one in the vertical editor."
+        : "No vertical version yet. Make one in the vertical editor first."));
   } else if (can("DownloadTeamVerticals")) {
     const choice = el("sl-select", { label: "Vertical version", size: "small", hoist: true, value: item.renderId || "own", disabled: !item.vertical },
       el("sl-option", { value: "own" }, "My newest"),
@@ -450,8 +501,13 @@ function clipFormat(item) {
   return el("div", { class: "xs-format" }, ...parts);
 }
 
+// A clip's own renders, or an edit's: the server only exports a render made for the same one
+function rendersOf(item) {
+  return (renderLists.get(item.id) ?? []).filter((r) => (r.editId ?? null) === (item.editId ?? null));
+}
+
 function newestOwn(item) {
-  return (renderLists.get(item.id) ?? []).filter((r) => r.createdByUserId === me?.id).sort((a, b) => b.createdAtUtc.localeCompare(a.createdAtUtc))[0] ?? null;
+  return rendersOf(item).filter((r) => r.createdByUserId === me?.id).sort((a, b) => b.createdAtUtc.localeCompare(a.createdAtUtc))[0] ?? null;
 }
 
 // The vertical render's thumbnail; clicking it plays the render here
@@ -769,6 +825,13 @@ function openVodDialog(vod, existing = null) {
 
 function requestOf(item) {
   const common = { kind: item.kind, fileName: item.fileName || null, quality: item.quality || null };
+  if (item.editId) {
+    return {
+      ...common, kind: "edit", editId: item.editId,
+      ...(item.kind === "clip" ? { horizontal: item.horizontal, vertical: item.vertical, renderId: item.vertical ? item.renderId || null : null } : {}),
+      ...(item.kind === "video" ? { joined: Boolean(item.joined && me?.combineSegmentDownloads) } : {}),
+    };
+  }
   if (item.kind === "vod") return { ...common, vodId: Number(item.vodId), start: item.start, end: item.end };
   if (item.kind === "clip") return { ...common, entryId: item.id, horizontal: item.horizontal, vertical: item.vertical, renderId: item.vertical ? item.renderId || null : null };
   if (item.kind === "video") return { ...common, videoId: item.id, joined: Boolean(item.joined && me?.combineSegmentDownloads) };

@@ -52,6 +52,8 @@ const vx = {
   open: false,
   entry: null,
   entryKey: "",
+  editId: null,       // the saved edit open in Player 2 (null = the clip itself): renders are made for it
+  editCuts: [],       // what that edit (or the clip itself) leaves out, in file seconds, merged: never rendered or played
   dom: null,
   mode: "split",
   ratio: 0.4,
@@ -332,20 +334,36 @@ function followPlayhead() {
 }
 
 // The part of the file each kept part renders (inside the trim), neighbors with the same layout joined
+// (and outside what the edit in Player 2 leaves out)
 function pieces() {
   stash();
   const list = [];
   vx.parts.forEach((part, i) => {
     if (part.removed) return;
-    const start = Math.max(part.start, vx.trim.start);
-    const end = Math.min(partEnd(i), vx.trim.end);
-    if (end - start < MIN_PART) return;
-    const layout = pieceLayout(part, start);
-    const last = list.at(-1);
-    if (last && Math.abs(last.end - start) < 0.001 && sameLook(last.layout, layout)) last.end = end;
-    else list.push({ start, end, layout });
+    for (const range of editKept(Math.max(part.start, vx.trim.start), Math.min(partEnd(i), vx.trim.end))) {
+      const { start, end } = range;
+      if (end - start < MIN_PART) continue;
+      const layout = pieceLayout(part, start);
+      const last = list.at(-1);
+      if (last && Math.abs(last.end - start) < 0.001 && sameLook(last.layout, layout)) last.end = end;
+      else list.push({ start, end, layout });
+    }
   });
   return list;
+}
+
+// start..end less the edit's left-out parts
+function editKept(start, end) {
+  const out = [];
+  let at = start;
+  for (const cut of vx.editCuts) {
+    if (cut.end <= at) continue;
+    if (cut.start >= end) break;
+    if (cut.start > at) out.push({ start: at, end: cut.start });
+    at = Math.max(at, cut.end);
+  }
+  if (end > at) out.push({ start: at, end });
+  return out.filter((r) => r.end - r.start > 0.01);
 }
 
 const keptSeconds = () => pieces().reduce((sum, piece) => sum + piece.end - piece.start, 0);
@@ -356,7 +374,7 @@ function playable(t) {
     const start = Math.max(vx.parts[i].start, vx.trim.start);
     const end = Math.min(partEnd(i), vx.trim.end);
     if (vx.parts[i].removed || end - start <= 0.01) continue;
-    if (t < end) return Math.max(t, start);
+    for (const range of editKept(start, end)) if (t < range.end) return Math.max(t, range.start);
   }
   return null;
 }
@@ -1319,22 +1337,29 @@ async function poll() {
 function renderState(state) {
   const { render, progress, message } = vx.dom;
   const busy = state.status === "Rendering";
+  const other = busy && (state.renderingEditId ?? null) !== vx.editId;
   const finished = vx.wasRendering && !busy && state.status !== "Failed";
   vx.wasRendering = busy;
   render.disabled = busy || !can("MakeVertical") || Boolean(me?.support) || !vx.ready;
   render.loading = busy;
   progress.hidden = !busy;
   progress.value = Math.round((state.progress || 0) * 100);
-  if (busy) message.textContent = `Rendering… ${Math.round((state.progress || 0) * 100)}%`;
+  if (other) message.textContent = `Rendering another version of this clip… ${Math.round((state.progress || 0) * 100)}%`;
+  else if (busy) message.textContent = `Rendering… ${Math.round((state.progress || 0) * 100)}%`;
   else if (state.status === "Failed") message.textContent = state.error || "Rendering failed.";
   else if (finished) message.textContent = "The vertical video is ready: it's at the top of the list.";
   else if (!can("MakeVertical")) message.textContent = "Your role can't render vertical videos.";
   else message.textContent = "";
   message.classList.toggle("error", state.status === "Failed");
-  vx.renders = state.renders || [];
-  renderRenders(finished ? vx.renders[0]?.id : null);
+  vx.renders = ownRenders(state);
+  renderRenders(finished && !other ? vx.renders[0]?.id : null);
   clearTimeout(vx.pollTimer);
   if (busy && vx.open) vx.pollTimer = setTimeout(poll, 1500);
+}
+
+// The renders of what's open: the edit's, or the clip's own (made without an edit)
+function ownRenders(state) {
+  return (state?.renders ?? []).filter((r) => (r.editId ?? null) === vx.editId);
 }
 
 function renderLength(layout) {
@@ -1400,7 +1425,10 @@ async function startRender() {
   closePlayback();
   vx.dom.render.disabled = true;
   try {
-    renderState(await api("POST", `/api/entries/${vx.entry.id}/shortform`, layout));
+    // A new edit is saved first, so the render can name it
+    const editId = vx.hooks.editForRender ? await vx.hooks.editForRender() : vx.editId;
+    if (editId !== vx.editId) setVerticalEdit({ editId, cuts: vx.editCuts });
+    renderState(await api("POST", `/api/entries/${vx.entry.id}/shortform`, editId != null ? { ...layout, editId } : layout));
   } catch (error) {
     vx.dom.render.disabled = false;
     vx.dom.message.textContent = error.message;
@@ -1551,10 +1579,16 @@ export function verticalEntryId() {
   return vx.open ? vx.entry?.id ?? null : null;
 }
 
-// entryId: the clip in Player 2
-export async function openVertical(entryId) {
-  if (vx.open && vx.entry?.id === entryId) return;
+// entryId: the clip in Player 2; edit = { editId, cuts }: the saved edit shown there (editId null = the clip itself) and what
+// it leaves out in file seconds
+export async function openVertical(entryId, edit = null) {
+  if (vx.open && vx.entry?.id === entryId) {
+    if (edit) setVerticalEdit(edit);
+    return;
+  }
   closeVertical();
+  vx.editId = edit?.editId ?? null;
+  vx.editCuts = mergeCuts(edit?.cuts);
   vx.open = true;
   vx.entry = { id: entryId };
   vx.entryKey = "";
@@ -1592,7 +1626,7 @@ export async function openVertical(entryId) {
     return;
   }
   if (!vx.open || vx.entry.id !== entryId) return;
-  vx.savedLayout = state?.layout ?? null;
+  vx.savedLayout = ownRenders(state)[0]?.layout ?? state?.layout ?? null;
   if (state) {
     vx.renders = state.renders || [];
     vx.wasRendering = state.status === "Rendering";
@@ -1600,6 +1634,33 @@ export async function openVertical(entryId) {
   }
   vx.entryKey = fileKey(vx.entry);
   loadFile();
+}
+
+function mergeCuts(cuts) {
+  const sorted = [...(cuts ?? [])].filter((c) => c.end - c.start > 0.01).sort((a, b) => a.start - b.start);
+  const out = [];
+  for (const cut of sorted) {
+    const last = out.at(-1);
+    if (last && cut.start <= last.end + 0.001) last.end = Math.max(last.end, cut.end);
+    else out.push({ start: cut.start, end: cut.end });
+  }
+  return out;
+}
+
+// The edit in Player 2 changed (another edit picked, or its cut parts changed): the preview, length and renders follow it
+export function setVerticalEdit({ editId = null, cuts = [] } = {}) {
+  if (!vx.open) return;
+  const cutsChanged = JSON.stringify(mergeCuts(cuts)) !== JSON.stringify(vx.editCuts);
+  const editChanged = editId !== vx.editId;
+  if (!cutsChanged && !editChanged) return;
+  vx.editCuts = mergeCuts(cuts);
+  vx.editId = editId;
+  if (vx.dom && vx.ready) renderTrim();
+  if (editChanged) {
+    vx.renders = [];
+    renderRenders(null);
+    poll();
+  }
 }
 
 export function closeVertical() {

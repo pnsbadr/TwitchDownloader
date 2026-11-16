@@ -13,7 +13,7 @@ import { SourceTimeline, ago } from "./source-timeline.js";
 import { skipCut, keptSeconds, normalizeCuts } from "./cuts.js";
 import { setUpExport, addToExport, exportShown, pausePreview } from "./export.js";
 import { showShortcuts } from "./shortcuts.js";
-import { setUpVertical, openVertical, closeVertical, verticalOpen, verticalEntryId, pauseVertical, verticalEntryChanged, handleVerticalKey, verticalTime, verticalSeek, setVerticalPartStarts } from "./vertical.js";
+import { setUpVertical, openVertical, setVerticalEdit, closeVertical, verticalOpen, verticalEntryId, pauseVertical, verticalEntryChanged, handleVerticalKey, verticalTime, verticalSeek, setVerticalPartStarts } from "./vertical.js";
 
 // Phosphor icons, bold weight, as <sl-icon library="ph" name="…">
 registerIconLibrary("ph", {
@@ -185,6 +185,33 @@ function exportFromTimeline(item) {
       isReferenceOnly: Boolean(item.reference),
     },
   }, { quiet: false });
+}
+
+// Player 2's edit menu "Add to the export list": the edit shown (saved first), exported as it is now, Player 1 untouched
+async function exportEdit() {
+  const t = timeline2;
+  await t.saveNow();
+  const edit = t.edit;
+  if (!edit || edit.original) return;
+  if (edit.id == null) {
+    toast(`"${t.editName(edit)}" isn't saved yet, so it can't be exported. Try again in a moment.`, "error");
+    return;
+  }
+  try {
+    const data = await api("GET", `/api/edits/${edit.id}`);
+    const source = t.source ?? {};
+    const vod = p1Vod && String(p1Vod.vodId) === String(data.vodId) ? p1Vod : null;
+    addToExport({
+      kind: "edit",
+      data: {
+        edit: data, itemTitle: source.title || p2Item?.title || "", editName: t.editName(edit),
+        thumbnailUrl: source.data?.thumbnailUrl ?? vod?.thumbnailUrl ?? null, frameUrl: source.data?.frameUrl ?? null,
+        vodDate: source.data?.streamDateUtc ?? vod?.createdAtUtc ?? null, reference: Boolean(source.parts?.[0]?.reference),
+      },
+    }, { quiet: false });
+  } catch (error) {
+    toast(`Couldn't add the edit: ${error.message}`, "error");
+  }
 }
 
 // ---------- players ----------
@@ -510,6 +537,7 @@ function renderP2Info() {
 function onP2FocusChanged(info) {
   if (!p2Item || !info) return;
   verticalEntryChanged();
+  if (verticalOpen()) setVerticalEdit(verticalEdit());
   p2Item.title = info.title;
   renderP2Info();
   renderPlayer2();
@@ -579,6 +607,7 @@ function renderEditMenu() {
     item("revert", "Revert to original", { icon: "clock-counter-clockwise", disabled: !t.canRevert() }));
   if (current && !current.original) {
     entries.push(el("sl-divider"));
+    if (!DEMO) entries.push(item("export", "Add to the export list", { icon: "download-simple", disabled: current.id == null && !current.dirty }));
     if (!current.own) entries.push(item("copy", "Make my own copy", { icon: "copy", disabled: !can }));
     if (current.own) entries.push(item("rename", "Rename this edit", { icon: "pencil-simple", disabled: Boolean(me?.support) }));
     if (current.canDelete ?? current.own) entries.push(item("delete", "Delete this edit", { icon: "trash", disabled: Boolean(me?.support) }));
@@ -604,6 +633,7 @@ function setUpEditPicker() {
     else if (value === "copy") t.copyEdit();
     else if (value === "rename") t.renameEdit();
     else if (value === "delete") t.deleteEdit();
+    else if (value === "export") exportEdit();
   });
   $("p2-apply").addEventListener("click", () => timeline2.applyEdit());
 }
@@ -745,6 +775,7 @@ function setUpPlayer2() {
       renderP2Info();
       renderPlayer2();
       if (activePlayer === "p2") renderTools();
+      if (verticalOpen()) setVerticalEdit(verticalEdit());
     },
     // An edit was applied (or undone): Player 1 and the cards show the item's new cut-out parts
     onApplied: () => {
@@ -756,7 +787,7 @@ function setUpPlayer2() {
     onFocusMoved: (focus) => {
       if (!p2Item) return;
       Object.assign(p2Item, { type: focus.type, id: focus.id });
-      if (verticalOpen() && focus.type === "clip") openVertical(focus.id);
+      if (verticalOpen() && focus.type === "clip") openVertical(focus.id, verticalEdit());
     },
     onFocusGone: (message) => {
       if (p2Item) closePlayer2(message);
@@ -765,6 +796,11 @@ function setUpPlayer2() {
   wirePlayerButtons(2, "p2");
   setUpVertical($("player2"), {
     onExit: () => toggleVertical(false),
+    // A render is made for the edit shown; a new one is saved first so it has an id
+    editForRender: async () => {
+      await timeline2.saveNow();
+      return verticalEdit().editId;
+    },
     // The vertical editor's parts on the clip in Player 2's row (file seconds -> source time)
     onParts: (info) => timeline2.setVerticalParts(info && {
       parts: info.parts.map((part) => ({ ...part, start: fileToSource(part.start), end: fileToSource(part.end), keys: (part.keys ?? []).map(fileToSource) })),
@@ -835,7 +871,18 @@ function toggleVertical(on = !verticalOpen()) {
   player2.pause();
   $("view-editor").classList.add("vertical-mode");
   timelineTabs.pick("p2");
-  openVertical(p2Item.id);
+  openVertical(p2Item.id, verticalEdit());
+}
+
+// The vertical editor works on the edit shown in Player 2: renders are made for it (Original: the clip itself) and what it
+// leaves out (trimmed ends and cut parts, in file seconds) isn't played or rendered
+function verticalEdit() {
+  const t = timeline2;
+  const edit = t.edit;
+  const cuts = t.removedRanges()
+    .map((r) => ({ start: sourceToFile(r.start), end: sourceToFile(r.end) }))
+    .filter((r) => r.end - r.start > 0.01);
+  return { editId: edit && !edit.original ? edit.id ?? null : null, cuts };
 }
 
 // ---------- tools bar (works on the timeline whose tab is open) ----------
