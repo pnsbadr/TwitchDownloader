@@ -8,6 +8,7 @@
 // Drawing: one canvas for the ruler (with Twitch's muted parts in red and saved clean audio in green under the ticks)
 // and one for the rows; row headers are DOM next to it so they can hold buttons. Times are seconds into the VOD.
 
+import { timelineWheel } from "./timeline-input.js";
 import { $, el, api, me, can, toast, formatDuration, withTooltip } from "./core.js";
 import { askText, confirmAction } from "./dialogs.js";
 import { MARKER_COLORS } from "./colors.js";
@@ -489,16 +490,13 @@ export class Timeline {
       canvas.addEventListener("dblclick", (event) => this.doubleClick(event, canvas));
       canvas.addEventListener("wheel", (event) => {
         if (!this.vodId) return;
-        event.preventDefault();
         const rect = canvas.getBoundingClientRect();
-        if (event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
-          const delta = (event.shiftKey ? event.deltaY : event.deltaX) / rect.width * this.span();
-          this.follow = false;
-          this.setView(this.view.start + delta, this.view.end + delta);
-        } else {
-          this.follow = false;
-          this.zoomBy(event.deltaY > 0 ? 1.25 : 0.8, this.xToTime(event.clientX - rect.left, rect.width));
-        }
+        timelineWheel(event, {
+          x: event.clientX - rect.left, width: rect.width, span: this.span(), xToTime: (px, w) => this.xToTime(px, w),
+          zoomAt: (factor, at) => { this.follow = false; this.zoomBy(factor, at); },
+          panBy: (seconds) => { this.follow = false; this.setView(this.view.start + seconds, this.view.end + seconds); },
+          rows: document.querySelector(".tl-body"),
+        });
       }, { passive: false });
     }
   }
