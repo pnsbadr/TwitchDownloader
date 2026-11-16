@@ -468,7 +468,9 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   (badrfly 2026-11-16): a cut tool click splits the item there (white line with a notch; saved on the edit as `layout.splits`
   `{ partId: [VOD seconds] }`, the rest of `layout` stays the vertical one; right-click "Remove this split"); a pointer click picks the
   **piece** under it (between the item's ends, its parts, splits and cut edges; `pieceSel`, violet) and Delete leaves it out of the edit or,
-  on a left-out piece, puts it back (`deletePiece`); with nothing picked Delete still unloads. Splits are undo steps too. Edits are kept
+  on a left-out piece, puts it back (`deletePiece`); with nothing picked Delete still unloads. Splits are undo steps too. The cut tool's
+  cursor is a **razor** like Premiere's (`RAZOR` / `RAZOR_BLOCKED` SVG cursors in `ui/timeline-edit.js`, crossed out in red where a click
+  can't cut) and a white line shows where the click will cut (`updateRazor` / `drawRazor`, snapped like the click; Player 1 too, on segments). Edits are kept
   per part in VOD seconds (`partCuts`, like the item's own cut-out parts; a video's segments' own cut-out parts stay out of every edit) and
   saved ~0.6 s after the last change (`POST/PUT /api/edits`, one request at a time, keepalive on `pagehide`). **Original** = the item as on
   Player 1, view only: the first change makes a new edit ("Edit N"); a teammate's edit is view only too and the first change makes your own
