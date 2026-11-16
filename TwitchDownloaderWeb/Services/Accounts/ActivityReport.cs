@@ -65,6 +65,7 @@ namespace TwitchDownloaderWeb.Services.Accounts
                 .ToListAsync(cancellationToken);
 
             var now = DateTime.UtcNow;
+            var renderBytes = shortform.RenderBytesByEntry();
             var builders = new Dictionary<(int, string), (Dictionary<string, int> Counts, int Added, long Disk)>();
             (Dictionary<string, int> Counts, int Added, long Disk) Get((int, string) key) =>
                 builders.TryGetValue(key, out var b) ? b : (KindNames.ToDictionary(x => x, _ => 0), 0, 0L);
@@ -83,7 +84,7 @@ namespace TwitchDownloaderWeb.Services.Accounts
                 var b = Get(key);
                 var bytes = (entry.FileSizeBytes ?? 0)
                             + (entry.GeneratedExpiresAtUtc > now ? entry.GeneratedFileSizeBytes ?? 0 : 0)
-                            + shortform.ListRenders(entry.Id).Sum(x => x.SizeBytes);
+                            + renderBytes.GetValueOrDefault(entry.Id);
                 builders[key] = (b.Counts, b.Added + 1, b.Disk + bytes);
             }
 
@@ -105,13 +106,14 @@ namespace TwitchDownloaderWeb.Services.Accounts
             var entries = await db.Entries.IgnoreQueryFilters().AsNoTracking()
                 .Select(x => new { x.Id, x.TeamId, x.FileSizeBytes, x.GeneratedFileSizeBytes, x.GeneratedExpiresAtUtc })
                 .ToListAsync(cancellationToken);
+            var renderBytes = shortform.RenderBytesByEntry();
             var disk = new Dictionary<int, long>();
             foreach (var entry in entries)
             {
                 disk[entry.TeamId] = disk.GetValueOrDefault(entry.TeamId)
                                      + (entry.FileSizeBytes ?? 0)
                                      + (entry.GeneratedExpiresAtUtc > now ? entry.GeneratedFileSizeBytes ?? 0 : 0)
-                                     + shortform.ListRenders(entry.Id).Sum(x => x.SizeBytes);
+                                     + renderBytes.GetValueOrDefault(entry.Id);
             }
             foreach (var export in await SegmentExportDiskAsync(db, null, null, cancellationToken))
                 disk[export.TeamId] = disk.GetValueOrDefault(export.TeamId) + export.Bytes;

@@ -94,6 +94,23 @@ namespace TwitchDownloaderWeb.Services.Shortform
             return new ShortformState(ShortformStatus.None, 0, null, renders.FirstOrDefault(x => x.EditId is null)?.Layout, renders);
         }
 
+        /// <summary>Bytes of each entry's kept renders, from one look at the renders folder (for disk use over many entries).</summary>
+        public Dictionary<int, long> RenderBytesByEntry()
+        {
+            var bytes = new Dictionary<int, long>();
+            var root = new DirectoryInfo(_storage.Resolve(LibraryStorage.ShortformFolderName));
+            if (!root.Exists)
+                return bytes;
+
+            foreach (var folder in root.EnumerateDirectories())
+            {
+                if (int.TryParse(folder.Name, NumberStyles.None, CultureInfo.InvariantCulture, out var entryId)
+                    && ListRenders(entryId).Sum(x => x.SizeBytes) is > 0 and var sum)
+                    bytes[entryId] = sum;
+            }
+            return bytes;
+        }
+
         public IReadOnlyList<ShortformRender> ListRenders(int entryId)
         {
             var folder = EntryFolder(entryId);
