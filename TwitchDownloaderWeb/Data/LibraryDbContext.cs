@@ -253,6 +253,8 @@ namespace TwitchDownloaderWeb.Data
                 entity.ToTable("Projects");
                 entity.Property(x => x.Title).HasMaxLength(EditProject.MaxTitleLength);
                 entity.Property(x => x.Content).HasMaxLength(EditProject.MaxContentLength);
+                // Two saves of one revision at once: the second one's update finds no row and is refused (409 project-changed)
+                entity.Property(x => x.Revision).IsConcurrencyToken();
                 entity.HasIndex(x => new { x.TeamId, x.UserId });
                 entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
                 entity.HasMany(x => x.Vods).WithOne().HasForeignKey(x => x.ProjectId).OnDelete(DeleteBehavior.Cascade);

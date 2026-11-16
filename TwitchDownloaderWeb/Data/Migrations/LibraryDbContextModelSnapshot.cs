@@ -155,6 +155,7 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .HasColumnType("INTEGER");
 
                     b.Property<int>("Revision")
+                        .IsConcurrencyToken()
                         .HasColumnType("INTEGER");
 
                     b.Property<int>("TeamId")
