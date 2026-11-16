@@ -120,5 +120,39 @@ namespace TwitchDownloaderWeb.Tests
             // DeleteAnyEntries may delete someone else's row
             Assert.Equal(HttpStatusCode.NoContent, (await owner.DeleteAsync($"/api/rows/{videoRow}", ct)).StatusCode);
         }
-    }
+    
+
+        [Fact]
+        public async Task UndoingTheDeleteOfATeammatesSegmentPutsItBackOnTheirRow()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            var (owner, member, _, memberId) = await TeamWithMemberAsync("rw3");
+            var clipper = await CreateRoleAsync(owner, "Clipper", "ViewLibrary", "AddEntries");
+            await AssignAsync(owner, memberId, clipper);
+
+            var segment = await (await member.PostAsJsonAsync("/api/vods/420/markers", new { seconds = 5, endSeconds = 9, label = "A" }, ct))
+                .Content.ReadFromJsonAsync<JsonElement>(ct);
+            var memberRow = segment.GetProperty("rowId").GetInt32();
+            await GetJsonAsync(owner, "/api/vods/420/timeline");
+
+            // The owner (DeleteAnyEntries) deletes it, then undo makes it again on the member's row, as the member's
+            Assert.Equal(HttpStatusCode.NoContent, (await owner.DeleteAsync($"/api/markers/{segment.GetProperty("id").GetInt32()}", ct)).StatusCode);
+            var restored = await owner.PostAsJsonAsync("/api/vods/420/markers",
+                new { seconds = 5, endSeconds = 9, label = "A", rowId = memberRow, restore = true }, ct);
+            Assert.Equal(HttpStatusCode.Created, restored.StatusCode);
+            var back = await restored.Content.ReadFromJsonAsync<JsonElement>(ct);
+            Assert.Equal(memberRow, back.GetProperty("rowId").GetInt32());
+            Assert.Equal(memberId, back.GetProperty("createdByUserId").GetInt32());
+            Assert.Equal("rw3member", back.GetProperty("createdBy").GetString());
+
+            // Without restore it's still refused; so is restoring onto someone's row without DeleteAnyEntries
+            Assert.Equal(HttpStatusCode.BadRequest,
+                (await owner.PostAsJsonAsync("/api/vods/420/markers", new { seconds = 1, rowId = memberRow }, ct)).StatusCode);
+            var ownerId = (await GetJsonAsync(owner, "/api/auth/me")).GetProperty("id").GetInt32();
+            var ownerRow = RowsOf(await GetJsonAsync(owner, "/api/vods/420/timeline"), ownerId)
+                .Single(x => x.GetProperty("kind").GetString() == "Video").GetProperty("id").GetInt32();
+            Assert.Equal(HttpStatusCode.BadRequest,
+                (await member.PostAsJsonAsync("/api/vods/420/markers", new { seconds = 1, rowId = ownerRow, restore = true }, ct)).StatusCode);
+        }
+}
 }

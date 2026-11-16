@@ -93,8 +93,11 @@ namespace TwitchDownloaderWeb.Endpoints
     /// of the marker's creator on the VOD (blank = stays where it is).</param>
     /// <param name="Cuts">A segment's cut-out parts in VOD seconds (see <see cref="CutOuts"/>). Changing: null keeps the ones it has (clipped
     /// to the new range), [] removes them.</param>
+    /// <param name="Restore">Adding only: the page's undo of a delete. With DeleteAnyEntries (needed to have deleted it) <c>RowId</c> may then
+    /// be another member's video row, and the marker is made again as theirs, where it was (badrfly 2026-11-16: undo used to bring a
+    /// teammate's segment back on your own row).</param>
     public sealed record AddMarkerRequest(double? Seconds, double? EndSeconds, string? Label, string? Color, int? RowId = null,
-        IReadOnlyList<CutRange>? Cuts = null);
+        IReadOnlyList<CutRange>? Cuts = null, bool Restore = false);
 
     /// <summary>
     /// What the player's timeline shows besides Twitch's muted parts (which the page reads from the playlist itself): the team's
@@ -439,12 +442,20 @@ namespace TwitchDownloaderWeb.Endpoints
             if (errors.Count > 0)
                 return Results.ValidationProblem(errors);
 
+            // Undoing the delete of a teammate's marker puts it back on their row, as theirs
+            var ownerUserId = team.UserId;
+            if (request.Restore && request.RowId is { } restoreRowId && team.Can(TeamPermission.DeleteAnyEntries)
+                && await db.TimelineRows.AsNoTracking().Where(x => x.Id == restoreRowId && x.VodId == vodId).Select(x => (int?)x.UserId)
+                    .FirstOrDefaultAsync(cancellationToken) is { } rowOwner)
+                ownerUserId = rowOwner;
+
             if (request.RowId is { } rowId
-                && await CheckRowAsync(db, rowId, vodId, TimelineRowKind.Video, team.UserId, cancellationToken) is { } rowProblem)
+                && await CheckRowAsync(db, rowId, vodId, TimelineRowKind.Video, ownerUserId, cancellationToken) is { } rowProblem)
                 return rowProblem;
 
             var marker = new VodMarker
             {
+                CreatedByUserId = ownerUserId == team.UserId ? 0 : ownerUserId,
                 RowId = request.RowId,
                 VodId = vodId,
                 Seconds = Math.Round(request.Seconds!.Value, 2),
@@ -455,7 +466,9 @@ namespace TwitchDownloaderWeb.Endpoints
             };
             marker.Cuts = NormalizedCuts(marker, request.Cuts);
             db.Markers.Add(marker);
-            db.Audit(AuditActions.MarkerAdded, null, $"VOD {vodId} {Describe(marker)}");
+            db.Audit(AuditActions.MarkerAdded, null, ownerUserId == team.UserId
+                ? $"VOD {vodId} {Describe(marker)}"
+                : $"VOD {vodId} {Describe(marker)} (put back on user {ownerUserId}'s row)");
             await db.SaveChangesAsync(cancellationToken);
 
             // A marker on a live stream makes (or moves) the team's reference entry around its markers
