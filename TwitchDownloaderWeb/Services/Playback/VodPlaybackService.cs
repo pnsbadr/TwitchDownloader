@@ -73,9 +73,27 @@ namespace TwitchDownloaderWeb.Services.Playback
             if (cache.TryGetValue(CacheKey(vodId), out PlaybackVariants? cached) && cached is not null)
                 return cached;
 
-            var variants = await source.GetVariantsAsync(vodId, cancellationToken);
-            cache.Set(CacheKey(vodId), variants, variants.Status == PlaybackStatus.Ok ? VariantCacheTime : TimeSpan.FromMinutes(1));
-            return variants;
+            // One Twitch lookup per VOD at a time: opening a VOD asks for the master while the cards ask for frames of the same VOD
+            var lookup = _lookups.GetOrAdd(vodId, LookUpAsync);
+            return await lookup.WaitAsync(cancellationToken);
+        }
+
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<long, Task<PlaybackVariants>> _lookups = new();
+
+        private async Task<PlaybackVariants> LookUpAsync(long vodId)
+        {
+            await Task.Yield(); // so GetOrAdd has stored the task before it can finish and remove itself
+            try
+            {
+                // Not the caller's token: other callers share this lookup
+                var variants = await source.GetVariantsAsync(vodId, CancellationToken.None);
+                cache.Set(CacheKey(vodId), variants, variants.Status == PlaybackStatus.Ok ? VariantCacheTime : TimeSpan.FromMinutes(1));
+                return variants;
+            }
+            finally
+            {
+                _lookups.TryRemove(vodId, out _);
+            }
         }
 
         /// <summary>The variant's media playlist with every segment URL rewritten, or null if the VOD or variant is gone.</summary>
