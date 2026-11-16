@@ -133,6 +133,9 @@ namespace TwitchDownloaderWeb.Endpoints
                         var target = Path.Combine(storage.RootFolder, relative);
                         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
                         File.Copy(sourceFile, target, overwrite: true);
+                        // A copy keeps the source's write time (Windows), and until this transaction commits the cleanup sweep doesn't
+                        // see the new entry: an "old" file named after no entry is what it deletes as an orphan
+                        File.SetLastWriteTimeUtc(target, DateTime.UtcNow);
                         copy.FilePath = relative;
                         copy.FileSizeBytes = new FileInfo(target).Length;
                         copy.FileCuts = source.FileCuts;
