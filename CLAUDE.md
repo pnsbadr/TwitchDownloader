@@ -408,12 +408,13 @@ The old library page (`app.js`, `player-bar.js`, `app.css`) was removed in front
   (`cdn.jsdelivr.net/npm/hls.js@1.6.16`, loaded lazily). The server gets the access token + master playlist like Core's downloader
   (`VodPlaybackService`, master cached 10 min) and serves `GET /api/vods/{id}/play.m3u8`: landscape video renditions only (no audio-only,
   no portrait), pointing at our `/play/{n}.m3u8`, which is Twitch's media playlist with segment URLs rewritten. Segments load straight
-  from Twitch's CDN; if that fails while starting, the page retries with `?segments=proxy` (segments through `/play/{n}/{segment}`,
-  only file names in the rendition's folder) and keeps that for the visit. Tokens never reach the browser or the logs.
+  from Twitch's CDN; if a segment fails before the first frame (e.g. CORS: the CDN refuses `localhost`), the page retries at once with
+  `?segments=proxy` (segments through `/play/{n}/{segment}`, only file names in the rendition's folder) and remembers that for 24 h
+  (`localStorage` `clipLibrary.segmentMode`). Tokens never reach the browser or the logs.
   The video's `currentTime` is the offset into the VOD (hls.js maps the playlist start to 0). **Fallback:** if the app player can't play a
-  VOD (403 sub-only, 404, hls.js missing, unsupported codec, no first frame in 20 s) the official Twitch embed
+  VOD (403 sub-only, 404, hls.js missing, unsupported codec, no first frame in 20 s direct / 45 s through the server) the official Twitch embed
   (`player.twitch.tv/js/embed/v1.js`) is used (choice saved in `localStorage` key `clipLibrary.playerMode`, `app`/`twitch`; if the chosen one
-  fails the other is tried). Volume is saved in `clipLibrary.playerVolume`. The embed needs `parent` = `location.hostname`, so open the page
+  fails the other is tried; both players have the gear menu to switch and say why they fell back). Volume is saved in `clipLibrary.playerVolume`. The embed needs `parent` = `location.hostname`, so open the page
   as `localhost` (Twitch may reject a bare IP); sub-only VODs play there only if the browser is logged in to Twitch with access. With the
   embed, `getCurrentTime()` is a cache refreshed about once a second, so `EmbedBackend.position()` estimates the live offset (last refresh or
   seek target + time played since).

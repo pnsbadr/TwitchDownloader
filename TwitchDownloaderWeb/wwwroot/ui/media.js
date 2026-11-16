@@ -10,6 +10,11 @@ const HLS_SRC = "https://cdn.jsdelivr.net/npm/hls.js@1.6.16/dist/hls.min.js";
 const PLAYER_MODE_STORAGE_KEY = "clipLibrary.playerMode"; // "app" (default) or "twitch"
 const PLAYER_VOLUME_STORAGE_KEY = "clipLibrary.playerVolume";
 const HLS_START_TIMEOUT_MS = 20000;
+// Through the server it's the last try before Twitch's player, and a segment may first need its saved clean audio swapped in
+const HLS_PROXY_START_TIMEOUT_MS = 45000;
+// Where Twitch's CDN refuses this page (no CORS header), it does every time: remember that for a day so a reload doesn't wait for it again
+const SEGMENT_MODE_STORAGE_KEY = "clipLibrary.segmentMode";
+const SEGMENT_MODE_REMEMBER_MS = 24 * 3600 * 1000;
 const scripts = new Map();
 
 function loadScript(src, errorMessage) {
@@ -139,6 +144,8 @@ class HlsBackend {
     }
     // Muted segments the server will play with saved clean audio instead
     this.cleanSegments = Number(check.headers.get("X-Clean-Audio-Segments")) || 0;
+    // Closed while it asked (another VOD or player opened in this slot): don't put a video in the slot it now uses
+    if (this.closed) throw new PlayerUnavailable("closed");
 
     const video = document.createElement("video");
     video.controls = false;
@@ -154,12 +161,13 @@ class HlsBackend {
     } catch {
       // Without hls.js only browsers with their own HLS support (Safari) can play it
     }
-    if (window.Hls?.isSupported()) await this.openHls(src, startSeconds);
+    if (this.closed) throw new PlayerUnavailable("closed");
+    if (window.Hls?.isSupported()) await this.openHls(src, startSeconds, segmentMode);
     else if (video.canPlayType("application/vnd.apple.mpegurl")) await this.openNative(src, startSeconds);
     else throw new PlayerUnavailable(window.Hls ? "this browser can't play HLS video" : "couldn't load hls.js");
   }
 
-  openHls(src, startSeconds) {
+  openHls(src, startSeconds, segmentMode) {
     const video = this.video;
     const hls = new Hls({
       startPosition: startSeconds,
@@ -177,7 +185,7 @@ class HlsBackend {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         if (!this.ready) reject(new PlayerUnavailable("the video took too long to start", true));
-      }, HLS_START_TIMEOUT_MS);
+      }, segmentMode === "proxy" ? HLS_PROXY_START_TIMEOUT_MS : HLS_START_TIMEOUT_MS);
       video.addEventListener("loadeddata", () => {
         clearTimeout(timeout);
         this.ready = true;
@@ -191,7 +199,15 @@ class HlsBackend {
       hls.on(Hls.Events.LEVEL_LOADED, onLevel);
       hls.on(Hls.Events.LEVEL_UPDATED, onLevel);
       hls.on(Hls.Events.ERROR, (_, data) => {
-        if (!data.fatal || this.hls !== hls) return;
+        if (this.hls !== hls) return;
+        // A segment straight from Twitch's CDN failed before anything played (usually the CDN refusing this page: CORS).
+        // hls.js would keep trying other qualities until the start timeout; go through the server now instead.
+        if (!this.ready && segmentMode === "direct" && data.type === Hls.ErrorTypes.NETWORK_ERROR && data.details === Hls.ErrorDetails.FRAG_LOAD_ERROR) {
+          clearTimeout(timeout);
+          reject(new PlayerUnavailable("couldn't load the video from Twitch's CDN", true));
+          return;
+        }
+        if (!data.fatal) return;
         if (!this.ready) {
           clearTimeout(timeout);
           reject(new PlayerUnavailable(describeHlsError(data), data.type === Hls.ErrorTypes.NETWORK_ERROR));
@@ -254,6 +270,7 @@ class HlsBackend {
   }
 
   close() {
+    this.closed = true;
     this.ready = false;
     this.hls?.destroy();
     this.hls = null;
@@ -261,9 +278,9 @@ class HlsBackend {
       this.video.pause();
       this.video.removeAttribute("src");
       this.video.load();
+      if (this.video.parentNode === this.container) this.video.remove();
       this.video = null;
     }
-    this.container.replaceChildren();
   }
 }
 
@@ -380,8 +397,27 @@ export function formatClock(seconds) {
   return `${formatDuration(Math.floor(hundredths / 100), { short: false })}.${String(hundredths % 100).padStart(2, "0")}`;
 }
 
-// Segments load straight from Twitch's CDN until that fails once, then through the server for the rest of the visit
-let segmentMode = "direct";
+// Segments load straight from Twitch's CDN until that fails once, then through the server (remembered for a day)
+let segmentMode = loadSegmentMode();
+
+function loadSegmentMode() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SEGMENT_MODE_STORAGE_KEY));
+    if (saved?.mode === "proxy" && Date.now() - saved.at < SEGMENT_MODE_REMEMBER_MS) return "proxy";
+  } catch {
+    // Unavailable or unreadable storage: try the CDN first
+  }
+  return "direct";
+}
+
+function saveSegmentMode(mode) {
+  try {
+    if (mode === "proxy") localStorage.setItem(SEGMENT_MODE_STORAGE_KEY, JSON.stringify({ mode, at: Date.now() }));
+    else localStorage.removeItem(SEGMENT_MODE_STORAGE_KEY);
+  } catch {
+    // Still applies for this visit
+  }
+}
 
 // One player slot. Plays a VOD in the app player, falling back to the Twitch embed, and pauses previews at stopAt.
 //   events: onTick(position), onState() (play/pause, opened, closed, source changed), onDetails(hls playlist details)
@@ -447,6 +483,7 @@ export class MediaPlayer {
       if (!error.retryWithProxy || segmentMode !== "direct" || generation !== this.generation) throw error;
       const started = await this.start(new HlsBackend(this.container), vodId, startSeconds, "proxy", generation);
       segmentMode = "proxy";
+      saveSegmentMode("proxy");
       return started;
     }
   }
