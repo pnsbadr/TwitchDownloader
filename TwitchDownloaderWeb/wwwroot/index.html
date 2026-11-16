@@ -181,6 +181,10 @@
                 <sl-icon-button library="ph" id="p2-delete" name="eject" label="Close the project (nothing is deleted)" disabled></sl-icon-button>
                 <sl-icon-button library="ph" id="p2-mute" name="speaker-high" label="Mute" disabled></sl-icon-button>
                 <sl-range id="p2-volume" class="volume" min="0" max="100" value="100" tooltip="none" aria-label="Volume" disabled></sl-range>
+                <sl-dropdown id="p2-quality-menu" placement="top-end" hoist distance="4">
+                  <sl-icon-button library="ph" slot="trigger" id="p2-quality" name="gear-six" label="Quality and player" disabled></sl-icon-button>
+                  <sl-menu id="p2-quality-items"></sl-menu>
+                </sl-dropdown>
                 <sl-icon-button library="ph" id="p2-full" name="corners-out" label="Fullscreen" data-keybind="fullscreen" disabled></sl-icon-button>
               </div>
             </section>

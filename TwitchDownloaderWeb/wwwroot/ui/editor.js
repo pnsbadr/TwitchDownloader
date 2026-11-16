@@ -412,6 +412,7 @@ function renderPlayer2() {
   $("p2-rename").disabled = !open || !store.canEdit;
   $("p2-delete").disabled = !open;
   $("p2-export").disabled = !hasPieces || DEMO;
+  $("p2-quality").disabled = !player2.ready;
   renderProjectPicker();
   renderP2Info();
 }
@@ -566,11 +567,11 @@ function renderClock(position) {
 }
 
 // Quality menu: Auto + the renditions (app player), and the switch between our player and Twitch's
-function renderQualityMenu() {
+function renderQualityMenu(player, itemsId) {
   const items = [];
-  if (player1.kind === "app") {
-    const levels = player1.levels();
-    const current = player1.level;
+  if (player.kind === "app") {
+    const levels = player.levels();
+    const current = player.level;
     items.push(el("sl-menu-item", { type: "checkbox", value: "level:-1", checked: current === -1 }, "Auto"));
     for (const level of levels) {
       items.push(el("sl-menu-item", { type: "checkbox", value: `level:${level.index}`, checked: current === level.index }, level.name));
@@ -579,8 +580,8 @@ function renderQualityMenu() {
   }
   items.push(el("sl-menu-item", { value: "switch" },
     el("sl-icon", { slot: "prefix", library: "ph", name: "swap" }),
-    player1.kind === "app" ? "Use the Twitch player" : "Use the app player"));
-  $("p1-quality-items").replaceChildren(...items);
+    player.kind === "app" ? "Use the Twitch player" : "Use the app player"));
+  $(itemsId).replaceChildren(...items);
 }
 
 // Only one player plays at a time: starting one pauses the other
@@ -644,7 +645,7 @@ function setUpPlayer1() {
     player1.seek(player1.livePosition());
     player1.play();
   });
-  $("p1-quality-menu").addEventListener("sl-show", renderQualityMenu);
+  $("p1-quality-menu").addEventListener("sl-show", () => renderQualityMenu(player1, "p1-quality-items"));
   $("p1-quality-items").addEventListener("sl-select", async (event) => {
     const value = event.detail.item.value;
     if (value === "switch") {
@@ -699,6 +700,23 @@ function setUpPlayer2() {
     },
   });
   playback.onError = (error) => showNote("p2", `Couldn't play this VOD: ${error.message}`, 8000);
+  // Same as Player 1: say when our player couldn't play the VOD and Twitch's took over (and why)
+  playback.onOpened = () => showNote("p2", playerNotes(player2), player2.fallbackReason ? 15000 : 8000);
+  $("p2-quality-menu").addEventListener("sl-show", () => renderQualityMenu(player2, "p2-quality-items"));
+  $("p2-quality-items").addEventListener("sl-select", async (event) => {
+    const value = event.detail.item.value;
+    if (value === "switch") {
+      showNote("p2", "Switching player…");
+      try {
+        await playback.switchPlayer();
+        showNote("p2", playerNotes(player2), 8000);
+      } catch (error) {
+        showNote("p2", `Couldn't play this VOD: ${error.message}`);
+      }
+    } else if (value.startsWith("level:")) {
+      player2.level = Number(value.slice(6));
+    }
+  });
   timeline2 = new ProjectTimeline(store, {
     getPosition: p2Position,
     onSeek: p2Seek,

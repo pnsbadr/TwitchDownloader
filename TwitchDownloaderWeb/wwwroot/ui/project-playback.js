@@ -109,6 +109,23 @@ export class ProjectPlayback {
     // The time may have moved on while it opened (a seek elsewhere opened something else, or was in the same VOD)
     if (this.playingFlag) this.player.play();
     else this.player.pause();
+    this.onOpened?.();
+    this.onState?.();
+  }
+
+  // The gear menu's "Use the Twitch player" / "Use the app player": the same VOD at the same spot in the other player
+  async switchPlayer() {
+    if (!this.player.vodId || this.opening) return;
+    const target = { vodId: this.player.vodId, offset: this.player.position() ?? 0 };
+    this.opening = target;
+    try {
+      await this.player.switchPlayer();
+    } finally {
+      if (this.opening === target) this.opening = null;
+    }
+    this.setMuted(this.current?.muted ?? false);
+    if (this.playingFlag) this.player.play();
+    else this.player.pause();
     this.onState?.();
   }
 
