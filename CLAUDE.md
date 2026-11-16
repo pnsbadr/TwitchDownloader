@@ -464,7 +464,11 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   `ui/source-timeline.js`, `SourceTimeline extends Timeline`, mode `"item"`): the item in Player 2 is the **source**; its timeline runs in
   **source time** from 0:00 to the item's length (a video: its segments end to end, in play order), nothing outside it is shown and nothing
   can be dragged past it (extend the item on Player 1). What's done there is an **edit**: the ends trimmed inward (the white outline's
-  grips, I / O) and parts cut out (cut tool drag; click or right-click a cut part to put it back); Player 1 doesn't change. Edits are kept
+  grips, I / O) and parts cut out (cut tool drag; right-click a cut part to put it back); Player 1 doesn't change. **Splits**
+  (badrfly 2026-11-16): a cut tool click splits the item there (white line with a notch; saved on the edit as `layout.splits`
+  `{ partId: [VOD seconds] }`, the rest of `layout` stays the vertical one; right-click "Remove this split"); a pointer click picks the
+  **piece** under it (between the item's ends, its parts, splits and cut edges; `pieceSel`, violet) and Delete leaves it out of the edit or,
+  on a left-out piece, puts it back (`deletePiece`); with nothing picked Delete still unloads. Splits are undo steps too. Edits are kept
   per part in VOD seconds (`partCuts`, like the item's own cut-out parts; a video's segments' own cut-out parts stay out of every edit) and
   saved ~0.6 s after the last change (`POST/PUT /api/edits`, one request at a time, keepalive on `pagehide`). **Original** = the item as on
   Player 1, view only: the first change makes a new edit ("Edit N"); a teammate's edit is view only too and the first change makes your own

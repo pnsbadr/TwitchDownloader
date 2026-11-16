@@ -512,7 +512,7 @@ export const editing = {
       const drag = this.cutDrag;
       this.cutDrag = null;
       if (press.moved && drag && drag.end - drag.start >= 0.05) this.cutOut(drag.start, drag.end);
-      else if (!press.moved) this.clickCutOut(press.at);
+      else if (!press.moved) this.clickCutOut(press.from);
     }
     this.dirty = true;
   },
@@ -1134,7 +1134,9 @@ export const editing = {
   deleteSelected() {
     // Player 2: Delete only unloads it (badrfly 2026-11-16: it used to delete the clip or segment for good). Deleting for real is on
     // Player 1's timeline and the library cards.
+    // A piece picked with the pointer is left out of the edit (or put back) instead
     if (this.mode === "item") {
+      if (this.deletePiece?.()) return;
       this.hooks.onUnload?.();
       return;
     }
@@ -1170,7 +1172,7 @@ export const editing = {
 
   // ---------- cut-out parts (Player 2's cut tool; SourceTimeline says what it cuts: cutTarget, cutOut, clickCutOut) ----------
 
-  // Pressing with the cut tool: dragging marks the part to cut out, a click on a cut-out part puts it back
+  // Pressing with the cut tool: dragging marks the part to cut out, a click splits the item there
   startCutOut(event, canvas, rect, x, y, t) {
     const target = this.cutTarget();
     if (!target) return;

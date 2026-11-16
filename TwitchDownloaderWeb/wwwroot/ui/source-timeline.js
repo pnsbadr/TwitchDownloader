@@ -28,6 +28,7 @@ const HISTORY_LIMIT = 50;
 const LAST_EDIT_KEY = "clipco.p2.lastEdit"; // { "clip:12": editId | "original" }: the edit last open per item
 
 const round = (seconds) => Math.round(seconds * 100) / 100;
+const cloneSplits = (splits) => Object.fromEntries(Object.entries(splits ?? {}).map(([id, list]) => [id, [...list]]));
 const clone = (partCuts) => Object.fromEntries(Object.entries(partCuts ?? {}).map(([id, cuts]) => [id, cuts.map((c) => ({ ...c }))]));
 
 // Sorted, merged ranges (touching ones joined)
@@ -98,6 +99,7 @@ export class SourceTimeline extends Timeline {
     this.editHistory = { undo: [], redo: [] };
     this.historyEdit = null;
     this.cutNote = "left out of this edit";
+    this.pieceSel = null;   // the piece the pointer picked (between splits, part ends and cut edges): Delete leaves it out / puts it back
   }
 
   // ---------- loading ----------
@@ -131,6 +133,7 @@ export class SourceTimeline extends Timeline {
     this.editsLoaded = false;
     this.edit = null;
     this.previewCuts = null;
+    this.pieceSel = null;
     this.editHistory = { undo: [], redo: [] };
     this.historyEdit = null;
     this.hooks.onEditsChanged?.();
@@ -280,6 +283,8 @@ export class SourceTimeline extends Timeline {
 
   fromServer(data, kind, focus) {
     const own = data.createdByUserId != null && String(data.createdByUserId) === String(me?.id);
+    // Splits (cut tool clicks) are kept in the edit's layout JSON as { splits: { partId: [VOD seconds] } }; the rest of it is the vertical layout
+    const { splits = {}, ...layout } = data.layout ?? {};
     const partCuts = kind === "video"
       ? Object.fromEntries((data.parts ?? []).map((p) => [String(p.markerId), p.cuts ?? []]))
       : { [String(focus.id)]: data.cuts ?? [] };
@@ -287,7 +292,8 @@ export class SourceTimeline extends Timeline {
       id: data.id, title: data.title || null, kind, itemId: focus.id, focus: { ...focus },
       createdByUserId: data.createdByUserId, createdBy: data.createdBy, own,
       canEdit: data.canEdit ?? own, canDelete: data.canDelete ?? own,
-      createdAtUtc: data.createdAtUtc, updatedAtUtc: data.updatedAtUtc, layout: data.layout ?? null, partCuts,
+      createdAtUtc: data.createdAtUtc, updatedAtUtc: data.updatedAtUtc, layout: Object.keys(layout).length ? layout : null, partCuts,
+      splits: cloneSplits(splits),
     };
   }
 
@@ -320,7 +326,7 @@ export class SourceTimeline extends Timeline {
   }
 
   originalEdit() {
-    return { original: true, id: null, title: "Original", own: false, canEdit: false, canDelete: false, partCuts: this.appliedCuts() };
+    return { original: true, id: null, title: "Original", own: false, canEdit: false, canDelete: false, partCuts: this.appliedCuts(), splits: {} };
   }
 
   // An edit's cut parts per part, cut down to fit the parts as they are now
@@ -474,6 +480,30 @@ export class SourceTimeline extends Timeline {
     const x1 = this.timeToX(range.start, width);
     const x2 = this.timeToX(range.end, width);
     ctx.save();
+    if (this.pieceSel) {
+      const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#8b7cf6";
+      const p1 = this.timeToX(this.pieceSel.start, width);
+      const p2 = this.timeToX(this.pieceSel.end, width);
+      ctx.fillStyle = accent;
+      ctx.globalAlpha = 0.25;
+      ctx.fillRect(p1, 1, Math.max(2, p2 - p1), h - 2);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(p1 + 1, 1, Math.max(2, p2 - p1 - 2), h - 2);
+    }
+    // Splits: a white line with a notch on top
+    ctx.fillStyle = "#fff";
+    for (const t of this.splitTimes()) {
+      const x = Math.round(this.timeToX(t, width));
+      if (x < -2 || x > width + 2) continue;
+      ctx.fillRect(x - 0.5, 0, 1.5, h);
+      ctx.beginPath();
+      ctx.moveTo(x - 4, 0);
+      ctx.lineTo(x + 4.5, 0);
+      ctx.lineTo(x + 0.25, 5);
+      ctx.fill();
+    }
     ctx.strokeStyle = "#fff";
     ctx.lineWidth = 2;
     ctx.strokeRect(x1, 3, Math.max(2, x2 - x1), h - 6);
@@ -536,6 +566,7 @@ export class SourceTimeline extends Timeline {
     if (shown && !shown.original && shown.own && shown.canEdit !== false) return shown;
     const edit = this.newEdit({
       partCuts: clone(this.fitted(shown?.partCuts)),
+      splits: cloneSplits(shown?.splits),
       title: shown && !shown.original ? `Copy of ${this.editName(shown)}`.slice(0, 200) : null,
       layout: shown?.layout ?? null,
     });
@@ -547,11 +578,11 @@ export class SourceTimeline extends Timeline {
     return edit;
   }
 
-  newEdit({ partCuts = {}, title = null, layout = null } = {}) {
+  newEdit({ partCuts = {}, splits = {}, title = null, layout = null } = {}) {
     const focus = { ...this.focus };
     const edit = {
       id: null, title, kind: this.source.kind, itemId: focus.id, focus, own: true, canEdit: true, canDelete: true,
-      createdByUserId: me?.id, createdBy: me?.username, createdAtUtc: new Date().toISOString(), layout, partCuts, dirty: true,
+      createdByUserId: me?.id, createdBy: me?.username, createdAtUtc: new Date().toISOString(), layout, partCuts, splits, dirty: true,
     };
     this.edits.push(edit);
     this.scheduleSave();
@@ -615,17 +646,113 @@ export class SourceTimeline extends Timeline {
     this.changeEdit(this.toPartCuts(subtract(this.editableRanges(), range.start, range.end)));
   }
 
+  // A click with the cut tool splits the item there (badrfly 2026-11-16); the pointer then picks a piece and Delete leaves it out
   clickCutOut(t) {
-    const cut = this.editableRanges().find((r) => t >= r.start && t < r.end);
-    if (cut) {
-      this.putBack(cut);
+    this.addSplit(t);
+  }
+
+  // ---------- splits and pieces ----------
+
+  // The edit's splits in source time
+  splitTimes(edit = this.edit) {
+    const out = [];
+    for (const part of this.source?.parts ?? []) {
+      for (const v of edit?.splits?.[String(part.id)] ?? []) {
+        if (v > part.vodStart + 0.01 && v < part.vodEnd - 0.01) out.push(part.offset + v - part.vodStart);
+      }
+    }
+    return out.sort((a, b) => a - b);
+  }
+
+  // Where the item is cut into pieces: its ends, its parts' ends, the splits and the edges of what's left out
+  pieceEdges() {
+    const edges = [0, this.length(), ...this.splitTimes()];
+    for (const part of this.source?.parts ?? []) edges.push(part.offset);
+    for (const r of this.removedRanges()) edges.push(r.start, r.end);
+    const sorted = edges.filter((t) => t >= 0 && t <= this.length()).sort((a, b) => a - b);
+    return sorted.filter((t, i) => i === 0 || t - sorted[i - 1] > 0.005);
+  }
+
+  // The piece at t: { start, end, out } (out = left out of the edit)
+  pieceAt(t) {
+    const edges = this.pieceEdges();
+    for (let i = 0; i + 1 < edges.length; i++) {
+      if (t >= edges[i] && t < edges[i + 1]) {
+        const start = edges[i];
+        const end = edges[i + 1];
+        const mid = (start + end) / 2;
+        return { start, end, out: this.removedRanges().some((r) => mid >= r.start && mid < r.end) };
+      }
+    }
+    return null;
+  }
+
+  addSplit(t) {
+    if (!this.source) return;
+    if (!this.canMakeEdits()) {
+      toast(this.viewOnlyReason());
       return;
     }
-    if (this.lockedRanges().some((r) => t >= r.start && t < r.end)) {
-      toast("This part is cut out of the segment itself. Load the segment in Player 2 to change that.");
-      return;
+    const part = this.source.parts.find((p) => t > p.offset + 0.05 && t < p.offset + p.vodEnd - p.vodStart - 0.05);
+    if (!part) return;
+    if (this.splitTimes().some((s) => Math.abs(s - t) < 0.05)) return;
+    const splits = cloneSplits(this.edit?.splits);
+    const key = String(part.id);
+    splits[key] = [...(splits[key] ?? []), round(part.vodStart + t - part.offset)].sort((a, b) => a - b);
+    this.changeSplits(splits);
+  }
+
+  removeSplit(t) {
+    const splits = cloneSplits(this.edit?.splits);
+    for (const part of this.source?.parts ?? []) {
+      const key = String(part.id);
+      splits[key] = (splits[key] ?? []).filter((v) => Math.abs(part.offset + v - part.vodStart - t) > 0.005);
     }
-    toast("Drag across the part you want to cut out.");
+    this.changeSplits(splits);
+  }
+
+  changeSplits(splits) {
+    if (!this.canMakeEdits()) {
+      toast(this.viewOnlyReason());
+      return false;
+    }
+    const before = cloneSplits(this.edit?.splits);
+    const edit = this.ensureOwnEdit();
+    const cuts = clone(this.fitted(edit.partCuts));
+    this.remember({ edit, before: cuts, after: cuts, beforeSplits: before, afterSplits: cloneSplits(splits) });
+    edit.splits = splits;
+    edit.dirty = true;
+    this.scheduleSave();
+    this.changed();
+    this.hooks.onEditsChanged?.();
+    return true;
+  }
+
+  // Delete with a piece picked: a kept piece is left out of the edit, a left-out one put back. false = nothing picked
+  deletePiece() {
+    const piece = this.pieceSel;
+    if (!piece || !this.source) return false;
+    if (!this.canMakeEdits()) {
+      toast(this.viewOnlyReason());
+      return true;
+    }
+    if (piece.out) {
+      const editable = within(this.editableRanges(), piece.start, piece.end);
+      if (!editable.length) toast("This part is cut out of the segment itself. Load the segment in Player 2 to change that.");
+      else this.changeEdit(this.toPartCuts(subtract(this.editableRanges(), piece.start, piece.end)));
+    } else {
+      this.cutOut(piece.start, piece.end);
+    }
+    this.pieceSel = this.pieceAt((piece.start + piece.end) / 2) ?? null;
+    this.changed();
+    return true;
+  }
+
+  escape() {
+    if (!this.pieceSel) return false;
+    this.pieceSel = null;
+    this.changed();
+    return true;
   }
 
   // I / O: the edit's start or end at the playhead
@@ -662,6 +789,10 @@ export class SourceTimeline extends Timeline {
         this.updateCursor(true);
         return;
       }
+      // A click picks the piece under it (Delete then leaves it out or puts it back)
+      const y = event.clientY - rect.top;
+      this.pieceSel = y < this.rowHeight ? this.pieceAt(this.xToTime(event.clientX - rect.left, rect.width)) : null;
+      this.dirty = true;
     }
     super.pointerDown(event, canvas);
   }
@@ -722,6 +853,7 @@ export class SourceTimeline extends Timeline {
     for (const r of this.removedRanges(this.edit?.partCuts)) {
       for (const t of [r.start, r.end]) if (dragged == null || Math.abs(t - dragged) > 0.001) points.push(t);
     }
+    points.push(...this.splitTimes());
     if (this.hasLayoutRow()) {
       this.verticalParts.parts.forEach((part, k) => {
         if (k > 0 && !skip?.layout?.includes(k)) points.push(part.start);
@@ -751,6 +883,12 @@ export class SourceTimeline extends Timeline {
       const editable = this.editableRanges();
       const cut = editable.find((r) => t >= r.start && t < r.end);
       if (cut) entries.push({ icon: "arrow-counter-clockwise", label: "Put this part back", run: () => this.putBack(cut) });
+      const piece = this.pieceAt(t);
+      if (piece && !piece.out && this.splitTimes().length) {
+        entries.push({ icon: "scissors", label: "Leave this piece out", run: () => this.cutOut(piece.start, piece.end) });
+      }
+      const split = this.splitTimes().find((s) => Math.abs(this.timeToX(s, rect.width) - x) <= 6);
+      if (split != null) entries.push({ icon: "x", label: "Remove this split", run: () => this.removeSplit(split) });
       if (this.source.kind === "video" && !cut) {
         entries.push({ icon: "scissors", label: "Leave this part out of the edit", run: () => this.cutOut(item.start, item.end) });
       }
@@ -788,7 +926,10 @@ export class SourceTimeline extends Timeline {
     const body = edit.kind === "video"
       ? { parts: Object.entries(edit.partCuts ?? {}).map(([markerId, cuts]) => ({ markerId: Number(markerId), cuts })) }
       : { cuts: edit.partCuts?.[String(edit.itemId)] ?? [] };
-    return { title: edit.title ?? null, ...body, ...(edit.layout != null ? { layout: edit.layout } : {}) };
+    const splits = Object.fromEntries(Object.entries(edit.splits ?? {}).filter(([, list]) => list.length));
+    // layout: {} removes it, so taking the last split away is saved too
+    const layout = { ...(edit.layout ?? {}), ...(Object.keys(splits).length ? { splits } : {}) };
+    return { title: edit.title ?? null, ...body, layout };
   }
 
   async saveEdit(edit) {
@@ -853,6 +994,7 @@ export class SourceTimeline extends Timeline {
     if (edit === this.edit) return;
     await this.saveNow();
     this.edit = edit ?? this.originalEdit();
+    this.pieceSel = null;
     this.editHistory = { undo: [], redo: [] };
     this.historyEdit = null;
     this.rememberPick();
@@ -869,6 +1011,7 @@ export class SourceTimeline extends Timeline {
     }
     await this.saveNow();
     this.edit = this.newEdit({ partCuts: {} });
+    this.pieceSel = null;
     this.editHistory = { undo: [], redo: [] };
     this.historyEdit = null;
     this.changed();
@@ -1013,6 +1156,7 @@ export class SourceTimeline extends Timeline {
     const step = this.editHistory[from].pop();
     const edit = step.edit;
     edit.partCuts = clone(step[side]);
+    if (step[`${side}Splits`]) edit.splits = cloneSplits(step[`${side}Splits`]);
     edit.dirty = true;
     this.editHistory[to].push(step);
     this.scheduleSave();
