@@ -137,6 +137,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .HasMaxLength(2000000)
                         .HasColumnType("TEXT");
 
+                    b.Property<int?>("ConvertedFromEditId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<int?>("CopiedFromProjectId")
                         .HasColumnType("INTEGER");
 

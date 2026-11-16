@@ -35,6 +35,9 @@ namespace TwitchDownloaderWeb.Data
         /// <summary>A copy of another project (no FK).</summary>
         public int? CopiedFromProjectId { get; set; }
 
+        /// <summary>Made from this saved edit (<see cref="ItemEdit"/>, no FK) when edits were turned into projects; see <c>SavedEditConversion</c>.</summary>
+        public int? ConvertedFromEditId { get; set; }
+
         public DateTime CreatedAtUtc { get; set; }
         public DateTime UpdatedAtUtc { get; set; }
 

@@ -63,7 +63,11 @@ var app = builder.Build();
 
 using (var scope = app.Services.CreateScope())
 {
-    scope.ServiceProvider.GetRequiredService<LibraryDbContext>().Database.Migrate();
+    var startupDb = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+    startupDb.Database.Migrate();
+    // Saved edits (the old Player 2) become projects, once each
+    await TwitchDownloaderWeb.Services.Projects.SavedEditConversion.RunAsync(startupDb,
+        scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("SavedEditConversion"));
 }
 
 app.UseExceptionHandler();
