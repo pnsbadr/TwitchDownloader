@@ -9,6 +9,7 @@ using TwitchDownloaderCore.Models;
 using TwitchDownloaderWeb.Data;
 using TwitchDownloaderWeb.Services;
 using TwitchDownloaderWeb.Services.Accounts;
+using TwitchDownloaderWeb.Services.Projects;
 using TwitchDownloaderWeb.Services.Segments;
 using TwitchDownloaderWeb.Services.Shortform;
 
@@ -20,13 +21,14 @@ namespace TwitchDownloaderWeb.Endpoints
     /// "clip" (<paramref name="EntryId"/>; <paramref name="Horizontal"/> and/or <paramref name="Vertical"/>), "video" (<paramref name="VideoId"/>;
     /// <paramref name="Joined"/> = one file, else a .zip of its segments), "segment" (<paramref name="MarkerId"/>) or "edit" (<paramref name="EditId"/>:
     /// a saved edit of a clip, segment or video, made like that item but without what the edit removes; a clip edit takes horizontal/vertical,
-    /// its vertical a render made for that edit; a video edit takes joined).</param>
+    /// its vertical a render made for that edit; a video edit takes joined) or "project" (<paramref name="ProjectId"/>: the whole timeline rendered
+    /// as one file; <paramref name="Horizontal"/> and/or <paramref name="Vertical"/>, the vertical with each piece's boxes).</param>
     /// <param name="FileName">The download's name (no extension); blank = the item's title.</param>
     /// <param name="Quality">Blank = best (a clip: its own quality, so a stored clip is just copied). Ignored for vertical.</param>
     /// <param name="RenderId">Vertical: one of the clip's renders (someone else's needs DownloadTeamVerticals); blank = the caller's own newest.</param>
     public sealed record ExportItemRequest(string? Kind, string? FileName = null, string? Quality = null, long? VodId = null, double? Start = null,
         double? End = null, int? EntryId = null, bool Horizontal = true, bool Vertical = false, string? RenderId = null, int? VideoId = null,
-        bool Joined = false, int? MarkerId = null, int? EditId = null);
+        bool Joined = false, int? MarkerId = null, int? EditId = null, int? ProjectId = null);
 
     /// <param name="Kind">VodRange, Clip, ClipVertical, Video or Segment.</param>
     /// <param name="LengthSeconds">What it plays (cut-out parts left out).</param>
@@ -38,6 +40,9 @@ namespace TwitchDownloaderWeb.Endpoints
     {
         /// <summary>The saved edit it's made from (its kind is then the edit's item's: Clip, ClipVertical, Segment or Video).</summary>
         public int? EditId { get; init; }
+
+        /// <summary>The project it's made from (kind Project or ProjectVertical).</summary>
+        public int? ProjectId { get; init; }
     }
 
     public sealed record ExportBatchDto(int Id, string Status, string? Error, int CreatedByUserId, string? CreatedBy, DateTime CreatedAtUtc,
@@ -174,9 +179,12 @@ namespace TwitchDownloaderWeb.Endpoints
             return Results.Accepted($"/api/exports/{batch.Id}", await ToDtoAsync(db, team, batch, cancellationToken));
         }
 
-        private static double LengthOf(ExportItem item) => item.Kind == ExportItemKind.Video
-            ? ExportVideoPart.Read(item.Parts).Sum(x => x.KeptSeconds)
-            : CutOuts.KeptSeconds(item.StartSeconds, item.EndSeconds, CutOuts.Read(item.Cuts));
+        private static double LengthOf(ExportItem item) => item.Kind switch
+        {
+            ExportItemKind.Video => ExportVideoPart.Read(item.Parts).Sum(x => x.KeptSeconds),
+            ExportItemKind.Project or ExportItemKind.ProjectVertical => ProjectTimeline.Flatten(ProjectContent.Read(item.Parts)).Sum(x => x.Duration),
+            _ => CutOuts.KeptSeconds(item.StartSeconds, item.EndSeconds, CutOuts.Read(item.Cuts)),
+        };
 
         /// <summary>Checks one list item and copies what it's made from. A clip in both formats gives two items.</summary>
         private static async Task<(List<ExportItem> Items, IResult? Problem)> BuildAsync(int index, ExportItemRequest request, TeamContext team,
@@ -304,8 +312,11 @@ namespace TwitchDownloaderWeb.Endpoints
                     }
                 }
 
+                case "project":
+                    return await BuildProjectAsync(index, request, fileName, db, cache, cancellationToken);
+
                 default:
-                    return ([], Invalid(index, "Kind must be vod, clip, video, segment or edit."));
+                    return ([], Invalid(index, "Kind must be vod, clip, video, segment, edit or project."));
             }
         }
 
@@ -358,6 +369,50 @@ namespace TwitchDownloaderWeb.Endpoints
                     EndSeconds = end, RenderId = render.Id, FileName = name, EditId = editId,
                 });
             }
+            return (made, null);
+        }
+
+        /// <summary>
+        /// A project's items (landscape and/or 9:16): what it plays now is copied. Every VOD it plays must be open to the team, on Twitch and
+        /// streamed far enough; the quality asked for is used where a VOD has it (each VOD's best otherwise, the output is one size anyway).
+        /// </summary>
+        private static async Task<(List<ExportItem> Items, IResult? Problem)> BuildProjectAsync(int index, ExportItemRequest request, string? fileName,
+            LibraryDbContext db, VodInfoCache cache, CancellationToken cancellationToken)
+        {
+            if (!request.Horizontal && !request.Vertical)
+                return ([], Invalid(index, "Pick horizontal, vertical or both."));
+            var project = request.ProjectId is { } projectId
+                ? await db.Projects.AsNoTracking().FirstOrDefaultAsync(x => x.Id == projectId, cancellationToken)
+                : null;
+            if (project is null)
+                return ([], Invalid(index, "That project is gone."));
+
+            var content = ProjectContent.Read(project.Content);
+            var stretches = ProjectTimeline.Flatten(content);
+            if (stretches.All(x => x.IsGap))
+                return ([], Invalid(index, "That project has nothing on its visible rows."));
+
+            foreach (var vod in stretches.Where(x => !x.IsGap).GroupBy(x => x.Piece!.VodId))
+            {
+                var (_, problem) = await VodForCutAsync(index, vod.Key, vod.Max(x => x.VodEnd), null, cache, cancellationToken);
+                if (problem is not null)
+                    return ([], problem);
+            }
+
+            var quality = string.IsNullOrWhiteSpace(request.Quality) ? null : request.Quality.Trim();
+            if (quality is not null && (VodInfoService.IsAudioQuality(quality) || quality.Length > 64))
+                return ([], Invalid(index, "Pick a video quality."));
+
+            var name = string.IsNullOrEmpty(fileName) ? (project.Title.Length > 0 ? project.Title : "Untitled project") : fileName;
+            var first = stretches.First(x => !x.IsGap);
+            var json = content.Write();
+            var made = new List<ExportItem>();
+            foreach (var vertical in new[] { false, true }.Where(v => v ? request.Vertical : request.Horizontal))
+                made.Add(new ExportItem
+                {
+                    Kind = vertical ? ExportItemKind.ProjectVertical : ExportItemKind.Project, ProjectId = project.Id, VodId = first.Piece!.VodId,
+                    StartSeconds = 0, EndSeconds = Math.Round(stretches.Sum(x => x.Duration), 2), Parts = json, Quality = quality, FileName = name,
+                });
             return (made, null);
         }
 
@@ -448,7 +503,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 db.Audit(AuditActions.FileServed, item.EntryId, $"export {batch.Id}, item {item.Position}");
                 await db.SaveChangesAsync(cancellationToken);
             }
-            return Results.File(fullPath, "video/mp4", item.Kind == ExportItemKind.ClipVertical ? $"{name} (vertical).mp4" : $"{name}.mp4",
+            return Results.File(fullPath, "video/mp4", item.Kind is ExportItemKind.ClipVertical or ExportItemKind.ProjectVertical ? $"{name} (vertical).mp4" : $"{name}.mp4",
                 enableRangeProcessing: true);
         }
 
@@ -515,7 +570,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 x.Items.OrderBy(i => i.Position).Select(i => new ExportItemDto(i.Position, i.Kind.ToString(), i.FileName, i.Quality, i.VodId, i.StartSeconds,
                     i.EndSeconds, CutOuts.Read(i.Cuts), i.EntryId, i.MarkerId, i.VideoId, i.RenderId, i.Joined, Math.Round(LengthOf(i), 2), i.Status.ToString(),
                     i.Error, i.PartsDone, i.PartsTotal, i.FileSizeBytes, i.AudioRestoredSeconds, i.AudioMutedSeconds,
-                    i.Status == ExportStatus.Ready ? $"{url}/items/{i.Position}/file" : null) { EditId = i.EditId }).ToList());
+                    i.Status == ExportStatus.Ready ? $"{url}/items/{i.Position}/file" : null) { EditId = i.EditId, ProjectId = i.ProjectId }).ToList());
         }
     }
 }

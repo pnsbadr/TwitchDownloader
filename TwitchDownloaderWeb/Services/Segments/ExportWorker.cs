@@ -19,19 +19,21 @@ namespace TwitchDownloaderWeb.Services.Segments
         private readonly KeptPartsCutter _cutter;
         private readonly IVodDetailsSource _vods;
         private readonly ShortformService _shortform;
+        private readonly Projects.ProjectRenderer _projects;
         private readonly LibraryStorage _storage;
         private readonly IConfiguration _configuration;
         private readonly IOptions<DownloadSettings> _settings;
         private readonly ILogger<ExportWorker> _logger;
 
         public ExportWorker(IServiceScopeFactory scopeFactory, ExportQueue queue, KeptPartsCutter cutter, IVodDetailsSource vods, ShortformService shortform,
-            LibraryStorage storage, IConfiguration configuration, IOptions<DownloadSettings> settings, ILogger<ExportWorker> logger)
+            Projects.ProjectRenderer projects, LibraryStorage storage, IConfiguration configuration, IOptions<DownloadSettings> settings, ILogger<ExportWorker> logger)
         {
             _scopeFactory = scopeFactory;
             _queue = queue;
             _cutter = cutter;
             _vods = vods;
             _shortform = shortform;
+            _projects = projects;
             _storage = storage;
             _configuration = configuration;
             _settings = settings;
@@ -127,10 +129,11 @@ namespace TwitchDownloaderWeb.Services.Segments
 
                     try
                     {
-                        if (item.Kind != ExportItemKind.ClipVertical && await IsVodGoneAsync(item.VodId, vodGone))
+                        if (item.Kind is not (ExportItemKind.ClipVertical or ExportItemKind.Project or ExportItemKind.ProjectVertical)
+                            && await IsVodGoneAsync(item.VodId, vodGone))
                             throw new InvalidOperationException(SegmentExportWorker.VodGoneMessage);
 
-                        await MakeItemAsync(db, batch, item, () => SaveIgnoringDeletedAsync(db, stoppingToken), token);
+                        await MakeItemAsync(db, batch, item, vodGone, () => SaveIgnoringDeletedAsync(db, stoppingToken), token);
                         item.Status = ExportStatus.Ready;
                         item.PartsDone = item.PartsTotal;
                     }
@@ -197,7 +200,8 @@ namespace TwitchDownloaderWeb.Services.Segments
             return gone;
         }
 
-        private async Task MakeItemAsync(LibraryDbContext db, ExportBatch batch, ExportItem item, Func<Task<bool>> saveProgress, CancellationToken token)
+        private async Task MakeItemAsync(LibraryDbContext db, ExportBatch batch, ExportItem item, Dictionary<long, bool> vodGone, Func<Task<bool>> saveProgress,
+            CancellationToken token)
         {
             var relativePath = LibraryStorage.ExportItemRelativePath(batch.Id, item.Position);
             var fullPath = _storage.Resolve(relativePath);
@@ -236,6 +240,24 @@ namespace TwitchDownloaderWeb.Services.Segments
                     item.PartsTotal = 1;
                     restore = await CutAsync(db, batch, item, item.StartSeconds, item.EndSeconds, CutOuts.Read(item.Cuts), fullPath, token);
                     break;
+
+                case ExportItemKind.Project or ExportItemKind.ProjectVertical:
+                {
+                    var content = ProjectContent.Read(item.Parts);
+                    foreach (var vodId in Projects.ProjectTimeline.Flatten(content).Where(x => !x.IsGap).Select(x => x.Piece!.VodId).Distinct())
+                        if (await IsVodGoneAsync(vodId, vodGone))
+                            throw new InvalidOperationException($"VOD {vodId} in the project is gone from Twitch.");
+                    (_, restore) = await _projects.RenderAsync(db, batch.TeamId, content, item.Kind == ExportItemKind.ProjectVertical, item.Quality, fullPath,
+                        $"export-{batch.Id}-{item.Position}", _logger,
+                        error => db.Audit(AuditActions.AudioRestoreFailed, null, $"Export {batch.Id}, item {item.Position}: {error}", teamId: batch.TeamId),
+                        async (done, total) =>
+                        {
+                            item.PartsDone = done;
+                            item.PartsTotal = total;
+                            await saveProgress();
+                        }, token);
+                    break;
+                }
 
                 case ExportItemKind.Video:
                     restore = await MakeVideoAsync(db, batch, item, saveProgress, token);
