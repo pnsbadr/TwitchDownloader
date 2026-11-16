@@ -275,6 +275,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<int>("Position")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int?>("ProjectId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("Quality")
                         .HasMaxLength(64)
                         .HasColumnType("TEXT");

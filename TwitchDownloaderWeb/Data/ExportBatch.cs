@@ -22,7 +22,11 @@ namespace TwitchDownloaderWeb.Data
         /// <summary>A video (linked segments): a .zip of one file per segment, or joined into one file.</summary>
         Video,
         /// <summary>One segment.</summary>
-        Segment
+        Segment,
+        /// <summary>A project (multi-track Player 2) rendered landscape; its content is copied into <see cref="ExportItem.Parts"/>.</summary>
+        Project,
+        /// <summary>A project rendered 9:16 with its pieces' boxes.</summary>
+        ProjectVertical
     }
 
     /// <summary>
@@ -84,10 +88,14 @@ namespace TwitchDownloaderWeb.Data
         /// <summary>The saved edit it's made from (Player 2): the item without what the edit removes, copied into the fields above. No FK.</summary>
         public int? EditId { get; set; }
 
+        /// <summary>The project it's made from (<see cref="ExportItemKind.Project"/> / <see cref="ExportItemKind.ProjectVertical"/>). No FK.</summary>
+        public int? ProjectId { get; set; }
+
         /// <summary>The vertical render it copies (<see cref="ExportItemKind.ClipVertical"/>).</summary>
         public string? RenderId { get; set; }
 
-        /// <summary>A video's segments when it was asked for, in play order (<see cref="ExportVideoPart"/> JSON).</summary>
+        /// <summary>A video's segments when it was asked for, in play order (<see cref="ExportVideoPart"/> JSON); a project's content
+        /// (<see cref="ProjectContent"/> JSON).</summary>
         public string? Parts { get; set; }
 
         /// <summary>A video joined into one file (the team's "render as one" setting) instead of a .zip of its segments.</summary>

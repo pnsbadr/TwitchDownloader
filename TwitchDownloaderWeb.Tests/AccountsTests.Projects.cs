@@ -156,5 +156,71 @@ namespace TwitchDownloaderWeb.Tests
             Assert.DoesNotContain("\"bottom\"", content.Write()); // nulls left out
             Assert.Single(ProjectContent.Read("not json").Tracks!);
         }
+
+        [Fact]
+        public async Task ProjectsExportAsOneFileLandscapeAndVertical()
+        {
+            if (!HasFfmpeg())
+                Assert.Skip("ffmpeg not found; set FFMPEG_PATH to run the project export test.");
+            var ct = TestContext.Current.CancellationToken;
+            var (owner, _, _, _) = await TeamWithMemberAsync("pj3");
+
+            // A 1 s gap, then a piece of VOD 520 under a piece of VOD 521 on the top row
+            var content = TwoTracks(Piece("top", "t1", 2, 521, 30, 31.5), Piece("under", "t2", 1, 520, 200, 203.5));
+            var id = (await (await owner.PostAsJsonAsync("/api/projects", new { title = "Mix", content }, ct)).Content.ReadFromJsonAsync<JsonElement>(ct))
+                .GetProperty("id").GetInt32();
+
+            Assert.Equal(HttpStatusCode.BadRequest,
+                (await owner.PostAsJsonAsync("/api/exports", new { items = new[] { new { kind = "project", projectId = id, horizontal = false, vertical = false } } }, ct)).StatusCode);
+            var response = await owner.PostAsJsonAsync("/api/exports",
+                new { items = new[] { new { kind = "project", projectId = id, horizontal = true, vertical = true, quality = "480p30" } } }, ct);
+            Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+            var batch = await response.Content.ReadFromJsonAsync<JsonElement>(ct);
+            Assert.Equal(["Project", "ProjectVertical"], batch.GetProperty("items").EnumerateArray().Select(x => x.GetProperty("kind").GetString()));
+            Assert.Equal(4.5, batch.GetProperty("items")[0].GetProperty("lengthSeconds").GetDouble());
+
+            var done = await WaitForExportAsync(owner, batch.GetProperty("id").GetInt32());
+            Assert.Equal("Ready", done.GetProperty("status").GetString());
+            var items = done.GetProperty("items");
+            Assert.Equal(4, items[0].GetProperty("partsTotal").GetInt32()); // gap, under, top, under again
+            Assert.Equal(id, items[1].GetProperty("projectId").GetInt32());
+
+            // The VOD ranges cut: the lower piece around the top one
+            Assert.Contains(_cutter.Cuts, x => x.VodId == 520 && x.StartTime.TotalSeconds == 200 && x.EndTime!.Value.TotalSeconds == 201);
+            Assert.Contains(_cutter.Cuts, x => x.VodId == 521 && x.StartTime.TotalSeconds == 30 && x.EndTime!.Value.TotalSeconds == 31.5);
+            Assert.Contains(_cutter.Cuts, x => x.VodId == 520 && x.StartTime.TotalSeconds == 202.5 && x.EndTime!.Value.TotalSeconds == 203.5);
+
+            foreach (var (item, size) in new[] { (items[0], "854x480"), (items[1], "1080x1920") })
+            {
+                var file = await owner.GetAsync(item.GetProperty("fileUrl").GetString(), ct);
+                Assert.Equal(HttpStatusCode.OK, file.StatusCode);
+                var path = Path.Combine(_dir, $"project-{size}.mp4");
+                await File.WriteAllBytesAsync(path, await file.Content.ReadAsByteArrayAsync(ct), ct);
+                var (streams, seconds) = await ProbeAsync(path);
+                Assert.Contains(size, streams);
+                Assert.Contains("Audio", streams);
+                Assert.InRange(seconds, 4.3, 4.8);
+            }
+        }
+
+        /// <summary>The stream lines and duration ffmpeg prints for a file.</summary>
+        private static async Task<(string Streams, double Seconds)> ProbeAsync(string path)
+        {
+            using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(FakeCutter.Ffmpeg)
+            {
+                ArgumentList = { "-hide_banner", "-i", path },
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            })!;
+            var output = await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            var streams = string.Join("\n", output.Split('\n').Where(x => x.Contains("Stream #")));
+            var match = System.Text.RegularExpressions.Regex.Match(output, @"Duration: (\d+):(\d+):(\d+(\.\d+)?)");
+            var seconds = match.Success
+                ? int.Parse(match.Groups[1].Value) * 3600 + int.Parse(match.Groups[2].Value) * 60
+                  + double.Parse(match.Groups[3].Value, System.Globalization.CultureInfo.InvariantCulture)
+                : 0;
+            return (streams, seconds);
+        }
     }
 }
