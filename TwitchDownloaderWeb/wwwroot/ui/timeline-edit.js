@@ -672,7 +672,7 @@ export const editing = {
           const before = { ...markerBody(source), rowId: source.rowId ?? undefined };
           const after = { ...markerBody(source), rowId: row.id };
           await this.putMarker(source.id, after);
-          this.remember({ type: "change", ref: { id: source.id }, before, after });
+          this.remember({ type: "change", ref: this.ref("marker", source.id), before, after });
           this.selected = { type: "marker", id: source.id };
           break;
         }
@@ -680,14 +680,14 @@ export const editing = {
         case "clipToSegment": {
           const url = action === "copyMarker" ? `/api/markers/${source.id}/copy` : `/api/entries/${source.id}/copy-as-segment`;
           const copy = await api("POST", url, { rowId: row.id });
-          this.remember({ type: "add", ref: { id: copy.id }, data: { ...markerBody(copy), rowId: row.id } });
+          this.remember({ type: "add", ref: this.ref("marker", copy.id), data: { ...markerBody(copy), rowId: row.id } });
           this.selected = { type: "marker", id: copy.id };
           toast(action === "copyMarker" ? "Copied to your row." : "Made a segment from the clip.");
           break;
         }
         case "moveClip":
           await api("PUT", `/api/entries/${source.id}/row`, { rowId: row.id });
-          this.remember({ type: "clipRow", ref: { id: source.id }, before: source.rowId, after: row.id });
+          this.remember({ type: "clipRow", ref: this.ref("clip", source.id), before: source.rowId, after: row.id });
           this.selected = { type: "clip", id: source.id };
           break;
         case "copyClip": {
@@ -915,7 +915,7 @@ export const editing = {
           rowId: draft.rowId ?? undefined,
         };
         const marker = await this.postMarker(body);
-        this.remember({ type: "add", ref: { id: marker.id }, data: body });
+        this.remember({ type: "add", ref: this.ref("marker", marker.id), data: body });
         this.selected = { type: "marker", id: marker.id };
         if (draft.kind === "segment") this.hooks.onCreated?.({ kind: "segment", data: marker });
       }
@@ -944,13 +944,13 @@ export const editing = {
         const before = { start: item.data.start, end: item.data.end ?? null, cuts: item.data.cuts ?? [] };
         const after = { start, end };
         await this.trimClip(target.id, after);
-        this.remember({ type: "trim", ref: { id: target.id }, before: target.copied ? after : before, after });
+        this.remember({ type: "trim", ref: this.ref("clip", target.id), before: target.copied ? after : before, after });
         this.selected = { type: "clip", id: target.id };
       } else {
         const before = markerBody(item.data);
         const after = { ...before, seconds: start, endSeconds: end, cuts: null };
         await this.putMarker(target.id, after);
-        this.remember({ type: "change", ref: { id: target.id }, before, after });
+        this.remember({ type: "change", ref: this.ref("marker", target.id), before, after });
         this.selected = { type: "marker", id: target.id };
       }
     } catch (error) {
@@ -986,7 +986,7 @@ export const editing = {
     const after = { start: pending.start, end: pending.end, cuts: pending.cuts };
     try {
       await this.trimClip(pending.id, after);
-      this.remember({ type: "trim", ref: { id: pending.id }, before: pending.before, after });
+      this.remember({ type: "trim", ref: this.ref("clip", pending.id), before: pending.before, after });
     } catch (error) {
       toast(error.message, "error");
     }
@@ -1064,7 +1064,7 @@ export const editing = {
         const before = markerBody(item.data);
         const after = { ...before, label: title, color };
         await this.putMarker(target.id, after);
-        this.remember({ type: "change", ref: { id: target.id }, before, after });
+        this.remember({ type: "change", ref: this.ref("marker", target.id), before, after });
       }
     } catch (error) {
       toast(error.message, "error");
@@ -1112,7 +1112,7 @@ export const editing = {
         await this.putMarker(target.id, before).catch(() => {});
         throw error;
       }
-      this.remember({ type: "split", ref: { id: target.id }, before, after, newRef: { id: created.id }, newData: extra });
+      this.remember({ type: "split", ref: this.ref("marker", target.id), before, after, newRef: this.ref("marker", created.id), newData: extra });
       this.selected = { type: "marker", id: created.id };
     } catch (error) {
       toast(error.message, "error");
@@ -1129,7 +1129,7 @@ export const editing = {
       if (item.kind === "clip") {
         this.hooks.onClipsChanged?.();
       } else {
-        this.remember({ type: "add", ref: { id: copy.id }, data: { ...markerBody(copy), rowId: copy.rowId ?? undefined } });
+        this.remember({ type: "add", ref: this.ref("marker", copy.id), data: { ...markerBody(copy), rowId: copy.rowId ?? undefined } });
       }
       this.edited();
       await this.load();
@@ -1177,7 +1177,9 @@ export const editing = {
     }
     try {
       await this.deleteMarker(item.id);
-      this.remember({ type: "delete", ref: { id: item.id }, data: { ...markerBody(item.data), rowId: this.isOwn(item) ? item.data.rowId ?? undefined : undefined } });
+      const ref = this.ref("marker", item.id);
+      this.forgetRef(ref);
+      this.remember({ type: "delete", ref, data: { ...markerBody(item.data), rowId: this.isOwn(item) ? item.data.rowId ?? undefined : undefined } });
       this.select(null);
     } catch (error) {
       toast(error.message, "error");
@@ -1467,63 +1469,125 @@ export const editing = {
   },
 
   // ---------- undo / redo (last 10 per VOD, this tab only) ----------
+  //
+  // Steps name markers and clips through refs ({ type, id }), one per item per VOD, shared by every step that names it.
+  // Undoing a delete (or redoing an add or split) makes the marker again with a NEW id; the ref follows it, so older steps
+  // change the marker as it is now. (They used to keep their own copy of the old id: after undoing a few deletes, undoing
+  // the splits before them changed or deleted the wrong segments, or failed, and the history fell apart.)
 
   history() {
-    if (!this.histories.has(this.vodId)) this.histories.set(this.vodId, { undo: [], redo: [] });
+    if (!this.histories.has(this.vodId)) this.histories.set(this.vodId, { undo: [], redo: [], refs: new Map() });
     return this.histories.get(this.vodId);
+  },
+
+  ref(type, id) {
+    const refs = this.history().refs;
+    const key = `${type}:${id}`;
+    if (!refs.has(key)) refs.set(key, { type, id });
+    return refs.get(key);
+  },
+
+  // The marker behind ref is gone: a new one that happens to get its id isn't the same item
+  forgetRef(ref) {
+    const refs = this.history().refs;
+    const key = `${ref.type}:${ref.id}`;
+    if (refs.get(key) === ref) refs.delete(key);
+  },
+
+  // The marker behind ref was made again with a new id
+  moveRef(ref, id) {
+    this.forgetRef(ref);
+    ref.id = id;
+    this.history().refs.set(`${ref.type}:${id}`, ref);
   },
 
   remember(step) {
     const history = this.history();
+    // A change that didn't touch the cut-out parts keeps whatever they are when it's undone or redone (null = keep): undoing
+    // a rename used to bring back cut-out parts an Apply in Player 2 had changed since
+    if (step.type === "change" && JSON.stringify(step.before.cuts ?? null) === JSON.stringify(step.after.cuts ?? null)) {
+      step.before = { ...step.before, cuts: null };
+      step.after = { ...step.after, cuts: null };
+    }
     history.undo.push(step);
     if (history.undo.length > HISTORY_LIMIT) history.undo.shift();
     history.redo = [];
     this.changed();
   },
 
+  // A stored clip's re-trim waits 3 s before it's sent (it downloads again): it can be undone before that too
+  hasPendingTrim() {
+    return Boolean(this.pendingTrim && this.mode === "vod");
+  },
+
   canUndo() {
-    return Boolean(this.vodId && this.history().undo.length && !me?.support);
+    return Boolean(this.vodId && (this.history().undo.length || this.hasPendingTrim()) && !me?.support);
   },
 
   canRedo() {
     return Boolean(this.vodId && this.history().redo.length && !me?.support);
   },
 
-  async undo() {
-    await this.replay("undo", "redo", true);
+  undo() {
+    return this.queueReplay("undo", "redo", true);
   },
 
-  async redo() {
-    await this.replay("redo", "undo", false);
+  redo() {
+    return this.queueReplay("redo", "undo", false);
+  },
+
+  // Presses while a step is still being sent wait their turn (they used to be dropped, so pressing Ctrl+Z three times
+  // quickly undid one or two steps)
+  queueReplay(from, to, reverse) {
+    const vodId = this.vodId;
+    this.replayChain = (this.replayChain ?? Promise.resolve()).then(() => (this.vodId === vodId ? this.replay(from, to, reverse) : null))
+      .catch((error) => console.warn("Undo/redo failed:", error));
+    return this.replayChain;
   },
 
   async replay(from, to, reverse) {
-    if (this.replaying || !this.vodId) return;
+    if (!this.vodId) return;
     const history = this.history();
+    // Undo with a stored clip's re-trim still waiting: it's dropped (never sent, nothing downloads); redo sends it
+    if (reverse && this.hasPendingTrim()) {
+      const pending = this.pendingTrim;
+      clearTimeout(pending.timer);
+      this.pendingTrim = null;
+      history.redo.push({ type: "trim", ref: this.ref("clip", pending.id), before: pending.before, after: { start: pending.start, end: pending.end, cuts: pending.cuts } });
+      this.changed();
+      await this.load();
+      return;
+    }
     const step = history[from].pop();
     if (!step) return;
-    this.replaying = true;
+    this.changed();
     try {
       await this.applyStep(step, reverse);
       history[to].push(step);
     } catch (error) {
       toast(`Couldn't ${reverse ? "undo" : "redo"} that: ${error.message}`, "error");
-    } finally {
-      this.replaying = false;
     }
     this.changed();
-    this.load();
+    await this.load();
   },
 
   async applyStep(step, reverse) {
     switch (step.type) {
       case "add":
-        if (reverse) await this.deleteMarker(step.ref.id);
-        else step.ref.id = (await this.postMarker(this.ownRowOnly(step.data))).id;
+        if (reverse) {
+          await this.deleteMarker(step.ref.id);
+          this.forgetRef(step.ref);
+        } else {
+          this.moveRef(step.ref, (await this.postMarker(this.ownRowOnly(step.data))).id);
+        }
         break;
       case "delete":
-        if (reverse) step.ref.id = (await this.postMarker(this.ownRowOnly(step.data))).id;
-        else await this.deleteMarker(step.ref.id);
+        if (reverse) {
+          this.moveRef(step.ref, (await this.postMarker(this.ownRowOnly(step.data))).id);
+        } else {
+          await this.deleteMarker(step.ref.id);
+          this.forgetRef(step.ref);
+        }
         break;
       case "change":
         await this.putMarker(step.ref.id, reverse ? step.before : step.after);
@@ -1531,10 +1595,11 @@ export const editing = {
       case "split":
         if (reverse) {
           await this.deleteMarker(step.newRef.id);
+          this.forgetRef(step.newRef);
           await this.putMarker(step.ref.id, step.before);
         } else {
           await this.putMarker(step.ref.id, step.after);
-          step.newRef.id = (await this.postMarker(this.ownRowOnly(step.newData))).id;
+          this.moveRef(step.newRef, (await this.postMarker(this.ownRowOnly(step.newData))).id);
         }
         break;
       case "trim":

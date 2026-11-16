@@ -18,7 +18,7 @@
 // playhead (or removes the one there); once a part has one, moving a box sets the keyframe at the playhead (made if needed). The
 // mode and split ratio stay the same through the part.
 
-import { el, api, can, me, loadSetting, saveSetting, toast, formatDate, iconButton, withTooltip } from "./core.js";
+import { el, api, can, me, loadSetting, saveSetting, toast, formatDate, iconButton, withTooltip, nextUndoSeq } from "./core.js";
 import { askText, confirmAction } from "./dialogs.js";
 
 const OUT_W = 1080;
@@ -627,14 +627,19 @@ function snapshot() {
 function restore(state) {
   const data = JSON.parse(state);
   vx.parts = data.parts;
+  // The file may have changed since (the clip was re-cut): no part starts past its end
+  const duration = duration_();
+  if (duration) vx.parts = vx.parts.filter((part, i) => i === 0 || part.start <= duration - MIN_PART);
+  if (!vx.parts.some((part) => !part.removed)) vx.parts[0].removed = false;
   setTrim(0, Infinity);
   loadPart(partAt(vx.dom.video.currentTime || 0));
+  closePlayback();
   renderAll();
 }
 
 function record(before) {
   if (before === snapshot()) return;
-  vx.history.push(before);
+  vx.history.push({ state: before, seq: nextUndoSeq() });
   if (vx.history.length > HISTORY_LIMIT) vx.history.shift();
   vx.future = [];
   renderUndo();
@@ -648,25 +653,58 @@ function change(fn) {
   record(before);
 }
 
-function undo() {
-  const state = vx.history.pop();
-  if (!state) return;
-  vx.future.push(snapshot());
-  restore(state);
+function undoOwn() {
+  const step = vx.history.pop();
+  if (!step) return;
+  vx.future.push({ state: snapshot(), seq: step.seq });
+  restore(step.state);
   renderUndo();
+}
+
+function redoOwn() {
+  const step = vx.future.pop();
+  if (!step) return;
+  vx.history.push({ state: snapshot(), seq: step.seq });
+  restore(step.state);
+  renderUndo();
+}
+
+// Ctrl+Z / the undo buttons: with Player 2's timeline below, the page (ui/editor.js) undoes whichever changed last
+function undo() {
+  if (vx.hooks.undo) vx.hooks.undo();
+  else undoOwn();
 }
 
 function redo() {
-  const state = vx.future.pop();
-  if (!state) return;
-  vx.history.push(snapshot());
-  restore(state);
-  renderUndo();
+  if (vx.hooks.redo) vx.hooks.redo();
+  else redoOwn();
+}
+
+export function verticalUndo() {
+  undoOwn();
+}
+
+export function verticalRedo() {
+  redoOwn();
+}
+
+// The numbers of the steps undo / redo would take (null = none)
+export function verticalUndoSeqs() {
+  if (!vx.open) return { undo: null, redo: null };
+  return { undo: vx.history.at(-1)?.seq ?? null, redo: vx.future.at(-1)?.seq ?? null };
 }
 
 function renderUndo() {
-  vx.dom.undo.querySelector("sl-icon-button").disabled = !vx.history.length;
-  vx.dom.redo.querySelector("sl-icon-button").disabled = !vx.future.length;
+  refreshVerticalUndo();
+  vx.hooks.onUndoChanged?.();
+}
+
+// The panel's undo / redo buttons: on when there's something to undo here or in Player 2's edit
+export function refreshVerticalUndo() {
+  if (!vx.dom) return;
+  const other = vx.hooks.undoState?.() ?? {};
+  vx.dom.undo.querySelector("sl-icon-button").disabled = !vx.history.length && !other.canUndo;
+  vx.dom.redo.querySelector("sl-icon-button").disabled = !vx.future.length && !other.canRedo;
 }
 
 // ---------- building the panel ----------
