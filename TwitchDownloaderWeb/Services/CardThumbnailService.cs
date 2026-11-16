@@ -205,7 +205,7 @@ namespace TwitchDownloaderWeb.Services
                 _gate.Release();
                 if (work is not null)
                 {
-                    try { Directory.Delete(work, true); } catch (IOException) { }
+                    try { Directory.Delete(work, true); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
                 }
             }
         }
@@ -338,7 +338,7 @@ namespace TwitchDownloaderWeb.Services
                     if (!Directory.EnumerateFileSystemEntries(folder).Any())
                         Directory.Delete(folder);
                 }
-                catch (IOException) { }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
             }
         }
     }

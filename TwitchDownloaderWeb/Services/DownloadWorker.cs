@@ -58,7 +58,7 @@ namespace TwitchDownloaderWeb.Services
                 {
                     dir.Delete(true);
                 }
-                catch (IOException ex)
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
                     _logger.LogWarning("Couldn't delete leftover work folder {Path}: {Message}", dir.FullName, ex.Message);
                 }
