@@ -11,7 +11,7 @@ namespace TwitchDownloaderWeb.Services.Accounts
         private const string ItemKey = nameof(StaffContext);
 
         public static ValueTask<StaffContext?> BindAsync(HttpContext context, ParameterInfo parameter) =>
-            ValueTask.FromResult(context.Items[ItemKey] as StaffContext
+            ValueTask.FromResult<StaffContext?>(context.Items[ItemKey] as StaffContext
                                  ?? throw new InvalidOperationException("StaffContext used on an endpoint without the staff filter."));
 
         internal void Store(HttpContext context) => context.Items[ItemKey] = this;

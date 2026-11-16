@@ -32,8 +32,8 @@ namespace TwitchDownloaderWeb.Tests
 
             // Loading again doesn't add more; rows don't carry over to other VODs
             Assert.Equal(2, RowsOf(await GetJsonAsync(member, "/api/vods/400/timeline"), memberId).Length);
-            Assert.Empty((await GetJsonAsync(member, "/api/vods/401/timeline")).GetProperty("rows").EnumerateArray()
-                .Where(x => x.GetProperty("userId").GetInt32() == ownerId));
+            Assert.DoesNotContain((await GetJsonAsync(member, "/api/vods/401/timeline")).GetProperty("rows").EnumerateArray(),
+                x => x.GetProperty("userId").GetInt32() == ownerId);
 
             // Others see the rows but can't change them; the caller's own rows come first
             var seenByOwner = await GetJsonAsync(owner, "/api/vods/400/timeline");
