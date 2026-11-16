@@ -266,6 +266,71 @@ namespace TwitchDownloaderWeb.Endpoints
             return problem ?? Results.Ok(await ToDtoAsync(db, edit, source!, team, cancellationToken));
         }
 
+        // --- for exports and vertical renders ---
+
+        /// <summary>What an export of an edit is made of (copied when the export is asked for).</summary>
+        /// <param name="Cuts">Clip/segment: what the edit removes, against the item's current range.</param>
+        /// <param name="VideoParts">Video: its segments without their own cut-out parts or the edit's (segments cut out whole left out).</param>
+        internal sealed record EditForExport(ItemEdit Edit, ItemEditKind Kind, LibraryEntry? Entry, VodMarker? Marker, Video? Video,
+            IReadOnlyList<CutRange> Cuts, IReadOnlyList<ExportVideoPart> VideoParts);
+
+        internal static async Task<EditForExport?> ForExportAsync(LibraryDbContext db, int editId, CancellationToken cancellationToken)
+        {
+            var edit = await db.ItemEdits.AsNoTracking().FirstOrDefaultAsync(x => x.Id == editId, cancellationToken);
+            if (edit is null)
+                return null;
+            var (source, problem) = await LoadAsync(db, RefOf(edit), tracking: false, cancellationToken);
+            if (problem is not null)
+                return null;
+
+            if (source!.Kind != ItemEditKind.Video)
+                return new EditForExport(edit, source.Kind, source.Entry, source.Marker, null, ItemEdits.ReadCuts(edit.Cuts, source.Start, source.End), []);
+
+            var parts = ItemEditPart.Read(edit.Parts);
+            var videoParts = source.Links.Select((link, i) =>
+            {
+                var (start, end) = (link.Marker!.Seconds, link.Marker.EndSeconds!.Value);
+                return new ExportVideoPart(link.Marker.Label.Length > 0 ? link.Marker.Label : $"Segment {i + 1}", start, end,
+                    CutOuts.Normalize(CutOuts.Read(link.Marker.Cuts).Concat(PartCuts(parts, link)), start, end));
+            }).Where(x => x.KeptSeconds >= CutOuts.MinKeptPartSeconds).ToList();
+            return new EditForExport(edit, ItemEditKind.Video, null, null, source.Video, [], videoParts);
+        }
+
+        /// <summary>
+        /// What a clip edit keeps, in seconds into the clip's file (which holds the whole range, or for a file made the old way the range
+        /// without its cut-out parts back to back). Null if the edit isn't one of this clip's.
+        /// </summary>
+        internal static async Task<IReadOnlyList<(double Start, double End)>?> ClipEditFilePartsAsync(LibraryDbContext db, int editId, LibraryEntry entry,
+            CancellationToken cancellationToken)
+        {
+            var edit = await db.ItemEdits.AsNoTracking().FirstOrDefaultAsync(x => x.Id == editId && x.EntryId == entry.Id, cancellationToken);
+            if (edit is null || entry.Kind != EntryKind.Vod)
+                return null;
+            var (start, end) = (entry.StartTime.TotalSeconds, entry.EndTime?.TotalSeconds ?? entry.VodLengthSeconds);
+            var filePieces = EntryDto.HasFileCuts(entry) ? CutOuts.Kept(start, end, CutOuts.Read(entry.FileCuts)) : [(start, end)];
+            return VodToFile(CutOuts.Kept(start, end, ItemEdits.ReadCuts(edit.Cuts, start, end)), filePieces);
+        }
+
+        /// <summary>Ranges of the VOD mapped into a file that plays <paramref name="filePieces"/> back to back (what's not in the file is dropped).</summary>
+        public static IReadOnlyList<(double Start, double End)> VodToFile(IReadOnlyList<(double Start, double End)> ranges,
+            IReadOnlyList<(double Start, double End)> filePieces)
+        {
+            var result = new List<(double, double)>();
+            foreach (var (start, end) in ranges)
+            {
+                var offset = 0.0;
+                foreach (var (pieceStart, pieceEnd) in filePieces)
+                {
+                    var from = Math.Max(start, pieceStart);
+                    var to = Math.Min(end, pieceEnd);
+                    if (to > from)
+                        result.Add((offset + from - pieceStart, offset + to - pieceStart));
+                    offset += pieceEnd - pieceStart;
+                }
+            }
+            return result;
+        }
+
         // --- writing edits ---
 
         /// <summary>Checks and stores the request's title, cuts/parts and layout on the edit (null fields are kept).</summary>

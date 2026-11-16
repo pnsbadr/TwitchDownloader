@@ -12,12 +12,18 @@ namespace TwitchDownloaderWeb.Endpoints
         /// <summary>Who made it (null for renders from before this was kept).</summary>
         public int? CreatedByUserId { get; init; }
 
+        /// <summary>The saved edit it was made for; null = the clip itself.</summary>
+        public int? EditId { get; init; }
+
         public string? CreatedBy { get; init; }
     }
 
     /// <param name="Layout">The running render's layout, else the newest kept render's (so the editor reopens with it).</param>
     public sealed record ShortformDto(string Status, double Progress, string? Error, ShortformLayout? Layout, IReadOnlyList<ShortformRenderDto> Renders)
     {
+        /// <summary>The saved edit the running render is for (null = the clip itself, or nothing running).</summary>
+        public int? RenderingEditId { get; init; }
+
         public static ShortformDto From(int entryId, ShortformState state, IReadOnlyDictionary<int, string>? names = null) => new(state.Status.ToString(),
             state.Progress, state.Error, state.Layout,
             state.Renders.Select(x => new ShortformRenderDto(x.Id, x.CreatedAtUtc, x.ExpiresAtUtc, x.SizeBytes, x.Layout,
@@ -25,8 +31,9 @@ namespace TwitchDownloaderWeb.Endpoints
                 x.HasThumbnail ? $"/api/entries/{entryId}/shortform/{x.Id}/thumbnail" : null)
             {
                 CreatedByUserId = x.CreatedByUserId,
+                EditId = x.EditId,
                 CreatedBy = x.CreatedByUserId is { } u ? names?.GetValueOrDefault(u) : null,
-            }).ToList());
+            }).ToList()) { RenderingEditId = state.RenderingEditId };
 
         public static async Task<ShortformDto> FromAsync(LibraryDbContext db, int entryId, ShortformState state, CancellationToken cancellationToken) =>
             From(entryId, state, await TimelineEndpoints.UserNamesAsync(db, state.Renders.Where(x => x.CreatedByUserId is not null).Select(x => x.CreatedByUserId!.Value),
@@ -59,16 +66,33 @@ namespace TwitchDownloaderWeb.Endpoints
         }
 
         /// <summary>Starts a render from the entry's file (stored, or an unexpired on-demand file). 202 with the new state.</summary>
-        private static async Task<IResult> StartShortform(int id, ShortformLayout layout, TeamContext team, LibraryDbContext db, LibraryStorage storage,
+        /// <param name="editId">Render a saved edit of the clip (also accepted as <c>editId</c> in the body): what the edit removes is left out
+        /// of the layout (its parts are cut down to what the edit keeps) and the render remembers the edit.</param>
+        private static async Task<IResult> StartShortform(int id, ShortformLayout layout, int? editId, TeamContext team, LibraryDbContext db, LibraryStorage storage,
             ShortformService shortform, CancellationToken cancellationToken)
         {
             var entry = await db.Entries.FindAsync([id], cancellationToken);
             if (entry is null)
                 return EntryNotFound(id);
 
-            if (layout.Validate(EntryDto.FileSeconds(entry)) is { } error)
+            var fileSeconds = EntryDto.FileSeconds(entry);
+            editId = layout.EditId ?? editId;
+            layout = layout with { EditId = null };
+            if (layout.Validate(fileSeconds) is { } error)
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["layout"] = [error] });
             layout = layout.Normalize();
+
+            if (editId is { } edit)
+            {
+                var kept = await ItemEditEndpoints.ClipEditFilePartsAsync(db, edit, entry, cancellationToken);
+                if (kept is null)
+                    return Results.ValidationProblem(new Dictionary<string, string[]> { ["editId"] = ["That isn't an edit of this clip."] });
+                if (ShortformLayout.KeepOnly(layout, kept, fileSeconds) is not { } restricted)
+                    return Results.ValidationProblem(new Dictionary<string, string[]> { ["layout"] = ["The edit leaves nothing of this layout."] });
+                if (restricted.Validate(fileSeconds) is { } editError)
+                    return Results.ValidationProblem(new Dictionary<string, string[]> { ["layout"] = [editError] });
+                layout = restricted.Normalize();
+            }
 
             var relativePath = entry.Status == EntryStatus.Ready ? entry.FilePath
                 : EntryDto.HasUnexpiredGeneratedFile(entry) ? entry.GeneratedFilePath
@@ -76,9 +100,9 @@ namespace TwitchDownloaderWeb.Endpoints
             if (relativePath is null || !File.Exists(storage.Resolve(relativePath)))
                 return Results.Problem(detail: "The entry's file isn't ready, so it can't be made vertical yet.", statusCode: StatusCodes.Status409Conflict);
 
-            shortform.Start(id, storage.Resolve(relativePath), EntryDto.FileSeconds(entry), layout, team.UserId);
+            shortform.Start(id, storage.Resolve(relativePath), fileSeconds, layout, team.UserId, editId);
             // The render itself is audited by the background job, which doesn't know who asked; this records who did
-            db.Audit(AuditActions.ShortformRequested, id, layout.Summary);
+            db.Audit(AuditActions.ShortformRequested, id, layout.Summary + (editId is { } e ? $", edit {e}" : ""));
             await db.SaveChangesAsync(cancellationToken);
             return Results.Accepted($"/api/entries/{id}/shortform", await ShortformDto.FromAsync(db, id, shortform.GetState(id), cancellationToken));
         }
