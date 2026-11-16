@@ -28,6 +28,19 @@
 import { api, me, can, toast } from "./core.js";
 import { confirmAction, chooseEditTarget } from "./dialogs.js";
 import { openMenu } from "./menu.js";
+
+// The cut tool's cursor, like Premiere Pro's Razor: a blade with a dotted line through the hotspot (where the cut goes); crossed out
+// in red where a click can't cut
+const razorSvg = (blocked) => `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 28 28">`
+  + `<line x1="5.5" y1="1" x2="5.5" y2="27" stroke="#000" stroke-width="3"/>`
+  + `<line x1="5.5" y1="1" x2="5.5" y2="27" stroke="#fff" stroke-width="1.5" stroke-dasharray="2 2"/>`
+  + `<g transform="translate(16 12) rotate(40)"><rect x="-8" y="-4.5" width="16" height="9" rx="1.5" fill="${blocked ? "#9a9a9a" : "#fff"}" stroke="#000" stroke-width="1.5"/>`
+  + `<rect x="-4.5" y="-1.2" width="9" height="2.4" rx="1.2" fill="#000"/><line x1="-8" y1="3" x2="8" y2="3" stroke="#000" stroke-width="1"/></g>`
+  + (blocked ? `<line x1="8" y1="21" x2="24" y2="3" stroke="#e5484d" stroke-width="3" stroke-linecap="round"/>` : "")
+  + `</svg>`;
+const razorCursor = (blocked) => `url("data:image/svg+xml,${encodeURIComponent(razorSvg(blocked))}") 5 14, ${blocked ? "not-allowed" : "crosshair"}`;
+const RAZOR = razorCursor(false);
+const RAZOR_BLOCKED = razorCursor(true);
 import { formatClock } from "./media.js";
 import { startDrag, dropTarget } from "./drag.js";
 
@@ -262,9 +275,50 @@ export const editing = {
     const cursor = this.press?.kind === "pan" || (this.press?.kind === "layout" && this.press.grab === "slide") ? "grabbing"
       : edge === "grab" ? "grab"
       : this.press?.kind === "edge" || this.press?.kind === "layout" || edge ? "ew-resize"
-        : { pointer: "pointer", cut: "crosshair", zoom: "zoom-in", hand: "grab" }[this.tool];
+        : this.tool === "cut" ? (this.razorAt ? RAZOR : RAZOR_BLOCKED)
+        : { pointer: "pointer", zoom: "zoom-in", hand: "grab" }[this.tool];
     this.track.style.cursor = cursor;
     this.ruler.style.cursor = this.tool === "hand" ? cursor : this.tool === "zoom" ? "zoom-in" : "pointer";
+  },
+
+  // Cut tool hover: where a click would cut (snapped like the click), drawn as a line through the row; null = nothing to cut there
+  updateRazor() {
+    const hover = this.hover;
+    let at = null;
+    if (hover?.canvas === this.track && this.tool === "cut" && !this.linking) {
+      const rowIndex = Math.floor(hover.y / this.rowHeight);
+      const t = this.xToTime(hover.x, hover.width);
+      if (this.mode === "item") {
+        if (rowIndex === 0 && this.source && this.canMakeEdits?.() && t > 0 && t < this.length()) {
+          at = { time: round(Math.max(0, Math.min(this.snapTime(t, hover.width), this.length()))), row: 0 };
+        }
+      } else {
+        const item = this.itemAt(hover.x, hover.y, hover.width);
+        if (item?.kind === "segment" && this.canEditItem?.(item) !== false) at = { time: t, row: rowIndex };
+      }
+    }
+    if (!at) this.snapAt = null;
+    const changed = JSON.stringify(at) !== JSON.stringify(this.razorAt ?? null);
+    this.razorAt = at;
+    this.updateCursor();
+    if (changed) this.dirty = true;
+  },
+
+  drawRazor(ctx, width) {
+    const at = this.razorAt;
+    if (!at || this.tool !== "cut" || this.press) return;
+    const x = Math.round(this.timeToX(at.time, width)) + 0.5;
+    ctx.save();
+    // A white line with a dark edge, so it shows on any item color
+    for (const [color, lineWidth] of [["rgba(0,0,0,0.7)", 3.5], ["#fff", 1.5]]) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = lineWidth;
+      ctx.beginPath();
+      ctx.moveTo(x, at.row * this.rowHeight + 1);
+      ctx.lineTo(x, (at.row + 1) * this.rowHeight - 1);
+      ctx.stroke();
+    }
+    ctx.restore();
   },
 
   // ---------- selection ----------
@@ -415,6 +469,7 @@ export const editing = {
 
   pointerMove(event) {
     const press = this.press;
+    if (!press && this.tool === "cut") this.updateRazor();
     if (!press) {
       // Edge cursor over the selected item's edges
       if (this.tool === "pointer" && this.hover?.canvas === this.track) {

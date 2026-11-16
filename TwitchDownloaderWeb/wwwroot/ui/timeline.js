@@ -488,6 +488,11 @@ export class Timeline {
       });
       canvas.addEventListener("pointerleave", () => {
         this.hover = null;
+        if (this.razorAt) {
+          this.razorAt = null;
+          this.snapAt = null;
+          this.dirty = true;
+        }
         this.renderTip();
       });
       canvas.addEventListener("contextmenu", (event) => this.contextMenu(event, canvas));
@@ -705,6 +710,7 @@ export class Timeline {
     this.drawOverlay?.(ctx, width);
     this.drawPending(ctx, width, now);
     if (this.cutDrag) this.drawCutDrag(ctx, width);
+    this.drawRazor?.(ctx, width);
     // The row a dragged item would land on
     const dropIndex = this.dropRowId == null ? -1 : this.rows.findIndex((row) => row.id === this.dropRowId);
     if (dropIndex >= 0) {
