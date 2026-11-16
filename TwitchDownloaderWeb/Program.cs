@@ -65,6 +65,10 @@ using (var scope = app.Services.CreateScope())
 {
     var startupDb = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
     startupDb.Database.Migrate();
+    // Write-ahead logging: readers (page polls, playback) no longer wait for the background jobs' progress writes, and writes are cheaper.
+    // It is stored in the database file, so this only changes something the first time. Keep the -wal/-shm files next to clipco.db
+    // when copying it (or stop the app first).
+    startupDb.Database.ExecuteSqlRaw("PRAGMA journal_mode=WAL;");
     // Saved edits (the old Player 2) become projects, once each
     await TwitchDownloaderWeb.Services.Projects.SavedEditConversion.RunAsync(startupDb,
         scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("SavedEditConversion"));
