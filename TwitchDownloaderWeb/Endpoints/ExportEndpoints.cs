@@ -18,13 +18,15 @@ namespace TwitchDownloaderWeb.Endpoints
 
     /// <param name="Kind">"vod" (a range of a VOD: <paramref name="VodId"/>, <paramref name="Start"/>, <paramref name="End"/>; a one-off, never saved),
     /// "clip" (<paramref name="EntryId"/>; <paramref name="Horizontal"/> and/or <paramref name="Vertical"/>), "video" (<paramref name="VideoId"/>;
-    /// <paramref name="Joined"/> = one file, else a .zip of its segments) or "segment" (<paramref name="MarkerId"/>).</param>
+    /// <paramref name="Joined"/> = one file, else a .zip of its segments), "segment" (<paramref name="MarkerId"/>) or "edit" (<paramref name="EditId"/>:
+    /// a saved edit of a clip, segment or video, made like that item but without what the edit removes; a clip edit takes horizontal/vertical,
+    /// its vertical a render made for that edit; a video edit takes joined).</param>
     /// <param name="FileName">The download's name (no extension); blank = the item's title.</param>
     /// <param name="Quality">Blank = best (a clip: its own quality, so a stored clip is just copied). Ignored for vertical.</param>
     /// <param name="RenderId">Vertical: one of the clip's renders (someone else's needs DownloadTeamVerticals); blank = the caller's own newest.</param>
     public sealed record ExportItemRequest(string? Kind, string? FileName = null, string? Quality = null, long? VodId = null, double? Start = null,
         double? End = null, int? EntryId = null, bool Horizontal = true, bool Vertical = false, string? RenderId = null, int? VideoId = null,
-        bool Joined = false, int? MarkerId = null);
+        bool Joined = false, int? MarkerId = null, int? EditId = null);
 
     /// <param name="Kind">VodRange, Clip, ClipVertical, Video or Segment.</param>
     /// <param name="LengthSeconds">What it plays (cut-out parts left out).</param>
@@ -32,7 +34,11 @@ namespace TwitchDownloaderWeb.Endpoints
     /// <param name="FileUrl">Its file once ready (a .zip for a video of separate files).</param>
     public sealed record ExportItemDto(int Position, string Kind, string FileName, string? Quality, long VodId, double StartSeconds, double EndSeconds,
         IReadOnlyList<CutRange> Cuts, int? EntryId, int? MarkerId, int? VideoId, string? RenderId, bool Joined, double LengthSeconds, string Status,
-        string? Error, int PartsDone, int PartsTotal, long? FileSizeBytes, double? AudioRestoredSeconds, double? AudioMutedSeconds, string? FileUrl);
+        string? Error, int PartsDone, int PartsTotal, long? FileSizeBytes, double? AudioRestoredSeconds, double? AudioMutedSeconds, string? FileUrl)
+    {
+        /// <summary>The saved edit it's made from (its kind is then the edit's item's: Clip, ClipVertical, Segment or Video).</summary>
+        public int? EditId { get; init; }
+    }
 
     public sealed record ExportBatchDto(int Id, string Status, string? Error, int CreatedByUserId, string? CreatedBy, DateTime CreatedAtUtc,
         DateTime? ExpiresAtUtc, int ItemsDone, int ItemsTotal, bool CanDelete, IReadOnlyList<ExportItemDto> Items);
@@ -252,53 +258,107 @@ namespace TwitchDownloaderWeb.Endpoints
                     var entry = request.EntryId is { } entryId ? await db.Entries.AsNoTracking().FirstOrDefaultAsync(x => x.Id == entryId, cancellationToken) : null;
                     if (entry is null)
                         return ([], Invalid(index, "That clip is gone."));
-                    if (!request.Horizontal && !request.Vertical)
-                        return ([], Invalid(index, "Pick horizontal, vertical or both."));
-                    if (entry.Kind != EntryKind.Vod)
-                        return ([], Invalid(index, "Twitch clips can't be exported here; use the library card's download."));
-                    if (entry.Status == EntryStatus.VodUnavailable && entry.FilePath is null)
-                        return ([], Coded(StatusCodes.Status410Gone, "vod-gone", $"\"{entry.Title}\": the VOD is gone from Twitch."));
-                    if (await cache.RefusalAsync(entry.VodId, cancellationToken) is { } refused)
-                        return ([], refused);
+                    return await BuildClipAsync(index, request, entry, fileName, CutOuts.Read(entry.Cuts), null, team, cache, shortform, cancellationToken);
+                }
 
-                    var name = string.IsNullOrEmpty(fileName) ? entry.Title : fileName;
-                    var made = new List<ExportItem>();
-                    var end = entry.EndTime?.TotalSeconds ?? entry.VodLengthSeconds;
-                    if (request.Horizontal)
+                case "edit":
+                {
+                    var source = request.EditId is { } editId ? await ItemEditEndpoints.ForExportAsync(db, editId, cancellationToken) : null;
+                    if (source is null)
+                        return ([], Invalid(index, "That edit is gone."));
+                    var edit = source.Edit;
+                    var name = string.IsNullOrEmpty(fileName) ? (edit.Title.Length > 0 ? edit.Title : null) : fileName;
+                    switch (source.Kind)
                     {
-                        // Its own quality by default: a stored clip is then copied, nothing is downloaded
-                        string? quality = entry.Quality;
-                        if (!string.IsNullOrWhiteSpace(request.Quality) && entry.Status != EntryStatus.VodUnavailable)
+                        case ItemEditKind.Clip:
+                            return await BuildClipAsync(index, request, source.Entry!, name, source.Cuts, edit.Id, team, cache, shortform, cancellationToken);
+                        case ItemEditKind.Segment:
                         {
-                            var (vod, problem) = await VodForCutAsync(index, entry.VodId, end, request.Quality, cache, cancellationToken);
+                            var marker = source.Marker!;
+                            var end = marker.EndSeconds!.Value;
+                            var (vod, problem) = await VodForCutAsync(index, marker.VodId, end, request.Quality, cache, cancellationToken);
                             if (problem is not null)
                                 return ([], problem);
-                            quality = vod.Quality;
+                            return ([new ExportItem
+                            {
+                                Kind = ExportItemKind.Segment, VodId = marker.VodId, MarkerId = marker.Id, EditId = edit.Id, StartSeconds = marker.Seconds,
+                                EndSeconds = end, Cuts = CutOuts.Write(source.Cuts), Quality = vod.Quality,
+                                FileName = name ?? (marker.Label.Length > 0 ? marker.Label : $"{vod.Details.Title} {TrimTime.Format(TimeSpan.FromSeconds(Math.Floor(marker.Seconds)))}"),
+                            }], null);
                         }
-                        made.Add(new ExportItem
+                        default:
                         {
-                            Kind = ExportItemKind.Clip, VodId = entry.VodId, EntryId = entry.Id, StartSeconds = entry.StartTime.TotalSeconds, EndSeconds = end,
-                            Cuts = CutOuts.Write(CutOuts.Normalize(CutOuts.Read(entry.Cuts), entry.StartTime.TotalSeconds, end)), TrimMode = entry.TrimMode,
-                            Quality = quality, FileName = name,
-                        });
+                            var video = source.Video!;
+                            if (source.VideoParts.Count == 0)
+                                return ([], Invalid(index, "That edit leaves nothing of the video."));
+                            var (vod, problem) = await VodForCutAsync(index, video.VodId, source.VideoParts.Max(x => x.End), request.Quality, cache, cancellationToken);
+                            if (problem is not null)
+                                return ([], problem);
+                            return ([new ExportItem
+                            {
+                                Kind = ExportItemKind.Video, VodId = video.VodId, VideoId = video.Id, EditId = edit.Id,
+                                StartSeconds = source.VideoParts.Min(x => x.Start), EndSeconds = source.VideoParts.Max(x => x.End),
+                                Parts = ExportVideoPart.Write(source.VideoParts), Joined = request.Joined, Quality = vod.Quality, FileName = name ?? video.Title,
+                            }], null);
+                        }
                     }
-
-                    if (request.Vertical)
-                    {
-                        if (PickRender(shortform.ListRenders(entry.Id), request.RenderId, team, out var error) is not { } render)
-                            return ([], Coded(StatusCodes.Status409Conflict, "no-vertical", $"\"{entry.Title}\": {error}"));
-                        made.Add(new ExportItem
-                        {
-                            Kind = ExportItemKind.ClipVertical, VodId = entry.VodId, EntryId = entry.Id, StartSeconds = entry.StartTime.TotalSeconds,
-                            EndSeconds = end, RenderId = render.Id, FileName = name,
-                        });
-                    }
-                    return (made, null);
                 }
 
                 default:
-                    return ([], Invalid(index, "Kind must be vod, clip, video or segment."));
+                    return ([], Invalid(index, "Kind must be vod, clip, video, segment or edit."));
             }
+        }
+
+        /// <summary>
+        /// A clip's items (horizontal and/or vertical) without <paramref name="cuts"/>: its own cut-out parts, or an edit's (<paramref name="editId"/>,
+        /// whose vertical is a render made for that edit; a plain clip's vertical is a render made without one).
+        /// </summary>
+        private static async Task<(List<ExportItem> Items, IResult? Problem)> BuildClipAsync(int index, ExportItemRequest request, LibraryEntry entry,
+            string? fileName, IReadOnlyList<CutRange> cuts, int? editId, TeamContext team, VodInfoCache cache, ShortformService shortform,
+            CancellationToken cancellationToken)
+        {
+            if (!request.Horizontal && !request.Vertical)
+                return ([], Invalid(index, "Pick horizontal, vertical or both."));
+            if (entry.Kind != EntryKind.Vod)
+                return ([], Invalid(index, "Twitch clips can't be exported here; use the library card's download."));
+            if (entry.Status == EntryStatus.VodUnavailable && entry.FilePath is null)
+                return ([], Coded(StatusCodes.Status410Gone, "vod-gone", $"\"{entry.Title}\": the VOD is gone from Twitch."));
+            if (await cache.RefusalAsync(entry.VodId, cancellationToken) is { } refused)
+                return ([], refused);
+
+            var name = string.IsNullOrEmpty(fileName) ? entry.Title : fileName;
+            var made = new List<ExportItem>();
+            var end = entry.EndTime?.TotalSeconds ?? entry.VodLengthSeconds;
+            if (request.Horizontal)
+            {
+                // Its own quality by default: a stored clip is then copied, nothing is downloaded
+                string? quality = entry.Quality;
+                if (!string.IsNullOrWhiteSpace(request.Quality) && entry.Status != EntryStatus.VodUnavailable)
+                {
+                    var (vod, problem) = await VodForCutAsync(index, entry.VodId, end, request.Quality, cache, cancellationToken);
+                    if (problem is not null)
+                        return ([], problem);
+                    quality = vod.Quality;
+                }
+                made.Add(new ExportItem
+                {
+                    Kind = ExportItemKind.Clip, VodId = entry.VodId, EntryId = entry.Id, StartSeconds = entry.StartTime.TotalSeconds, EndSeconds = end,
+                    Cuts = CutOuts.Write(CutOuts.Normalize(cuts, entry.StartTime.TotalSeconds, end)), TrimMode = entry.TrimMode,
+                    Quality = quality, FileName = name, EditId = editId,
+                });
+            }
+
+            if (request.Vertical)
+            {
+                if (PickRender(shortform.ListRenders(entry.Id).Where(x => x.EditId == editId).ToList(), request.RenderId, team, out var error) is not { } render)
+                    return ([], Coded(StatusCodes.Status409Conflict, "no-vertical", $"\"{entry.Title}\": {error}"));
+                made.Add(new ExportItem
+                {
+                    Kind = ExportItemKind.ClipVertical, VodId = entry.VodId, EntryId = entry.Id, StartSeconds = entry.StartTime.TotalSeconds,
+                    EndSeconds = end, RenderId = render.Id, FileName = name, EditId = editId,
+                });
+            }
+            return (made, null);
         }
 
         /// <summary>The VOD must be open to the team, on Twitch, not restricted, streamed up to <paramref name="end"/>, and have the quality.</summary>
@@ -455,7 +515,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 x.Items.OrderBy(i => i.Position).Select(i => new ExportItemDto(i.Position, i.Kind.ToString(), i.FileName, i.Quality, i.VodId, i.StartSeconds,
                     i.EndSeconds, CutOuts.Read(i.Cuts), i.EntryId, i.MarkerId, i.VideoId, i.RenderId, i.Joined, Math.Round(LengthOf(i), 2), i.Status.ToString(),
                     i.Error, i.PartsDone, i.PartsTotal, i.FileSizeBytes, i.AudioRestoredSeconds, i.AudioMutedSeconds,
-                    i.Status == ExportStatus.Ready ? $"{url}/items/{i.Position}/file" : null)).ToList());
+                    i.Status == ExportStatus.Ready ? $"{url}/items/{i.Position}/file" : null) { EditId = i.EditId }).ToList());
         }
     }
 }

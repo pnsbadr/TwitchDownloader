@@ -18,16 +18,24 @@ namespace TwitchDownloaderWeb.Services.Shortform
     /// <summary>A finished portrait render, kept until it expires or is pushed out by newer ones.</summary>
     /// <param name="CreatedByUserId">Who started it (null for renders from before that was kept).</param>
     public sealed record ShortformRender(string Id, DateTime CreatedAtUtc, DateTime ExpiresAtUtc, long SizeBytes, ShortformLayout Layout,
-        bool HasThumbnail, int? CreatedByUserId = null);
+        bool HasThumbnail, int? CreatedByUserId = null)
+    {
+        /// <summary>The saved edit it was made for (Player 2): made from the clip's file without what the edit removes. Null = the clip itself.</summary>
+        public int? EditId { get; init; }
+    }
 
     /// <summary>The entry's current job (None when idle) plus its kept renders, newest first.</summary>
     public sealed record ShortformState(ShortformStatus Status, double Progress, string? Error, ShortformLayout? Layout,
-        IReadOnlyList<ShortformRender> Renders);
+        IReadOnlyList<ShortformRender> Renders)
+    {
+        /// <summary>The saved edit the running render is for (null = the clip itself, or nothing running).</summary>
+        public int? RenderingEditId { get; init; }
+    }
 
     /// <summary>
     /// Renders an entry's finished file into 9:16 portrait videos using crop layouts from the page. Each render is kept in
     /// "shortform/{entryId}/{renderId}.mp4" with its layout ("{renderId}.json") and a thumbnail ("{renderId}.jpg"), shared by
-    /// the team, until it is <see cref="DownloadSettings.GeneratedFileHours"/> old or more than <see cref="MaxRendersPerEntry"/>
+    /// the team, until it is <see cref="DownloadSettings.GeneratedFileHours"/> old or more than <see cref="MaxRendersPerEntry"/> (per edit)
     /// newer renders exist. One render runs at a time; a new render for the same entry replaces a running one. Job state
     /// is in memory: a render interrupted by a restart is simply gone.
     /// </summary>
@@ -60,13 +68,14 @@ namespace TwitchDownloaderWeb.Services.Shortform
             public required CancellationTokenSource Cancellation { get; init; }
             public required ShortformLayout Layout { get; init; }
             public int? UserId { get; init; }
+            public int? EditId { get; init; }
             public ShortformStatus Status { get; set; } = ShortformStatus.Rendering;
             public double Progress { get; set; }
             public string? Error { get; set; }
         }
 
         /// <summary>What a render's metadata file holds.</summary>
-        private sealed record RenderInfo(DateTime CreatedAtUtc, ShortformLayout Layout, int? CreatedByUserId = null);
+        private sealed record RenderInfo(DateTime CreatedAtUtc, ShortformLayout Layout, int? CreatedByUserId = null, int? EditId = null);
 
         private string EntryFolder(int entryId) => _storage.Resolve(Path.Combine(LibraryStorage.ShortformFolderName, entryId.ToString(CultureInfo.InvariantCulture)));
 
@@ -80,9 +89,9 @@ namespace TwitchDownloaderWeb.Services.Shortform
         {
             var renders = ListRenders(entryId);
             if (_jobs.TryGetValue(entryId, out var job))
-                return new ShortformState(job.Status, job.Progress, job.Error, job.Layout, renders);
+                return new ShortformState(job.Status, job.Progress, job.Error, job.Layout, renders) { RenderingEditId = job.EditId };
 
-            return new ShortformState(ShortformStatus.None, 0, null, renders.FirstOrDefault()?.Layout, renders);
+            return new ShortformState(ShortformStatus.None, 0, null, renders.FirstOrDefault(x => x.EditId is null)?.Layout, renders);
         }
 
         public IReadOnlyList<ShortformRender> ListRenders(int entryId)
@@ -104,11 +113,12 @@ namespace TwitchDownloaderWeb.Services.Shortform
                     continue;
 
                 renders.Add(new ShortformRender(id, info.CreatedAtUtc, expires, video.Length, info.Layout,
-                    File.Exists(Path.ChangeExtension(json.FullName, ".jpg")), info.CreatedByUserId));
+                    File.Exists(Path.ChangeExtension(json.FullName, ".jpg")), info.CreatedByUserId) { EditId = info.EditId });
             }
 
-            // Older ones are deleted by the cleanup service
-            return renders.OrderByDescending(x => x.CreatedAtUtc).Take(MaxRendersPerEntry).ToList();
+            // The newest few of the clip itself and of each of its edits; older ones are deleted by the cleanup service
+            return renders.GroupBy(x => x.EditId).SelectMany(g => g.OrderByDescending(x => x.CreatedAtUtc).Take(MaxRendersPerEntry))
+                .OrderByDescending(x => x.CreatedAtUtc).ToList();
         }
 
         private static RenderInfo? ReadInfo(string path)
@@ -126,9 +136,10 @@ namespace TwitchDownloaderWeb.Services.Shortform
 
         /// <summary>Starts rendering in the background. The layout must already be validated.</summary>
         /// <param name="userId">Who asked (kept with the render: exports use a member's own newest render).</param>
-        public void Start(int entryId, string sourcePath, double clipLengthSeconds, ShortformLayout layout, int? userId = null)
+        /// <param name="editId">The saved edit it's made for (the layout already leaves out what the edit removes).</param>
+        public void Start(int entryId, string sourcePath, double clipLengthSeconds, ShortformLayout layout, int? userId = null, int? editId = null)
         {
-            var job = new Job { Cancellation = new CancellationTokenSource(), Layout = layout, UserId = userId };
+            var job = new Job { Cancellation = new CancellationTokenSource(), Layout = layout, UserId = userId, EditId = editId };
             if (_jobs.TryRemove(entryId, out var previous))
                 Cancel(previous);
             _jobs[entryId] = job;
@@ -279,7 +290,7 @@ namespace TwitchDownloaderWeb.Services.Shortform
                 await TryMakeThumbnailAsync(ffmpegPath, output, thumbnail, duration, token);
 
                 // Written last: a render only shows up once its metadata exists
-                var info = new RenderInfo(DateTime.UtcNow, layout, job.UserId);
+                var info = new RenderInfo(DateTime.UtcNow, layout, job.UserId, job.EditId);
                 await File.WriteAllTextAsync(RenderPath(entryId, renderId, "json")!, JsonSerializer.Serialize(info, JsonOptions), CancellationToken.None);
 
                 _jobs.TryRemove(new KeyValuePair<int, Job>(entryId, job));

@@ -223,6 +223,15 @@ namespace TwitchDownloaderWeb.Services.Segments
                     copied = true;
                     break;
 
+                case ExportItemKind.Clip when await WholeStoredFileAsync(db, item, token) is { } whole:
+                    // Its stored file holds the whole clip: cut what's kept out of it, nothing is downloaded
+                    item.PartsTotal = 1;
+                    await CutFromFileAsync(whole.Path, item, fullPath, $"export-{batch.Id}-{item.Position}", token);
+                    item.AudioRestoredSeconds = whole.Entry.AudioRestoredSeconds;
+                    item.AudioMutedSeconds = whole.Entry.AudioMutedSeconds;
+                    copied = true;
+                    break;
+
                 case ExportItemKind.VodRange or ExportItemKind.Segment or ExportItemKind.Clip:
                     item.PartsTotal = 1;
                     restore = await CutAsync(db, batch, item, item.StartSeconds, item.EndSeconds, CutOuts.Read(item.Cuts), fullPath, token);
@@ -269,6 +278,59 @@ namespace TwitchDownloaderWeb.Services.Segments
                 return null;
             var full = _storage.Resolve(path);
             return File.Exists(full) ? (full, entry) : null;
+        }
+
+        /// <summary>
+        /// The clip's stored file when it holds the item's whole range at its quality, cut Exact (a Safe cut starts a little early, so file
+        /// seconds wouldn't line up), so the item's kept parts can be cut out of it.
+        /// </summary>
+        private async Task<(string Path, LibraryEntry Entry)?> WholeStoredFileAsync(LibraryDbContext db, ExportItem item, CancellationToken token)
+        {
+            if (item.EntryId is not { } entryId)
+                return null;
+            var entry = await db.Entries.AsNoTracking().FirstOrDefaultAsync(x => x.Id == entryId, token);
+            if (entry is not { Status: EntryStatus.Ready, FilePath: { } path, FileCuts: null, TrimMode: TwitchDownloaderCore.Models.VideoTrimMode.Exact }
+                || entry.Quality != item.Quality
+                || Math.Abs(entry.StartTime.TotalSeconds - item.StartSeconds) > 0.005
+                || Math.Abs((entry.EndTime?.TotalSeconds ?? entry.VodLengthSeconds) - item.EndSeconds) > 0.005)
+                return null;
+            var full = _storage.Resolve(path);
+            return File.Exists(full) ? (full, entry) : null;
+        }
+
+        /// <summary>Cuts the item's kept parts out of a file that starts at the item's start (re-encoded like Exact trims) and joins them.</summary>
+        private async Task CutFromFileAsync(string source, ExportItem item, string outputPath, string workName, CancellationToken token)
+        {
+            var parts = CutOuts.Kept(item.StartSeconds, item.EndSeconds, CutOuts.Read(item.Cuts));
+            if (parts.Count == 0)
+                throw new InvalidOperationException("The cut-out parts leave nothing.");
+
+            var settings = _settings.Value;
+            var ffmpegPath = _configuration["Ffmpeg:Path"] is { Length: > 0 } configured ? configured : "ffmpeg";
+            var work = _storage.CreateWorkFolder(workName);
+            try
+            {
+                if (parts.Count == 1)
+                {
+                    await ExactTrimService.TrimAsync(ffmpegPath, source, parts[0].Start - item.StartSeconds, parts[0].End - parts[0].Start, outputPath, work,
+                        settings.ExactTrimPreset, settings.ExactTrimCrf, _logger, token);
+                    return;
+                }
+
+                var files = new List<string>();
+                for (var i = 0; i < parts.Count; i++)
+                {
+                    var file = Path.Combine(work, $"{i + 1}.mp4");
+                    await ExactTrimService.TrimAsync(ffmpegPath, source, parts[i].Start - item.StartSeconds, parts[i].End - parts[i].Start, file, work,
+                        settings.ExactTrimPreset, settings.ExactTrimCrf, _logger, token);
+                    files.Add(file);
+                }
+                await SegmentJoiner.JoinAsync(ffmpegPath, files, outputPath, work, settings.ExactTrimPreset, settings.ExactTrimCrf, _logger, token);
+            }
+            finally
+            {
+                DeleteFolder(work);
+            }
         }
 
         /// <summary>One file per segment in the item's folder; joined, those are then joined into the item's file and the folder goes.</summary>

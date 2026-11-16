@@ -182,6 +182,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<string>("Cuts")
                         .HasColumnType("TEXT");
 
+                    b.Property<int?>("EditId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<double>("EndSeconds")
                         .HasColumnType("REAL");
 

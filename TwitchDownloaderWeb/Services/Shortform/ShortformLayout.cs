@@ -21,6 +21,10 @@ namespace TwitchDownloaderWeb.Services.Shortform
     public sealed record ShortformLayout(string? Mode, CropBox? Top, CropBox? Bottom, double? SplitRatio, double? TrimStart = null, double? TrimEnd = null,
         IReadOnlyList<ShortformPart>? Parts = null, IReadOnlyList<ShortformKey>? Keys = null)
     {
+        /// <summary>Request only (<c>POST /shortform</c>): render a saved edit of the clip. Not stored in the layout (the render keeps it).</summary>
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public int? EditId { get; init; }
+
         public const int MaxParts = 40;
         public const int MaxKeys = 30;
         public const double MinPartSeconds = 0.5;
@@ -126,6 +130,32 @@ namespace TwitchDownloaderWeb.Services.Shortform
             }
 
             return GetDuration(clipLengthSeconds) < MinTrimSeconds ? $"The parts must add up to at least {MinTrimSeconds:0} second." : null;
+        }
+
+        /// <summary>
+        /// The layout cut down to <paramref name="kept"/> (file seconds, in order): each part (or the plain layout's trimmed range) keeps only
+        /// what lies inside them, split where they leave gaps; pieces under <see cref="MinPartSeconds"/> go. Null when nothing is left.
+        /// Keyframe times are file seconds, so they still apply to the pieces. Validate the result (it may have too many parts).
+        /// </summary>
+        public static ShortformLayout? KeepOnly(ShortformLayout layout, IReadOnlyList<(double Start, double End)> kept, double fileSeconds)
+        {
+            var parts = layout.Parts is { Count: > 0 }
+                ? layout.Parts
+                : [new ShortformPart(layout.GetStart(), layout.TrimEnd is { } trimEnd ? Math.Min(trimEnd, fileSeconds) : fileSeconds, layout.Mode, layout.Top,
+                    layout.Bottom, layout.SplitRatio, layout.Keys)];
+            var pieces = new List<ShortformPart>();
+            foreach (var part in parts)
+            {
+                foreach (var (start, end) in kept)
+                {
+                    var from = Math.Max(part.Start, start);
+                    var to = Math.Min(part.End, end);
+                    if (to - from >= MinPartSeconds - Tolerance)
+                        pieces.Add(part with { Start = Math.Round(from, 3), End = Math.Round(to, 3) });
+                }
+            }
+
+            return pieces.Count == 0 ? null : layout with { Parts = pieces, EditId = null };
         }
 
         /// <summary>With parts, sets the single-layout fields from them (first part's layout, first start, last end); otherwise returns itself.</summary>

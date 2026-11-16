@@ -81,6 +81,9 @@ namespace TwitchDownloaderWeb.Data
         public int? MarkerId { get; set; }
         public int? VideoId { get; set; }
 
+        /// <summary>The saved edit it's made from (Player 2): the item without what the edit removes, copied into the fields above. No FK.</summary>
+        public int? EditId { get; set; }
+
         /// <summary>The vertical render it copies (<see cref="ExportItemKind.ClipVertical"/>).</summary>
         public string? RenderId { get; set; }
 
