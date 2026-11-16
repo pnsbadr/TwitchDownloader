@@ -232,9 +232,20 @@ namespace TwitchDownloaderWeb.Services.Segments
                 case ExportItemKind.Clip when await WholeStoredFileAsync(db, item, token) is { } whole:
                     // Its stored file holds the whole clip: cut what's kept out of it, nothing is downloaded
                     item.PartsTotal = 1;
-                    await CutFromFileAsync(whole.Path, item, fullPath, $"export-{batch.Id}-{item.Position}", token);
+                    await CutFromFileAsync(whole.Path, item, null, fullPath, $"export-{batch.Id}-{item.Position}", token);
                     item.AudioRestoredSeconds = whole.Entry.AudioRestoredSeconds;
                     item.AudioMutedSeconds = whole.Entry.AudioMutedSeconds;
+                    copied = true;
+                    break;
+
+                case ExportItemKind.Clip when await ExactStoredFileAsync(db, item, token) is { } kept && await IsVodGoneAsync(item.VodId, vodGone):
+                    // The VOD is gone from Twitch (badrfly 2026-11-16: stored clips always stay exportable): cut what's kept out of the stored
+                    // file, at the file's quality whatever was asked; parts an older file already left out can't come back
+                    item.PartsTotal = 1;
+                    item.Quality = kept.Entry.Quality;
+                    await CutFromFileAsync(kept.Path, item, CutOuts.Read(kept.Entry.FileCuts), fullPath, $"export-{batch.Id}-{item.Position}", token);
+                    item.AudioRestoredSeconds = kept.Entry.AudioRestoredSeconds;
+                    item.AudioMutedSeconds = kept.Entry.AudioMutedSeconds;
                     copied = true;
                     break;
 
@@ -287,7 +298,26 @@ namespace TwitchDownloaderWeb.Services.Segments
         }
 
         private async Task<bool> UsesStoredFileAsync(LibraryDbContext db, ExportItem item, CancellationToken token) =>
-            await CopyableClipFileAsync(db, item, token) is not null || await WholeStoredFileAsync(db, item, token) is not null;
+            await CopyableClipFileAsync(db, item, token) is not null || await WholeStoredFileAsync(db, item, token) is not null
+            || await ExactStoredFileAsync(db, item, token) is not null;
+
+        /// <summary>
+        /// The clip's stored file when it was cut Exact over the item's range, at any quality and whatever cut-out parts it already leaves
+        /// out: what's left of a clip whose VOD is gone. (A Safe file starts at a segment boundary before the clip, at an offset only the
+        /// VOD's playlist can tell, so it can't be cut.)
+        /// </summary>
+        private async Task<(string Path, LibraryEntry Entry)?> ExactStoredFileAsync(LibraryDbContext db, ExportItem item, CancellationToken token)
+        {
+            if (item.EntryId is not { } entryId)
+                return null;
+            var entry = await db.Entries.AsNoTracking().FirstOrDefaultAsync(x => x.Id == entryId, token);
+            if (entry is not { Status: EntryStatus.Ready, FilePath: { } path, TrimMode: TwitchDownloaderCore.Models.VideoTrimMode.Exact }
+                || Math.Abs(entry.StartTime.TotalSeconds - item.StartSeconds) > 0.005
+                || Math.Abs((entry.EndTime?.TotalSeconds ?? entry.VodLengthSeconds) - item.EndSeconds) > 0.005)
+                return null;
+            var full = _storage.Resolve(path);
+            return File.Exists(full) ? (full, entry) : null;
+        }
 
         /// <summary>
         /// The clip's stored file, if it is exactly what the item asks for (same cut, quality, and the file leaves out exactly the item's
@@ -325,10 +355,14 @@ namespace TwitchDownloaderWeb.Services.Segments
             return File.Exists(full) ? (full, entry) : null;
         }
 
-        /// <summary>Cuts the item's kept parts out of a file that starts at the item's start (re-encoded like Exact trims) and joins them.</summary>
-        private async Task CutFromFileAsync(string source, ExportItem item, string outputPath, string workName, CancellationToken token)
+        /// <summary>
+        /// Cuts the item's kept parts out of a file that starts at the item's start (re-encoded like Exact trims) and joins them.
+        /// <paramref name="fileCuts"/>: parts the file already leaves out (VOD seconds), so later parts sit earlier in it.
+        /// </summary>
+        private async Task CutFromFileAsync(string source, ExportItem item, IReadOnlyList<CutRange>? fileCuts, string outputPath, string workName,
+            CancellationToken token)
         {
-            var parts = CutOuts.Kept(item.StartSeconds, item.EndSeconds, CutOuts.Read(item.Cuts));
+            var parts = FileParts(item.StartSeconds, item.EndSeconds, CutOuts.Read(item.Cuts), fileCuts);
             if (parts.Count == 0)
                 throw new InvalidOperationException("The cut-out parts leave nothing.");
 
@@ -339,7 +373,7 @@ namespace TwitchDownloaderWeb.Services.Segments
             {
                 if (parts.Count == 1)
                 {
-                    await ExactTrimService.TrimAsync(ffmpegPath, source, parts[0].Start - item.StartSeconds, parts[0].End - parts[0].Start, outputPath, work,
+                    await ExactTrimService.TrimAsync(ffmpegPath, source, parts[0].Start, parts[0].End - parts[0].Start, outputPath, work,
                         settings.ExactTrimPreset, settings.ExactTrimCrf, _logger, token);
                     return;
                 }
@@ -348,7 +382,7 @@ namespace TwitchDownloaderWeb.Services.Segments
                 for (var i = 0; i < parts.Count; i++)
                 {
                     var file = Path.Combine(work, $"{i + 1}.mp4");
-                    await ExactTrimService.TrimAsync(ffmpegPath, source, parts[i].Start - item.StartSeconds, parts[i].End - parts[i].Start, file, work,
+                    await ExactTrimService.TrimAsync(ffmpegPath, source, parts[i].Start, parts[i].End - parts[i].Start, file, work,
                         settings.ExactTrimPreset, settings.ExactTrimCrf, _logger, token);
                     files.Add(file);
                 }
@@ -358,6 +392,35 @@ namespace TwitchDownloaderWeb.Services.Segments
             {
                 DeleteFolder(work);
             }
+        }
+
+        /// <summary>
+        /// The item's kept parts in seconds of a file that holds [start, end] without <paramref name="fileCuts"/> (joined end to end).
+        /// Parts the file doesn't have are left out; pieces under 0.1 s are dropped.
+        /// </summary>
+        public static List<(double Start, double End)> FileParts(double start, double end, IReadOnlyList<CutRange> itemCuts, IReadOnlyList<CutRange>? fileCuts)
+        {
+            var inFile = CutOuts.Kept(start, end, fileCuts ?? []);
+            var result = new List<(double Start, double End)>();
+            foreach (var part in CutOuts.Kept(start, end, itemCuts))
+            {
+                var fileAt = 0.0;
+                foreach (var have in inFile)
+                {
+                    var (from, to) = (Math.Max(part.Start, have.Start), Math.Min(part.End, have.End));
+                    if (to - from >= 0.1)
+                    {
+                        var at = fileAt + (from - have.Start);
+                        // Touching the previous piece (only a file cut lay between): one piece
+                        if (result.Count > 0 && Math.Abs(result[^1].End - at) < 0.001)
+                            result[^1] = (result[^1].Start, at + (to - from));
+                        else
+                            result.Add((at, at + (to - from)));
+                    }
+                    fileAt += have.End - have.Start;
+                }
+            }
+            return result;
         }
 
         /// <summary>One file per segment in the item's folder; joined, those are then joined into the item's file and the folder goes.</summary>

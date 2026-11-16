@@ -125,6 +125,74 @@ namespace TwitchDownloaderWeb.Tests
         }
 
         [Fact]
+        public void FilePartsSkipWhatTheFileLeavesOut()
+        {
+            // Clip 50..60; the file leaves out 52..55 (so it's 7 s: 50..52 then 55..60)
+            List<CutRange> fileCuts = [new(52, 55)];
+            // Item keeps 50..52 and 55..58: file seconds 0..2 and 2..5, which touch, so one piece
+            Assert.Equal([(0.0, 5.0)], ExportWorker.FileParts(50, 60, [new(52, 55), new(58, 60)], fileCuts));
+            // Item keeps everything: the left-out part can't come back
+            Assert.Equal([(0.0, 7.0)], ExportWorker.FileParts(50, 60, [], fileCuts));
+            // Item cuts 56..57 only: 50..52 + 55..56 = file 0..3, then 57..60 = file 4..7
+            Assert.Equal([(0.0, 3.0), (4.0, 7.0)], ExportWorker.FileParts(50, 60, [new(56, 57)], fileCuts));
+            // No file cuts: plain offsets
+            Assert.Equal([(0.0, 2.0), (5.0, 8.0)], ExportWorker.FileParts(50, 60, [new(52, 55), new(58, 60)], null));
+        }
+
+        [Fact]
+        public async Task StoredClipWithCutsIsCutFromItsFileWhenTheVodIsGone()
+        {
+            if (!HasFfmpeg())
+                Assert.Skip("ffmpeg not found; set FFMPEG_PATH.");
+            var ct = TestContext.Current.CancellationToken;
+            var (owner, _, teamId, _) = await TeamWithMemberAsync("ee9");
+            var ownerId = (await GetJsonAsync(owner, "/api/auth/me")).GetProperty("id").GetInt32();
+            var clipId = AddStoredClip(teamId, ownerId, 479, 50, 60, "");
+            using (var scope = _factory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+                var entry = db.Entries.Single(x => x.Id == clipId);
+                entry.TrimMode = TwitchDownloaderCore.Models.VideoTrimMode.Exact;
+                entry.ChannelName = "arky";
+                entry.Quality = "720p";
+                // An older file that already leaves out 52..55 (7 s); the clip now also cuts 58..60
+                entry.FileCuts = CutOuts.Write([new CutRange(52, 55)]);
+                entry.Cuts = CutOuts.Write([new CutRange(52, 55), new CutRange(58, 60)]);
+                db.SaveChanges();
+                var file = Path.Combine(_dir, "downloads", entry.FilePath!);
+                using var process = Process.Start(new ProcessStartInfo(FakeCutter.Ffmpeg, ["-hide_banner", "-nostdin", "-y", "-f", "lavfi", "-i",
+                    "testsrc=size=160x90:rate=30:duration=7", "-f", "lavfi", "-i", "sine=frequency=440:duration=7", "-c:v", "libx264", "-preset",
+                    "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", file]) { RedirectStandardError = true, UseShellExecute = false })!;
+                await process.StandardError.ReadToEndAsync(ct);
+                await process.WaitForExitAsync(ct);
+                Assert.Equal(0, process.ExitCode);
+            }
+
+            _vods.Gone[479] = true;
+            try
+            {
+                // Another quality is asked for: only the file's is left
+                var export = await PostJsonAsync(owner, "/api/exports",
+                    new { items = new[] { new { kind = "clip", entryId = clipId, horizontal = true, vertical = false, quality = "1080p60" } } }, HttpStatusCode.Accepted);
+                var done = await WaitForExportAsync(owner, export.GetProperty("id").GetInt32());
+                Assert.Equal("Ready", done.GetProperty("status").GetString());
+                Assert.Equal("720p", done.GetProperty("items")[0].GetProperty("quality").GetString());
+                Assert.DoesNotContain(_cutter.Cuts, x => x.VodId == 479);
+
+                // Keeps 50..52 and 55..58: 5 s
+                var output = Path.Combine(_dir, "downloads", LibraryStorage.ExportItemRelativePath(export.GetProperty("id").GetInt32(), 1));
+                using var probe = Process.Start(new ProcessStartInfo("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", output])
+                    { RedirectStandardOutput = true, UseShellExecute = false })!;
+                var duration = double.Parse((await probe.StandardOutput.ReadToEndAsync(ct)).Trim(), CultureInfo.InvariantCulture);
+                Assert.InRange(duration, 4.8, 5.3);
+            }
+            finally
+            {
+                _vods.Gone.TryRemove(479, out _);
+            }
+        }
+
+        [Fact]
         public async Task VerticalRendersOfAnEditRememberIt()
         {
             var ct = TestContext.Current.CancellationToken;

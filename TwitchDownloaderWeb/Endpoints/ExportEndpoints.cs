@@ -344,7 +344,10 @@ namespace TwitchDownloaderWeb.Endpoints
             {
                 // Its own quality by default: a stored clip is then copied, nothing is downloaded
                 string? quality = entry.Quality;
-                if (!string.IsNullOrWhiteSpace(request.Quality) && entry.Status != EntryStatus.VodUnavailable)
+                if (!string.IsNullOrWhiteSpace(request.Quality) && entry.Status != EntryStatus.VodUnavailable
+                    && !(entry.FilePath is not null && string.Equals(request.Quality.Trim(), entry.Quality, StringComparison.OrdinalIgnoreCase))
+                    // VOD deleted: the stored file's quality is the only one left
+                    && !(entry.FilePath is not null && await cache.DetailsAsync(entry.VodId) is null))
                 {
                     var (vod, problem) = await VodForCutAsync(index, entry.VodId, end, request.Quality, cache, cancellationToken);
                     if (problem is not null)

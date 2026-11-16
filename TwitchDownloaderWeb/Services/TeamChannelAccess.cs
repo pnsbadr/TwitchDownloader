@@ -81,7 +81,9 @@ namespace TwitchDownloaderWeb.Services
             }
 
             if (owner is null)
-                return VodAccess.NotFound;
+                return await IsGoneVodOfOwnChannelAsync(vodId, channels.Select(x => x.Login).ToList(), cancellationToken)
+                    ? VodAccess.Allowed
+                    : VodAccess.NotFound;
 
             // Compare by Twitch user ID first: a streamer can rename their login
             var match = channels.FirstOrDefault(x =>
@@ -97,6 +99,24 @@ namespace TwitchDownloaderWeb.Services
                    || await db.Markers.AsNoTracking().AnyAsync(x => x.VodId == vodId, cancellationToken)
                 ? VodAccess.Allowed
                 : VodAccess.NotAssigned;
+        }
+
+        /// <summary>
+        /// A VOD Twitch no longer has stays open when the team's own work on it names one of its channels (badrfly 2026-11-16: stored clips
+        /// must stay exportable after Twitch deletes the VOD). Its channel can't be asked of Twitch any more, so it goes by the channel name
+        /// saved on the team's entries and videos, as "Revoke now" does. A removed (revoked) channel has no row left, so it doesn't match.
+        /// Everything that needs the VOD itself still fails on its own (playback 404, cuts "VOD gone").
+        /// </summary>
+        private async Task<bool> IsGoneVodOfOwnChannelAsync(long vodId, List<string> logins, CancellationToken cancellationToken)
+        {
+            var names = await db.Entries.AsNoTracking().Where(x => x.VodId == vodId && x.ChannelName != null).Select(x => x.ChannelName!)
+                .Concat(db.Videos.AsNoTracking().Where(x => x.VodId == vodId && x.ChannelName != null).Select(x => x.ChannelName!))
+                .Distinct().ToListAsync(cancellationToken);
+            if (names.Count == 0)
+                return false;
+
+            var displayNames = await db.Channels.AsNoTracking().Select(x => x.DisplayName).ToListAsync(cancellationToken);
+            return names.Any(name => logins.Concat(displayNames).Any(x => string.Equals(x, name, StringComparison.OrdinalIgnoreCase)));
         }
 
         /// <summary>The VOD's channel (login, Twitch user ID), or null when Twitch has no such VOD. Throws <see cref="HttpRequestException"/> when Twitch is unreachable.</summary>
