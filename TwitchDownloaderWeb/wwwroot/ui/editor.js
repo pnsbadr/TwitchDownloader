@@ -334,6 +334,8 @@ async function closeProject() {
   await store.close();
   saveSetting(LAST_PROJECT_KEY, null);
   timeline2.refresh({ reset: true });
+  // Closing the store re-reads the (now empty) content, which seeks and shows the gap's black: stop again so the hint shows
+  playback.stop();
   $("p2-media").hidden = true;
   $("p2-hint").hidden = false;
   showNote("p2", "");
