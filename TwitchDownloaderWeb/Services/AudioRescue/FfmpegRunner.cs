@@ -18,6 +18,8 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
                     CreateNoWindow = true,
                     RedirectStandardError = true,
                     RedirectStandardOutput = true,
+                    // ffmpeg reads keys from stdin ("q" stops it); never give it the app's console
+                    RedirectStandardInput = true,
                     WorkingDirectory = workingDirectory,
                 }
             };
@@ -38,6 +40,7 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
 
             logger.LogDebug("Running ffmpeg {Args}", string.Join(' ', args));
             process.Start();
+            process.StandardInput.Close();
             process.BeginErrorReadLine();
             if (onOutputLine is null)
             {
@@ -58,7 +61,13 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
             }
             catch (OperationCanceledException)
             {
-                try { process.Kill(true); } catch (InvalidOperationException) { }
+                try
+                {
+                    process.Kill(true);
+                    // Let it exit so its output file is closed: on Windows the caller's cleanup can't delete a file ffmpeg still has open
+                    process.WaitForExit(TimeSpan.FromSeconds(5));
+                }
+                catch (InvalidOperationException) { }
                 throw;
             }
 
