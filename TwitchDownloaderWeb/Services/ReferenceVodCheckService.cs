@@ -76,8 +76,10 @@ namespace TwitchDownloaderWeb.Services
                 {
                     exists = await _vods.ExistsAsync(group.Key);
                 }
-                catch (HttpRequestException ex)
+                catch (Exception ex) when (ex is HttpRequestException or System.Text.Json.JsonException
+                                               || (ex is TaskCanceledException && !cancellationToken.IsCancellationRequested))
                 {
+                    // Unknown (Twitch unreachable, timed out or answered oddly): look again next round; the other VODs are still checked
                     _logger.LogWarning("Couldn't check whether VOD {VodId} still exists: {Message}", group.Key, ex.Message);
                     continue;
                 }

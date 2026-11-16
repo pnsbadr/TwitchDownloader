@@ -236,9 +236,11 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
                     {
                         exists = await _vods.ExistsAsync(rescue.VodId);
                     }
-                    catch (HttpRequestException ex)
+                    catch (Exception ex) when (ex is HttpRequestException or System.Text.Json.JsonException
+                                                   || (ex is TaskCanceledException && !cancellationToken.IsCancellationRequested))
                     {
-                        // Unknown, so keep it and look again next time
+                        // Unknown (unreachable, timed out, odd answer), so keep it and look again next time. Before, a timeout escaped
+                        // the pass, the next check time wasn't saved, and the same VOD was retried every minute ahead of the others
                         _logger.LogWarning("Couldn't check whether VOD {VodId} still exists: {Message}", rescue.VodId, ex.Message);
                         exists = true;
                     }
