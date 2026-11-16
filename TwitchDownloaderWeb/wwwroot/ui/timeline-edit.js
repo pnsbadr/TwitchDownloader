@@ -547,8 +547,9 @@ export const editing = {
     if (!item) return;
     this.select(item);
     const t = this.xToTime(x, rect.width);
+    const unload = { icon: "eject", label: "Unload from Player 2", run: () => this.hooks.onUnload?.() };
     if (this.isVideoLayout()) {
-      openMenu(event.clientX, event.clientY, [...this.cutMenu(item, t), ...this.videoPartMenu(item)]);
+      openMenu(event.clientX, event.clientY, [...this.cutMenu(item, t), ...this.videoPartMenu(item), unload]);
       return;
     }
     const entries = this.mode === "item" ? this.cutMenu(item, t) : [];
@@ -559,7 +560,8 @@ export const editing = {
     if (this.mode === "vod" && (item.kind === "segment" || (item.kind === "clip" && item.data.kind === "Vod"))) {
       entries.push({ icon: "download-simple", label: "Add to the export list", run: () => this.hooks.onExport?.(item) });
     }
-    if (this.canDeleteItem(item)) entries.push({ icon: "trash", label: "Delete", danger: true, run: () => this.deleteItem(item) });
+    if (this.mode === "item") entries.push(unload);
+    else if (this.canDeleteItem(item)) entries.push({ icon: "trash", label: "Delete", danger: true, run: () => this.deleteItem(item) });
     if (!entries.length) entries.push({ icon: "eye", label: "View only", run: () => {} });
     openMenu(event.clientX, event.clientY, entries);
   },
@@ -1165,12 +1167,14 @@ export const editing = {
   },
 
   deleteSelected() {
-    const item = this.selectedItem();
-    if (!item) return;
-    if (this.isVideoLayout()) {
-      this.removeFromVideo(item);
+    // Player 2: Delete only unloads it (badrfly 2026-11-16: it used to delete the clip or segment for good). Deleting for real is on
+    // Player 1's timeline and the library cards.
+    if (this.mode === "item") {
+      this.hooks.onUnload?.();
       return;
     }
+    const item = this.selectedItem();
+    if (!item) return;
     if (!this.canDeleteItem(item)) {
       toast(`You can't delete this ${this.whatIs(item)}.`);
       return;
