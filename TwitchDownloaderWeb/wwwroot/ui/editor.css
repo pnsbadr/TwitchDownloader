@@ -140,8 +140,12 @@ button.team-pill:hover { background: var(--bg-4); }
   border-radius: var(--radius-small) var(--radius-small) 0 0;
   background: transparent;
   color: var(--text-dim);
-  font-size: 19px;
-  padding: 6px 4px 7px;
+  font-size: clamp(14px, 1.1vw, 19px);
+  padding: 6px 2px 7px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   cursor: pointer;
 }
 .side-tab:hover { color: var(--text); background: var(--bg-3); }
@@ -654,8 +658,27 @@ button.team-pill:hover { background: var(--bg-4); }
 .view-editor.vertical-mode #player1,
 .view-editor.vertical-mode #players > .gutter { display: none; }
 .view-editor.vertical-mode #player2 { width: 100% !important; flex: 1 1 auto; }
-#player2.vertical > .player-screen,
 #player2.vertical > .player-controls { display: none; }
+/* the 9:16 view draws Player 2's own video: it keeps playing, out of sight (display: none could stop it drawing) */
+#player2.vertical > .player-screen { position: absolute; width: 2px; height: 2px; overflow: hidden; opacity: 0; pointer-events: none; }
+#player2 { position: relative; }
+.vx2-source { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.vx2-readonly .vx2-box { cursor: default; }
+.vx2-readonly .vx2-handle { display: none; }
+
+/* ---------- Player 2 projects (ui/project-timeline.js) ---------- */
+
+.p2-black { position: absolute; inset: 0; background: #000; }
+.p2-black[hidden] { display: none; }
+.pt-scroll { flex: 1; height: 10px; margin: 0 12px; position: relative; border-radius: 999px; background: var(--bg-3); cursor: pointer; }
+.pt-scroll[hidden] { display: none; }
+.pt-scroll-thumb { position: absolute; top: 0; bottom: 0; border-radius: 999px; background: var(--line-strong); cursor: grab; min-width: 12px; }
+.pt-scroll-thumb:hover { background: var(--text-dim); }
+.pt-head { cursor: default; user-select: none; position: relative; }
+.pt-head.picked { box-shadow: inset 3px 0 var(--accent); background: rgb(139 124 246 / 0.1); }
+.pt-head.is-hidden .row-title { color: var(--text-dim); text-decoration: line-through; }
+.pt-head.dragging { z-index: 2; background: var(--bg-3); box-shadow: 0 4px 14px rgb(0 0 0 / 0.5); }
+.pt-grip { flex: none; color: var(--text-faint); cursor: grab; font-size: 14px; }
 
 .vx2 {
   flex: 1;

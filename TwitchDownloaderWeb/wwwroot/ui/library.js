@@ -1,8 +1,9 @@
-// The left panel (frontend rework step 2): VODS / VIDEOS / CLIPS lists with simple cards, a filter popover, a right-click
+// The left panel (frontend rework step 2): VODS / VIDEOS / CLIPS / PROJECTS lists with simple cards, a filter popover, a right-click
 // menu and the export icon. The same panel is used on the Editor and Export screens.
 //
 // VODs come only from the channels the app Owner assigned to the team (GET /api/channels, then /api/channels/{login}/vods).
-// Clips are the team's library entries (GET /api/entries); videos are segments linked on one row (GET /api/videos).
+// Clips are the team's library entries (GET /api/entries); videos are segments linked on one row (GET /api/videos); projects
+// are Player 2's multi-track timelines (GET /api/projects), opened in Player 2.
 
 import { $, el, api, me, can, formatDate, formatDuration, loadSetting, saveSetting, toast, iconButton, withTooltip, twitchThumb, thumbStyle } from "./core.js";
 import { draggable } from "./drag.js";
@@ -30,6 +31,9 @@ const state = {
   videos: [],
   videosLoaded: false,
   videosError: "",
+  projects: [],
+  projectsLoaded: false,
+  projectsError: "",
 };
 
 let handlers = { onLoad: () => {}, onExport: () => {} };
@@ -57,6 +61,7 @@ function showSample(sample) {
   state.clipsLoaded = true;
   state.videos = sample.videos;
   state.videosLoaded = true;
+  state.projectsLoaded = true;
   renderChannelPicker();
   render();
 }
@@ -68,6 +73,7 @@ export function showList(list) {
   render();
   if (list === "clips" && !state.clipsLoaded) loadClips();
   if (list === "videos" && !state.videosLoaded) loadVideos();
+  if (list === "projects") loadProjects();
 }
 
 // ---------- loading ----------
@@ -187,6 +193,25 @@ export function refreshClips() {
   return loadClips();
 }
 
+// The team's projects, yours first, then newest first
+async function loadProjects() {
+  try {
+    const projects = await api("GET", "/api/projects?limit=200");
+    state.projects = [...projects].sort((a, b) => Number(b.userId === me?.id) - Number(a.userId === me?.id)
+      || String(b.updatedAtUtc).localeCompare(String(a.updatedAtUtc)));
+    state.projectsError = "";
+  } catch (error) {
+    state.projectsError = error.message;
+  }
+  state.projectsLoaded = true;
+  if (state.list === "projects") render();
+}
+
+export function refreshProjectCards() {
+  if (state.projectsLoaded || state.list === "projects") return loadProjects();
+  return null;
+}
+
 // ---------- rendering ----------
 
 const EMPTY = {
@@ -195,6 +220,9 @@ const EMPTY = {
     : "Your team has no channels yet. The app owner assigns them."),
   videos: () => state.videosError || (state.videosLoaded ? "No videos yet. Link segments on a VOD's timeline to make one." : "Loading videos…"),
   clips: () => state.clipsError || (state.clipsLoaded ? (filtersOn() ? "No clips match the filter." : "No clips yet.") : "Loading clips…"),
+  projects: () => state.projectsError || (state.projectsLoaded
+    ? "No projects yet. Drag clips, segments or videos onto Player 2 to start one."
+    : "Loading projects…"),
 };
 
 function visibleItems() {
@@ -202,12 +230,13 @@ function visibleItems() {
     const search = state.vodSearch.toLowerCase();
     return search ? state.vods.filter((v) => v.title.toLowerCase().includes(search)) : state.vods;
   }
+  if (state.list === "projects") return state.projects;
   return state.list === "clips" ? state.clips : state.videos;
 }
 
 function render() {
   const items = visibleItems();
-  const noun = { vods: "VOD", videos: "video", clips: "clip" }[state.list];
+  const noun = { vods: "VOD", videos: "video", clips: "clip", projects: "project" }[state.list];
   const more = state.list === "vods" && state.vodCursor ? "+" : "";
   $("side-count").textContent = items.length ? `${items.length}${more} ${noun}${items.length === 1 && !more ? "" : "s"}` : "";
   $("side-filter").toggleAttribute("data-active", filtersOn());
@@ -215,7 +244,8 @@ function render() {
     $("side-list").replaceChildren(el("p", { class: "side-empty" }, EMPTY[state.list]()));
     return;
   }
-  const cards = items.map((item) => (state.list === "vods" ? vodCard(item) : state.list === "clips" ? clipCard(item) : videoCard(item)));
+  const cards = items.map((item) => (state.list === "vods" ? vodCard(item) : state.list === "clips" ? clipCard(item)
+    : state.list === "projects" ? projectCard(item) : videoCard(item)));
   if (state.list === "vods" && state.vodsLoading) cards.push(el("p", { class: "side-empty" }, "Loading more…"));
   $("side-list").replaceChildren(...cards);
 }
@@ -440,6 +470,70 @@ export async function deleteVideo(video) {
   }
 }
 
+// --- projects: Player 2's multi-track timelines (length, pieces, who made it). Double-click opens it in Player 2. ---
+
+function projectCard(project) {
+  const item = project;
+  return card({
+    kind: "project",
+    title: project.title,
+    thumb: [],
+    badges: [el("span", { class: "card-badge num" }, formatDuration(Math.round(project.lengthSeconds ?? 0)))],
+    meta: [
+      `${project.pieceCount} piece${project.pieceCount === 1 ? "" : "s"} · ${project.vodIds?.length ?? 0} VOD${project.vodIds?.length === 1 ? "" : "s"}`,
+      project.createdBy ? `by ${project.createdBy}${project.userId === me?.id ? " (you)" : ""}` : null,
+      `changed ${formatDate(project.updatedAtUtc)}`,
+    ],
+    actions: [],
+    dragData: item,
+    menu: () => [
+      { label: "Open in Player 2", icon: "film-strip", run: () => handlers.onLoad({ kind: "project", data: item }) },
+      can("AddEntries") && !me?.support && { label: project.canEdit ? "Duplicate" : "Make my own copy", icon: "copy", run: () => copyProject(item) },
+      project.canEdit && { label: "Rename", icon: "pencil-simple", run: () => renameProject(item) },
+      project.canDelete && { label: "Delete", icon: "trash", danger: true, run: () => deleteProject(item) },
+    ].filter(Boolean),
+  });
+}
+
+async function copyProject(project) {
+  try {
+    const copy = await api("POST", `/api/projects/${project.id}/copy`, {});
+    toast(`Made "${copy.title}".`);
+    await loadProjects();
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+async function renameProject(project) {
+  const title = await askText({ heading: "Rename project", label: "Title", value: project.title, confirm: "Rename", maxLength: 200 });
+  if (title === null || !title.trim() || title.trim() === project.title) return;
+  try {
+    await api("PUT", `/api/projects/${project.id}`, { title: title.trim() });
+    await loadProjects();
+    handlers.onProjectChanged?.(project.id);
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+async function deleteProject(project) {
+  const ok = await confirmAction({
+    heading: "Delete project?",
+    text: `"${project.title}" is deleted for the whole team. The clips, segments and videos in it stay as they are.`,
+    confirm: "Delete",
+  });
+  if (!ok) return;
+  try {
+    await api("DELETE", `/api/projects/${project.id}`);
+    toast(`Deleted "${project.title}".`);
+    await loadProjects();
+    handlers.onProjectChanged?.(project.id, { deleted: true });
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
 // ---------- filter popover ----------
 
 function filtersOn() {
@@ -519,7 +613,7 @@ function setUpFilter() {
 function renderFilter() {
   const vods = state.list === "vods";
   const clips = state.list === "clips";
-  $("side-filter").disabled = state.list === "videos";
+  $("side-filter").disabled = state.list === "videos" || state.list === "projects";
   $("filter-search").value = vods ? state.vodSearch : state.clipFilter.search;
   $("filter-search").placeholder = vods ? "Search loaded VODs" : "Search titles";
   $("filter-type-row").hidden = !vods;

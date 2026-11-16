@@ -1,7 +1,7 @@
 // The timeline under the players (frontend rework steps 3 and 4). There are two, one per player, sharing the same panel
 // (the Player 1 / Player 2 tabs show one at a time). Player 1's (mode "vod"): every member's rows on the loaded VOD, from
-// GET /api/vods/{id}/timeline. Player 2's (mode "item") is SourceTimeline (ui/source-timeline.js): one clip, segment or
-// video as the source of saved edits, in its own time from 0:00. A row belongs to one member and one VOD: video rows hold segments (hatched boxes) and
+// GET /api/vods/{id}/timeline. Player 2 has its own multi-track project timeline
+// (ProjectTimeline, ui/project-timeline.js); the "item" mode code paths here are left from the old saved-edits timeline. A row belongs to one member and one VOD: video rows hold segments (hatched boxes) and
 // moment markers (lines), clip rows hold clips (solid bars). Everyone can see and play every row; only the owner edits
 // it (editing comes in step 3b). Hide / solo / lock are page-only, per row.
 //
@@ -292,14 +292,6 @@ export class Timeline {
           ? "No rows on this VOD yet."
           : "Load a VOD in Player 1 to see the team's rows.";
     }
-    const layoutHead = this.hasLayoutRow()
-      ? el("div", { class: "row-head layout-head", style: `height:${ROW_HEIGHT}px` },
-        el("span", { class: "row-check-gap" }),
-        el("div", { class: "row-name" },
-          el("sl-icon", { library: "ph", name: "device-mobile", class: "row-kind" }),
-          el("span", { class: "row-title" }, "Layout"),
-          el("span", { class: "row-owner" }, "vertical")))
-      : null;
     heads.replaceChildren(...this.rows.map((row, index) => {
       const state = this.stateOf(row);
       const isClip = /clip/i.test(row.kind);
@@ -334,7 +326,6 @@ export class Timeline {
           item ? null : toggle("solo", "Solo (only this row)", "headphones", "headphones"),
           row.canEdit ? toggle("locked", state.locked ? "Unlock row" : "Lock row", "lock-simple-open", "lock-simple") : null));
     }));
-    if (layoutHead) heads.append(layoutHead);
     this.dirty = true;
   }
 
@@ -481,7 +472,6 @@ export class Timeline {
       canvas.addEventListener("pointercancel", () => {
         this.press = null;
         this.preview = null;
-        this.layoutDrag = null;
         this.snapAt = null;
         this.edgeTip = null;
         this.dirty = true;
@@ -581,13 +571,6 @@ export class Timeline {
     const t = this.xToTime(hover.x, hover.width);
     const item = hover.canvas === this.track ? this.itemAt(hover.x, hover.y, hover.width) : null;
     const lines = [formatDuration(Math.max(0, t), { short: false })];
-    const part = hover.canvas === this.track ? this.layoutPartAt(hover.x, hover.y, hover.width) : null;
-    if (part) {
-      lines.push(`Part ${part.number} · ${part.removed ? "left out of the render" : part.label}`);
-      if (part.keys?.length) lines.push(`${part.keys.length} keyframe${part.keys.length === 1 ? "" : "s"} (moving boxes) · click a diamond to go to it · F adds or removes one`);
-      lines.push("Drag a split line to move it · drag a part to slide it");
-      lines.push("S splits at the playhead · Delete leaves a part out · J joins");
-    }
     if (item) {
       const range = item.end != null ? `${formatDuration(item.start, { short: false })} – ${formatDuration(item.end, { short: false })}` : `at ${formatDuration(item.start, { short: false })}`;
       lines.push(`${item.title || { clip: "Clip", segment: "Segment", moment: "Marker" }[item.kind]} · ${range}`);
@@ -676,7 +659,7 @@ export class Timeline {
   }
 
   drawTrack(now) {
-    const rowCount = this.rows.length + (this.hasLayoutRow() ? 1 : 0);
+    const rowCount = this.rows.length;
     const height = Math.max(rowCount * ROW_HEIGHT, $("tl-track").clientHeight);
     const { ctx, width } = this.prepare(this.track, rowCount * ROW_HEIGHT || 1);
     if (!this.vodId) return;
@@ -701,12 +684,6 @@ export class Timeline {
       }
       ctx.globalAlpha = 1;
     });
-    if (this.hasLayoutRow()) {
-      const y = this.rows.length * ROW_HEIGHT;
-      ctx.fillStyle = css.getPropertyValue("--line");
-      ctx.fillRect(0, y + ROW_HEIGHT - 1, width, 1);
-      this.drawVerticalParts(ctx, width, y);
-    }
     this.drawOverlay?.(ctx, width);
     this.drawPending(ctx, width, now);
     if (this.cutDrag) this.drawCutDrag(ctx, width);
@@ -737,119 +714,6 @@ export class Timeline {
       ctx.restore();
     }
     this.drawPlayhead(ctx, width, height, now, false);
-  }
-
-  // The vertical editor's parts (VOD seconds), drawn on the clip in Player 2's row: a white line at each split, a label per part
-  // ("2 · Two boxes"), the part under the playhead brighter with a white bar, parts left out dark and hatched, and outside
-  // the render's trim darker
-  setVerticalParts(info) {
-    const had = this.hasLayoutRow();
-    this.verticalParts = info;
-    if (had !== this.hasLayoutRow()) this.renderHeads();
-    this.dirty = true;
-  }
-
-  // Player 2 with the vertical editor open: a "Layout" row under the clip with the editor's parts
-  hasLayoutRow() {
-    return Boolean(this.verticalParts && this.mode === "item" && this.rows.length);
-  }
-
-  // The vertical part under x in the layout row, or null
-  layoutPartAt(x, y, width) {
-    if (!this.hasLayoutRow() || Math.floor(y / ROW_HEIGHT) !== this.rows.length) return null;
-    const t = this.xToTime(x, width);
-    const index = this.verticalParts.parts.findIndex((part) => t >= part.start && t < part.end);
-    return index < 0 ? null : { ...this.verticalParts.parts[index], number: index + 1 };
-  }
-
-  drawVerticalParts(ctx, width, y) {
-    const { trim } = this.verticalParts;
-    // While a split line is dragged, the parts are drawn where they'd end up
-    const edges = this.layoutDrag?.edges;
-    const parts = edges
-      ? this.verticalParts.parts.map((part, i) => ({ ...part, start: edges[i], end: edges[i + 1] }))
-      : this.verticalParts.parts;
-    ctx.fillStyle = "rgb(139 124 246 / 0.06)";
-    ctx.fillRect(0, y, width, ROW_HEIGHT - 1);
-    const top = y + 6;
-    const h = ROW_HEIGHT - 12;
-    const x = (t) => this.timeToX(t, width);
-    const now = this.getPosition();
-    ctx.save();
-    parts.forEach((part, i) => {
-      const x1 = x(part.start);
-      const x2 = x(part.end);
-      if (x2 < 0 || x1 > width) return;
-      const w = Math.max(1, x2 - x1);
-      if (part.removed) {
-        ctx.fillStyle = "rgb(16 17 20 / 0.78)";
-        ctx.fillRect(x1, top, w, h);
-        ctx.fillStyle = hatch(ctx, "#6b6f78");
-        ctx.fillRect(x1, top, w, h);
-      } else {
-        ctx.fillStyle = i % 2 ? "rgb(96 165 250 / 0.55)" : "rgb(56 130 230 / 0.55)";
-        ctx.fillRect(x1, top, w, h);
-      }
-      if (part.current) {
-        ctx.fillStyle = "rgb(255 255 255 / 0.14)";
-        ctx.fillRect(x1, top, w, h);
-        ctx.fillStyle = "#fff";
-        ctx.fillRect(x1, top + h - 3, w, 3);
-      }
-      if (i > 0) {
-        // the split: a white line over the whole row with a small notch on top
-        ctx.fillStyle = "#fff";
-        ctx.fillRect(Math.round(x1) - 1, y + 1, 2, ROW_HEIGHT - 2);
-        ctx.beginPath();
-        ctx.moveTo(x1 - 5, y);
-        ctx.lineTo(x1 + 5, y);
-        ctx.lineTo(x1, y + 6);
-        ctx.closePath();
-        ctx.fill();
-      }
-      // keyframes of moving boxes: small diamonds along the bottom, the one at the playhead filled
-      for (const key of part.keys ?? []) {
-        const kx = x(key);
-        if (kx < -6 || kx > width + 6) continue;
-        const on = now != null && Math.abs(now - key) < 0.06;
-        ctx.beginPath();
-        ctx.moveTo(kx, top + h - 11);
-        ctx.lineTo(kx + 5, top + h - 6);
-        ctx.lineTo(kx, top + h - 1);
-        ctx.lineTo(kx - 5, top + h - 6);
-        ctx.closePath();
-        ctx.fillStyle = on ? "#fff" : "#1b1d22";
-        ctx.fill();
-        ctx.strokeStyle = "#fff";
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-      }
-      const text = `${i + 1} · ${part.removed ? "Left out" : part.label}`;
-      ctx.font = "600 11px Barlow, system-ui, sans-serif";
-      const room = w - 10;
-      if (room < 14) return;
-      const shown = ctx.measureText(text).width <= room ? text : String(i + 1);
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(x1 + 4, top, room, h);
-      ctx.clip();
-      ctx.fillStyle = part.removed ? "#b8bcc6" : "#fff";
-      ctx.textBaseline = "middle";
-      ctx.shadowColor = "rgb(0 0 0 / 0.9)";
-      ctx.shadowBlur = 3;
-      ctx.fillText(shown, Math.max(x1, 0) + 6, top + h / 2 - 1);
-      ctx.restore();
-    });
-    if (trim && parts.length) {
-      ctx.fillStyle = "rgb(0 0 0 / 0.55)";
-      const start = x(parts[0].start);
-      const end = x(parts[parts.length - 1].end);
-      const t1 = x(trim.start);
-      const t2 = x(trim.end);
-      if (t1 > start + 0.5) ctx.fillRect(start, top, t1 - start, h);
-      if (t2 < end - 0.5) ctx.fillRect(t2, top, end - t2, h);
-    }
-    ctx.restore();
   }
 
   // White outline around the selected item, with grips on edges that can be dragged

@@ -5,15 +5,18 @@
 import { registerIconLibrary } from "https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.20.1/cdn/utilities/icon-library.js";
 import { $, el, api, me, can, loadMe, sessionHandlers, TEAM_PAGE_PERMISSIONS, wireIconButtons, loadSetting, saveSetting, toast, formatDuration } from "./core.js";
 import { dropTarget } from "./drag.js";
-import { setUpLibrary, showList, refreshClips, refreshVideos } from "./library.js";
+import { setUpLibrary, showList, refreshClips, refreshVideos, refreshProjectCards } from "./library.js";
 import { MARKER_COLORS } from "./colors.js";
 import { MediaPlayer, formatClock } from "./media.js";
 import { Timeline } from "./timeline.js";
-import { SourceTimeline, ago } from "./source-timeline.js";
-import { skipCut, keptSeconds, normalizeCuts } from "./cuts.js";
+import { skipCut, keptSeconds } from "./cuts.js";
+import { askText, confirmAction } from "./dialogs.js";
+import { ProjectStore, piecesFromItem } from "./project.js";
+import { ProjectTimeline } from "./project-timeline.js";
+import { ProjectPlayback } from "./project-playback.js";
 import { setUpExport, addToExport, exportShown, pausePreview } from "./export.js";
 import { showShortcuts } from "./shortcuts.js";
-import { setUpVertical, openVertical, setVerticalEdit, closeVertical, verticalOpen, verticalEntryId, pauseVertical, verticalEntryChanged, handleVerticalKey, verticalTime, verticalSeek, setVerticalPartStarts, verticalUndo, verticalRedo, verticalUndoSeqs, refreshVerticalUndo } from "./vertical.js";
+import { setUpProjectVertical, openProjectVertical, closeProjectVertical, projectVerticalOpen, refreshProjectVertical, handleProjectVerticalKey, pauseProjectVertical } from "./project-vertical.js";
 
 // Phosphor icons, bold weight, as <sl-icon library="ph" name="…">
 registerIconLibrary("ph", {
@@ -132,7 +135,8 @@ function showScreen(view) {
   // Only one player plays at a time: the screen left behind is paused
   if (view === "export") {
     for (const player of [player1, player2]) if (player?.ready && player.playing()) player.pause();
-    pauseVertical();
+    playback?.pause();
+    pauseProjectVertical();
     exportShown();
   } else {
     pausePreview();
@@ -187,52 +191,27 @@ function exportFromTimeline(item) {
   }, { quiet: false });
 }
 
-// Player 2's edit menu "Add to the export list": the edit shown (saved first), exported as it is now, Player 1 untouched
-async function exportEdit() {
-  const t = timeline2;
-  await t.saveNow();
-  const edit = t.edit;
-  if (!edit || edit.original) return;
-  if (edit.id == null) {
-    toast(`"${t.editName(edit)}" isn't saved yet, so it can't be exported. Try again in a moment.`, "error");
-    return;
-  }
-  try {
-    const data = await api("GET", `/api/edits/${edit.id}`);
-    const source = t.source ?? {};
-    const vod = p1Vod && String(p1Vod.vodId) === String(data.vodId) ? p1Vod : null;
-    addToExport({
-      kind: "edit",
-      data: {
-        edit: data, itemTitle: source.title || p2Item?.title || "", editName: t.editName(edit),
-        thumbnailUrl: source.data?.thumbnailUrl ?? vod?.thumbnailUrl ?? null, frameUrl: source.data?.frameUrl ?? null,
-        vodDate: source.data?.streamDateUtc ?? vod?.createdAtUtc ?? null, reference: Boolean(source.parts?.[0]?.reference),
-      },
-    }, { quiet: false });
-  } catch (error) {
-    toast(`Couldn't add the edit: ${error.message}`, "error");
-  }
-}
-
 // ---------- players ----------
 //
-// Player 1 plays VODs with every member's rows on its timeline. Player 2 plays one segment, clip or video as a SOURCE
-// (ui/source-timeline.js): its timeline runs from 0:00 to the item's length (a video: its segments end to end), and what's
-// done there is a saved edit of it that doesn't change Player 1 until it's applied. Player 2's position is mapped between
-// VOD seconds and source time (p2Position). A change to an item on one is read again by the other. The keys and the tools
-// bar work on the player whose timeline tab is open; clicking a player that has something loaded opens its tab.
+// Player 1 plays VODs with every member's rows on its timeline: the overview where things are marked. Player 2 is the editor:
+// it plays the open PROJECT (ui/project.js), a multi-track timeline from 0:00 made of pieces of VODs (copies of clips,
+// segments and videos dropped on it). Player 2's position is project time (ui/project-playback.js maps it to a VOD and a
+// second). 9:16 (E) is a view of the same project (ui/project-vertical.js). The keys and the tools bar work on the player whose
+// timeline tab is open; clicking a player that has something loaded opens its tab.
 
-const PLAYER_KINDS = { p1: ["vod"], p2: ["video", "clip", "segment"] };
+const PLAYER_KINDS = { p1: ["vod"], p2: ["video", "clip", "segment", "project"] };
 const FRAME_SECONDS = 1 / 30;
+const LAST_PROJECT_KEY = "clipco.p2.project";
 
 let player1 = null;
 let player2 = null;
 let timeline = null;   // Player 1's
-let timeline2 = null;  // Player 2's
+let timeline2 = null;  // Player 2's (ProjectTimeline)
+let store = null;      // the project open in Player 2
+let playback = null;
 let p1Vod = null;
-let p2Item = null;     // { type: "marker" | "clip" | "video", id, vodId, kind: "segment" | "clip" | "video", title }
-let p2Part = 0;        // a video: the index of the part playing
 let activePlayer = "p1";
+let p2Opened = 0;      // which open the project picker is on (ignores late answers)
 
 function pair(which = activePlayer) {
   return which === "p2" ? { player: player2, timeline: timeline2 } : { player: player1, timeline };
@@ -249,7 +228,11 @@ function load(item) {
     timelineTabs.pick("p1");
     return;
   }
-  openInPlayer2(item);
+  if (item.kind === "project") {
+    openProject(item.data.id);
+    return;
+  }
+  addToProject(item);
 }
 
 async function openVod(vod, { start = 0, paused = false } = {}) {
@@ -283,68 +266,6 @@ function playerNotes(player) {
   return notes.join(" ");
 }
 
-// Player 2: a segment, clip or video. show = open the Player 2 timeline tab (not for new items made on Player 1's timeline,
-// so marking can go on there); editId = the saved edit to show (else the one last open for the item, else Original)
-async function openInPlayer2({ kind, data }, { show = true, editId } = {}) {
-  if (DEMO) {
-    toast("Playback isn't available in the demo.");
-    return;
-  }
-  const vodId = data.vodId != null ? String(data.vodId) : "";
-  if (!vodId || vodId === "0") {
-    toast("Twitch didn't say which VOD this clip is from, so it can't play here.", "error");
-    return;
-  }
-  const type = { clip: "clip", video: "video" }[kind] ?? "marker";
-  const firstPart = kind === "video" ? [...(data.segments ?? [])].sort((a, b) => a.position - b.position)[0] : null;
-  const start = kind === "clip" ? (data.startSeconds ?? data.start ?? 0) : kind === "video" ? (firstPart?.startSeconds ?? 0) : data.seconds;
-  p2Part = 0;
-  p2StopAt = null;
-  const target = { type, id: data.id, vodId, kind, title: data.title ?? data.label ?? "" };
-  if (verticalOpen() && !(type === "clip" && verticalEntryId() === data.id)) toggleVertical(false);
-  p2Item = target;
-  $("p2-hint").hidden = true;
-  $("p2-media").hidden = false;
-  renderP2Info();
-  if (show) timelineTabs.pick("p2");
-  showNote("p2", "Loading…");
-  const lengthSeconds = data.vodLengthSeconds || (p1Vod && String(p1Vod.vodId) === vodId ? p1Vod.lengthSeconds : 0);
-  const loaded = timeline2.openItem({ type, id: data.id, vodId, lengthSeconds, editId: editId ?? data.editId });
-  try {
-    if (player2.ready && player2.vodId === vodId) {
-      player2.pause();
-      player2.seek(start);
-    } else {
-      await player2.open(vodId, start);
-      player2.pause();
-    }
-    if (p2Item !== target) return;
-    showNote("p2", playerNotes(player2), 8000);
-  } catch (error) {
-    if (p2Item !== target) return;
-    showNote("p2", `Couldn't play this ${kind}: ${error.message}`);
-  }
-  await loaded;
-  // Start where the edit on show starts
-  if (p2Item === target && player2.ready && !player2.playing() && !verticalOpen()) p2Seek(timeline2.keptRange().start);
-  renderPlayer2();
-}
-
-function closePlayer2(message) {
-  toggleVertical(false);
-  const kind = p2Item?.kind;
-  p2Item = null;
-  player2.close();
-  timeline2.close();
-  $("p2-media").hidden = true;
-  $("p2-hint").hidden = false;
-  showNote("p2", "");
-  renderP2Info();
-  renderPlayer2();
-  if (activePlayer === "p2") renderTools();
-  if (message !== undefined) toast(message ?? `The ${kind ?? "item"} in Player 2 was deleted.`);
-}
-
 const noteTimers = {};
 function showNote(which, text, hideAfter = 0) {
   clearTimeout(noteTimers[which]);
@@ -354,136 +275,113 @@ function showNote(which, text, hideAfter = 0) {
   if (text && hideAfter) noteTimers[which] = setTimeout(() => { note.hidden = true; }, hideAfter);
 }
 
-// ---------- Player 2 in source time (saved edits) ----------
-//
-// Player 2's timeline is in source time: seconds into its item (a video: its segments end to end). sourceParts() says where
-// each part is in the VOD; p2Part is the one playing. Playing skips what the edit on show leaves out and stops at its end.
+// ---------- Player 2: projects ----------
 
-let p2StopAt = null;   // source time Player 2 stops at (Shift+Space), else the edit's end
-
-function p2Parts() {
-  return timeline2?.sourceParts() ?? [];
-}
-
-function partLength(part) {
-  return part.vodEnd - part.vodStart;
-}
-
-// Player 2's position on its timeline (source time)
-function p2Position() {
-  if (verticalOpen()) {
-    const t = verticalTime();
-    return t == null ? null : fileToSource(t);
+async function openProject(id, { show = true, quiet = false } = {}) {
+  if (DEMO) {
+    toast("Projects aren't available in the demo.");
+    return false;
   }
-  if (!player2.ready) return null;
-  const position = player2.position();
-  const parts = p2Parts();
-  if (position == null || !parts.length) return null;
-  const inPart = (part) => position >= part.vodStart - 0.05 && position <= part.vodEnd + 0.05;
-  if (!parts[p2Part] || !inPart(parts[p2Part])) {
-    const found = parts.findIndex(inPart);
-    if (found >= 0) p2Part = found;
+  const opened = ++p2Opened;
+  try {
+    await store.openProject(id);
+  } catch (error) {
+    if (!quiet) toast(`Couldn't open the project: ${error.message}`, "error");
+    if (error.status === 404) saveSetting(LAST_PROJECT_KEY, null);
+    return false;
   }
-  const part = parts[Math.min(p2Part, parts.length - 1)];
-  return part.offset + Math.min(Math.max(position - part.vodStart, 0), partLength(part));
-}
-
-function p2Seek(seconds) {
-  if (verticalOpen()) {
-    const t = sourceToFile(seconds);
-    if (t != null) verticalSeek(t);
-    return;
-  }
-  const parts = p2Parts();
-  if (!parts.length) return;
-  let index = parts.findIndex((part) => seconds < part.offset + partLength(part));
-  if (index < 0) index = parts.length - 1;
-  p2Part = index;
-  const part = parts[index];
-  player2.seek(part.vodStart + Math.min(Math.max(seconds - part.offset, 0), partLength(part)));
-}
-
-// The vertical editor plays the clip's file. Files made since saved edits keep the whole clip, so seconds into the file are
-// source time; an older file was made without the clip's cut-out parts (fileHasCuts), so its seconds skip those.
-function fileCuts() {
-  const item = timeline2.focusItem();
-  return item?.data?.fileHasCuts ? normalizeCuts(item.data.cuts ?? [], item.vodStart, item.vodEnd)
-    .map((c) => ({ start: c.start - item.vodStart, end: c.end - item.vodStart })) : [];
-}
-
-function fileToSource(t) {
-  let at = t;
-  for (const cut of fileCuts()) {
-    if (at >= cut.start) at += cut.end - cut.start;
-  }
-  return Math.min(at, timeline2.length());
-}
-
-function sourceToFile(seconds) {
-  let t = seconds;
-  for (const cut of [...fileCuts()].reverse()) {
-    if (seconds >= cut.end) t -= cut.end - cut.start;
-    else if (seconds > cut.start) t -= seconds - cut.start;
-  }
-  return Math.max(0, t);
-}
-
-// Cut-out parts are skipped while playing: jumps over the one at position (or stops when it runs to end). true = jumped.
-function jumpCuts(player, cuts, position, end) {
-  const to = skipCut(cuts, position, end);
-  if (to == null) return false;
-  if (to === "end") {
-    player.stopAt = null;
-    player.pause();
-  } else {
-    player.seek(to);
-  }
+  if (opened !== p2Opened) return false;
+  projectOpened();
+  if (show) timelineTabs.pick("p2");
   return true;
 }
 
-// Player 1 skips the cut-out parts of the selected segment or clip while it plays just that
-function p1Tick(position) {
-  if (!player1.playing() || player1.stopAt == null) return;
-  const item = timeline.selectedItem();
-  if (item?.cuts?.length) jumpCuts(player1, item.cuts, position, player1.stopAt);
+async function newProject({ title = null, show = true } = {}) {
+  if (DEMO || me?.support || !can("AddEntries")) {
+    toast(me?.support ? "Support view is read-only." : "Your role can't make projects.", "error");
+    return false;
+  }
+  try {
+    await store.create({ title });
+  } catch (error) {
+    toast(`Couldn't make a project: ${error.message}`, "error");
+    return false;
+  }
+  p2Opened++;
+  projectOpened();
+  refreshProjects();
+  if (show) timelineTabs.pick("p2");
+  return true;
 }
 
-// Player 2 plays what its edit keeps: it jumps over left-out parts, from the end of one part of a video to the next, and
-// stops at the edit's end (or where Shift+Space said)
-function p2Tick() {
-  if (!player2.playing() || verticalOpen()) return;
-  const parts = p2Parts();
-  const part = parts[p2Part];
-  const now = p2Position();
-  if (!part || now == null) return;
-  const kept = timeline2.keptRange();
-  const stop = Math.min(p2StopAt ?? kept.end, kept.end);
-  if (now >= stop - 0.04) {
-    p2StopAt = null;
-    player2.pause();
+function projectOpened() {
+  saveSetting(LAST_PROJECT_KEY, store.project.id);
+  playback.stop();
+  playback.seek(0, { quiet: true });
+  timeline2.refresh({ reset: true });
+  $("p2-hint").hidden = true;
+  $("p2-media").hidden = false;
+  if (projectVerticalOpen()) refreshProjectVertical();
+  renderPlayer2();
+  renderTools();
+}
+
+async function closeProject() {
+  toggleVertical(false);
+  playback.stop();
+  player2.close();
+  await store.close();
+  saveSetting(LAST_PROJECT_KEY, null);
+  timeline2.refresh({ reset: true });
+  $("p2-media").hidden = true;
+  $("p2-hint").hidden = false;
+  showNote("p2", "");
+  renderPlayer2();
+  renderTools();
+}
+
+// A card, Player 1 item or new item goes into the open project (a new one when none is open, or it can't be changed)
+async function addToProject(item, { show = true } = {}) {
+  const pieces = piecesFromItem(item);
+  if (!pieces?.length) {
+    toast(item.kind === "clip" ? "Twitch didn't say which VOD this clip is from, so it can't go in a project." : "That can't go in a project.", "error");
     return;
   }
-  const cut = timeline2.removedRanges().find((r) => now >= r.start && now < r.end - 0.04);
-  if (cut) {
-    if (cut.end >= stop - 0.05) {
-      p2StopAt = null;
-      player2.pause();
-    } else {
-      p2Seek(cut.end);
-    }
+  if (!store.open || !store.canEdit) {
+    if (!(await newProject({ show }))) return;
+  }
+  if (!timeline2.addItemAtPlayhead(pieces)) {
+    toast("It doesn't fit there. Pick an empty row or make one (+ Row).", "error");
     return;
   }
-  if (player2.position() >= part.vodEnd - 0.04 && p2Part + 1 < parts.length) p2Seek(parts[p2Part + 1].offset);
+  if (show) timelineTabs.pick("p2");
+}
+
+// Store changes: the timeline, the preview and the buttons follow
+function onProjectChanged() {
+  timeline2?.refresh();
+  playback?.refresh();
+  if (projectVerticalOpen()) refreshProjectVertical();
+  renderPlayer2();
+  if (activePlayer === "p2") renderTools();
+}
+
+function p2Position() {
+  return store?.open ? playback.time() : null;
+}
+
+function p2Seek(seconds) {
+  if (!store.open) return;
+  playback.seek(seconds);
+  timeline2.dirty = true;
 }
 
 // Play / pause / volume / fullscreen buttons of player n (1 or 2)
-function renderPlayerButtons(n, player) {
-  const ready = player.ready;
+function renderPlayerButtons(n, player, { ready = player.ready, playing = player.playing() } = {}) {
   for (const id of ["play", "back", "fwd", "full"]) $(`p${n}-${id}`).disabled = !ready;
-  const app = ready && player.kind === "app";
+  const app = player.ready && player.kind === "app";
   $(`p${n}-mute`).disabled = !app;
   $(`p${n}-volume`).disabled = !app;
-  const playing = player.playing();
   $(`p${n}-play`).name = playing ? "pause" : "play";
   $(`p${n}-play`).label = playing ? "Pause" : "Play";
   const volume = player.volume;
@@ -501,141 +399,158 @@ function renderPlayer1() {
 }
 
 function renderPlayer2() {
-  renderPlayerButtons(2, player2);
-  // The vertical editor works on a clip's file
-  $("p2-vertical").hidden = p2Item?.kind !== "clip";
-  $("p2-vertical").disabled = p2Item?.kind !== "clip" || DEMO;
-  const source = p2Item ? timeline2.source : null;
-  $("p2-show").disabled = !source;
-  // Rename = the item itself (its title on Player 1 and the cards); edits are renamed in the edit picker
-  $("p2-rename").disabled = !source || Boolean(me?.support) || !source.canEdit;
-  $("p2-apply").hidden = !source;
-  $("p2-apply").disabled = !timeline2.canApply();
-  $("p2-delete").disabled = !p2Item;
-  renderEditPicker();
+  if (!store) return;
+  const open = store.open;
+  const hasPieces = open && store.content.pieces.length > 0;
+  renderPlayerButtons(2, player2, { ready: hasPieces, playing: playback.playing() });
+  $("p2-vertical").hidden = false;
+  $("p2-vertical").disabled = !open || DEMO;
+  $("p2-show").disabled = !hasPieces;
+  $("p2-rename").disabled = !open || !store.canEdit;
+  $("p2-delete").disabled = !open;
+  $("p2-export").disabled = !hasPieces || DEMO;
+  renderProjectPicker();
+  renderP2Info();
 }
 
-// Top right of Player 2: type, length (what the edit on show keeps) and title
+// Top right of Player 2: the playhead, the project's length and how many pieces
 function renderP2Info() {
   const info = $("p2-info");
-  if (!p2Item) {
+  if (!store?.open) {
     info.replaceChildren();
     return;
   }
-  const focus = timeline2.focusInfo();
-  const kind = { clip: "Clip", video: "Video" }[p2Item.kind] ?? "Segment";
-  const title = (focus ? focus.title : p2Item.title) || `Untitled ${kind.toLowerCase()}`;
-  const length = focus?.length ?? null;
-  info.replaceChildren(...[
-    el("span", { class: "p2-kind" }, kind),
-    length != null ? el("span", { class: "p2-length num" }, formatDuration(Math.round(length))) : null,
-    el("span", { class: "p2-title", title }, title),
-  ].filter(Boolean));
+  const length = store.content.pieces.length ? Math.max(...store.content.pieces.map((p) => p.at + p.end - p.start)) : 0;
+  const now = playback.time();
+  info.replaceChildren(
+    el("span", { class: "p2-length num" }, `${shortClock(now)} / ${shortClock(length)}`),
+    el("span", { class: "p2-kind" }, `${store.content.pieces.length} piece${store.content.pieces.length === 1 ? "" : "s"} · ${store.content.tracks.length} row${store.content.tracks.length === 1 ? "" : "s"}`));
 }
 
-// The item or the edit on show changed
-function onP2FocusChanged(info) {
-  if (!p2Item || !info) return;
-  verticalEntryChanged();
-  if (verticalOpen()) setVerticalEdit(verticalEdit());
-  p2Item.title = info.title;
-  renderP2Info();
-  renderPlayer2();
+// "1:05.20" (hours only when there are any)
+function shortClock(seconds) {
+  const hundredths = Math.max(0, Math.floor(seconds * 100));
+  return `${formatDuration(Math.floor(hundredths / 100))}.${String(hundredths % 100).padStart(2, "0")}`;
 }
 
-// ---------- Player 2's edit picker (saved edits) ----------
-//
-// Top left of Player 2: the edit on show (Original = the item as on Player 1). Its menu lists Original and the team's edits
-// of the item (yours first), New edit, Apply to Player 1, Undo last apply, Revert to original, and for the edit on show:
-// Make my own copy (someone else's), Rename, Delete.
+// ---------- Player 2's project picker ----------
 
-function renderEditPicker() {
-  const t = timeline2;
-  const shown = Boolean(p2Item && t?.source);
-  $("p2-edit-menu").hidden = !shown;
-  if (!shown) return;
-  const edit = t.edit;
-  const saving = t.edits.some((e) => e.saving || e.dirty);
-  const failed = t.edits.some((e) => e.failed);
-  $("p2-edit-name").textContent = t.editName(edit);
-  $("p2-edit-state").textContent = saving ? "saving…" : failed ? "not saved" : edit?.original ? (t.canMakeEdits() ? "view only" : "") : t.isApplied(edit) ? "applied" : "";
-  $("p2-edit-state").classList.toggle("bad", failed && !saving);
-  $("p2-edit-pick").title = edit?.original
-    ? "The item as it is on Player 1. Trim it or cut a part out to make a new edit."
-    : `${t.editName(edit)}${edit?.own ? "" : ` by ${edit?.createdBy ?? "a teammate"} (view only: a change makes your own copy)`}`;
-  if ($("p2-edit-menu").open) renderEditMenu();
+let projectList = [];
+
+async function loadProjectList() {
+  try {
+    projectList = await api("GET", "/api/projects?limit=100");
+  } catch {
+    projectList = [];
+  }
+  if ($("p2-project-menu").open) renderProjectMenu();
 }
 
-function renderEditMenu() {
-  const t = timeline2;
-  const current = t.edit;
+function renderProjectPicker() {
+  const open = store.open;
+  $("p2-project-name").textContent = open ? store.project.title : "No project";
+  const state = open ? store.stateText() : "";
+  $("p2-project-state").textContent = state;
+  $("p2-project-state").classList.toggle("bad", state === "not saved");
+  $("p2-project-pick").title = open
+    ? `${store.project.title}${store.project.createdBy && !store.canEdit ? ` by ${store.project.createdBy} (view only: make your own copy to change it)` : ""}`
+    : "Open or start a project";
+  if ($("p2-project-menu").open) renderProjectMenu();
+}
+
+function renderProjectMenu() {
+  const current = store.project;
   const item = (value, label, { icon = null, checked = null, disabled = false, detail = null } = {}) => el("sl-menu-item", {
     value, disabled, ...(checked != null ? { type: "checkbox", checked } : {}),
   }, icon ? el("sl-icon", { slot: "prefix", library: "ph", name: icon }) : null, label, detail ? el("span", { slot: "suffix", class: "edit-detail" }, detail) : null);
-  const detailOf = (edit) => [formatDuration(Math.round(t.keptTotal(t.fitted(edit.partCuts)))), t.isApplied(edit) ? "applied" : null].filter(Boolean).join(" · ");
-  const entries = [item("original", "Original", { checked: Boolean(current?.original), detail: "as on Player 1" })];
-  const index = (edit) => t.edits.indexOf(edit);
-  const newest = (a, b) => String(b.updatedAtUtc ?? b.createdAtUtc ?? "").localeCompare(String(a.updatedAtUtc ?? a.createdAtUtc ?? ""));
-  const own = t.edits.filter((e) => e.own).sort(newest);
-  if (own.length) {
-    entries.push(el("sl-divider"), el("sl-menu-label", {}, "Your edits"));
-    for (const edit of own) entries.push(item(`edit:${index(edit)}`, t.editName(edit), { checked: edit === current, detail: detailOf(edit) }));
-  }
-  const byMember = new Map();
-  for (const edit of t.edits.filter((e) => !e.own).sort(newest)) {
-    const name = edit.createdBy ?? "A teammate";
-    if (!byMember.has(name)) byMember.set(name, []);
-    byMember.get(name).push(edit);
-  }
-  for (const [name, edits] of byMember) {
-    entries.push(el("sl-divider"), el("sl-menu-label", {}, `${name}'s edits`));
-    for (const edit of edits) entries.push(item(`edit:${index(edit)}`, t.editName(edit), { checked: edit === current, detail: detailOf(edit) }));
-  }
-  const can = t.canMakeEdits();
-  entries.push(el("sl-divider"), item("new", "New edit", { icon: "plus", disabled: !can }));
-  const last = t.applies[0];
-  const applyName = (apply) => {
-    const edit = t.edits.find((e) => e.id === apply.editId);
-    return edit ? t.editName(edit) : apply.editTitle || "a deleted edit";
-  };
-  entries.push(el("sl-divider"),
-    item("apply", t.applyMakesCopy ? "Apply to a copy on my row" : "Apply to Player 1", { icon: "arrow-fat-line-up", disabled: !t.canApply() }),
-    item("undo-apply", "Undo last apply", {
-      icon: "arrow-u-up-left", disabled: !t.canRevert(),
-      detail: last ? `${applyName(last)}${last.username ? ` · ${last.username}` : ""} · ${ago(last.appliedAtUtc)}` : null,
-    }),
-    item("revert", "Revert to original", { icon: "clock-counter-clockwise", disabled: !t.canRevert() }));
-  if (current && !current.original) {
+  const entries = [];
+  const canMake = can("AddEntries") && !me?.support && !DEMO;
+  entries.push(item("new", "New project", { icon: "plus", disabled: !canMake }));
+  const own = projectList.filter((p) => p.userId === me?.id).slice(0, 10);
+  const others = projectList.filter((p) => p.userId !== me?.id).slice(0, 10);
+  const line = (p) => item(`open:${p.id}`, p.title, { checked: p.id === current?.id, detail: formatDuration(Math.round(p.lengthSeconds)) });
+  if (own.length) entries.push(el("sl-divider"), el("sl-menu-label", {}, "Your projects"), ...own.map(line));
+  if (others.length) entries.push(el("sl-divider"), el("sl-menu-label", {}, "The team's projects"), ...others.map((p) => item(`open:${p.id}`, p.title, {
+    checked: p.id === current?.id, detail: `${p.createdBy ?? "teammate"} · ${formatDuration(Math.round(p.lengthSeconds))}`,
+  })));
+  entries.push(item("all", "All projects…", { icon: "list" }));
+  if (current) {
     entries.push(el("sl-divider"));
-    if (!DEMO) entries.push(item("export", "Add to the export list", { icon: "download-simple", disabled: current.id == null && !current.dirty }));
-    if (!current.own) entries.push(item("copy", "Make my own copy", { icon: "copy", disabled: !can }));
-    if (current.own) entries.push(item("rename", "Rename this edit", { icon: "pencil-simple", disabled: Boolean(me?.support) }));
-    if (current.canDelete ?? current.own) entries.push(item("delete", "Delete this edit", { icon: "trash", disabled: Boolean(me?.support) }));
+    if (!DEMO) entries.push(item("export", "Add to the export list", { icon: "download-simple", disabled: !store.content.pieces.length }));
+    if (store.canEdit) entries.push(item("rename", "Rename this project", { icon: "pencil-simple" }));
+    entries.push(item("copy", store.canEdit ? "Duplicate" : "Make my own copy", { icon: "copy", disabled: !canMake }));
+    if (current.canDelete) entries.push(item("delete", "Delete this project", { icon: "trash" }));
+    entries.push(item("close", "Close (nothing is deleted)", { icon: "eject" }));
   }
-  $("p2-edit-items").replaceChildren(...entries);
+  $("p2-project-items").replaceChildren(...entries);
 }
 
-function setUpEditPicker() {
-  $("p2-edit-menu").addEventListener("sl-show", (event) => {
-    if (event.target !== $("p2-edit-menu")) return;
-    renderEditMenu();
-    timeline2.loadEdits();
+async function renameProject() {
+  if (!store.open || !store.canEdit) return;
+  const title = await askText({ heading: "Rename the project", label: "Title", value: store.project.title });
+  if (title == null || !title.trim()) return;
+  try {
+    await store.rename(title.trim());
+    refreshProjects();
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+async function copyProject() {
+  if (!store.open) return;
+  await store.saveNow();
+  try {
+    const copy = await api("POST", `/api/projects/${store.project.id}/copy`, {});
+    await openProject(copy.id);
+    refreshProjects();
+    toast(`Made "${copy.title}".`);
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+async function deleteProject() {
+  if (!store.open) return;
+  const project = store.project;
+  const ok = await confirmAction({
+    heading: "Delete this project?",
+    text: `"${project.title}" is deleted for the whole team. The clips, segments and videos in it stay as they are.`,
+    confirm: "Delete",
   });
-  $("p2-edit-items").addEventListener("sl-select", (event) => {
+  if (!ok) return;
+  try {
+    await store.saveNow();
+    await api("DELETE", `/api/projects/${project.id}`);
+    await closeProject();
+    refreshProjects();
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+function exportProject() {
+  if (!store.open) return;
+  addToExport({ kind: "project", data: { ...store.project, content: store.content } }, { quiet: false });
+}
+
+function setUpProjectPicker() {
+  $("p2-project-menu").addEventListener("sl-show", (event) => {
+    if (event.target !== $("p2-project-menu")) return;
+    renderProjectMenu();
+    loadProjectList();
+  });
+  $("p2-project-items").addEventListener("sl-select", (event) => {
     const value = event.detail.item.value;
-    const t = timeline2;
-    if (value === "original") t.pickEdit(null);
-    else if (value.startsWith("edit:")) t.pickEdit(t.edits[Number(value.slice(5))] ?? null);
-    else if (value === "new") t.startNewEdit();
-    else if (value === "apply") t.applyEdit();
-    else if (value === "undo-apply") t.revert("previous");
-    else if (value === "revert") t.revert("original");
-    else if (value === "copy") t.copyEdit();
-    else if (value === "rename") t.renameEdit();
-    else if (value === "delete") t.deleteEdit();
-    else if (value === "export") exportEdit();
+    if (value === "new") newProject();
+    else if (value.startsWith("open:")) openProject(Number(value.slice(5)));
+    else if (value === "all") listTabs.pick("projects");
+    else if (value === "export") exportProject();
+    else if (value === "rename") renameProject();
+    else if (value === "copy") copyProject();
+    else if (value === "delete") deleteProject();
+    else if (value === "close") closeProject();
   });
-  $("p2-apply").addEventListener("click", () => timeline2.applyEdit());
 }
 
 function renderClock(position) {
@@ -668,7 +583,10 @@ function renderQualityMenu() {
 // Only one player plays at a time: starting one pauses the other
 function playAlone(player, other) {
   const playing = player.playing();
-  if (playing && !player.wasPlaying && other.playing()) other.pause();
+  if (playing && !player.wasPlaying && other.playing()) {
+    other.pause();
+    if (other === player2) playback.pause();
+  }
   player.wasPlaying = playing;
 }
 
@@ -712,10 +630,11 @@ function setUpPlayer1() {
     onClipsChanged: refreshClips,
     onVideosChanged: refreshVideos,
     onExport: exportFromTimeline,
-    onCreated: (item) => openInPlayer2({ kind: item.kind, data: { ...item.data, vodId: timeline.vodId, vodLengthSeconds: timeline.length() } }, { show: false }),
-    onEdited: () => {
-      if (timeline2.vodId && timeline2.vodId === timeline.vodId) timeline2.load();
+    // A new segment or clip goes into the project open in Player 2 (at its playhead), without switching the tab
+    onCreated: (item) => {
+      if (store.open && store.canEdit) addToProject({ kind: item.kind, data: { ...item.data, vodId: timeline.vodId, vodLengthSeconds: timeline.length() } }, { show: false });
     },
+    onEdited: () => {},
   });
   wirePlayerButtons(1, "p1");
   $("p1-live").addEventListener("click", () => {
@@ -740,104 +659,99 @@ function setUpPlayer1() {
   renderPlayer1();
 }
 
-function setUpPlayer2() {
-  player2 = new MediaPlayer($("p2-media"), {
-    onTick: p2Tick,
-    onState: () => {
-      playAlone(player2, player1);
-      renderPlayer2();
-    },
-    onDetails: (details) => timeline2.setDetails(details),
-  });
-  timeline2 = new SourceTimeline({
-    // Delete / "Unload from Player 2" only clears Player 2; nothing is deleted
-    onUnload: () => closePlayer2(),
-    // Split lines dragged in the Layout row (source time -> seconds into the clip's file)
-    onLayoutParts: (starts) => setVerticalPartStarts(starts.map(sourceToFile)),
-    onSeek: p2Seek,
-    getPosition: p2Position,
-    openItemEditor,
-    closeItemEditor: () => closeItemEditor(false),
-    onChange: () => {
-      renderTools();
-      renderP2Info();
-      renderPlayer2();
-    },
-    onClipsChanged: refreshClips,
-    onVideosChanged: refreshVideos,
-    onEdited: () => {
-      if (timeline.vodId && timeline.vodId === timeline2.vodId) timeline.load();
-      verticalEntryChanged();
-    },
-    onFocusChanged: onP2FocusChanged,
-    onEditsChanged: () => {
-      renderEditPicker();
-      renderP2Info();
-      renderPlayer2();
-      if (activePlayer === "p2") renderTools();
-      if (verticalOpen()) setVerticalEdit(verticalEdit());
-    },
-    // An edit was applied (or undone): Player 1 and the cards show the item's new cut-out parts
-    onApplied: () => {
-      if (timeline.vodId && timeline.vodId === timeline2.vodId) timeline.load();
-      refreshClips();
-      refreshVideos();
-    },
-    // The first change to someone else's item made a copy: Player 2 goes on with it
-    onFocusMoved: (focus) => {
-      if (!p2Item) return;
-      Object.assign(p2Item, { type: focus.type, id: focus.id });
-      if (verticalOpen() && focus.type === "clip") openVertical(focus.id, verticalEdit());
-    },
-    onFocusGone: (message) => {
-      if (p2Item) closePlayer2(message);
-    },
-  });
-  wirePlayerButtons(2, "p2");
-  setUpVertical($("player2"), {
-    onExit: () => toggleVertical(false),
-    // A render is made for the edit shown; a new one is saved first so it has an id
-    editForRender: async () => {
-      await timeline2.saveNow();
-      return verticalEdit().editId;
-    },
-    // The vertical editor's parts on the clip in Player 2's row (file seconds -> source time)
-    onParts: (info) => timeline2.setVerticalParts(info && {
-      parts: info.parts.map((part) => ({ ...part, start: fileToSource(part.start), end: fileToSource(part.end), keys: (part.keys ?? []).map(fileToSource) })),
-      trim: { start: fileToSource(info.trim.start), end: fileToSource(info.trim.end) },
-    }),
-    // One undo for the screen: the vertical editor's steps and the edit's in Player 2's timeline below, newest first
-    undo: () => screenUndo(false),
-    redo: () => screenUndo(true),
-    undoState: () => screenUndoState(),
-    onUndoChanged: () => renderTools(),
-  });
-  $("p2-vertical").addEventListener("click", () => toggleVertical(true));
-  $("p2-show").addEventListener("click", showInPlayer1);
-  $("p2-rename").addEventListener("click", () => {
-    if (p2Item?.type === "video") {
-      timeline2.editVideoTitle();
-      return;
+// Player 1 skips the cut-out parts of the selected segment or clip while it plays just that
+function p1Tick(position) {
+  if (!player1.playing() || player1.stopAt == null) return;
+  const item = timeline.selectedItem();
+  if (item?.cuts?.length) {
+    const to = skipCut(item.cuts, position, player1.stopAt);
+    if (to === "end") {
+      player1.stopAt = null;
+      player1.pause();
+    } else if (to != null) {
+      player1.seek(to);
     }
-    const item = timeline2.focusItem();
-    if (item) timeline2.editTitle(item);
-  });
-  $("p2-delete").addEventListener("click", () => closePlayer2());
-  setUpEditPicker();
-  renderPlayer2();
+  }
 }
 
-// Player 2's crosshair: Player 1 opens the item's VOD (if it isn't open already), goes to the item and selects it
-async function showInPlayer1() {
-  if (!p2Item) return;
-  // A video: its first part selected, all its parts in view
-  const parts = p2Parts();
-  if (!parts.length) return;
-  const start = parts[0].vodStart;
-  const range = p2Item.type === "video" ? { start: Math.min(...parts.map((p) => p.vodStart)), end: Math.max(...parts.map((p) => p.vodEnd)) } : null;
-  const focus = p2Item.type === "video" ? { type: "marker", id: parts[0].id } : { ...timeline2.focus };
-  const vodId = p2Item.vodId;
-  player2.pause();
+function setUpPlayer2() {
+  player2 = new MediaPlayer($("p2-media"), {
+    onTick: () => renderP2Info(),
+    onState: () => {
+      playAlone(player2, player1);
+      playback?.playerPaused();
+      renderPlayer2();
+    },
+  });
+  store = new ProjectStore({
+    onChange: onProjectChanged,
+    onReplaced: () => timeline2.refresh(),
+  });
+  playback = new ProjectPlayback(player2, {
+    getContent: () => store.content,
+    black: $("p2-black"),
+    onState: () => {
+      renderPlayer2();
+      timeline2.dirty = true;
+    },
+  });
+  playback.onError = (error) => showNote("p2", `Couldn't play this VOD: ${error.message}`, 8000);
+  timeline2 = new ProjectTimeline(store, {
+    getPosition: p2Position,
+    onSeek: p2Seek,
+    openItemEditor,
+    closeItemEditor: () => closeItemEditor(false),
+    ensureProject: () => newProject({ show: false }),
+    onChange: () => {
+      renderTools();
+      if (projectVerticalOpen()) refreshProjectVertical();
+    },
+    onShowInPlayer1: showInPlayer1,
+    onApplyToOriginal: applyToOriginal,
+  });
+  wirePlayerButtons(2, "p2");
+  setUpProjectVertical($("player2"), {
+    store,
+    playback,
+    player: player2,
+    timeline: () => timeline2,
+    onExit: () => toggleVertical(false),
+    onUndoChanged: () => renderTools(),
+  });
+  $("p2-vertical").addEventListener("click", () => toggleVertical());
+  $("p2-show").addEventListener("click", () => {
+    const now = playback.time();
+    const piece = timeline2.selectedPieces()[0] ?? store.content?.pieces.find((p) => now >= p.at && now < p.at + p.end - p.start);
+    if (piece) showInPlayer1(piece);
+  });
+  $("p2-rename").addEventListener("click", renameProject);
+  $("p2-delete").addEventListener("click", closeProject);
+  $("p2-export").addEventListener("click", exportProject);
+  setUpProjectPicker();
+  renderPlayer2();
+  // The project open last time
+  const last = loadSetting(LAST_PROJECT_KEY, null);
+  if (last && !DEMO) openProject(last, { show: false, quiet: true });
+}
+
+// A project card was renamed or deleted: the open one follows
+async function onProjectCardChanged(id, { deleted = false } = {}) {
+  loadProjectList();
+  if (store?.project?.id !== id) return;
+  if (deleted) await closeProject();
+  else await openProject(id, { show: false, quiet: true });
+}
+
+function refreshProjects() {
+  loadProjectList();
+  refreshProjectCards();
+}
+
+// Player 2's crosshair (or a piece's right-click): Player 1 opens the piece's VOD, goes to it and shows its range; the clip or
+// segment it was copied from is selected when it's still there
+async function showInPlayer1(piece) {
+  const vodId = String(piece.vodId);
+  playback.pause();
   if (!p1Vod || String(p1Vod.vodId) !== vodId) {
     let info;
     try {
@@ -846,50 +760,77 @@ async function showInPlayer1() {
       toast(error.message, "error");
       return;
     }
-    await openVod({ vodId: info.vodId, title: info.title, lengthSeconds: info.lengthSeconds, isLive: info.isLive }, { start, paused: true });
+    await openVod({ vodId: info.vodId, title: info.title, lengthSeconds: info.lengthSeconds, isLive: info.isLive }, { start: piece.start, paused: true });
   } else {
     player1.pause();
-    player1.seek(start);
+    player1.seek(piece.start);
   }
   timelineTabs.pick("p1");
-  timeline.reveal(focus, range);
+  const focus = piece.source?.kind === "clip" ? { type: "clip", id: piece.source.id } : piece.source?.kind === "segment" ? { type: "marker", id: piece.source.id } : { type: null, id: null };
+  timeline.reveal(focus, { start: piece.start, end: piece.end });
 }
 
-// ---------- vertical (9:16) editor in Player 2 (ui/vertical.js) ----------
-//
-// A clip in Player 2 can turn the player into the vertical editor: Player 2 takes the whole width and shows the crop
-// boxes, the 9:16 preview and the renders; the Player 2 timeline stays below (trims and cut-out parts there change the
-// clip's file, which the editor reloads).
+// "Apply this trim to the original": the clip or segment a piece was copied from gets the range of every piece made from it in
+// this project, and what's between them as its cut-out parts (can be undone with Ctrl+Z on Player 1 only for segments)
+async function applyToOriginal(piece) {
+  const source = piece.source;
+  const from = store.content.pieces.filter((p) => p.source?.kind === source.kind && p.source.id === source.id && String(p.vodId) === String(piece.vodId))
+    .sort((a, b) => a.start - b.start);
+  const start = Math.min(...from.map((p) => p.start));
+  const end = Math.max(...from.map((p) => p.end));
+  const cuts = [];
+  let at = start;
+  for (const p of from) {
+    if (p.start > at + 0.01) cuts.push({ start: at, end: p.start });
+    at = Math.max(at, p.end);
+  }
+  const what = source.kind === "clip" ? "clip" : "segment";
+  const ok = await confirmAction({
+    heading: `Change the original ${what}?`,
+    text: `It will run ${formatDuration(start, { short: false })} – ${formatDuration(end, { short: false })} in the VOD${cuts.length ? `, with ${cuts.length} part${cuts.length === 1 ? "" : "s"} cut out` : ""}, like the piece${from.length === 1 ? "" : "s"} made from it here. The project doesn't change.`,
+    confirm: "Change it",
+    danger: false,
+  });
+  if (!ok) return;
+  try {
+    if (source.kind === "clip") {
+      await api("PUT", `/api/entries/${source.id}/trim`, { startTime: String(start), endTime: String(end), cuts });
+      refreshClips();
+    } else {
+      const data = await api("GET", `/api/vods/${encodeURIComponent(piece.vodId)}/timeline`);
+      const marker = data.markers?.find((m) => m.id === source.id);
+      if (!marker) throw new Error("The segment isn't there any more.");
+      await api("PUT", `/api/markers/${source.id}`, { seconds: start, endSeconds: end, label: marker.label, color: marker.color, rowId: marker.rowId, cuts });
+    }
+    if (timeline.vodId === String(piece.vodId)) timeline.load();
+    toast(`The original ${what} was changed.`);
+  } catch (error) {
+    toast(`Couldn't change the original ${what}: ${error.message}`, "error");
+  }
+}
 
-function toggleVertical(on = !verticalOpen()) {
+// ---------- 9:16 view of the project (ui/project-vertical.js) ----------
+//
+// Player 2 takes the whole width and shows the landscape source of the piece under the playhead with its crop boxes, the live
+// 9:16 result and the layout tools; the project timeline stays below. Boxes are saved on the pieces (one undo history).
+
+function toggleVertical(on = !projectVerticalOpen()) {
   if (!on) {
-    if (!verticalOpen()) return;
-    closeVertical();
+    if (!projectVerticalOpen()) return;
+    closeProjectVertical();
     $("view-editor").classList.remove("vertical-mode");
     renderTools();
     return;
   }
-  if (p2Item?.kind !== "clip") {
-    toast("Load a clip in Player 2 to make a vertical version of it.");
+  if (!store.open) {
+    toast("Open a project in Player 2 first: drop clips, segments or videos on it.");
     return;
   }
   player1.pause();
-  player2.pause();
   $("view-editor").classList.add("vertical-mode");
   timelineTabs.pick("p2");
-  openVertical(p2Item.id, verticalEdit());
+  openProjectVertical();
   renderTools();
-}
-
-// The vertical editor works on the edit shown in Player 2: renders are made for it (Original: the clip itself) and what it
-// leaves out (trimmed ends and cut parts, in file seconds) isn't played or rendered
-function verticalEdit() {
-  const t = timeline2;
-  const edit = t.edit;
-  const cuts = t.removedRanges()
-    .map((r) => ({ start: sourceToFile(r.start), end: sourceToFile(r.end) }))
-    .filter((r) => r.end - r.start > 0.01);
-  return { editId: edit && !edit.original ? edit.id ?? null : null, cuts };
 }
 
 // ---------- tools bar (works on the timeline whose tab is open) ----------
@@ -898,7 +839,7 @@ function renderTools() {
   if (DEMO || !timeline || !timeline2) return;
   const t = activeTimeline();
   const on = Boolean(t.vodId);
-  const canCreate = on && t.canCreate();
+  const canCreate = activePlayer === "p1" && on && t.canCreate();
   for (const button of document.querySelectorAll("#tools [data-tool]")) {
     button.disabled = !on;
     button.toggleAttribute("data-active", on && t.tool === button.dataset.tool);
@@ -914,36 +855,21 @@ function renderTools() {
   const undo = screenUndoState();
   document.querySelector('#tools [data-keybind="undo"]').disabled = !undo.canUndo;
   document.querySelector('#tools [data-keybind="redo"]').disabled = !undo.canRedo;
-  refreshVerticalUndo();
 }
 
-// Undo / redo for what's on screen: the active timeline, or with the vertical editor open whichever of it and Player 2's
-// edit changed last (before, Ctrl+Z there only undid box changes while the tools bar's undo undid the edit, so the two
-// buttons did different things)
+// Undo / redo: Player 1's steps, or Player 2's project (the 9:16 view's box changes are project changes too)
 function screenUndo(redo) {
-  if (!verticalOpen()) {
-    const t = activeTimeline();
-    if (t.vodId) redo ? t.redo() : t.undo();
-    return;
+  if (activePlayer === "p2" || projectVerticalOpen()) {
+    redo ? store.redo() : store.undo();
+  } else if (timeline.vodId) {
+    redo ? timeline.redo() : timeline.undo();
   }
-  const own = verticalUndoSeqs();
-  const v = redo ? own.redo : own.undo;
-  const t = redo ? timeline2.redoSeq() : timeline2.undoSeq();
-  if (v == null && t == null) return;
-  // Undo takes the newest step; redo the one undone last, which is the older of the two waiting
-  const vertical = t == null || (v != null && (redo ? v < t : v > t));
-  if (vertical) redo ? verticalRedo() : verticalUndo();
-  else redo ? timeline2.redo() : timeline2.undo();
   renderTools();
 }
 
 function screenUndoState() {
-  if (!verticalOpen()) {
-    const t = activeTimeline();
-    return { canUndo: t.canUndo(), canRedo: t.canRedo() };
-  }
-  const own = verticalUndoSeqs();
-  return { canUndo: own.undo != null || timeline2.canUndo(), canRedo: own.redo != null || timeline2.canRedo() };
+  if (activePlayer === "p2" || projectVerticalOpen()) return { canUndo: store.canUndo(), canRedo: store.canRedo() };
+  return { canUndo: timeline.canUndo(), canRedo: timeline.canRedo() };
 }
 
 function setUpTools() {
@@ -955,10 +881,10 @@ function setUpTools() {
   document.querySelector('#tools [data-keybind="undo"]').addEventListener("click", () => screenUndo(false));
   document.querySelector('#tools [data-keybind="redo"]').addEventListener("click", () => screenUndo(true));
   const create = {
-    marker: () => activeTimeline().addMoment(),
-    segment: () => activeTimeline().mark("segment"),
-    clip: () => activeTimeline().mark("clip"),
-    video: () => activeTimeline().startLinking(),
+    marker: () => timeline.addMoment(),
+    segment: () => timeline.mark("segment"),
+    clip: () => timeline.mark("clip"),
+    video: () => timeline.startLinking(),
   };
   for (const button of document.querySelectorAll("#tools [data-create]")) {
     button.addEventListener("click", () => create[button.dataset.create]?.());
@@ -966,28 +892,14 @@ function setUpTools() {
   renderTools();
 }
 
-// Play / pause: with a segment or clip selected (Player 2: always its item) and the player paused, play just it
-// Play / pause: with a segment or clip selected and the player paused, play just it. Player 2 plays what its edit keeps
-// (from where it is, or from the edit's start once it has ended)
+// Play / pause. Player 1: with a segment or clip selected and the player paused, play just it. Player 2: the project.
 function playPause(which = activePlayer) {
-  const { player, timeline: t } = pair(which);
-  if (!player.ready) return;
   if (which === "p2") {
-    if (player.playing()) {
-      player.pause();
-      return;
-    }
-    const kept = t.keptRange();
-    let from = p2Position();
-    if (from == null || from < kept.start - 0.01 || from >= kept.end - 0.05) from = kept.start;
-    const cut = t.removedRanges().find((r) => from >= r.start && from < r.end);
-    if (cut) from = cut.end;
-    p2StopAt = null;
-    player.stopAt = null;
-    if (Math.abs(from - (p2Position() ?? -1)) > 0.01) p2Seek(from);
-    player.play();
+    if (store.open) playback.toggle();
     return;
   }
+  const { player, timeline: t } = pair(which);
+  if (!player.ready) return;
   const range = t.selectedRange();
   if (range && !player.playing()) {
     const now = player.position();
@@ -998,26 +910,29 @@ function playPause(which = activePlayer) {
   player.togglePlay();
 }
 
-// Shift+Space: the last 3 s of the selected item (Player 2: of its edit)
+// Shift+Space: the last 3 s of the selected item (Player 2: of the selected piece, then on)
 function playLastSeconds(which = activePlayer) {
-  const { player, timeline: t } = pair(which);
-  if (!player.ready) return;
   if (which === "p2") {
-    const kept = t.keptRange();
-    if (kept.end <= kept.start) return;
-    p2Seek(Math.max(kept.start, kept.end - 3));
-    p2StopAt = kept.end;
-    player.stopAt = null;
-    player.play();
+    const piece = timeline2.selectedPieces()[0];
+    if (!piece) return;
+    const end = piece.at + piece.end - piece.start;
+    playback.seek(Math.max(piece.at, end - 3));
+    playback.play();
     return;
   }
+  const { player, timeline: t } = pair(which);
+  if (!player.ready) return;
   const range = t.selectedRange();
   if (!range) return;
   player.playRange(Math.max(range.start, range.end - 3), range.end);
 }
 
-// Seeking stays inside what the timeline can show (Player 2: its item)
 function skip(which, delta) {
+  if (which === "p2") {
+    if (!store.open) return;
+    playback.seek(playback.time() + delta);
+    return;
+  }
   const { player, timeline: t } = pair(which);
   const now = t.getPosition();
   if (!player.ready || now == null) return;
@@ -1047,12 +962,12 @@ function setUpPlayers() {
     if (activePlayer !== "p1" && p1Vod) timelineTabs.pick("p1");
   });
   $("player2").addEventListener("pointerdown", () => {
-    if (activePlayer !== "p2" && p2Item) timelineTabs.pick("p2");
+    if (activePlayer !== "p2" && store.open) timelineTabs.pick("p2");
   });
-  // A stored clip's trim waits 3 s before it's saved; don't lose it when the page closes
+  // A stored clip's trim waits 3 s before it's saved, and the project saves shortly after a change; don't lose either
   window.addEventListener("pagehide", () => {
     timeline.flushTrimOnExit();
-    timeline2.flushTrimOnExit();
+    store.flushOnExit();
   });
 }
 
@@ -1071,8 +986,6 @@ function isTyping(event) {
   });
 }
 
-const VERTICAL_PASS_KEYS = new Set(["toolPointer", "toolCut", "toolZoom", "toolHand", "zoomIn", "zoomOut", "fit", "escape"]);
-
 function setUpKeys() {
   document.addEventListener("keydown", (event) => {
     if (isTyping(event) || document.querySelector("sl-dialog[open]")) return;
@@ -1083,17 +996,18 @@ function setUpKeys() {
       return;
     }
     if ($("view-editor").hidden) return;
-    // The vertical editor has its own keys; of the player's, only the timeline's tools and zoom still work
-    if (handleVerticalKey(event)) return;
+    // The 9:16 view has its own keys (boxes, keyframes); the rest of the player's still work there
+    if (handleProjectVerticalKey(event)) return;
     const id = keybindFor("player", event);
     if (!id) return;
-    if (verticalOpen() && !VERTICAL_PASS_KEYS.has(id)) return;
+    const p2 = activePlayer === "p2";
     const { player, timeline: t } = pair();
-    const ready = player.ready;
+    const ready = p2 ? store.open : player.ready;
     const on = Boolean(t.vodId);
     const frame = (delta) => {
       if (!ready) return;
-      player.pause();
+      if (p2) playback.pause();
+      else player.pause();
       skip(activePlayer, delta);
     };
     const run = {
@@ -1105,7 +1019,7 @@ function setUpKeys() {
       fwd5: () => skip(activePlayer, 5),
       frameBack: () => frame(-FRAME_SECONDS),
       frameFwd: () => frame(FRAME_SECONDS),
-      fullscreen: () => ready && player.fullscreen(),
+      fullscreen: () => (p2 ? store.open && player2.fullscreen() : ready && player.fullscreen()),
       zoomIn: () => on && t.zoomBy(0.5),
       zoomOut: () => on && t.zoomBy(2),
       fit: () => on && t.fit(),
@@ -1114,14 +1028,18 @@ function setUpKeys() {
       toolZoom: () => on && t.setTool("zoom"),
       toolHand: () => on && t.setTool("hand"),
       toggleSnap: () => on && t.toggleSnap(),
-      marker: () => on && t.addMoment(),
-      segment: () => on && t.mark("segment"),
-      clip: () => on && t.mark("clip"),
+      marker: () => !p2 && on && t.addMoment(),
+      segment: () => (p2 ? on && t.splitAtPlayhead() : on && t.mark("segment")),
+      clip: () => !p2 && on && t.mark("clip"),
       setStart: () => on && t.setEdgeAtPlayhead("start"),
       setEnd: () => on && t.setEdgeAtPlayhead("end"),
-      undo: () => on && screenUndo(false),
-      redo: () => on && screenUndo(true),
-      deleteSelected: () => on && t.deleteSelected(),
+      undo: () => screenUndo(false),
+      redo: () => screenUndo(true),
+      deleteSelected: () => on && (p2 ? t.deleteSelected(false) : t.deleteSelected()),
+      rippleDelete: () => p2 && on && t.deleteSelected(true),
+      copyPieces: () => p2 && on && t.copySelected(),
+      pastePieces: () => p2 && on && t.paste(),
+      addRow: () => p2 && on && t.addTrack(),
       escape: () => on && t.escape(),
       verticalToggle: () => toggleVertical(),
     }[id];
@@ -1257,9 +1175,9 @@ async function start() {
   $("workspace").hidden = false;
   wireIconButtons();
   setUpLayout();
-  setUpExport({ demo: DEMO, otherPlayers: () => [player1, player2] });
+  setUpExport({ demo: DEMO, otherPlayers: () => [player1, player2], onPausePlayers: () => playback?.pause() });
   screenTabs = tabs(document.querySelector(".main-tabs"), "data-view", showScreen, "clipco.editor.screen");
-  setUpLibrary({ onLoad: load, onExport: openExport, sample: DEMO ? demoSample() : null });
+  setUpLibrary({ onLoad: load, onExport: openExport, onProjectChanged: onProjectCardChanged, sample: DEMO ? demoSample() : null });
   if (DEMO) wireDemoTools();
   listTabs = tabs(document.querySelector(".side-tabs"), "data-list", showList, "clipco.editor.list");
   setUpPlayers();

@@ -24,10 +24,11 @@ const KINDS = {
   vod: { icon: "broadcast", label: "VOD range" },
   clip: { icon: "film-strip", label: "Clip" },
   video: { icon: "film-slate", label: "Video" },
+  project: { icon: "stack", label: "Project" },
   segment: { icon: "brackets-square", label: "Segment" },
 };
 const kindLabel = (item) => (item.editId ? `${KINDS[item.kind].label} edit` : KINDS[item.kind].label);
-const ITEM_KIND_ICON = { VodRange: "broadcast", Clip: "film-strip", ClipVertical: "device-mobile", Video: "film-slate", Segment: "brackets-square" };
+const ITEM_KIND_ICON = { VodRange: "broadcast", Clip: "film-strip", ClipVertical: "device-mobile", Video: "film-slate", Segment: "brackets-square", Project: "stack", ProjectVertical: "device-mobile" };
 
 let list = [];
 let selectedKey = null;
@@ -135,6 +136,9 @@ function fromDrop(kind, data) {
   if (kind === "video") {
     return { ...base, key: `video:${data.id}`, ...videoFields(data) };
   }
+  if (kind === "project") {
+    return { ...base, key: `project:${data.id}`, vodId: "", ...projectFields(data) };
+  }
   if (kind === "segment") {
     if (data.endSeconds == null) {
       toast("Markers can't be exported, only segments.", "error");
@@ -194,6 +198,12 @@ function videoFields(video) {
   };
 }
 
+// A project (Player 2): its length and pieces; files are made from what its timeline plays (gaps black)
+function projectFields(project) {
+  const length = project.lengthSeconds ?? 0;
+  return { title: project.title, length, pieceCount: project.pieceCount ?? project.content?.pieces?.length ?? 0, start: 0, end: length };
+}
+
 const thumbOf = twitchThumb;
 
 function remove(key) {
@@ -221,17 +231,19 @@ async function clearList() {
 
 // ---------- the list ----------
 
+const twoFormats = (item) => item.kind === "clip" || item.kind === "project";
+
 function filesOf(item) {
-  return item.kind === "clip" ? Number(item.horizontal) + Number(item.vertical) : 1;
+  return twoFormats(item) ? Number(item.horizontal) + Number(item.vertical) : 1;
 }
 
 // Like the server: verticals don't count toward the time limit
 function secondsOf(item) {
-  return item.kind === "clip" && !item.horizontal ? 0 : item.length ?? 0;
+  return twoFormats(item) && !item.horizontal ? 0 : item.length ?? 0;
 }
 
 function formatOf(item) {
-  if (item.kind === "clip") return [item.horizontal && "horizontal", item.vertical && "vertical"].filter(Boolean).join(" + ") || "nothing picked";
+  if (twoFormats(item)) return [item.horizontal && "horizontal", item.vertical && "vertical"].filter(Boolean).join(" + ") || "nothing picked";
   if (item.kind === "video") return item.joined ? "one file" : `.zip of ${item.parts?.length ?? 0} file${item.parts?.length === 1 ? "" : "s"}`;
   return null;
 }
@@ -246,7 +258,7 @@ function renderList() {
   $("export-clear").disabled = !list.length;
   const allowed = can("GenerateFiles") && !me?.support;
   const button = $("export-button");
-  button.disabled = !list.length || !allowed || list.some((item) => item.kind === "clip" && !item.horizontal && !item.vertical);
+  button.disabled = !list.length || !allowed || list.some((item) => twoFormats(item) && !item.horizontal && !item.vertical);
   button.title = allowed ? "" : "Your role can't make files.";
 }
 
@@ -261,6 +273,7 @@ function row(item) {
   const kind = KINDS[item.kind];
   const range = item.kind === "video"
     ? `${item.parts?.length ?? 0} segment${item.parts?.length === 1 ? "" : "s"}`
+    : item.kind === "project" ? `${item.pieceCount ?? 0} piece${item.pieceCount === 1 ? "" : "s"}`
     : `${formatDuration(item.start, { short: false })} – ${formatDuration(item.end, { short: false })}`;
   const quality = item.quality || (item.kind === "clip" ? "its own quality" : "best quality");
   const node = el("div", {
@@ -338,6 +351,8 @@ async function refreshItem(item) {
       loadRenders(item);
     } else if (item.kind === "video") {
       Object.assign(item, videoFields(await api("GET", `/api/videos/${item.id}`)), { gone: false });
+    } else if (item.kind === "project") {
+      Object.assign(item, projectFields(await api("GET", `/api/projects/${item.id}`)), { gone: false });
     } else if (item.kind === "segment") {
       const markers = await api("GET", `/api/markers?vodIds=${encodeURIComponent(item.vodId)}`);
       const marker = markers.find((m) => m.id === item.id);
@@ -409,6 +424,7 @@ function renderSettings() {
   if (item.kind === "vod") fields.push(rangeFields(item));
   if (item.kind === "clip") fields.push(clipFormat(item));
   if (item.kind === "video") fields.push(videoFormat(item));
+  if (item.kind === "project") fields.push(projectFormat(item));
   body.replaceChildren(...fields);
 }
 
@@ -460,6 +476,23 @@ function setRange(item, start, end) {
   }
   Object.assign(item, { start, end, length: end - start });
   changed(item, { preview: true });
+}
+
+// A project: one landscape file and/or one 9:16 file with each piece's boxes (Player 2's 9:16 view)
+function projectFormat(item) {
+  const horizontal = el("sl-checkbox", { checked: item.horizontal }, "Horizontal");
+  const vertical = el("sl-checkbox", { checked: item.vertical }, "Vertical (9:16)");
+  horizontal.addEventListener("sl-change", () => {
+    item.horizontal = horizontal.checked;
+    changed(item, { settings: true });
+  });
+  vertical.addEventListener("sl-change", () => {
+    item.vertical = vertical.checked;
+    changed(item, { settings: true });
+  });
+  return el("div", { class: "xs-format" },
+    el("div", { class: "xs-label" }, "Format"), el("div", { class: "xs-checks" }, horizontal, vertical),
+    el("p", { class: "faint xs-note" }, "Made from what the project's timeline plays, top row first; gaps are black. Vertical uses each piece's boxes (Player 2's 9:16 view; pieces without boxes get a centered crop)."));
 }
 
 function clipFormat(item) {
@@ -565,6 +598,7 @@ function setUpPreview() {
 }
 
 function previewPartsOf(item) {
+  if (item.kind === "project") return [];
   if (item.kind === "video") return (item.parts ?? []).flatMap((p) => keptParts(p.start, p.end, p.cuts ?? []));
   return keptParts(item.start, item.end, item.cuts ?? []);
 }
@@ -833,6 +867,7 @@ function requestOf(item) {
     };
   }
   if (item.kind === "vod") return { ...common, vodId: Number(item.vodId), start: item.start, end: item.end };
+  if (item.kind === "project") return { ...common, projectId: item.id, horizontal: item.horizontal, vertical: item.vertical };
   if (item.kind === "clip") return { ...common, entryId: item.id, horizontal: item.horizontal, vertical: item.vertical, renderId: item.vertical ? item.renderId || null : null };
   if (item.kind === "video") return { ...common, videoId: item.id, joined: Boolean(item.joined && me?.combineSegmentDownloads) };
   return { ...common, markerId: item.id };
@@ -935,7 +970,7 @@ function batchNode(batch) {
 }
 
 function batchItemNode(item) {
-  const name = item.kind === "Video" && !item.joined ? `${item.fileName}.zip` : item.kind === "ClipVertical" ? `${item.fileName} (vertical).mp4` : `${item.fileName}.mp4`;
+  const name = item.kind === "Video" && !item.joined ? `${item.fileName}.zip` : item.kind === "ClipVertical" || item.kind === "ProjectVertical" ? `${item.fileName} (vertical).mp4` : `${item.fileName}.mp4`;
   const progress = item.status === "Running" && item.partsTotal > 1
     ? el("sl-progress-bar", { value: String(Math.round((item.partsDone / item.partsTotal) * 100)) })
     : item.status === "Running" ? el("sl-progress-bar", { indeterminate: true }) : null;
