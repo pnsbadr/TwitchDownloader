@@ -62,15 +62,21 @@ namespace TwitchDownloaderWeb.Services.Playback
 
             PruneOldFiles();
             // One swap per segment even if the player asks twice; it isn't cancelled with a single request
-            var job = _running.GetOrAdd(output, _ => new Lazy<Task<string?>>(() => SwapAsync(vodId, variant, key, output)));
+            // The job takes itself out when it ends, even if every request waiting on it gave up first: a failed swap left behind
+            // used to answer every later request for that segment with the muted one until the app restarted
+            var job = _running.GetOrAdd(output, _ => new Lazy<Task<string?>>(() => RunAsync(output, () => SwapAsync(vodId, variant, key, output))));
+            return await job.Value.WaitAsync(cancellationToken);
+        }
+
+        private async Task<string?> RunAsync(string output, Func<Task<string?>> swap)
+        {
             try
             {
-                return await job.Value.WaitAsync(cancellationToken);
+                return await swap();
             }
             finally
             {
-                if (job.Value.IsCompleted)
-                    _running.TryRemove(new KeyValuePair<string, Lazy<Task<string?>>>(output, job));
+                _running.TryRemove(output, out _);
             }
         }
 
