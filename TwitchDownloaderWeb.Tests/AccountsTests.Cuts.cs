@@ -68,7 +68,7 @@ namespace TwitchDownloaderWeb.Tests
         }
 
         [Fact]
-        public async Task ClipLimitCountsWhatsLeftAfterCutOutParts()
+        public async Task ClipLimitCountsTheWholeRange()
         {
             var ct = TestContext.Current.CancellationToken;
             var (owner, _, teamId, _) = await TeamWithMemberAsync("ct2");
@@ -83,16 +83,23 @@ namespace TwitchDownloaderWeb.Tests
                 db.SaveChanges();
             }
 
-            // 200 s with 30 s cut out = 170 s: under the 180 s limit, so it's stored
+            // 200 s with 30 s cut out = 170 s left, but the stored file would hold all 200 s: over the 180 s limit, so it's a reference
             var cut = await owner.PutAsJsonAsync($"/api/entries/{entryId}/trim",
                 new { startTime = "100", endTime = "300", cuts = new[] { new { start = 150, end = 180 } } }, ct);
             Assert.Equal(HttpStatusCode.OK, cut.StatusCode);
             var entryDto = await cut.Content.ReadFromJsonAsync<JsonElement>(ct);
             Assert.Equal(170, entryDto.GetProperty("clipLengthSeconds").GetDouble());
             Assert.Equal([[150.0, 180.0]], CutsOf(entryDto));
-            Assert.False(entryDto.GetProperty("isReferenceOnly").GetBoolean());
+            Assert.True(entryDto.GetProperty("isReferenceOnly").GetBoolean());
             // The card's frame is the middle of what's left (85 s in: 35 s after the cut)
             Assert.Equal($"/api/entries/{entryId}/thumbnail?t=2150", entryDto.GetProperty("frameUrl").GetString());
+
+            // 170 s in all (140 s left) is stored
+            var stored = await (await owner.PutAsJsonAsync($"/api/entries/{entryId}/trim",
+                new { startTime = "100", endTime = "270", cuts = new[] { new { start = 150, end = 180 } } }, ct)).Content.ReadFromJsonAsync<JsonElement>(ct);
+            Assert.False(stored.GetProperty("isReferenceOnly").GetBoolean());
+            Assert.Equal(140, stored.GetProperty("clipLengthSeconds").GetDouble());
+            Assert.False(stored.GetProperty("fileHasCuts").GetBoolean());
 
             // Without the cut it's 200 s: reference-only again
             var uncut = await (await owner.PutAsJsonAsync($"/api/entries/{entryId}/trim", new { startTime = "100", endTime = "300", cuts = Array.Empty<object>() }, ct))

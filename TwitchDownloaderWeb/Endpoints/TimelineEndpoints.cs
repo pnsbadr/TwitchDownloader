@@ -21,11 +21,14 @@ namespace TwitchDownloaderWeb.Endpoints
 
         public int? CopiedFromEntryId { get; init; }
 
-        /// <summary>Cut-out parts (VOD seconds, inside Start..End); the file skips them.</summary>
+        /// <summary>Cut-out parts (VOD seconds, inside Start..End); left out of exports and lengths, not of the clip's own file.</summary>
         public IReadOnlyList<CutRange> Cuts { get; init; } = [];
 
-        /// <summary>What's left after the cut-out parts (the length the stored-clip limit counts).</summary>
+        /// <summary>What's left after the cut-out parts (the stored-clip limit counts the whole range, End - Start).</summary>
         public double LengthSeconds { get; init; }
+
+        /// <summary>The clip's file was made the old way, without its cut-out parts; false = it covers the whole range (see <see cref="EntryDto.FileHasCuts"/>).</summary>
+        public bool FileHasCuts { get; init; }
     }
 
     /// <param name="UserId">The member who owns it and everything on it.</param>
@@ -121,7 +124,7 @@ namespace TwitchDownloaderWeb.Endpoints
         private static bool CanDelete(TeamContext team, VodMarker marker) =>
             team.CanOnOwnOrAny(marker.CreatedByUserId.ToString(), TeamPermission.AddEntries, TeamPermission.DeleteAnyEntries);
 
-        private static bool CanEdit(TeamContext team, VodMarker marker) =>
+        internal static bool CanEdit(TeamContext team, VodMarker marker) =>
             team.CanOnOwnOrAny(marker.CreatedByUserId.ToString(), TeamPermission.AddEntries, TeamPermission.EditAnyEntries);
 
         /// <summary>
@@ -138,7 +141,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 .Where(x => x.VodId == vodId)
                 .OrderBy(x => x.AddedAtUtc)
                 .Select(x => new { x.Id, x.Title, x.Kind, x.StartTime, x.EndTime, x.Status, x.FollowsMarkers, x.AddedByUserId, x.RowId, x.CopiedFromEntryId, x.Cuts,
-                    x.ClipLengthSeconds, x.VodLengthSeconds })
+                    x.ClipLengthSeconds, x.VodLengthSeconds, x.FileCuts, x.FilePath, x.GeneratedFilePath })
                 .ToListAsync(cancellationToken);
 
             var markers = await db.Markers.AsNoTracking().Where(x => x.VodId == vodId).ToListAsync(cancellationToken);
@@ -160,6 +163,7 @@ namespace TwitchDownloaderWeb.Endpoints
                     CopiedFromEntryId = x.CopiedFromEntryId,
                     Cuts = x.Kind == EntryKind.Vod ? CutOuts.Normalize(CutOuts.Read(x.Cuts), x.StartTime.TotalSeconds, x.EndTime?.TotalSeconds ?? x.VodLengthSeconds) : [],
                     LengthSeconds = x.ClipLengthSeconds,
+                    FileHasCuts = x.Kind == EntryKind.Vod && CutOuts.Read(x.FileCuts).Count > 0 && (x.FilePath is not null || x.GeneratedFilePath is not null),
                 }).ToList(),
                 markers.OrderBy(x => x.Seconds).Select(x => ToDto(x, names, team)).ToList(),
                 settings.Value.MaxStoredClipSeconds,

@@ -21,7 +21,7 @@ namespace TwitchDownloaderWeb.Endpoints
     /// <param name="StartTime">"h:mm:ss" offset from the start of the VOD. Blank is the start.</param>
     /// <param name="EndTime">"h:mm:ss" offset from the start of the VOD, not a duration. Blank is the end.</param>
     /// <param name="RowId">One of the caller's clip rows on that VOD; blank = their first one (made if they have none).</param>
-    /// <param name="Cuts">Cut-out parts in VOD seconds (see <see cref="CutOuts"/>); the stored-clip limit counts what's left.</param>
+    /// <param name="Cuts">Cut-out parts in VOD seconds (see <see cref="CutOuts"/>); the stored-clip limit counts the whole range.</param>
     public sealed record AddEntryRequest(string? VodId, string? Title, string? Quality, string? TrimMode, string? StartTime, string? EndTime,
         int? RowId = null, IReadOnlyList<CutRange>? Cuts = null);
 
@@ -101,10 +101,36 @@ namespace TwitchDownloaderWeb.Endpoints
             Cuts = entry.Kind == EntryKind.Vod
                 ? CutOuts.Normalize(CutOuts.Read(entry.Cuts), entry.StartTime.TotalSeconds, entry.EndTime?.TotalSeconds ?? entry.VodLengthSeconds)
                 : [],
+            FileCuts = HasFileCuts(entry)
+                ? CutOuts.Normalize(CutOuts.Read(entry.FileCuts), entry.StartTime.TotalSeconds, entry.EndTime?.TotalSeconds ?? entry.VodLengthSeconds)
+                : [],
+            FileHasCuts = HasFileCuts(entry),
         };
 
-        /// <summary>Cut-out parts (VOD seconds, inside the trim); the file skips them and <see cref="ClipLengthSeconds"/> is what's left.</summary>
+        /// <summary>The entry's file was made before files held the whole range: it leaves out <see cref="LibraryEntry.FileCuts"/> (the same
+        /// as its cut-out parts, since changing those makes such a file again).</summary>
+        public static bool HasFileCuts(LibraryEntry entry) =>
+            entry.Kind == EntryKind.Vod && CutOuts.Read(entry.FileCuts).Count > 0 && (entry.FilePath is not null || entry.GeneratedFilePath is not null);
+
+        /// <summary>How long the entry's file plays: its whole range, or what's left for a file made the old way (<see cref="HasFileCuts"/>).</summary>
+        public static double FileSeconds(LibraryEntry entry) =>
+            entry.Kind != EntryKind.Vod || HasFileCuts(entry)
+                ? entry.ClipLengthSeconds
+                : Math.Max(0, (entry.EndTime?.TotalSeconds ?? entry.VodLengthSeconds) - entry.StartTime.TotalSeconds);
+
+        /// <summary>See <see cref="HasFileCuts"/>; false = the file covers the clip's whole range.</summary>
+        public bool FileHasCuts { get; init; }
+
+        /// <summary>Cut-out parts (VOD seconds, inside the trim): left out of files made from it and of lengths (<see cref="ClipLengthSeconds"/>
+        /// is what's left), but not of the entry's own file (see <see cref="FileCuts"/>).</summary>
         public IReadOnlyList<CutRange> Cuts { get; init; } = [];
+
+        /// <summary>
+        /// The parts already left out of the entry's own file (<c>/file</c>): empty for files made since 2026-11-16, which hold the whole
+        /// range; a file made before holds its range without these until it's made again. File seconds map to the VOD over the range
+        /// without these.
+        /// </summary>
+        public IReadOnlyList<CutRange> FileCuts { get; init; } = [];
 
         /// <summary>A frame from the middle of the clip for its card (see <see cref="CardThumbnailService"/>); null for Twitch clips,
         /// which keep Twitch's thumbnail in <see cref="ThumbnailUrl"/> (the VOD's for VOD clips: the page shows it while the frame loads).</summary>
@@ -252,10 +278,11 @@ namespace TwitchDownloaderWeb.Endpoints
             if (CutOuts.Validate(request.Cuts, startTime.TotalSeconds, rangeEnd) is { } cutError)
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["cuts"] = [cutError] });
 
-            // The stored-vs-reference rule is decided here from the trim times (minus cut-out parts), never by the client
+            // The stored-vs-reference rule is decided here from the trim times, never by the client. It counts the whole range: the
+            // stored file holds all of it (cut-out parts are left out only when files are made from it), see IsStoredLength
             var cuts = CutOuts.Normalize(request.Cuts, startTime.TotalSeconds, rangeEnd);
             var clipLength = TimeSpan.FromSeconds(CutOuts.KeptSeconds(startTime.TotalSeconds, rangeEnd, cuts));
-            var isStored = clipLength.TotalSeconds <= settings.Value.MaxStoredClipSeconds;
+            var isStored = IsStoredLength(rangeEnd - startTime.TotalSeconds, settings.Value);
             var now = DateTime.UtcNow;
 
             var entry = new LibraryEntry
@@ -467,10 +494,33 @@ namespace TwitchDownloaderWeb.Endpoints
             if (CutOuts.Validate(requestedCuts, startTime.TotalSeconds, rangeEnd) is { } cutError)
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["cuts"] = [cutError] });
             var cuts = CutOuts.Normalize(requestedCuts, startTime.TotalSeconds, rangeEnd);
+            var follow = request.FollowMarkers == true && entry.MadeFromMarkers;
+            return await RecutAsync(entry, startTime, endTime, cuts, follow, db, queue, storage, liveEntries, settings.Value, null, cancellationToken)
+                ?? Results.Ok(EntryDto.From(entry));
+        }
+
+        /// <summary>
+        /// The stored-vs-reference rule: the whole range counts, not what's left after cut-out parts, because the stored file holds the whole
+        /// range (badrfly 2026-11-16; this replaced the 2026-11-15 rule that counted what was left).
+        /// </summary>
+        internal static bool IsStoredLength(double rangeSeconds, DownloadSettings settings) => rangeSeconds <= settings.MaxStoredClipSeconds;
+
+        /// <summary>
+        /// Sets an entry's range and cut-out parts (checked and normalized by the caller) and saves. Files hold the whole range, so a change of
+        /// cut-out parts alone keeps the entry's file; a new range (or a file made before files held the whole range) cancels any running
+        /// download, deletes the files, applies the stored-vs-reference rule again and re-queues a stored download.
+        /// </summary>
+        /// <param name="auditAction">Null: audited as a re-trim; else that action with <paramref name="auditDetails"/>.</param>
+        /// <returns>A problem (the running download didn't stop in time), or null with the entry saved (reloaded when it follows markers again).</returns>
+        internal static async Task<IResult?> RecutAsync(LibraryEntry entry, TimeSpan startTime, TimeSpan? endTime, IReadOnlyList<CutRange> cuts, bool follow,
+            LibraryDbContext db, DownloadQueue queue, LibraryStorage storage, LiveMarkerEntryService liveEntries, DownloadSettings settings,
+            (string Action, string Details)? audit, CancellationToken cancellationToken)
+        {
+            var id = entry.Id;
             var cutsJson = CutOuts.Write(cuts);
+            var rangeEnd = endTime?.TotalSeconds ?? entry.VodLengthSeconds;
 
             // Saving a cut by hand (even the same one) means "keep this cut"; undoing that makes a live markers entry follow again
-            var follow = request.FollowMarkers == true && entry.MadeFromMarkers;
             if (startTime == entry.StartTime && endTime == entry.EndTime && cutsJson == entry.Cuts)
             {
                 if (entry.FollowsMarkers != follow)
@@ -478,9 +528,39 @@ namespace TwitchDownloaderWeb.Endpoints
                     entry.FollowsMarkers = follow;
                     await db.SaveChangesAsync(cancellationToken);
                     if (follow)
-                        return Results.Ok(EntryDto.From(await FollowMarkersAgainAsync(entry, db, liveEntries, cancellationToken)));
+                        await FollowMarkersAgainAsync(entry, db, liveEntries, cancellationToken);
                 }
-                return Results.Ok(EntryDto.From(entry));
+                return null;
+            }
+
+            var oldRange = $"{TrimTime.Format(entry.StartTime)}-{TrimTime.Format(entry.EndTime) ?? "end"}";
+            var oldCuts = CutOuts.Read(entry.Cuts).Count;
+            var clipLength = TimeSpan.FromSeconds(CutOuts.KeptSeconds(startTime.TotalSeconds, rangeEnd, cuts));
+            // A live markers entry is always a reference while it follows (it would be re-downloaded on every marker change)
+            var isStored = !follow && IsStoredLength(rangeEnd - startTime.TotalSeconds, settings);
+            var wasStored = entry.Status != EntryStatus.ReferenceOnly;
+            var sameRange = startTime == entry.StartTime && endTime == entry.EndTime;
+            var hasOldFile = entry.FileCuts is not null && (entry.FilePath is not null || entry.GeneratedFilePath is not null);
+            var keepFile = sameRange && isStored == wasStored && !hasOldFile && entry.Status != EntryStatus.Failed;
+
+            var details = $"{oldRange} -> {TrimTime.Format(startTime)}-{TrimTime.Format(endTime) ?? "end"}, {clipLength.TotalSeconds:0.###}s, {(isStored ? "stored" : "reference-only")}"
+                + (oldCuts != cuts.Count ? $", cut-out parts {oldCuts} -> {cuts.Count}" : cuts.Count > 0 ? $", {cuts.Count} cut-out part(s)" : "")
+                + (keepFile ? ", same file" : "")
+                + (follow ? ", follows markers again" : "");
+
+            var wasFollowing = entry.FollowsMarkers;
+            if (keepFile)
+            {
+                // Only the cut-out parts changed: the file already holds the whole range, so nothing is downloaded again
+                entry.Cuts = cutsJson;
+                entry.ClipLengthSeconds = clipLength.TotalSeconds;
+                entry.FollowsMarkers = follow;
+                entry.UpdatedAtUtc = DateTime.UtcNow;
+                db.Audit(audit?.Action ?? AuditActions.EntryRetrimmed, id, audit is { } a ? $"{a.Details}; {details}" : details);
+                await db.SaveChangesAsync(cancellationToken);
+                if (follow && !wasFollowing)
+                    await FollowMarkersAgainAsync(entry, db, liveEntries, cancellationToken);
+                return null;
             }
 
             // A running job would keep writing the old cut to the same file. Stop it and wait until it has cleaned up.
@@ -499,12 +579,6 @@ namespace TwitchDownloaderWeb.Endpoints
                 await db.Entry(entry).ReloadAsync(cancellationToken);
             }
 
-            var oldRange = $"{TrimTime.Format(entry.StartTime)}-{TrimTime.Format(entry.EndTime) ?? "end"}";
-            var oldCuts = CutOuts.Read(entry.Cuts).Count;
-            var clipLength = TimeSpan.FromSeconds(CutOuts.KeptSeconds(startTime.TotalSeconds, rangeEnd, cuts));
-            // A live markers entry is always a reference while it follows (it would be re-downloaded on every marker change)
-            var isStored = !follow && clipLength.TotalSeconds <= settings.Value.MaxStoredClipSeconds;
-
             storage.TryDelete(entry.FilePath);
             storage.TryDelete(entry.GeneratedFilePath);
 
@@ -517,6 +591,7 @@ namespace TwitchDownloaderWeb.Endpoints
             entry.Error = null;
             entry.FilePath = null;
             entry.FileSizeBytes = null;
+            entry.FileCuts = null;
             entry.GenerationStatus = GenerationStatus.None;
             entry.GeneratedFilePath = null;
             entry.GeneratedFileSizeBytes = null;
@@ -524,16 +599,15 @@ namespace TwitchDownloaderWeb.Endpoints
             entry.AudioRestoredSeconds = null;
             entry.AudioMutedSeconds = null;
             entry.UpdatedAtUtc = DateTime.UtcNow;
-            db.Audit(AuditActions.EntryRetrimmed, id,
-                $"{oldRange} -> {TrimTime.Format(startTime)}-{TrimTime.Format(endTime) ?? "end"}, {clipLength.TotalSeconds:0.###}s, {(isStored ? "stored" : "reference-only")}"
-                + (oldCuts != cuts.Count ? $", cut-out parts {oldCuts} -> {cuts.Count}" : cuts.Count > 0 ? $", {cuts.Count} cut-out part(s)" : "")
-                + (follow ? ", follows markers again" : ""));
+            db.Audit(audit?.Action ?? AuditActions.EntryRetrimmed, id, audit is { } b ? $"{b.Details}; {details}" : details);
             await db.SaveChangesAsync(cancellationToken);
 
             if (isStored)
                 queue.Enqueue(id, DownloadJobKind.Store);
 
-            return Results.Ok(EntryDto.From(follow ? await FollowMarkersAgainAsync(entry, db, liveEntries, cancellationToken) : entry));
+            if (follow)
+                await FollowMarkersAgainAsync(entry, db, liveEntries, cancellationToken);
+            return null;
         }
 
         /// <summary>Moves a live markers entry that follows its markers again to where the markers put it now.</summary>

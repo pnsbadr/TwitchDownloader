@@ -46,13 +46,13 @@ namespace TwitchDownloaderWeb.Endpoints
             return app;
         }
 
-        private static bool CanEdit(TeamContext team, Video video) =>
+        internal static bool CanEdit(TeamContext team, Video video) =>
             !team.IsSupport && team.CanOnOwnOrAny(video.UserId.ToString(), TeamPermission.AddEntries, TeamPermission.EditAnyEntries);
 
         private static bool CanDelete(TeamContext team, Video video) =>
             !team.IsSupport && team.CanOnOwnOrAny(video.UserId.ToString(), TeamPermission.AddEntries, TeamPermission.DeleteAnyEntries);
 
-        private static IQueryable<Video> WithSegments(LibraryDbContext db) =>
+        internal static IQueryable<Video> WithSegments(LibraryDbContext db) =>
             db.Videos.Include(x => x.Segments.OrderBy(s => s.Position)).ThenInclude(x => x.Marker);
 
         internal static async Task<List<VideoDto>> ToDtosAsync(LibraryDbContext db, IReadOnlyList<Video> videos, TeamContext team, CancellationToken cancellationToken)
@@ -302,11 +302,28 @@ namespace TwitchDownloaderWeb.Endpoints
             var source = await WithSegments(db).AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
             if (source is null)
                 return NotFound();
+
+            var (video, problem) = await CopyVideoAsync(source, request.RowId, team, db, access, cancellationToken);
+            if (problem is not null)
+                return problem;
+
+            var saved = await WithSegments(db).AsNoTracking().FirstAsync(x => x.Id == video!.Id, cancellationToken);
+            return Results.Created($"/api/videos/{saved.Id}", (await ToDtosAsync(db, [saved], team, cancellationToken))[0]);
+        }
+
+        /// <summary>
+        /// Copies a video (segments loaded) for the caller and saves it. The copy's links are in the same order as the source's segments, each
+        /// segment copy remembering its source (<see cref="VodMarker.CopiedFromMarkerId"/>).
+        /// </summary>
+        internal static async Task<(Video? Copy, IResult? Problem)> CopyVideoAsync(Video source, int? rowId, TeamContext team, LibraryDbContext db,
+            TeamChannelAccess access, CancellationToken cancellationToken)
+        {
             if (TeamChannelAccess.Refusal(await access.CheckVodAsync(team.TeamId, source.VodId, cancellationToken), source.VodId) is { } refused)
-                return refused;
-            if (request.RowId is { } rowId
-                && await TimelineEndpoints.CheckRowAsync(db, rowId, source.VodId, TimelineRowKind.Video, team.UserId, cancellationToken) is { } rowProblem)
-                return rowProblem;
+                return (null, refused);
+            if (rowId is { } row
+                && await TimelineEndpoints.CheckRowAsync(db, row, source.VodId, TimelineRowKind.Video, team.UserId, cancellationToken) is { } rowProblem)
+                return (null, rowProblem);
+            var request = new CopyRequest(rowId);
 
             var now = DateTime.UtcNow;
             var copies = source.Segments.Where(x => x.Marker is { EndSeconds: not null }).OrderBy(x => x.Position).Select(x => new VodMarker
@@ -316,7 +333,7 @@ namespace TwitchDownloaderWeb.Endpoints
             }).ToList();
             var linkCuts = source.Segments.Where(x => x.Marker is { EndSeconds: not null }).OrderBy(x => x.Position).Select(x => x.Cuts).ToList();
             if (copies.Count == 0)
-                return Results.Problem(detail: "This video has no segments left.", statusCode: StatusCodes.Status409Conflict);
+                return (null, Results.Problem(detail: "This video has no segments left.", statusCode: StatusCodes.Status409Conflict));
 
             await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
             db.Markers.AddRange(copies);
@@ -333,9 +350,7 @@ namespace TwitchDownloaderWeb.Endpoints
             db.Audit(AuditActions.VideoAdded, null, $"VOD {video.VodId} video {video.Id} \"{video.Title}\" (copy of video {source.Id}, {copies.Count} segments copied)");
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
-
-            var saved = await WithSegments(db).AsNoTracking().FirstAsync(x => x.Id == video.Id, cancellationToken);
-            return Results.Created($"/api/videos/{video.Id}", (await ToDtosAsync(db, [saved], team, cancellationToken))[0]);
+            return (video, null);
         }
 
         /// <summary>

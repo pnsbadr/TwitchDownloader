@@ -197,6 +197,7 @@ namespace TwitchDownloaderWeb.Services
                 entry.AudioMutedSeconds = restore is { StillMutedSeconds: > 0 } ? restore.StillMutedSeconds : null;
 
                 var size = new FileInfo(fullPath).Length;
+                entry.FileCuts = null; // the new file holds the whole range
                 if (isGenerate)
                 {
                     entry.GenerationStatus = GenerationStatus.Ready;
@@ -249,11 +250,12 @@ namespace TwitchDownloaderWeb.Services
         }
 
         /// <summary>
-        /// Downloads a VOD entry's cut (saved clean audio swapped into muted parts when there is any; cut-out parts skipped). We own this
-        /// path, so any leftover from an earlier attempt is overwritten.
+        /// Downloads a VOD entry's whole range (saved clean audio swapped into muted parts when there is any). Cut-out parts stay in the file:
+        /// they're left out when files are made from it (exports) and in preview, so changing them needs no new download. We own this path,
+        /// so any leftover from an earlier attempt is overwritten.
         /// </summary>
         private Task<AudioRestoreResult?> DownloadVodCutAsync(LibraryDbContext db, LibraryEntry entry, string fullPath, CancellationToken cancellationToken) =>
-            _cutter.CutAsync(db, entry, CutOuts.Read(entry.Cuts), entry.VodLengthSeconds, fullPath, _logger,
+            _cutter.CutAsync(db, entry, [], entry.VodLengthSeconds, fullPath, _logger,
                 error => db.Audit(AuditActions.AudioRestoreFailed, entry.Id, error), cancellationToken);
 
         /// <summary>Twitch no longer has what the entry's file would be made from.</summary>

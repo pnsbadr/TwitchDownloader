@@ -236,7 +236,9 @@ namespace TwitchDownloaderWeb.Endpoints
                         var (start, end) = (x.Marker!.Seconds, x.Marker.EndSeconds!.Value);
                         return new ExportVideoPart(x.Marker.Label.Length > 0 ? x.Marker.Label : $"Segment {i + 1}", start, end,
                             CutOuts.Normalize(CutOuts.Read(x.Marker.Cuts).Concat(CutOuts.Read(x.Cuts)), start, end));
-                    }).ToList();
+                    }).Where(x => x.KeptSeconds >= CutOuts.MinKeptPartSeconds).ToList(); // an applied edit may take a segment out whole
+                    if (parts.Count == 0)
+                        return ([], Invalid(index, "Everything in that video is cut out."));
                     return ([new ExportItem
                     {
                         Kind = ExportItemKind.Video, VodId = video.VodId, VideoId = video.Id, StartSeconds = parts.Min(x => x.Start),

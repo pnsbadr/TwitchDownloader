@@ -42,6 +42,8 @@ namespace TwitchDownloaderWeb.Data
         public DbSet<ExportItem> ExportItems => Set<ExportItem>();
         public DbSet<RevokedChannel> RevokedChannels => Set<RevokedChannel>();
         public DbSet<HiddenVod> HiddenVods => Set<HiddenVod>();
+        public DbSet<ItemEdit> ItemEdits => Set<ItemEdit>();
+        public DbSet<ItemApply> ItemApplies => Set<ItemApply>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -211,6 +213,35 @@ namespace TwitchDownloaderWeb.Data
                 entity.HasIndex(x => new { x.BatchId, x.Position }).IsUnique();
             });
 
+            modelBuilder.Entity<ItemEdit>(entity =>
+            {
+                entity.Property(x => x.Title).HasMaxLength(ItemEdit.MaxTitleLength);
+                entity.Property(x => x.Layout).HasMaxLength(ItemEdit.MaxLayoutLength);
+                entity.Ignore(x => x.Kind);
+                entity.HasIndex(x => x.EntryId);
+                entity.HasIndex(x => x.MarkerId);
+                entity.HasIndex(x => x.VideoId);
+                entity.HasIndex(x => new { x.TeamId, x.VodId });
+                entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne<LibraryEntry>().WithMany().HasForeignKey(x => x.EntryId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne<VodMarker>().WithMany().HasForeignKey(x => x.MarkerId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne<Video>().WithMany().HasForeignKey(x => x.VideoId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasQueryFilter(x => !ScopedToTeam || (x.TeamId == ScopeTeamId && !HiddenVods.Any(h => h.TeamId == ScopeTeamId && h.VodId == x.VodId)));
+            });
+
+            modelBuilder.Entity<ItemApply>(entity =>
+            {
+                entity.Property(x => x.EditTitle).HasMaxLength(ItemEdit.MaxTitleLength);
+                entity.HasIndex(x => x.EntryId);
+                entity.HasIndex(x => x.MarkerId);
+                entity.HasIndex(x => x.VideoId);
+                entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne<LibraryEntry>().WithMany().HasForeignKey(x => x.EntryId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne<VodMarker>().WithMany().HasForeignKey(x => x.MarkerId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne<Video>().WithMany().HasForeignKey(x => x.VideoId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasQueryFilter(x => !ScopedToTeam || (x.TeamId == ScopeTeamId && !HiddenVods.Any(h => h.TeamId == ScopeTeamId && h.VodId == x.VodId)));
+            });
+
             modelBuilder.Entity<RevokedChannel>(entity =>
             {
                 entity.Property(x => x.Login).HasMaxLength(25);
@@ -320,6 +351,14 @@ namespace TwitchDownloaderWeb.Data
                     case ExportBatch batch:
                         if (batch.TeamId == 0 && _actor.TeamId is { } batchTeam) batch.TeamId = batchTeam;
                         if (batch.CreatedByUserId == 0 && _actor.UserId is { } batchUser) batch.CreatedByUserId = batchUser;
+                        break;
+                    case ItemEdit edit:
+                        if (edit.TeamId == 0 && _actor.TeamId is { } editTeam) edit.TeamId = editTeam;
+                        if (edit.CreatedByUserId == 0 && _actor.UserId is { } editUser) edit.CreatedByUserId = editUser;
+                        break;
+                    case ItemApply apply:
+                        if (apply.TeamId == 0 && _actor.TeamId is { } applyTeam) apply.TeamId = applyTeam;
+                        if (apply.UserId == 0 && _actor.UserId is { } applyUser) apply.UserId = applyUser;
                         break;
                     case SavedChannel channel:
                         if (channel.TeamId == 0 && _actor.TeamId is { } channelTeam) channel.TeamId = channelTeam;
