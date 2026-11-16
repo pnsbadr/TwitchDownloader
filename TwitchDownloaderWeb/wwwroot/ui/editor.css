@@ -282,6 +282,33 @@ button.team-pill:hover { background: var(--bg-4); }
   pointer-events: none;
   z-index: 2;
 }
+.player-info[data-saving]::after { content: "saving…"; margin-left: 8px; font-size: 12px; font-weight: 400; color: var(--text-dim); }
+
+/* Player 2's edit picker (saved edits) */
+#p2-edit-menu { flex: none; min-width: 0; margin-right: auto; }
+.edit-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  height: 26px;
+  padding: 0 8px 0 9px;
+  border-radius: 13px;
+  background: var(--bg-3);
+  border: 1px solid var(--line-strong);
+  color: var(--text);
+  font: 600 13px/1 Barlow, system-ui, sans-serif;
+  cursor: pointer;
+}
+.edit-pick:hover { background: var(--bg-4); }
+.edit-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.edit-pick sl-icon { font-size: 14px; color: var(--text-dim); flex: none; }
+.edit-pick-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.edit-pick-state { font-size: 11px; font-weight: 500; color: var(--text-dim); flex: none; }
+.edit-pick-state:empty { display: none; }
+.edit-pick-state.bad { color: #ff8a8a; }
+.edit-menu { min-width: 280px; max-height: 70vh; overflow: auto; }
+.edit-menu .edit-detail { font-size: 12px; color: var(--text-dim); margin-left: 12px; }
 .p2-info { display: flex; align-items: baseline; gap: 8px; justify-content: flex-end; }
 .p2-info .p2-kind { font: 600 12px/1 "Barlow Condensed", Barlow, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); flex: none; }
 .p2-info .p2-length { font-weight: 500; color: var(--text-dim); flex: none; }

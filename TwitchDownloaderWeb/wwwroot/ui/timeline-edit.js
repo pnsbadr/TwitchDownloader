@@ -1,26 +1,27 @@
-// Editing on the timelines (frontend rework steps 3b and 4), mixed into Timeline (ui/timeline.js). Player 2's timeline
-// ("item" mode) has the same tools for its one item, except creating; stored clips are trimmed only there, and its cut tool
-// cuts parts out instead of splitting (step 7).
+// Editing on the timelines (frontend rework steps 3b and 4), mixed into Timeline (ui/timeline.js). Player 2's timeline is
+// SourceTimeline (ui/source-timeline.js): it makes saved edits of its item instead and overrides most of what's here for
+// that; what it keeps from here are the tools, the cut tool's drag, snapping and the changes to the item itself (titles,
+// a video's order).
 //
 // Tools (V/C/Z/H): pointer (click selects an item and seeks to it; drag the selected item's edges), cut (click a segment to
 // split it in two), zoom (click in, right click out) and hand (drag to scroll the view). S / X mark a segment / clip
 // (start, then end), M a moment; the title and color editor in the tools bar names it, and it goes on the member's own row
 // (the last own row clicked, else their first of that kind). Others' items: view only; with "edit anyone's entries" each
 // change asks "Edit original" or "Make a copy" (Enter = copy); anyone who may add things can copy them from the right-click
-// menu. Undo/redo: the last 10 marker changes and clip re-trims per VOD, in this tab only, shared by both timelines.
+// menu. Undo/redo: the last 10 marker changes and clip re-trims per VOD, in this tab only.
 // Dragging an item's body (not its edges) drags it to other places, e.g. onto Player 2 (ui/drag.js), or onto one of the
 // member's own rows on Player 1 (step 5): own items move there, others' are copied there, Alt copies own ones too, and
 // Alt + a clip on a video row makes a segment at exactly its times. Segments and markers only go on video rows, clips on
-// clip rows.
+// clip rows. Stored clips' edges are dragged here too (saved edits, 2026-11-16: Player 2 no longer changes the item),
+// capped at the stored-clip limit over the clip's whole range, and saved 3 s after the last change (each re-trim downloads
+// the clip again).
 //
 // Videos (step 6): the link tool (tools bar) takes a title and the segments clicked on one of the member's rows, in order.
-// In Player 2 a video is laid out in video time (Timeline.videoItems): dragging a part's edge trims that segment (in VOD
-// seconds, via toVod), the right-click menu reorders parts or takes one out of the video. Someone else's video asks
-// "Edit original / Make a copy" first (copying the whole video).
+// In Player 2 the right-click menu reorders a video's parts or takes one out of the video (that changes the video itself).
+// Someone else's video asks "Edit original / Make a copy" first (copying the whole video).
 //
-// Cut-out parts (step 7): Player 2's cut tool, dragged across its item, removes that part (the item's own cuts; in a video,
-// cuts of that video only, per segment). Clicking a cut-out part with it, or its right-click menu, puts the part back.
-// Files skip them and lengths count what's left (ui/cuts.js); playback skips them too (ui/editor.js).
+// Cut-out parts (step 7): made in Player 2 as part of an edit; applying the edit to Player 1 makes them the item's own
+// (drawn darker here). Files skip them and lengths count what's left (ui/cuts.js); playback skips them too (ui/editor.js).
 //
 // Every time a new kind of item gets drawn here, add its times to snapPoints().
 
@@ -29,7 +30,6 @@ import { confirmAction, chooseEditTarget } from "./dialogs.js";
 import { openMenu } from "./menu.js";
 import { formatClock } from "./media.js";
 import { startDrag, dropTarget } from "./drag.js";
-import { normalizeCuts, keptSeconds, cutAt, MIN_KEPT_SECONDS } from "./cuts.js";
 
 const EDGE_PX = 7;
 const SNAP_PX = 8;
@@ -185,18 +185,18 @@ export const editing = {
     return Boolean(item.data.canEdit);
   },
 
-  // Edges can be dragged on segments and on reference-only VOD clips; stored clips only in Player 2 (they download again)
+  // Edges can be dragged on segments and VOD clips (stored ones wait 3 s before they're saved: they download again)
   canMoveEdges(item) {
     if (!this.canEditItem(item)) return false;
     if (item.kind === "segment") return true;
-    return item.kind === "clip" && item.data.kind === "Vod" && (item.reference || this.mode === "item");
+    return item.kind === "clip" && item.data.kind === "Vod";
   },
 
-  // A stored clip's longest range: the stored-clip limit counts what's left after cut-out parts
+  // A stored clip's longest range: the stored file keeps the whole clip (cut-out parts are left out only when files are
+  // made from it), so the stored-clip limit counts the whole range
   clipLimit(item) {
     if (item.kind !== "clip" || item.reference) return Infinity;
-    const cut = (item.cuts ?? []).reduce((sum, c) => sum + Math.max(0, c.end - c.start), 0);
-    return this.maxStoredClipSeconds + cut;
+    return this.maxStoredClipSeconds;
   },
 
   canDeleteItem(item) {
@@ -274,9 +274,7 @@ export const editing = {
   },
 
   select(item) {
-    // Player 2's item stays selected (a video's parts can be selected one by one)
-    if (this.mode === "item" && !this.isVideoLayout()) this.selected = this.focus ? { ...this.focus } : null;
-    else this.selected = item ? { type: item.kind === "clip" ? "clip" : "marker", id: item.id } : null;
+    this.selected = item ? { type: item.kind === "clip" ? "clip" : "marker", id: item.id } : null;
     this.changed();
   },
 
@@ -305,21 +303,8 @@ export const editing = {
     return { start: item.start, end: item.end };
   },
 
-  // The same in VOD seconds (a video's part is shown in video time)
-  selectedVodRange() {
-    const item = this.selectedItem();
-    if (!item || item.end == null) return null;
-    return { start: this.toVod(item, item.start), end: this.toVod(item, item.end) };
-  },
-
-  // A time on this timeline as VOD seconds, for one item (only a video's parts differ)
-  toVod(item, t) {
-    return item.offset != null ? round(item.vodStart + (t - item.offset)) : t;
-  },
-
-  // How far an item's edges can go, in this timeline's time: the start and end of the VOD
-  edgeBounds(item) {
-    if (item.offset != null) return { min: item.offset - item.vodStart, max: item.offset + (this.vodLength() - item.vodStart) };
+  // How far an item's edges can go: the start and end of the VOD
+  edgeBounds() {
     return { min: 0, max: this.vodLength() };
   },
 
@@ -546,13 +531,7 @@ export const editing = {
     const item = this.itemAt(x, event.clientY - rect.top, rect.width);
     if (!item) return;
     this.select(item);
-    const t = this.xToTime(x, rect.width);
-    const unload = { icon: "eject", label: "Unload from Player 2", run: () => this.hooks.onUnload?.() };
-    if (this.isVideoLayout()) {
-      openMenu(event.clientX, event.clientY, [...this.cutMenu(item, t), ...this.videoPartMenu(item), unload]);
-      return;
-    }
-    const entries = this.mode === "item" ? this.cutMenu(item, t) : [];
+    const entries = [];
     if (this.canEditItem(item)) {
       entries.push({ icon: "pencil-simple", label: item.kind === "clip" ? "Rename" : "Edit title and color", run: () => this.editTitle(item) });
     }
@@ -560,8 +539,7 @@ export const editing = {
     if (this.mode === "vod" && (item.kind === "segment" || (item.kind === "clip" && item.data.kind === "Vod"))) {
       entries.push({ icon: "download-simple", label: "Add to the export list", run: () => this.hooks.onExport?.(item) });
     }
-    if (this.mode === "item") entries.push(unload);
-    else if (this.canDeleteItem(item)) entries.push({ icon: "trash", label: "Delete", danger: true, run: () => this.deleteItem(item) });
+    if (this.canDeleteItem(item)) entries.push({ icon: "trash", label: "Delete", danger: true, run: () => this.deleteItem(item) });
     if (!entries.length) entries.push({ icon: "eye", label: "View only", run: () => {} });
     openMenu(event.clientX, event.clientY, entries);
   },
@@ -679,17 +657,6 @@ export const editing = {
   // Every time on the timeline a dragged edge can stick to. New kinds of timeline items must add theirs here.
   snapPoints(skip) {
     const points = [];
-    if (this.isVideoLayout()) {
-      // A video's parts, in video time
-      for (const item of this.videoItems(this.rows[0])) {
-        if (!(skip?.id === item.id && skip.edge === "start")) points.push(item.start);
-        if (!(skip?.id === item.id && skip.edge === "end")) points.push(item.end);
-        for (const cut of item.cuts ?? []) points.push(cut.start, cut.end);
-      }
-      const now = this.getPosition();
-      if (now != null) points.push(now);
-      return points;
-    }
     for (const marker of this.markers) {
       if (!(skip?.type === "marker" && skip.id === marker.id && skip.edge === "start")) points.push(marker.seconds);
       if (marker.endSeconds != null && !(skip?.type === "marker" && skip.id === marker.id && skip.edge === "end")) points.push(marker.endSeconds);
@@ -926,7 +893,7 @@ export const editing = {
         this.selected = { type: "clip", id: target.id };
       } else {
         const before = markerBody(item.data);
-        const after = { ...before, seconds: this.toVod(item, start), endSeconds: this.toVod(item, end), cuts: null };
+        const after = { ...before, seconds: start, endSeconds: end, cuts: null };
         await this.putMarker(target.id, after);
         this.remember({ type: "change", ref: { id: target.id }, before, after });
         this.selected = { type: "marker", id: target.id };
@@ -955,7 +922,6 @@ export const editing = {
     };
     this.preview = null;
     this.changed();
-    if (this.mode === "item") this.hooks.onFocusChanged?.(this.focusItem());
   },
 
   async flushTrim() {
@@ -971,7 +937,6 @@ export const editing = {
     }
     if (this.pendingTrim === pending) this.pendingTrim = null;
     this.changed();
-    if (this.mode === "item") this.hooks.onFocusChanged?.(this.focusItem());
   },
 
   // The page is closing: send a waiting stored-clip trim without waiting for the answer
@@ -999,7 +964,7 @@ export const editing = {
     if (!item || position == null) return;
     const now = round(position);
     if (!this.canMoveEdges(item)) {
-      toast(item.kind === "clip" && !item.reference ? "Stored clips are trimmed in Player 2." : `You can't change this ${this.whatIs(item)}.`);
+      toast(item.kind === "clip" && item.data.kind !== "Vod" ? "Twitch clips can't be trimmed." : `You can't change this ${this.whatIs(item)}.`);
       return;
     }
     const start = edge === "start" ? now : item.start;
@@ -1203,34 +1168,7 @@ export const editing = {
     return false;
   },
 
-  // ---------- cut-out parts (step 7, Player 2's cut tool) ----------
-
-  // What the cut tool works on: { item, start, end } (a segment or VOD clip) or { video, start, end }; null (and why) if nothing
-  cutTarget() {
-    if (this.isVideoLayout()) {
-      if (!this.video) return null;
-      if (!this.video.canEdit || me?.support) {
-        toast(this.canAdd() && !me?.support ? "This video is view only. Right-click a part to make a copy on your row." : "This video is view only.");
-        return null;
-      }
-      return { video: true, start: 0, end: this.length() };
-    }
-    const item = this.focusItem();
-    if (!item) return null;
-    if (item.end == null) {
-      toast("Markers have no parts to cut out.");
-      return null;
-    }
-    if (item.kind === "clip" && item.data.kind !== "Vod") {
-      toast("Twitch clips can't have parts cut out.");
-      return null;
-    }
-    if (!this.canEditItem(item)) {
-      toast(this.canCopyItem(item) ? `This ${this.whatIs(item)} is view only. Right-click it to make a copy on your row.` : `You can't change this ${this.whatIs(item)}.`);
-      return null;
-    }
-    return { item, start: item.start, end: item.end };
-  },
+  // ---------- cut-out parts (Player 2's cut tool; SourceTimeline says what it cuts: cutTarget, cutOut, clickCutOut) ----------
 
   // Pressing with the cut tool: dragging marks the part to cut out, a click on a cut-out part puts it back
   startCutOut(event, canvas, rect, x, y, t) {
@@ -1240,134 +1178,6 @@ export const editing = {
     this.snapAt = null;
     this.press = { kind: "cutout", from, at: t, min: target.start, max: target.end, startX: event.clientX, moved: false, rect };
     canvas.setPointerCapture(event.pointerId);
-  },
-
-  async cutOut(start, end) {
-    const target = this.cutTarget();
-    if (!target) return;
-    if (target.video) {
-      await this.cutOutOfVideo(start, end);
-      return;
-    }
-    const item = target.item;
-    await this.saveCuts(item, normalizeCuts([...(item.cuts ?? []), { start, end }], item.start, item.end));
-  },
-
-  clickCutOut(t) {
-    if (this.isVideoLayout()) {
-      const item = this.videoItems(this.rows[0]).find((i) => t >= i.start && t < i.end);
-      const cut = item && cutAt(item.videoCutsVod, this.toVod(item, t));
-      if (cut) this.putBackInVideo(item, cut);
-      else if (item && cutAt(item.ownCutsVod, this.toVod(item, t))) toast("This part is cut out of the segment itself. Load the segment in Player 2 to put it back.");
-      else toast("Drag across the part you want to cut out.");
-      return;
-    }
-    const item = this.focusItem();
-    const cut = item && cutAt(item.cuts, t);
-    if (cut) this.putBack(item, cut);
-    else toast("Drag across the part you want to cut out.");
-  },
-
-  putBack(item, cut) {
-    this.saveCuts(item, (item.cuts ?? []).filter((c) => c.end <= cut.start || c.start >= cut.end));
-  },
-
-  // The item's new cut-out parts (VOD seconds, normalized). Stored clips wait like a trim (they download again).
-  async saveCuts(item, cuts) {
-    const kept = keptSeconds(item.start, item.end, cuts);
-    if (kept < MIN_KEPT_SECONDS) {
-      toast("That would cut out everything.");
-      return;
-    }
-    if (item.kind === "clip" && !item.reference && kept > this.maxStoredClipSeconds + 0.005) {
-      toast(`Stored clips are at most ${formatClock(this.maxStoredClipSeconds).replace(/^0:0?|\.00$/g, "")} after cut-out parts.`);
-      return;
-    }
-    if (JSON.stringify(cuts) === JSON.stringify(normalizeCuts(item.cuts, item.start, item.end))) return;
-    const target = await this.editTarget(item);
-    if (!target) return;
-    if (item.kind === "clip" && !item.reference) {
-      const before = { start: item.data.start, end: item.data.end ?? null, cuts: item.data.cuts ?? [] };
-      this.scheduleTrim(target.id, before, { start: item.start, end: item.end, cuts });
-      return;
-    }
-    try {
-      if (item.kind === "clip") {
-        const before = { start: item.data.start, end: item.data.end ?? null, cuts: item.data.cuts ?? [] };
-        const after = { start: before.start, end: before.end, cuts };
-        await this.trimClip(target.id, after);
-        this.remember({ type: "trim", ref: { id: target.id }, before, after });
-      } else {
-        const before = markerBody(item.data);
-        const after = { ...before, cuts };
-        await this.putMarker(target.id, after);
-        this.remember({ type: "change", ref: { id: target.id }, before, after });
-      }
-    } catch (error) {
-      toast(error.message, "error");
-    }
-    this.changed();
-    this.load();
-  },
-
-  // A part cut out of the video only (each segment it crosses gets its share; the segments themselves keep it)
-  async cutOutOfVideo(start, end) {
-    const changes = [];
-    for (const item of this.videoItems(this.rows[0])) {
-      const from = Math.max(start, item.start);
-      const to = Math.min(end, item.end);
-      if (to - from < 0.01) continue;
-      const after = normalizeCuts([...item.videoCutsVod, { start: this.toVod(item, from), end: this.toVod(item, to) }], item.vodStart, item.vodEnd);
-      if (keptSeconds(item.vodStart, item.vodEnd, [...item.ownCutsVod, ...after]) < MIN_KEPT_SECONDS) {
-        toast(`That would cut out all of "${item.title || "a segment"}". Take it out of the video instead.`);
-        return;
-      }
-      changes.push({ markerId: item.id, before: item.videoCutsVod, after });
-    }
-    if (changes.length) await this.saveVideoCuts(changes);
-  },
-
-  putBackInVideo(item, cut) {
-    const after = item.videoCutsVod.filter((c) => c.end <= cut.start || c.start >= cut.end);
-    this.saveVideoCuts([{ markerId: item.id, before: item.videoCutsVod, after }]);
-  },
-
-  async saveVideoCuts(changes) {
-    if (!(await this.videoEditTarget())) return;
-    const before = changes.map((c) => ({ markerId: c.markerId, cuts: c.before }));
-    const after = changes.map((c) => ({ markerId: c.markerId, cuts: c.after }));
-    try {
-      await api("PUT", `/api/videos/${this.video.id}`, { cuts: after });
-      this.remember({ type: "videoCuts", videoId: this.video.id, before, after });
-      this.hooks.onVideosChanged?.();
-    } catch (error) {
-      toast(error.message, "error");
-    }
-    await this.load();
-    this.edited();
-  },
-
-  // Right-click in Player 2: put cut-out parts back
-  cutMenu(item, t) {
-    const entries = [];
-    if (this.isVideoLayout()) {
-      if (!this.video?.canEdit || me?.support) return entries;
-      const cut = cutAt(item.videoCutsVod, this.toVod(item, t));
-      if (cut) entries.push({ icon: "arrow-counter-clockwise", label: "Put this part back", run: () => this.putBackInVideo(item, cut) });
-      if (item.videoCutsVod.length > (cut ? 1 : 0)) {
-        entries.push({
-          icon: "arrows-out-line-horizontal",
-          label: "Put back everything cut out of this part",
-          run: () => this.saveVideoCuts([{ markerId: item.id, before: item.videoCutsVod, after: [] }]),
-        });
-      }
-      return entries;
-    }
-    if (!item.cuts?.length || !this.canEditItem(item)) return entries;
-    const cut = cutAt(item.cuts, t);
-    if (cut) entries.push({ icon: "arrow-counter-clockwise", label: "Put this part back", run: () => this.putBack(item, cut) });
-    if (item.cuts.length > (cut ? 1 : 0)) entries.push({ icon: "arrows-out-line-horizontal", label: "Put back all cut-out parts", run: () => this.saveCuts(item, []) });
-    return entries;
   },
 
   // ---------- videos (step 6) ----------
@@ -1672,11 +1482,6 @@ export const editing = {
         break;
       case "trim":
         await this.trimClip(step.ref.id, reverse ? step.before : step.after);
-        break;
-      case "videoCuts":
-        await api("PUT", `/api/videos/${step.videoId}`, { cuts: reverse ? step.before : step.after });
-        this.hooks.onVideosChanged?.();
-        this.edited();
         break;
       case "clipRow":
         await api("PUT", `/api/entries/${step.ref.id}/row`, { rowId: reverse ? step.before : step.after });

@@ -1,8 +1,7 @@
 // The timeline under the players (frontend rework steps 3 and 4). There are two, one per player, sharing the same panel
 // (the Player 1 / Player 2 tabs show one at a time). Player 1's (mode "vod"): every member's rows on the loaded VOD, from
-// GET /api/vods/{id}/timeline. Player 2's (mode "item"): one segment or clip on its own row, the view locked to a window
-// around it; trimming it there changes the item itself, so Player 1's timeline moves too. A video in Player 2 (step 6) is
-// shown in "video time": its segments end to end in play order, whatever their places in the VOD (videoItems()). A row belongs to one member and one VOD: video rows hold segments (hatched boxes) and
+// GET /api/vods/{id}/timeline. Player 2's (mode "item") is SourceTimeline (ui/source-timeline.js): one clip, segment or
+// video as the source of saved edits, in its own time from 0:00. A row belongs to one member and one VOD: video rows hold segments (hatched boxes) and
 // moment markers (lines), clip rows hold clips (solid bars). Everyone can see and play every row; only the owner edits
 // it (editing comes in step 3b). Hide / solo / lock are page-only, per row.
 //
@@ -24,11 +23,6 @@ const MUTED_COLOR = "rgb(240 82 82 / 0.5)";
 const CLEAN_COLOR = "rgb(60 207 122 / 0.5)";
 const TICK_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400];
 
-// Player 2's window around its item: a quarter of its length on each side, 5 s to 60 s
-function windowMargin(length) {
-  return Math.min(Math.max(length * 0.25, 5), 60);
-}
-
 export class Timeline {
   // mode "vod" (Player 1) or "item" (Player 2). hooks: see initEditing in timeline-edit.js, plus for "item" mode
   // onFocusChanged(item) (its range or title changed) and onFocusGone(message) (deleted, or its VOD can't be opened)
@@ -48,7 +42,7 @@ export class Timeline {
     this.active = false;
     this.focus = null;      // "item" mode: { type: "marker" | "clip" | "video", id } of the item Player 2 shows
     this.video = null;      // "item" mode with a video: the video (GET /timeline's videos)
-    this.window = null;     // "item" mode: { start, end } the view is locked to
+    this.window = null;     // "item" mode: { start, end } the view is locked to (the item, 0:00 to its length)
 
     this.vodId = null;
     this.vodTitle = "";
@@ -162,7 +156,7 @@ export class Timeline {
       if (vodId !== this.vodId) return;
       if (timeline.maxStoredClipSeconds) this.maxStoredClipSeconds = timeline.maxStoredClipSeconds;
       if (this.mode === "item") {
-        this.applyItem(timeline);
+        this.applyItem(timeline); // SourceTimeline
       } else {
         const rowsChanged = JSON.stringify(timeline.rows) !== JSON.stringify(this.rows);
         this.rows = timeline.rows ?? [];
@@ -190,153 +184,11 @@ export class Timeline {
     }
   }
 
-  // "item" mode: keep only Player 2's item and its row
-  applyItem(timeline) {
-    const focus = this.focus;
-    if (!focus) return;
-    if (focus.type === "video") {
-      this.applyVideo(timeline);
-      return;
-    }
-    const found = focus.type === "clip"
-      ? (timeline.clips ?? []).find((c) => c.id === focus.id)
-      : (timeline.markers ?? []).find((m) => m.id === focus.id);
-    if (!found) {
-      this.markers = [];
-      this.clips = [];
-      this.hooks.onFocusGone?.(null);
-      return;
-    }
-    const row = (timeline.rows ?? []).find((r) => r.id === found.rowId) ?? {
-      id: 0,
-      userId: focus.type === "clip" ? Number(found.addedByUserId) : found.createdByUserId,
-      username: found.createdBy,
-      kind: focus.type === "clip" ? "Clip" : "Video",
-      position: 0,
-      name: null,
-      canEdit: false,
-    };
-    const rowsChanged = JSON.stringify([row]) !== JSON.stringify(this.rows);
-    this.rows = [row];
-    this.markers = focus.type === "marker" ? [found] : [];
-    this.clips = focus.type === "clip" ? [found] : [];
-    this.videos = [];
-    if (rowsChanged) {
-      this.renderHeads();
-      this.renderFooter();
-    }
-    this.updateWindow();
-    this.hooks.onFocusChanged?.(this.focusItem());
-  }
-
-  // A video: its row, and its segments' markers (for who may edit them)
-  applyVideo(timeline) {
-    const video = (timeline.videos ?? []).find((v) => v.id === this.focus.id);
-    if (!video || !video.segments?.length) {
-      this.markers = [];
-      this.video = null;
-      this.hooks.onFocusGone?.(null);
-      return;
-    }
-    const ids = new Set(video.segments.map((s) => s.markerId));
-    const row = (timeline.rows ?? []).find((r) => r.id === video.rowId) ?? {
-      id: video.rowId, userId: video.userId, username: video.createdBy, kind: "Video", position: 0, name: null, canEdit: false,
-    };
-    const rowsChanged = JSON.stringify([row]) !== JSON.stringify(this.rows);
-    this.rows = [row];
-    this.video = video;
-    this.markers = (timeline.markers ?? []).filter((m) => ids.has(m.id));
-    this.clips = [];
-    this.videos = [video];
-    if (rowsChanged) {
-      this.renderHeads();
-      this.renderFooter();
-    }
-    this.updateWindow();
-    this.hooks.onFocusChanged?.(this.focusInfo());
-  }
-
+  // Player 2 (SourceTimeline) shows a video
   isVideoLayout() {
     return this.mode === "item" && this.focus?.type === "video";
   }
 
-  // A video's segments end to end: start/end are video time; offset = where it starts in the video, vodStart/vodEnd its
-  // place in the VOD. toVod() turns a video time back into VOD seconds.
-  videoItems(row) {
-    const video = this.video;
-    if (!video) return [];
-    const preview = this.preview;
-    let offset = 0;
-    return [...video.segments].sort((a, b) => a.position - b.position).map((segment, index) => {
-      const marker = this.markers.find((m) => m.id === segment.markerId);
-      const vodStart = marker?.seconds ?? segment.startSeconds;
-      const vodEnd = marker?.endSeconds ?? segment.endSeconds;
-      const length = vodEnd - vodStart;
-      const shift = (cut) => ({ start: offset + cut.start - vodStart, end: offset + cut.end - vodStart });
-      const ownCutsVod = marker?.cuts ?? segment.cuts ?? [];
-      const videoCutsVod = segment.videoCuts ?? [];
-      let item = {
-        kind: "segment", id: segment.markerId, start: offset, end: offset + length, offset, vodStart, vodEnd,
-        title: marker?.label ?? segment.label, color: marker?.color ?? segment.color, by: marker?.createdBy ?? video.createdBy,
-        cuts: [...ownCutsVod, ...videoCutsVod].map(shift), ownCutsVod, videoCutsVod, row, videoIndex: index + 1,
-        data: marker ?? { id: segment.markerId, seconds: vodStart, endSeconds: vodEnd, label: segment.label, color: segment.color, canEdit: false, canDelete: false },
-      };
-      if (preview && preview.type === "marker" && preview.id === item.id) item = { ...item, start: preview.start, end: preview.end };
-      offset += length;
-      return item;
-    });
-  }
-
-  // The video's parts in play order, in VOD seconds (Player 2 plays them one after the other)
-  videoParts() {
-    return this.isVideoLayout() ? this.videoItems(this.rows[0]).map((item) => ({
-      id: item.id, offset: item.offset, vodStart: item.vodStart, vodEnd: item.vodEnd, cuts: [...item.ownCutsVod, ...item.videoCutsVod],
-    })) : [];
-  }
-
-  // Player 2's item as drawn (with an edge being dragged or a trim waiting to be saved)
-  focusItem() {
-    if (this.mode !== "item" || !this.rows.length || this.isVideoLayout()) return null;
-    return this.itemsOf(this.rows[0])[0] ?? null;
-  }
-
-  // Player 2's header: { title, length } (length = what's left after cut-out parts)
-  focusInfo() {
-    if (this.isVideoLayout()) return this.video ? { title: this.video.title, length: this.video.lengthSeconds } : null;
-    const item = this.focusItem();
-    if (!item) return null;
-    let length = null;
-    if (item.end != null) {
-      const cut = (item.cuts ?? []).reduce((sum, c) => sum + Math.max(0, Math.min(c.end, item.end) - Math.max(c.start, item.start)), 0);
-      length = item.end - item.start - cut;
-    }
-    return { title: item.title, length, start: item.start, end: item.end };
-  }
-
-  // The window around Player 2's item. It only moves when the item comes close to its edges or gets much shorter, so
-  // trimming doesn't make the view jump.
-  updateWindow() {
-    if (this.isVideoLayout()) {
-      // A video shows whole: from its start to its end
-      const old = this.window;
-      const fitted = !old || (Math.abs(this.view.start - old.start) < 0.01 && Math.abs(this.view.end - old.end) < 0.01);
-      this.window = { start: 0, end: Math.max(this.length(), 0.5) };
-      if (fitted || this.view.end > this.window.end) this.setView(0, this.window.end);
-      return;
-    }
-    const item = this.focusItem();
-    if (!item) return;
-    const end = item.end ?? item.start;
-    const margin = windowMargin(end - item.start);
-    const want = { start: Math.max(0, item.start - margin), end: Math.min(this.length(), end + margin) };
-    const old = this.window;
-    const tooTight = old && ((item.start < old.start + 1 && old.start > 0) || (end > old.end - 1 && old.end < this.length()));
-    const tooWide = old && old.end - old.start > 3 * (want.end - want.start);
-    if (old && !tooTight && !tooWide) return;
-    const fitted = !old || (Math.abs(this.view.start - old.start) < 0.01 && Math.abs(this.view.end - old.end) < 0.01);
-    this.window = want;
-    if (fitted || this.view.start < want.start || this.view.end > want.end) this.setView(want.start, want.end);
-  }
 
   // What the view can show: the whole VOD, or Player 2's window
   extent() {
@@ -384,28 +236,16 @@ export class Timeline {
       else ranges.push({ start: frag.start, end: frag.start + frag.duration, clean });
     }
     this.vodAudio = ranges;
-    this.audio = this.isVideoLayout() ? this.videoAudio(ranges) : ranges;
+    this.audio = ranges;
     const fragments = details?.fragments ?? [];
     const last = fragments[fragments.length - 1];
     const before = this.length();
     this.mediaLength = last ? last.start + last.duration : 0;
     // First playlist: show the whole VOD
-    if (this.mode === "item") this.updateWindow();
-    else if (before <= MIN_SPAN || (this.view.end > before - 0.5 && this.view.start <= 0)) this.view.end = Math.max(this.view.end, Math.min(this.length(), this.view.start + this.span()));
-    this.dirty = true;
-  }
-
-  // Muted / saved-audio ranges of the VOD, moved into a video's time
-  videoAudio(ranges) {
-    const out = [];
-    for (const item of this.videoItems(this.rows[0])) {
-      for (const range of ranges) {
-        const start = Math.max(range.start, item.vodStart);
-        const end = Math.min(range.end, item.vodEnd);
-        if (end > start) out.push({ start: item.offset + start - item.vodStart, end: item.offset + end - item.vodStart, clean: range.clean });
-      }
+    if (this.mode === "vod" && (before <= MIN_SPAN || (this.view.end > before - 0.5 && this.view.start <= 0))) {
+      this.view.end = Math.max(this.view.end, Math.min(this.length(), this.view.start + this.span()));
     }
-    return out;
+    this.dirty = true;
   }
 
   // The VOD's length (known so far)
@@ -413,12 +253,8 @@ export class Timeline {
     return Math.max(this.knownLength, this.mediaLength, MIN_SPAN);
   }
 
-  // What the timeline spans: the VOD, or a video's segments end to end
+  // What the timeline spans: the VOD (Player 2: its item)
   length() {
-    if (this.isVideoLayout()) {
-      const items = this.videoItems(this.rows[0]);
-      return items.length ? items[items.length - 1].offset + (items[items.length - 1].vodEnd - items[items.length - 1].vodStart) : 0;
-    }
     return this.vodLength();
   }
 
@@ -692,7 +528,6 @@ export class Timeline {
   }
 
   itemsOf(row) {
-    if (this.isVideoLayout()) return this.videoItems(row);
     const preview = this.preview ?? (this.pendingTrim ? { type: "clip", ...this.pendingTrim } : null);
     const moved = (type, item) => (preview && preview.type === type && preview.id === item.id
       ? { ...item, start: preview.start, end: preview.end, ...(preview.cuts !== undefined ? { cuts: preview.cuts ?? [] } : {}) }
@@ -752,7 +587,7 @@ export class Timeline {
       const range = item.end != null ? `${formatDuration(item.start, { short: false })} – ${formatDuration(item.end, { short: false })}` : `at ${formatDuration(item.start, { short: false })}`;
       lines.push(`${item.title || { clip: "Clip", segment: "Segment", moment: "Marker" }[item.kind]} · ${range}`);
       const cut = (item.cuts ?? []).find((c) => t >= c.start && t < c.end);
-      if (cut) lines.push(`Cut out ${formatDuration(cut.start, { short: false })} – ${formatDuration(cut.end, { short: false })} · left out of files`);
+      if (cut) lines.push(`Cut out ${formatDuration(cut.start, { short: false })} – ${formatDuration(cut.end, { short: false })} · ${this.cutNote ?? "left out of files"}`);
       if (item.videoIndex) lines.push(`Part ${item.videoIndex} · VOD ${formatDuration(item.vodStart, { short: false })} – ${formatDuration(item.vodEnd, { short: false })}`);
       for (const video of item.videos ?? []) lines.push(`In video "${video.title}" (${video.position} of ${video.count})`);
       if (item.by) lines.push(`by ${item.by}${this.canEditItem(item) ? "" : " · view only"}`);
@@ -867,6 +702,7 @@ export class Timeline {
       ctx.fillRect(0, y + ROW_HEIGHT - 1, width, 1);
       this.drawVerticalParts(ctx, width, y);
     }
+    this.drawOverlay?.(ctx, width);
     this.drawPending(ctx, width, now);
     if (this.cutDrag) this.drawCutDrag(ctx, width);
     // The row a dragged item would land on
@@ -882,15 +718,6 @@ export class Timeline {
       ctx.lineWidth = 2;
       ctx.strokeRect(1, dropIndex * ROW_HEIGHT + 1, width - 2, ROW_HEIGHT - 2);
       ctx.restore();
-    }
-    const focus = this.focusItem();
-    if (focus) {
-      // Player 2: outside the item is darker (playback stays inside it)
-      ctx.fillStyle = "rgb(0 0 0 / 0.35)";
-      const x1 = this.timeToX(focus.start, width);
-      const x2 = this.timeToX(focus.end ?? focus.start, width);
-      if (x1 > 0) ctx.fillRect(0, 0, x1, height);
-      if (x2 < width) ctx.fillRect(x2, 0, width - x2, height);
     }
     if (this.snapAt != null) {
       const x = Math.round(this.timeToX(this.snapAt, width)) + 0.5;
