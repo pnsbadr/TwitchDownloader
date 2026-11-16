@@ -501,10 +501,16 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   download, delete). Dropping a **VOD** opens a pop-up (own `MediaPlayer`, title, start/end time boxes): a one-off range, never an entry.
   Export = one `POST /api/exports` for the whole list; a one-item export downloads by itself when ready. A refused request (400) marks the
   rows named in `errors["items[i]"]` (`api` errors carry the response body as `error.problem`). Items re-read their card when selected
-  (a deleted one is marked gone).
+  (a deleted one is marked gone). **Saved edits** go on the list from Player 2's edit menu ("Add to the export list", saved first):
+  key `edit:{id}`, the item's kind plus `editId`, labeled "Clip edit" etc., re-read with `GET /api/edits/{id}` (`editFields`: a video's
+  segments with their own cut-out parts plus the edit's) and sent as `{ kind: "edit", editId, ... }`. Renders are matched by `editId`
+  (an edit's vertical uses renders made for it; a plain clip only renders made without one).
 - **Vertical editor in Player 2** (step 9, `ui/vertical.js`): a clip in Player 2 gets the 9:16 toggle (E). Player 2 then takes the whole
-  width (`.vertical-mode`, Player 1 hidden) and shows the old page's editor on the clip's file (`/file?preview=true`, so cut-out parts are
-  already left out and trim times are seconds into the file): one or two crop boxes on the landscape video, a live canvas preview with the
+  width (`.vertical-mode`, Player 1 hidden) and shows the old page's editor on the clip's file (`/file?preview=true`; trim times are seconds
+  into the file). It works on the **edit shown in Player 2** (`openVertical(entryId, { editId, cuts })`, `setVerticalEdit` on every edit
+  change; `verticalEdit()` in `ui/editor.js`): `vx.editCuts` = what the edit (Original: the clip's own cut-out parts) leaves out, in file
+  seconds; the preview skips it, `pieces()` leaves it out of the layout sent, renders are made with `editId` (a new edit is saved first,
+  `hooks.editForRender`) and only that edit's renders are listed (`renderingEditId` → "Rendering another version"); one or two crop boxes on the landscape video, a live canvas preview with the
   split pill, a bar (play, length, I/O, volume, back), Render (`POST /shortform`, polled) and the clip's vertical versions (play in the 9:16 frame, download, "Use these
   settings", delete; "Matches" on the one made from what's on screen). It opens with the newest render's layout. Added: **layouts** (built-in
   presets made for the video's shape, plus your own saved in `localStorage` `clipco.vertical.presets`; team-wide presets would need the
