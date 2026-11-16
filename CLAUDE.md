@@ -122,7 +122,7 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   `LibraryEntries.FileCuts` = what an older file leaves out (migration `ItemEdits` set it from `Cuts`; such a file is made again on the next
   cut change); entry and timeline JSON have `fileHasCuts` / `fileCuts`. Renders work from the entry's file. Copies keep them.
 - `ItemEdits` + `ItemApplies` (`Data/ItemEdit.cs`, `ItemEditEndpoints`, badrfly 2026-11-16, spec `rework/player2-edits-spec.md` in project files):
-  **saved edits** in Player 2, reference-only versions of a clip (`EntryId`), segment (`MarkerId`) or video (`VideoId`), FK cascade with the item,
+  **saved edits** of the old Player 2 (the page no longer makes them; each becomes a project at startup, see Saved edits under Editor), reference-only versions of a clip (`EntryId`), segment (`MarkerId`) or video (`VideoId`), FK cascade with the item,
   team + hidden-VOD filter. An edit keeps what it removes from the item's **full** range (trimmed ends included) in VOD seconds: `Cuts`, or for a
   video `Parts` `[{ markerId, cuts }]` (a segment may be cut out whole; a video edit cuts on top of the segments' own cut-out parts), plus an
   optional `Layout` JSON for the vertical editor. Cuts touching the item's start/end are stored open-ended (`ItemEdits.ForStoring`: 0 /
@@ -472,53 +472,45 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   **Edit original / Make a copy** (`chooseEditTarget`, Enter = copy); right-click → "Make a copy on my row" (`POST .../copy`). Locked rows
   (page only) can't be edited. Hooks to `editor.js`: `openItemEditor` (`colors: false` for clips, `onColor` live preview), `onChange`
   (`renderTools`), `onClipsChanged` (library refresh), `onCreated` (Player 2, step 4). The right-click menu is `ui/menu.js` (shared with cards).
-- **Player 2** (step 4, `openInPlayer2` in `ui/editor.js`): plays one segment, clip or video, loaded by dropping a card (or "Load in Player 2"),
-  by dragging an item's body off the Player 1 timeline (`startDrag`; only edges of the selected item resize), or by itself when a segment or
-  clip is made on Player 1 (`onCreated`, without switching the tab). It's a second `MediaPlayer` and a `SourceTimeline` (**saved edits**,
-  below). Header: the **edit picker**, then type, length (what the edit keeps) and title; icons Show in Player 1 (opens the VOD there if
-  needed, selects and zooms to the item), **Apply to Player 1**, vertical, rename (the item itself), **unload** (eject), volume, fullscreen.
-  **Nothing is deleted from Player 2** (badrfly 2026-11-16): its Delete key, eject icon and right-click "Unload from Player 2" only clear it
-  (`hooks.onUnload` → `closePlayer2`); real deletes are on Player 1's timeline and the library cards. Only one player plays at a time. The
-  tools bar and keys work on the player whose timeline tab is open; clicking a player with something loaded opens its tab. In Player 2 the
-  create tools are off. Old Twitch clips without a VOD can't.
-- **Saved edits in Player 2** (badrfly 2026-11-16, Premiere-style; design and API in the project file `rework/player2-edits-spec.md`;
-  `ui/source-timeline.js`, `SourceTimeline extends Timeline`, mode `"item"`): the item in Player 2 is the **source**; its timeline runs in
-  **source time** from 0:00 to the item's length (a video: its segments end to end, in play order), nothing outside it is shown and nothing
-  can be dragged past it (extend the item on Player 1). What's done there is an **edit**: the ends trimmed inward (the white outline's
-  grips, I / O) and parts cut out (cut tool drag; right-click a cut part to put it back); Player 1 doesn't change. **Splits**
-  (badrfly 2026-11-16): a cut tool click splits the item there (white line with a notch; saved on the edit as `layout.splits`
-  `{ partId: [VOD seconds] }`, the rest of `layout` stays the vertical one; right-click "Remove this split"); a pointer click picks the
-  **piece** under it (between the item's ends, its parts, splits and cut edges; `pieceSel`, violet) and Delete leaves it out of the edit or,
-  on a left-out piece, puts it back (`deletePiece`); with nothing picked Delete still unloads. Splits are undo steps too. The cut tool's
-  cursor is a **razor** like Premiere's (`RAZOR` / `RAZOR_BLOCKED` SVG cursors in `ui/timeline-edit.js`, crossed out in red where a click
-  can't cut) and a white line shows where the click will cut (`updateRazor` / `drawRazor`, snapped like the click; Player 1 too, on segments). Edits are kept
-  per part in VOD seconds (`partCuts`, like the item's own cut-out parts; a video's segments' own cut-out parts stay out of every edit) and
-  saved ~0.6 s after the last change (`POST/PUT /api/edits`, one request at a time, keepalive on `pagehide`). **Original** = the item as on
-  Player 1, view only: the first change makes a new edit ("Edit N"); a teammate's edit is view only too and the first change makes your own
-  copy ("Copy of …"). The picker (`renderEditMenu` in `ui/editor.js`) lists Original, your edits, each member's edits (length, "applied"),
-  New edit (the whole item), Apply to Player 1 (or "to a copy on my row" when `applyMakesCopy`), Undo last apply, Revert to original
-  (`POST /api/{entries|markers|videos}/{id}/revert`), Make my own copy, Rename, Delete. **Apply** makes what the edit leaves out the item's
-  cut-out parts (grayed out on Player 1); `onApplied` reloads Player 1 and the cards. The edit last open per item is remembered in
-  `localStorage` `clipco.p2.lastEdit`. Undo/redo in Player 2 = changes to the edit on show (this visit). Playback (`p2Position` / `p2Seek` /
-  `p2Tick` in `ui/editor.js`, over `sourceParts()`) plays what the edit keeps: it skips left-out parts, goes from one part of a video to the
-  next and stops at the edit's end. Twitch clips: view only.
-- **Dropping on rows** (step 5, `dropPlan` / `runDrop` in `ui/timeline-edit.js`): the Player 1 track is a drop target for timeline items and
-  clip cards of the same VOD, on the member's **own, unlocked** rows only. Own segment/moment on another own video row → moved (`PUT /api/markers/{id}`
-  with `rowId`); own clip on another own clip row → moved (`PUT /api/entries/{id}/row`); someone else's (or own with Alt) → copied there
-  (`POST .../copy`); **Alt + a VOD clip on a video row** → a segment at its times (`copy-as-segment`). Segments and moments never go on clip
-  rows, clips go on video rows only with Alt, Twitch clips aren't copied. The row is highlighted and a tip says what letting go does;
-  moves and copies are undo steps (`clipRow` for clip moves).
+- **Player 2 = the project editor** (badrfly 2026-11-16, multi-track rework; plan: Claude Doc "Vertical editor: multi-track timeline plan").
+  Player 1 is the overview for marking; Player 2 works like any video editor (Premiere-like) on **projects** (see `Projects`), whose media
+  are references into Twitch VODs. Modules: `ui/project.js` (content rules mirroring the server: `fits`, `nearestFit`, `flatten` = what plays,
+  `piecesFromItem`: a clip = one piece per kept part, a segment = one piece, a video = its segments' kept parts in order; `ProjectStore`: the
+  open project, undo/redo of whole content snapshots (100), saves ~0.6 s after a change with the revision, 409 → takes the server's copy and
+  says so, keepalive flush on `pagehide`), `ui/project-timeline.js` (`ProjectTimeline`, uses the shared timeline DOM while Player 2's tab is
+  open), `ui/project-playback.js` (`ProjectPlayback`: plays the flattened stretches on Player 2's `MediaPlayer`, switching VODs between
+  pieces, black (`#p2-black`) and a clock in gaps, muted rows silent) and `ui/project-vertical.js` (the 9:16 view). In `ui/editor.js`:
+  `openProject` / `newProject` / `closeProject` / `addToProject`, the project picker (`renderProjectMenu`: New, own and team projects,
+  Add to the export list, Rename, Duplicate / Make my own copy, Delete, Close); the open project is remembered in `localStorage`
+  `clipco.p2.project`. Loading a clip, segment or video in Player 2 (drop on its screen or timeline, card menu, dragging off Player 1) adds
+  it to the open project at the playhead, or starts a new one. A segment or clip made on Player 1 is added by itself only while an editable
+  project is open. Others' projects: view only (copy to edit). The left panel has a PROJECTS tab (`library.js` `projectCard`).
+  **Timeline**: ruler from 0:00 to past the end (scroll and zoom freely: wheel scrolls, Ctrl+wheel zooms, Shift+wheel scrolls rows, middle
+  button pans, scrollbar under the rows); rows top to bottom (unnamed rows are named "V1, V2…" once and keep their name), row heads with grip
+  (drag to reorder), name (double-click), hide / mute / lock, right-click insert above/below, rename, paste, delete (asks when it holds
+  pieces); "Add a row" and "Delete the selected row" in the footer. Pieces: click / Shift+click / marquee select, drag to move (between rows;
+  Shift keeps the time; below the last row makes a new row; red where it can't go; a single piece slides to the nearest free place), drag
+  edges to trim (up to its neighbors and the VOD's length), I / O trim at the playhead, razor (C, white line) or S splits, Delete / Shift+Delete
+  (ripple) deletes, Ctrl+C / Ctrl+V copy and paste (at the playhead, on the selected row), right-click on a gap = Close gap. Piece menu: Name and
+  color, Split at the playhead, Copy, Copy / Paste layout, Use this layout on every piece, Show in Player 1, **Apply this trim to the original**
+  (clips and segments: the source's range and cut-out parts from every piece copied from it; `applyToOriginal` in `ui/editor.js`), Delete,
+  Delete and close the gap. Covered parts of lower rows are drawn darker; the ruler's bottom band shows what plays and hatches gaps. Snapping
+  uses `clipLibrary.snap`. New pieces take the layout of the piece before them on their row.
+  **Nothing is deleted from Player 2** except pieces of the project (badrfly 2026-11-16): unloading only closes the project; real deletes of
+  clips/segments are on Player 1's timeline and the cards.
+- **Saved edits** (`ItemEdits`, the old Player 2) are no longer made or shown by the page: at startup `SavedEditConversion` turns each one into
+  a project once (`EditProject.ConvertedFromEditId`; one row, the edit's kept parts end to end, its splits split pieces, a clip edit's vertical
+  layout part under each piece's middle becomes its layout with keys in VOD seconds; title "item · edit title" or "item (edit)"). The edits,
+  their endpoints and `kind: "edit"` exports stay on the server.
 - **Videos** (step 6): the tools bar's **link** tool (Player 1, `startLinking` / `toggleLink` / `saveLink` in `ui/timeline-edit.js`): click
   segments on one of your own rows in play order (numbered badges; clicking again takes one out), type a title, press ✓ →
   `POST /api/vods/{id}/videos`; the video shows in VIDEOS and loads in Player 2. Player 1 marks segments that are in a video with their
-  position (tip: "In video "x" (n of m)"). In Player 2 a video is a source of saved edits (above); its parts' right-click menu also has the
-  video's own changes: title/color, Move earlier/later and Take out of the video (`PUT /api/videos/{id}` with the whole `markerIds`), Make a
-  copy. Others' videos: view only, or with `EditAnyEntries` the Edit original / Make a copy choice (`POST /api/videos/{id}/copy`). Rename on
-  Player 2's icon and the card's menu; delete on the card's menu.
-- **Cut-out parts** (step 7, `ui/cuts.js` mirrors the server's `CutOuts` rules): made in Player 2 as part of an edit and put on the item by
-  Apply to Player 1 (a video: its own per-segment cuts). Drawn darker on both timelines (tip: "Cut out … · left out of files", Player 2:
-  "left out of this edit") and their edges are snap points. Playback skips them (`skipCut` / `jumpCuts` in `ui/editor.js`): Player 2 always,
-  Player 1 while a selected segment or clip plays on its own.
+  position (tip: "In video "x" (n of m)"). In Player 2 a video becomes pieces of the project (its segments'
+  kept parts). Rename and delete on the card's menu; others' videos are copied with `POST /api/videos/{id}/copy`.
+- **Cut-out parts** (step 7, `ui/cuts.js` mirrors the server's `CutOuts` rules): set from Player 2 by a piece's "Apply this trim to the
+  original" (the parts of the clip/segment that no piece copied from it keeps). Drawn darker on Player 1 (tip: "Cut out … · left out of
+  files") and their edges are snap points. Player 1 skips them while a selected segment or clip plays on its own; a clip dropped into a
+  project leaves them out of its pieces.
 - **Export screen** (step 8, `ui/export.js`, EXPORT tab): same left panel; a view-only preview player (plays the selected item's kept parts
   in order, skipping cut-out parts; a video part by part), settings for the selected item (file name, quality from `/api/vods/info`, clip
   Horizontal/Vertical checkboxes: vertical uses the member's own newest render, or with `DownloadTeamVerticals` a picked team render, grayed
@@ -528,46 +520,19 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   download, delete). Dropping a **VOD** opens a pop-up (own `MediaPlayer`, title, start/end time boxes): a one-off range, never an entry.
   Export = one `POST /api/exports` for the whole list; a one-item export downloads by itself when ready. A refused request (400) marks the
   rows named in `errors["items[i]"]` (`api` errors carry the response body as `error.problem`). Items re-read their card when selected
-  (a deleted one is marked gone). **Saved edits** go on the list from Player 2's edit menu ("Add to the export list", saved first):
-  key `edit:{id}`, the item's kind plus `editId`, labeled "Clip edit" etc., re-read with `GET /api/edits/{id}` (`editFields`: a video's
-  segments with their own cut-out parts plus the edit's) and sent as `{ kind: "edit", editId, ... }`. Renders are matched by `editId`
-  (an edit's vertical uses renders made for it; a plain clip only renders made without one).
-- **Vertical editor in Player 2** (step 9, `ui/vertical.js`): a clip in Player 2 gets the 9:16 toggle (E). Player 2 then takes the whole
-  width (`.vertical-mode`, Player 1 hidden) and shows the old page's editor on the clip's file (`/file?preview=true`; trim times are seconds
-  into the file). It works on the **edit shown in Player 2** (`openVertical(entryId, { editId, cuts })`, `setVerticalEdit` on every edit
-  change; `verticalEdit()` in `ui/editor.js`): `vx.editCuts` = what the edit (Original: the clip's own cut-out parts) leaves out, in file
-  seconds; the preview skips it, `pieces()` leaves it out of the layout sent, renders are made with `editId` (a new edit is saved first,
-  `hooks.editForRender`) and only that edit's renders are listed (`renderingEditId` → "Rendering another version"); one or two crop boxes on the landscape video, a live canvas preview with the
-  split pill, a bar (play, length, I/O, volume, back), Render (`POST /shortform`, polled) and the clip's vertical versions (play in the 9:16 frame, download, "Use these
-  settings", delete; "Matches" on the one made from what's on screen). It opens with the newest render's layout. Added: **layouts** (built-in
-  presets made for the video's shape, plus your own saved in `localStorage` `clipco.vertical.presets`; team-wide presets would need the
-  backend), **safe zones** overlay (TikTok / Shorts / Reels, approximate; `clipco.vertical.safeZone`), **snapping** of boxes to the video's
-  edges, middle and each other (shares `clipLibrary.snap`; Alt drags freely, dashed guides), a selected box moves with the arrow keys,
-  **undo/redo** of box/layout/split/trim/part changes (50 steps, page only; while it's open Ctrl+Z, its buttons and the tools bar's undo
-  whichever of it and the Player 2 edit changed last, by `nextUndoSeq()` numbers: `screenUndo` in `ui/editor.js`), keys in keybinds.js scopes `vertical` / `vertical-box`.
-  **Parts** (vertical part 2, badrfly 2026-11-15): S splits the file at the playhead into parts, each with its own layout (`vx.parts`, a
-  partition of the whole file; the part under the playhead is live in `vx.mode/ratio/boxes`, `stash()` / `loadPart()`); presets, One/Two boxes
-  and box edits change that part only ("Use this layout on every part" copies it). Delete leaves a part out (skipped in the preview, the render
-  closes the gap); J joins it with the part before (which keeps its layout). No trim
-  handles (badrfly): I / O leave out everything before / after the playhead (`leaveOutSide`), the bar's reset puts every part back, and a
-  render's `trimStart`/`trimEnd` opens as left-out parts at the ends (`trimToParts`); the bar shows the vertical video's length.
-  `currentLayout()` sends kept parts inside the trim with same-looking neighbors joined: one → a plain layout as before, more → `parts`.
-  The parts show in a **Layout row** under the clip in the Player 2 timeline (`hooks.onParts` → `Timeline.setVerticalParts`, file seconds
-  mapped to source time with `fileToSource`; `hasLayoutRow` / `drawVerticalParts` / `layoutPartAt`): a white line at each split, "n · One box /
-  Two boxes / Left out" labels, the part under the playhead with a white bar, left-out parts hatched; click seeks. Dragging a split line moves it, dragging a part
-  slides it (keeps its length, pushes into its neighbors; the file's start/end stay put; parts ≥ 0.5 s; snaps like other edges; one
-  undo step): `layoutGrab` / `dragLayout` in `ui/timeline-edit.js` → `hooks.onLayoutParts` → `setVerticalPartStarts`. `vx.trim` is always the
-  whole file (a longer new file used to stay cut at the old end, drawn dark and not rendered). **Moving boxes** (keyframes, badrfly
-  2026-11-15): a part can have `keys` (`[{ t, boxes }]`, file seconds; at most 30); its boxes glide between them with smoothstep easing
-  (`boxesAt`, the same curve as the server's `ShortformLayout.Ease`) and hold before the first / after the last; mode and split ratio stay
-  fixed. F adds a keyframe at the playhead or removes the one there, `[` / `]` go to the previous / next; once a part has one, moving a box
-  (drag, arrows, a preset) sets the keyframe at the playhead (`keyHere`). Splitting keeps each side's keyframes plus the nearest one past
-  the split, so motion doesn't change; J keeps the earlier part's; "Use this layout on every part" drops them. Diamonds on the Layout row
-  (click = go there). The Player 2
-  timeline stays below and follows the preview (`fileToSource` / `sourceToFile` in `ui/editor.js`: files keep the whole clip, so file
-  seconds are source time, except an old file with `fileHasCuts`, which skips the clip's cut-out parts); a changed file is reloaded
-  (`verticalEntryChanged`), and a clip without a file says why (long clips get "Make
-  the file", `POST /generate`). While it's open only the timeline's tool and zoom keys still work.
+  (a deleted one is marked gone). **Projects** go on the list from Player 2's export icon /
+  project menu or a PROJECTS card (key `project:{id}`, Horizontal / Vertical checkboxes, re-read with `GET /api/projects/{id}`, no preview)
+  and are sent as `{ kind: "project", projectId, horizontal, vertical }`. Rows saved as `edit:{id}` by older pages still export.
+- **9:16 view of the project** (E / the phone icon on Player 2, `ui/project-vertical.js`): Player 2 takes the whole width (`.vertical-mode`)
+  with the landscape source (Player 2's own `<video>` drawn on a canvas; with Twitch's embed the boxes can't be previewed and a note says so)
+  and the live 9:16 preview. It edits the **layout of the piece under the playhead** (in a gap: the selected one): One / Two boxes (1 / 2),
+  presets (built-in + own in `clipco.vertical.presets`), box drag/resize with snapping (Alt = free), arrow keys move the selected box, split
+  pill, safe zones (G, `clipco.vertical.safeZone`), **moving boxes**: F adds/removes a keyframe at the playhead (VOD seconds), `[` / `]` jump,
+  once a piece has keys a box change sets the key at the playhead; "Use this layout on every piece". Every change is a project edit (same
+  undo). **Render 9:16** (Ctrl+Enter) = `POST /api/exports` `{ kind: "project", vertical: true }` after saving; its renders (the caller's
+  ProjectVertical export items of this project) are listed with progress and download. The project timeline stays below. Keys: scopes
+  `vertical` / `vertical-box` in keybinds.js. The old clip-file vertical editor (`ui/vertical.js`, Layout row) is gone; `/shortform` stays on
+  the server (old renders expire as before).
 - `/?demo` fills sample cards (nothing is sent to the server) to try the shell.
 
 ### Card thumbnails (`CardThumbnailService`, badrfly 2026-11-15)
