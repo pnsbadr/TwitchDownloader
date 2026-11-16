@@ -142,6 +142,49 @@ namespace TwitchDownloaderWeb.Tests
         }
 
         [Fact]
+        public async Task StoredClipStaysExportableAfterItsVodIsDeleted()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            var (owner, member, teamId, memberId) = await TeamWithMemberAsync("ex9");
+            await AssignAsync(owner, memberId, await CreateRoleAsync(owner, "Maker", "ViewLibrary", "AddEntries", "GenerateFiles"));
+            var clip = AddStoredClip(teamId, memberId, 452, 30, 40, "kept file");
+            var stranger = AddStoredClip(teamId, memberId, 453, 30, 40, "other channel");
+            using (var scope = _factory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+                db.Entries.Single(x => x.Id == clip).ChannelName = "Arky";
+                db.Entries.Single(x => x.Id == stranger).ChannelName = "someoneelse";
+                await db.SaveChangesAsync(ct);
+            }
+            // Deleted on Twitch before anyone asked about them
+            _vods.Gone[452] = true;
+            _vods.Gone[453] = true;
+            try
+            {
+                // A quality asked for is ignored: the stored file's is the only one left
+                foreach (var quality in new[] { null, "720p" })
+                {
+                    var response = await member.PostAsJsonAsync("/api/exports",
+                        new { items = new[] { new { kind = "clip", entryId = clip, horizontal = true, vertical = false, quality } } }, ct);
+                    Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+                    var done = await WaitForExportAsync(member, (await response.Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("id").GetInt32());
+                    Assert.Equal("Ready", done.GetProperty("status").GetString());
+                    Assert.Equal("kept file", await member.GetStringAsync(done.GetProperty("items")[0].GetProperty("fileUrl").GetString(), ct));
+                }
+
+                // Its channel can't be asked of Twitch any more; one that isn't the team's stays closed
+                var refused = await member.PostAsJsonAsync("/api/exports",
+                    new { items = new[] { new { kind = "clip", entryId = stranger, horizontal = true, vertical = false } } }, ct);
+                Assert.Equal(HttpStatusCode.NotFound, refused.StatusCode);
+            }
+            finally
+            {
+                _vods.Gone.TryRemove(452, out _);
+                _vods.Gone.TryRemove(453, out _);
+            }
+        }
+
+        [Fact]
         public async Task ExportsCutVodRangesSegmentsAndVideosIntoFiles()
         {
             if (!HasFfmpeg())
