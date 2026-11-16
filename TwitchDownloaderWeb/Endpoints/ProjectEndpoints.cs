@@ -189,7 +189,25 @@ namespace TwitchDownloaderWeb.Endpoints
             if (changed)
             {
                 project.UpdatedAtUtc = DateTime.UtcNow;
-                await db.SaveChangesAsync(cancellationToken);
+                try
+                {
+                    await db.SaveChangesAsync(cancellationToken);
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    // Another save of the same revision got in between our read and write (Revision is a concurrency token): same
+                    // answer as a stale revision, with the project as it is now
+                    db.ChangeTracker.Clear();
+                    var current = await db.Projects.Include(x => x.Vods).AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+                    if (current is null)
+                        return NotFound();
+                    return Results.Problem(detail: "This project was changed somewhere else.", statusCode: StatusCodes.Status409Conflict,
+                        extensions: new Dictionary<string, object?>
+                        {
+                            ["code"] = "project-changed",
+                            ["project"] = await ToDtoAsync(db, current, team, cancellationToken),
+                        });
+                }
             }
             return Results.Ok(await ToDtoAsync(db, project, team, cancellationToken));
         }

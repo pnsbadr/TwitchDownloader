@@ -63,6 +63,8 @@ namespace TwitchDownloaderWeb.Data
                 entity.HasIndex(x => x.AddedAtUtc);
                 entity.HasIndex(x => x.Status);
                 entity.HasIndex(x => x.TeamId);
+                // The timeline, live markers entry and channel checks read a team's entries on one VOD
+                entity.HasIndex(x => new { x.TeamId, x.VodId });
                 entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Restrict);
                 // A request sees only its own team's library; requests without a resolved team see nothing. Work on VODs of a channel
                 // revoked from the team is hidden (old Twitch clips without a source VOD go by their channel name)
@@ -78,6 +80,8 @@ namespace TwitchDownloaderWeb.Data
                 entity.HasIndex(x => x.TimestampUtc);
                 entity.HasIndex(x => x.EntryId);
                 entity.HasIndex(x => x.TeamId);
+                // The team log: a team's newest events first
+                entity.HasIndex(x => new { x.TeamId, x.TimestampUtc });
                 entity.HasIndex(x => x.UserId);
             });
 
@@ -249,6 +253,8 @@ namespace TwitchDownloaderWeb.Data
                 entity.ToTable("Projects");
                 entity.Property(x => x.Title).HasMaxLength(EditProject.MaxTitleLength);
                 entity.Property(x => x.Content).HasMaxLength(EditProject.MaxContentLength);
+                // Two saves of one revision at once: the second one's update finds no row and is refused (409 project-changed)
+                entity.Property(x => x.Revision).IsConcurrencyToken();
                 entity.HasIndex(x => new { x.TeamId, x.UserId });
                 entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
                 entity.HasMany(x => x.Vods).WithOne().HasForeignKey(x => x.ProjectId).OnDelete(DeleteBehavior.Cascade);

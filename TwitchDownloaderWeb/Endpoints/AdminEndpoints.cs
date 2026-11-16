@@ -484,11 +484,17 @@ namespace TwitchDownloaderWeb.Endpoints
             // VODs already hidden by an earlier revoke of another channel stay as they are
             vodIds.ExceptWith(await db.HiddenVods.Where(x => x.TeamId == teamId).Select(x => x.VodId).ToListAsync(cancellationToken));
 
+            // One Twitch lookup per VOD not cached yet: a few at a time rather than one after the other (a team with hundreds of VODs
+            // waited minutes). Twitch unreachable still throws HttpRequestException (502, nothing changes).
+            var owners = new System.Collections.Concurrent.ConcurrentDictionary<long, (string? Login, string? UserId)?>();
+            await Parallel.ForEachAsync(vodIds, new ParallelOptions { MaxDegreeOfParallelism = 6, CancellationToken = cancellationToken },
+                async (vodId, _) => owners[vodId] = await access.GetVodChannelAsync(vodId));
+
             var names = new[] { channel.Login, channel.DisplayName.ToLowerInvariant() };
             var result = new List<long>();
             foreach (var vodId in vodIds.Order())
             {
-                if (await access.GetVodChannelAsync(vodId) is { } owner)
+                if (owners[vodId] is { } owner)
                 {
                     if ((!string.IsNullOrEmpty(owner.UserId) && owner.UserId == channel.TwitchUserId)
                         || string.Equals(owner.Login, channel.Login, StringComparison.OrdinalIgnoreCase))

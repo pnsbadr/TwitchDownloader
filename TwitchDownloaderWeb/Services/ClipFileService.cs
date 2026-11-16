@@ -64,7 +64,7 @@ namespace TwitchDownloaderWeb.Services
                     if (restore is { Downloaded: true })
                         return new ClipFileResult(ClipFileSource.VodRestored, restore);
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
+                catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
                 {
                     logger.LogWarning(ex, "Restoring audio for clip entry {EntryId} failed; using the clip file.", entry.Id);
                     db.Audit(AuditActions.AudioRestoreFailed, entry.Id, ex.Message);

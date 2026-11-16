@@ -75,6 +75,12 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal("Renamed", after.GetProperty("title").GetString());
             Assert.Equal([b, a], after.GetProperty("segments").EnumerateArray().Select(x => x.GetProperty("markerId").GetInt32()));
 
+            // A refused change of segments and cuts together changes nothing (the old links used to be gone already)
+            Assert.Equal(HttpStatusCode.BadRequest, (await member.PutAsJsonAsync($"/api/videos/{videoId}",
+                new { markerIds = new[] { a, b }, cuts = new[] { new { markerId = 999999, cuts = new[] { new { start = 1, end = 2 } } } } }, ct)).StatusCode);
+            Assert.Equal([b, a], (await GetJsonAsync(member, $"/api/videos/{videoId}")).GetProperty("segments").EnumerateArray()
+                .Select(x => x.GetProperty("markerId").GetInt32()));
+
             // Someone else copies it: segments copied onto their own row, linked the same way
             var copy = await owner.PostAsJsonAsync($"/api/videos/{videoId}/copy", new { }, ct);
             Assert.Equal(HttpStatusCode.Created, copy.StatusCode);

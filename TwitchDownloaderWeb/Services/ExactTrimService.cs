@@ -66,7 +66,7 @@ namespace TwitchDownloaderWeb.Services
                 {
                     Directory.Delete(work, true);
                 }
-                catch (IOException ex)
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
                     logger.LogWarning("Couldn't delete exact trim work folder {Path}: {Message}", work, ex.Message);
                 }

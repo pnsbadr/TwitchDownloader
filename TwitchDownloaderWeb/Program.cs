@@ -14,6 +14,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<DownloadSettings>(builder.Configuration.GetSection(DownloadSettings.SectionName));
 builder.Services.Configure<AudioRescueSettings>(builder.Configuration.GetSection(AudioRescueSettings.SectionName));
 builder.Services.AddProblemDetails();
+builder.Services.AddExceptionHandler<TwitchUnreachableExceptionHandler>();
 builder.Services.AddClipcoAuth(builder.Configuration.GetValue("Auth:LoginAttemptsPerMinute", 10));
 
 var databasePath = Path.GetFullPath(builder.Configuration["Database:Path"] ?? "App_Data/clipco.db", builder.Environment.ContentRootPath);
@@ -65,6 +66,10 @@ using (var scope = app.Services.CreateScope())
 {
     var startupDb = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
     startupDb.Database.Migrate();
+    // Write-ahead logging: readers (page polls, playback) no longer wait for the background jobs' progress writes, and writes are cheaper.
+    // It is stored in the database file, so this only changes something the first time. Keep the -wal/-shm files next to clipco.db
+    // when copying it (or stop the app first).
+    startupDb.Database.ExecuteSqlRaw("PRAGMA journal_mode=WAL;");
     // Saved edits (the old Player 2) become projects, once each
     await TwitchDownloaderWeb.Services.Projects.SavedEditConversion.RunAsync(startupDb,
         scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("SavedEditConversion"));

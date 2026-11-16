@@ -55,10 +55,15 @@ namespace TwitchDownloaderWeb.Services
             return cts;
         }
 
-        internal void EndJob(int entryId)
+        /// <summary>
+        /// Ends the job started with <paramref name="cts"/>. Only that job's record is removed: with more than one worker
+        /// (Downloads:MaxConcurrentJobs) a newer job of the same entry may have started meanwhile, and it must stay cancellable and
+        /// keep counting as running (the cleanup service skips running entries' files).
+        /// </summary>
+        internal void EndJob(int entryId, CancellationTokenSource cts)
         {
-            if (_running.TryRemove(entryId, out var cts))
-                cts.Dispose();
+            _running.TryRemove(new KeyValuePair<int, CancellationTokenSource>(entryId, cts));
+            cts.Dispose();
         }
     }
 }

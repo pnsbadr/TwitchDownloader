@@ -193,11 +193,16 @@ namespace TwitchDownloaderWeb.Endpoints
             if (TeamChannelAccess.Refusal(await access.CheckVodAsync(team.TeamId, vodId, cancellationToken), vodId) is { } refused)
                 return refused;
 
+            // Two separate Twitch lookups (video info; access token + master playlist): ask both at once
+            var qualitiesTask = vodInfo.GetQualitiesAsync(vodId);
             var details = await vodInfo.GetVodAsync(vodId);
             if (details is null)
+            {
+                Forget(qualitiesTask);
                 return VodNotFound(vodId);
+            }
 
-            var qualities = await vodInfo.GetQualitiesAsync(vodId);
+            var qualities = await qualitiesTask;
 
             return Results.Ok(new VodInfoDto(vodId, details.Title, details.ChannelName, details.LengthSeconds,
                 TrimTime.Format(TimeSpan.FromSeconds(details.LengthSeconds)), details.StreamDateUtc, details.ThumbnailUrl,
@@ -248,15 +253,23 @@ namespace TwitchDownloaderWeb.Endpoints
             if (title is { Length: > MaxTitleLength })
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["title"] = [$"Title cannot be longer than {MaxTitleLength} characters."] });
 
+            // Both Twitch lookups at once (the clip tool waits on this request)
+            var qualitiesTask = vodInfo.GetQualitiesAsync(vodId);
             var vod = await vodInfo.GetVodAsync(vodId);
             if (vod is null)
+            {
+                Forget(qualitiesTask);
                 return VodNotFound(vodId);
+            }
 
             var startTime = parsedStart ?? TimeSpan.Zero;
             if (VodInfoService.ValidateTrim(startTime, endTime, vod.LengthSeconds) is { } trimErrors)
+            {
+                Forget(qualitiesTask);
                 return Results.ValidationProblem(trimErrors);
+            }
 
-            var qualities = await vodInfo.GetQualitiesAsync(vodId);
+            var qualities = await qualitiesTask;
             if (qualities is null)
                 return RestrictedVod();
 
@@ -799,6 +812,9 @@ namespace TwitchDownloaderWeb.Endpoints
 
             return Results.File(fullPath, "video/mp4", GetDownloadFileName(entry), enableRangeProcessing: true);
         }
+
+        /// <summary>A lookup started alongside another whose answer isn't needed after all (it may throw for a missing VOD).</summary>
+        private static void Forget(Task task) => task.ContinueWith(t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
 
         internal static string GetDownloadFileName(LibraryEntry entry)
         {

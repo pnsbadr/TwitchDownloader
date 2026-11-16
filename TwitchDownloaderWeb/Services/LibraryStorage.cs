@@ -64,7 +64,9 @@ namespace TwitchDownloaderWeb.Services
         /// <summary>A fresh scratch folder for one job (e.g. an audio restore). The caller deletes it.</summary>
         public string CreateWorkFolder(string name)
         {
-            var path = Path.Combine(RootFolder, WorkFolderName, $"{name}-{DateTime.UtcNow.Ticks}");
+            // A random part too: jobs running side by side (card thumbnails make 3 at once) could start in the same clock tick, share a folder
+            // and delete it under each other
+            var path = Path.Combine(RootFolder, WorkFolderName, $"{name}-{DateTime.UtcNow.Ticks}-{Guid.NewGuid().ToString("N")[..8]}");
             Directory.CreateDirectory(path);
             return path;
         }

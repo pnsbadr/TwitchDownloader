@@ -73,8 +73,10 @@ namespace TwitchDownloaderWeb.Services
             {
                 owner = await GetOwnerAsync(vodId);
             }
-            catch (HttpRequestException)
+            catch (Exception ex) when (ex is HttpRequestException or System.Text.Json.JsonException
+                                       || (ex is TaskCanceledException && !cancellationToken.IsCancellationRequested))
             {
+                // Timed out or answered oddly: "try again" (502), not a server error
                 return VodAccess.TwitchUnreachable;
             }
 

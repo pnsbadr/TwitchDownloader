@@ -140,7 +140,7 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
                 {
                     Directory.Delete(work, true);
                 }
-                catch (IOException ex)
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
                     logger.LogWarning("Couldn't delete restore work folder {Path}: {Message}", work, ex.Message);
                 }

@@ -16,7 +16,7 @@ namespace TwitchDownloaderWeb.Services.Accounts
         private const string ItemKey = nameof(TeamContext);
 
         public static ValueTask<TeamContext?> BindAsync(HttpContext context, ParameterInfo parameter) =>
-            ValueTask.FromResult(context.Items[ItemKey] as TeamContext
+            ValueTask.FromResult<TeamContext?>(context.Items[ItemKey] as TeamContext
                                  ?? throw new InvalidOperationException("TeamContext used on an endpoint outside the team scope."));
 
         internal void Store(HttpContext context) => context.Items[ItemKey] = this;

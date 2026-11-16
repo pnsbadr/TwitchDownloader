@@ -556,10 +556,11 @@ namespace TwitchDownloaderWeb.Endpoints
                 if (team.IsSupport || !team.Can(TeamPermission.AddEntries))
                     return Results.Problem(detail: "Your role doesn't let you change this item or make a copy of it.", statusCode: StatusCodes.Status403Forbidden);
 
-                (source, edit, problem) = await CopyItemAsync(source, edit, request?.RowId, team, db, access, storage, queue, liveEntries, loggerFactory,
-                    cancellationToken);
-                if (problem is not null)
-                    return problem;
+                var (copySource, copyEdit, copyProblem) = await CopyItemAsync(source, edit, request?.RowId, team, db, access, storage, queue, liveEntries,
+                    loggerFactory, cancellationToken);
+                if (copyProblem is not null)
+                    return copyProblem;
+                (source, edit) = (copySource, copyEdit);
                 copied = true;
             }
             else if (request?.RowId is not null)

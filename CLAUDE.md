@@ -177,6 +177,8 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   (title + quality for the files; no FK). Team query filter; `TeamId`/`CreatedByUserId` filled by `SaveChanges`. Audited `segments.requested`
   (counts as "generated" activity) / `segments.ready` / `segments.failed` / `segments.deleted` / `segments.expired`, `team.features_changed`.
 - A converter marks every `DateTime` as UTC when read back (SQLite has no date type) — keep all times UTC.
+- SQLite runs in **WAL mode** (set at startup, stored in the file): copy `clipco.db` together with `clipco.db-wal`/`-shm`, or stop the app first.
+  `Projects.Revision` is a concurrency token (two saves of one revision: the second gets 409 `project-changed`).
 - Migrations: `cd TwitchDownloaderWeb && dotnet tool restore && dotnet ef migrations add <Name> -o Data/Migrations`.
   They are applied automatically at startup.
 

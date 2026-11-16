@@ -166,12 +166,16 @@ namespace TwitchDownloaderWeb.Tests
             using (var scope = _factory.Services.CreateScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
-                db.Entries.Add(new LibraryEntry { TeamId = teamA, Title = "A", VodId = 1, Status = EntryStatus.Ready, AddedAtUtc = DateTime.UtcNow,
-                    AddedByUserId = memberId.ToString(), FileSizeBytes = 1000 });
+                var entryA = new LibraryEntry { TeamId = teamA, Title = "A", VodId = 1, Status = EntryStatus.Ready, AddedAtUtc = DateTime.UtcNow,
+                    AddedByUserId = memberId.ToString(), FileSizeBytes = 1000 };
+                db.Entries.Add(entryA);
                 db.Entries.Add(new LibraryEntry { TeamId = teamB, Title = "B", VodId = 1, Status = EntryStatus.Ready, AddedAtUtc = DateTime.UtcNow,
                     AddedByUserId = memberId.ToString(), FileSizeBytes = 500 });
                 db.Audit(AuditActions.EntryAdded, null, "A", userId: memberId.ToString(), teamId: teamA);
                 await db.SaveChangesAsync(ct);
+                // A vertical render of A counts too (20 bytes); an expired one doesn't
+                AddRender(entryA.Id, "new", memberId, DateTime.UtcNow, new string('x', 20));
+                AddRender(entryA.Id, "old", memberId, DateTime.UtcNow.AddDays(-30), new string('x', 7));
             }
 
             var staff = await StaffClientAsync();
@@ -179,17 +183,17 @@ namespace TwitchDownloaderWeb.Tests
             var user = users.EnumerateArray().Single();
             Assert.Equal(memberId, user.GetProperty("id").GetInt32());
             Assert.Equal(["u1 team", "u2 team"], user.GetProperty("teams").EnumerateArray().Select(x => x.GetProperty("teamName").GetString()));
-            Assert.Equal(1500, user.GetProperty("diskBytes").GetInt64());
+            Assert.Equal(1520, user.GetProperty("diskBytes").GetInt64());
             Assert.Equal(2, user.GetProperty("entriesAdded").GetInt32());
             Assert.Equal(1, user.GetProperty("recentActions").GetInt32());
 
             var detail = await GetJsonAsync(staff, $"/api/admin/users/{memberId}?days=30");
             var inA = detail.GetProperty("activity").EnumerateArray().Single(x => x.GetProperty("teamId").GetInt32() == teamA);
             Assert.Equal(1, inA.GetProperty("counts").GetProperty("added").GetInt32());
-            Assert.Equal(1000, inA.GetProperty("diskBytes").GetInt64());
+            Assert.Equal(1020, inA.GetProperty("diskBytes").GetInt64());
 
             var team = await GetJsonAsync(staff, $"/api/admin/teams/{teamA}");
-            Assert.Equal(1000, team.GetProperty("team").GetProperty("diskBytes").GetInt64());
+            Assert.Equal(1020, team.GetProperty("team").GetProperty("diskBytes").GetInt64());
             var row = team.GetProperty("members").EnumerateArray().Single(x => x.GetProperty("userId").GetInt32() == memberId);
             Assert.Equal(1, row.GetProperty("otherTeams").GetInt32());
 

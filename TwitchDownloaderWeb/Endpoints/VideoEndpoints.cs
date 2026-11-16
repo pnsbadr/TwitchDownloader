@@ -210,7 +210,8 @@ namespace TwitchDownloaderWeb.Endpoints
             {
                 vod = await vods.GetVodAsync(vodId);
             }
-            catch (HttpRequestException)
+            catch (Exception ex) when (ex is HttpRequestException or System.Text.Json.JsonException
+                                       || (ex is TaskCanceledException && !cancellationToken.IsCancellationRequested))
             {
                 vod = null; // the card just lacks the date and thumbnail until it's edited
             }
@@ -246,6 +247,9 @@ namespace TwitchDownloaderWeb.Endpoints
             if (problem is not null)
                 return problem;
 
+            // Changing the segment list saves the old links' removal before the new ones go in (unique index), so the whole change is
+            // one transaction: a refused cut afterwards (400) used to leave the video with no segments at all
+            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
             var changes = new List<string>();
             if (title is not null && title != video.Title)
             {
@@ -275,6 +279,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 db.Audit(AuditActions.VideoChanged, null, $"VOD {video.VodId} video {video.Id}: {string.Join(", ", changes)}");
                 await db.SaveChangesAsync(cancellationToken);
             }
+            await transaction.CommitAsync(cancellationToken);
 
             var saved = await WithSegments(db).AsNoTracking().FirstAsync(x => x.Id == video.Id, cancellationToken);
             return Results.Ok((await ToDtosAsync(db, [saved], team, cancellationToken))[0]);
