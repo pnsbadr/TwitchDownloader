@@ -245,7 +245,7 @@ namespace TwitchDownloaderWeb.Services
             }
             finally
             {
-                _queue.EndJob(entry.Id);
+                _queue.EndJob(entry.Id, jobCts);
             }
         }
 
