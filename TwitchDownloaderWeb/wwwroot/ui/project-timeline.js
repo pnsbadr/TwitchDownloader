@@ -111,7 +111,8 @@ export class ProjectTimeline {
       this.selected.clear();
       this.trackSel = null;
       this.follow = true;
-      this.view = { start: 0, end: Math.max(30, Math.min(this.length() + 5, 600)) };
+      // Opening a project starts fitted: the whole project from 0:00
+      this.view = { start: 0, end: Math.max(this.length() * 1.04, 10) };
       for (const piece of this.content?.pieces ?? []) vodLength(piece.vodId);
     }
     const ids = new Set((this.content?.pieces ?? []).map((p) => p.id));
@@ -1249,12 +1250,19 @@ export class ProjectTimeline {
     const content = this.content;
     const length = pieces.reduce((s, p) => s + pieceLength(p), 0);
     const trackId = this.trackSel && !this.isLocked(this.trackSel) ? this.trackSel : content.tracks.find((t) => !t.locked)?.id;
-    if (!trackId) return this.insertPieces(pieces, { newRow: true, at: 0 });
+    if (!trackId) {
+      const ok = this.insertPieces(pieces, { newRow: true, at: 0 });
+      if (ok) this.fit();
+      return ok;
+    }
     const now = Math.max(0, this.hooks.getPosition() ?? 0);
     const index = this.trackIndex(trackId);
     let at = fits(content, trackId, now, length) ? now : Math.max(0, ...piecesOn(content, trackId).map(pieceEnd));
     if (!content.pieces.length) at = 0;
-    return this.insertPieces(pieces, { trackIndex: index, at: round(at) });
+    const ok = this.insertPieces(pieces, { trackIndex: index, at: round(at) });
+    // Loading something starts fitted, like opening a project
+    if (ok) this.fit();
+    return ok;
   }
 
   // ---------- tip ----------

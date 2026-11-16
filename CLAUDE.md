@@ -491,7 +491,7 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   project is open. **M / X on Player 2** make a moment / clip on the VOD under the playhead (its VOD second; a clip starts and ends on
   the same VOD, ≤ 3 min) on the member's own rows of that VOD, like Player 1 (`p2AddMoment` / `p2MarkClip` in `ui/editor.js`); in a gap nothing
   is made. They aren't added to the project (the piece already plays that part). Others' projects: view only (copy to edit). The left panel has a PROJECTS tab (`library.js` `projectCard`).
-  **Timeline**: ruler from 0:00 to past the end (scroll and zoom freely: wheel scrolls, Ctrl+wheel zooms, Shift+wheel scrolls rows, middle
+  **Timeline**: ruler from 0:00 to past the end; opening a project or loading an item into it starts fitted (badrfly 2026-11-16) (scroll and zoom freely: wheel scrolls, Ctrl+wheel zooms, Shift+wheel scrolls rows, middle
   button pans, scrollbar under the rows); rows top to bottom (unnamed rows are named "V1, V2…" once and keep their name), row heads with grip
   (drag to reorder), name (double-click), hide / mute / lock, right-click insert above/below, rename, paste, delete (asks when it holds
   pieces); "Add a row" and "Delete the selected row" in the footer. Pieces: click / Shift+click / marquee select, drag to move (between rows;
