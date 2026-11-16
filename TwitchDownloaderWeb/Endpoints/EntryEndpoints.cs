@@ -198,7 +198,7 @@ namespace TwitchDownloaderWeb.Endpoints
             var details = await vodInfo.GetVodAsync(vodId);
             if (details is null)
             {
-                _ = qualitiesTask.ContinueWith(t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted); // a missing VOD's lookup may throw
+                Forget(qualitiesTask);
                 return VodNotFound(vodId);
             }
 
@@ -253,15 +253,23 @@ namespace TwitchDownloaderWeb.Endpoints
             if (title is { Length: > MaxTitleLength })
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["title"] = [$"Title cannot be longer than {MaxTitleLength} characters."] });
 
+            // Both Twitch lookups at once (the clip tool waits on this request)
+            var qualitiesTask = vodInfo.GetQualitiesAsync(vodId);
             var vod = await vodInfo.GetVodAsync(vodId);
             if (vod is null)
+            {
+                Forget(qualitiesTask);
                 return VodNotFound(vodId);
+            }
 
             var startTime = parsedStart ?? TimeSpan.Zero;
             if (VodInfoService.ValidateTrim(startTime, endTime, vod.LengthSeconds) is { } trimErrors)
+            {
+                Forget(qualitiesTask);
                 return Results.ValidationProblem(trimErrors);
+            }
 
-            var qualities = await vodInfo.GetQualitiesAsync(vodId);
+            var qualities = await qualitiesTask;
             if (qualities is null)
                 return RestrictedVod();
 
@@ -804,6 +812,9 @@ namespace TwitchDownloaderWeb.Endpoints
 
             return Results.File(fullPath, "video/mp4", GetDownloadFileName(entry), enableRangeProcessing: true);
         }
+
+        /// <summary>A lookup started alongside another whose answer isn't needed after all (it may throw for a missing VOD).</summary>
+        private static void Forget(Task task) => task.ContinueWith(t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
 
         internal static string GetDownloadFileName(LibraryEntry entry)
         {
