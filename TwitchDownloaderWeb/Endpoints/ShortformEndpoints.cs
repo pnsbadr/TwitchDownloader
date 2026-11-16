@@ -66,7 +66,7 @@ namespace TwitchDownloaderWeb.Endpoints
             if (entry is null)
                 return EntryNotFound(id);
 
-            if (layout.Validate(entry.ClipLengthSeconds) is { } error)
+            if (layout.Validate(EntryDto.FileSeconds(entry)) is { } error)
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["layout"] = [error] });
             layout = layout.Normalize();
 
@@ -76,7 +76,7 @@ namespace TwitchDownloaderWeb.Endpoints
             if (relativePath is null || !File.Exists(storage.Resolve(relativePath)))
                 return Results.Problem(detail: "The entry's file isn't ready, so it can't be made vertical yet.", statusCode: StatusCodes.Status409Conflict);
 
-            shortform.Start(id, storage.Resolve(relativePath), entry.ClipLengthSeconds, layout, team.UserId);
+            shortform.Start(id, storage.Resolve(relativePath), EntryDto.FileSeconds(entry), layout, team.UserId);
             // The render itself is audited by the background job, which doesn't know who asked; this records who did
             db.Audit(AuditActions.ShortformRequested, id, layout.Summary);
             await db.SaveChangesAsync(cancellationToken);

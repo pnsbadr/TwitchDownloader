@@ -59,12 +59,13 @@ namespace TwitchDownloaderWeb.Services
             var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
             var maxStored = _settings.Value.MaxStoredClipSeconds;
 
-            // Reference entries, plus ones already marked gone (too long to be stored, so they were reference entries)
+            // Reference entries, plus ones already marked gone (too long to be stored, so they were reference entries; with cut-out parts
+            // the limit counts the whole range, which a query can't easily compute, so those are included)
             // Clips are skipped: their file comes from the clip itself, which outlives its VOD
             var entries = await db.Entries
                 .Where(x => x.Kind == EntryKind.Vod)
                 .Where(x => x.Status == EntryStatus.ReferenceOnly
-                            || (x.Status == EntryStatus.VodUnavailable && x.FilePath == null && x.ClipLengthSeconds > maxStored))
+                            || (x.Status == EntryStatus.VodUnavailable && x.FilePath == null && (x.ClipLengthSeconds > maxStored || x.Cuts != null)))
                 .ToListAsync(cancellationToken);
 
             var now = DateTime.UtcNow;

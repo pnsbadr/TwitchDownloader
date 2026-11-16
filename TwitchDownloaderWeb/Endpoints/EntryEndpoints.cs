@@ -112,6 +112,12 @@ namespace TwitchDownloaderWeb.Endpoints
         public static bool HasFileCuts(LibraryEntry entry) =>
             entry.Kind == EntryKind.Vod && CutOuts.Read(entry.FileCuts).Count > 0 && (entry.FilePath is not null || entry.GeneratedFilePath is not null);
 
+        /// <summary>How long the entry's file plays: its whole range, or what's left for a file made the old way (<see cref="HasFileCuts"/>).</summary>
+        public static double FileSeconds(LibraryEntry entry) =>
+            entry.Kind != EntryKind.Vod || HasFileCuts(entry)
+                ? entry.ClipLengthSeconds
+                : Math.Max(0, (entry.EndTime?.TotalSeconds ?? entry.VodLengthSeconds) - entry.StartTime.TotalSeconds);
+
         /// <summary>See <see cref="HasFileCuts"/>; false = the file covers the clip's whole range.</summary>
         public bool FileHasCuts { get; init; }
 
