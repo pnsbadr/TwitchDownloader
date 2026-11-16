@@ -14,6 +14,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<DownloadSettings>(builder.Configuration.GetSection(DownloadSettings.SectionName));
 builder.Services.Configure<AudioRescueSettings>(builder.Configuration.GetSection(AudioRescueSettings.SectionName));
 builder.Services.AddProblemDetails();
+builder.Services.AddExceptionHandler<TwitchUnreachableExceptionHandler>();
 builder.Services.AddClipcoAuth(builder.Configuration.GetValue("Auth:LoginAttemptsPerMinute", 10));
 
 var databasePath = Path.GetFullPath(builder.Configuration["Database:Path"] ?? "App_Data/clipco.db", builder.Environment.ContentRootPath);
