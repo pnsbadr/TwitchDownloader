@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using TwitchDownloaderCore.Models;
 using TwitchDownloaderWeb.Data;
 
@@ -14,14 +16,19 @@ namespace TwitchDownloaderWeb.Services
     /// capped at what has been streamed so far (but always covers the markers). Each later marker change on that VOD moves it,
     /// even after the stream has ended, until someone re-trims it by hand.
     /// </summary>
-    public sealed class LiveMarkerEntryService(IVodDetailsSource vods, DownloadQueue queue, LibraryStorage storage, ILogger<LiveMarkerEntryService> logger)
+    public sealed class LiveMarkerEntryService(IVodDetailsSource vods, DownloadQueue queue, LibraryStorage storage, IMemoryCache cache,
+        ILogger<LiveMarkerEntryService> logger)
     {
         public const double MarginSeconds = 30;
 
         private static readonly TimeSpan JobStopWait = TimeSpan.FromSeconds(20);
 
-        // Two markers saved at the same moment must not both make an entry
-        private readonly SemaphoreSlim _lock = new(1, 1);
+        /// <summary>A VOD that has finished streaming never goes live again, so marker changes on it skip the Twitch lookup for a while.</summary>
+        private static readonly TimeSpan FinishedCacheTime = TimeSpan.FromMinutes(10);
+
+        // Two markers saved at the same moment on one VOD must not both make an entry. Per VOD: the lookup below can wait on Twitch,
+        // and marker saves on other VODs (other teams) shouldn't queue behind it.
+        private readonly ConcurrentDictionary<long, SemaphoreSlim> _locks = new();
 
         /// <summary>Call after the team's markers on a VOD were saved. Never throws for Twitch being unreachable.</summary>
         /// <param name="mayCreate">False when the markers were changed in a library card's Review: the change is about that card, so no
@@ -29,14 +36,15 @@ namespace TwitchDownloaderWeb.Services
         /// <returns>The entry made or moved, or null if nothing changed.</returns>
         public async Task<LiveEntryChange?> MarkersChangedAsync(LibraryDbContext db, long vodId, CancellationToken cancellationToken, bool mayCreate = true)
         {
-            await _lock.WaitAsync(cancellationToken);
+            var gate = _locks.GetOrAdd(vodId, _ => new SemaphoreSlim(1, 1));
+            await gate.WaitAsync(cancellationToken);
             try
             {
                 return await UpdateAsync(db, vodId, mayCreate, cancellationToken);
             }
             finally
             {
-                _lock.Release();
+                gate.Release();
             }
         }
 
@@ -52,6 +60,8 @@ namespace TwitchDownloaderWeb.Services
             return (TimeSpan.FromSeconds(Math.Round(start, 2)), TimeSpan.FromSeconds(Math.Round(end, 2)));
         }
 
+        private static string FinishedKey(long vodId) => $"live-markers:finished:{vodId}";
+
         private async Task<LiveEntryChange?> UpdateAsync(LibraryDbContext db, long vodId, bool mayCreate, CancellationToken cancellationToken)
         {
             // Query filter: only the requesting team's entries and markers. One live markers entry per VOD: once it was re-cut by
@@ -62,6 +72,9 @@ namespace TwitchDownloaderWeb.Services
                 .ThenBy(x => x.Id)
                 .FirstOrDefaultAsync(cancellationToken);
             if (entry is { Status: EntryStatus.VodUnavailable } or { FollowsMarkers: false } || (entry is null && !mayCreate))
+                return null;
+            // Most markers go on VODs that have finished: there is nothing to make, so don't ask Twitch on every marker change
+            if (entry is null && cache.TryGetValue(FinishedKey(vodId), out _))
                 return null;
 
             var markers = (await db.Markers.AsNoTracking()
@@ -84,6 +97,8 @@ namespace TwitchDownloaderWeb.Services
                 return null;
             }
 
+            if (vod is { IsLive: false })
+                cache.Set(FinishedKey(vodId), true, FinishedCacheTime);
             if (vod is null || (entry is null && !vod.IsLive))
                 return null;
 
