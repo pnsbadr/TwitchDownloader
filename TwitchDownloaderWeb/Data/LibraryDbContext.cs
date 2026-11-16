@@ -44,6 +44,8 @@ namespace TwitchDownloaderWeb.Data
         public DbSet<HiddenVod> HiddenVods => Set<HiddenVod>();
         public DbSet<ItemEdit> ItemEdits => Set<ItemEdit>();
         public DbSet<ItemApply> ItemApplies => Set<ItemApply>();
+        public DbSet<EditProject> Projects => Set<EditProject>();
+        public DbSet<ProjectVod> ProjectVods => Set<ProjectVod>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -242,6 +244,25 @@ namespace TwitchDownloaderWeb.Data
                 entity.HasQueryFilter(x => !ScopedToTeam || (x.TeamId == ScopeTeamId && !HiddenVods.Any(h => h.TeamId == ScopeTeamId && h.VodId == x.VodId)));
             });
 
+            modelBuilder.Entity<EditProject>(entity =>
+            {
+                entity.ToTable("Projects");
+                entity.Property(x => x.Title).HasMaxLength(EditProject.MaxTitleLength);
+                entity.Property(x => x.Content).HasMaxLength(EditProject.MaxContentLength);
+                entity.HasIndex(x => new { x.TeamId, x.UserId });
+                entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasMany(x => x.Vods).WithOne().HasForeignKey(x => x.ProjectId).OnDelete(DeleteBehavior.Cascade);
+                // A project using any VOD hidden from the team is hidden whole (like exports)
+                entity.HasQueryFilter(x => !ScopedToTeam || (x.TeamId == ScopeTeamId
+                    && !x.Vods.Any(v => HiddenVods.Any(h => h.TeamId == ScopeTeamId && h.VodId == v.VodId))));
+            });
+
+            modelBuilder.Entity<ProjectVod>(entity =>
+            {
+                entity.HasIndex(x => new { x.ProjectId, x.VodId }).IsUnique();
+                entity.HasIndex(x => x.VodId);
+            });
+
             modelBuilder.Entity<RevokedChannel>(entity =>
             {
                 entity.Property(x => x.Login).HasMaxLength(25);
@@ -355,6 +376,10 @@ namespace TwitchDownloaderWeb.Data
                     case ItemEdit edit:
                         if (edit.TeamId == 0 && _actor.TeamId is { } editTeam) edit.TeamId = editTeam;
                         if (edit.CreatedByUserId == 0 && _actor.UserId is { } editUser) edit.CreatedByUserId = editUser;
+                        break;
+                    case EditProject project:
+                        if (project.TeamId == 0 && _actor.TeamId is { } projectTeam) project.TeamId = projectTeam;
+                        if (project.UserId == 0 && _actor.UserId is { } projectUser) project.UserId = projectUser;
                         break;
                     case ItemApply apply:
                         if (apply.TeamId == 0 && _actor.TeamId is { } applyTeam) apply.TeamId = applyTeam;

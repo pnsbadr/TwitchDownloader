@@ -91,6 +91,9 @@ namespace TwitchDownloaderWeb.Data
         public const string EditDeleted = "edit.deleted";
         public const string EditApplied = "edit.applied";
         public const string EditReverted = "edit.reverted";
+        /// <summary>Projects (multi-track Player 2). Saves while working aren't audited.</summary>
+        public const string ProjectAdded = "project.added";
+        public const string ProjectDeleted = "project.deleted";
         /// <summary>The app Owner turned a team feature (e.g. joined segment downloads) on or off.</summary>
         public const string TeamFeaturesChanged = "team.features_changed";
     }
