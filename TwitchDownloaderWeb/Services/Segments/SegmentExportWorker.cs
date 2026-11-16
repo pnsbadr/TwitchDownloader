@@ -210,7 +210,7 @@ namespace TwitchDownloaderWeb.Services.Segments
                 item.AudioRestoredSeconds = restore is { Downloaded: true, RestoredSeconds: > 0 } ? restore.RestoredSeconds : null;
                 item.AudioMutedSeconds = restore is { StillMutedSeconds: > 0 } ? restore.StillMutedSeconds : null;
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (ex is not OperationCanceledException || !token.IsCancellationRequested)
             {
                 // One bad segment doesn't stop the others
                 _logger.LogWarning(ex, "Segment {Position} of segment download {ExportId} failed.", item.Position, export.Id);

@@ -137,7 +137,7 @@ namespace TwitchDownloaderWeb.Services.Segments
                         item.Status = ExportStatus.Ready;
                         item.PartsDone = item.PartsTotal;
                     }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    catch (Exception ex) when (ex is not OperationCanceledException || !token.IsCancellationRequested)
                     {
                         _logger.LogWarning(ex, "Item {Position} of export {BatchId} failed.", item.Position, batch.Id);
                         item.Status = ExportStatus.Failed;

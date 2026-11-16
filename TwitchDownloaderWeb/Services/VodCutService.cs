@@ -40,7 +40,7 @@ namespace TwitchDownloaderWeb.Services
             {
                 restore = await _restore.TryDownloadRestoredAsync(db, cut, outputPath, logger, cancellationToken);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
                 logger.LogWarning(ex, "Restoring audio for VOD {VodId} ({Start}-{End}) failed; downloading without it.", cut.VodId, cut.StartTime, cut.EndTime);
                 onRestoreFailed(ex.Message);
