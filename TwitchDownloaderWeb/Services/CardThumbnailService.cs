@@ -59,6 +59,19 @@ namespace TwitchDownloaderWeb.Services
             return list[^1].End;
         }
 
+        /// <summary>Where a VOD second is in a file that plays <paramref name="fileParts"/> back to back (a second in a gap: the next part's start).</summary>
+        public static double FileSeconds(IEnumerable<(double Start, double End)> fileParts, double vodSeconds)
+        {
+            var at = 0.0;
+            foreach (var (start, end) in fileParts)
+            {
+                if (vodSeconds < end)
+                    return at + Math.Max(0, vodSeconds - start);
+                at += end - start;
+            }
+            return at;
+        }
+
         /// <summary>A VOD clip's kept parts (Twitch clip entries have Twitch's own thumbnail, so none).</summary>
         public static IReadOnlyList<(double Start, double End)> EntryParts(LibraryEntry entry)
         {
@@ -91,10 +104,12 @@ namespace TwitchDownloaderWeb.Services
             if (Middle(parts) is not { } middle)
                 return Task.FromResult<string?>(null);
 
-            // The file plays the kept parts back to back (a Safe cut starts a little early, close enough for a thumbnail)
+            // The file plays its range without the parts left out of it (none for files made since 2026-11-16) back to back (a Safe cut
+            // starts a little early, close enough for a thumbnail)
             var file = new[] { entry.FilePath, entry.Status == EntryStatus.ReferenceOnly ? entry.GeneratedFilePath : null }
                 .Where(x => !string.IsNullOrEmpty(x)).Select(x => storage.Resolve(x!)).FirstOrDefault(File.Exists);
-            var fileSeconds = parts.Sum(x => x.End - x.Start) / 2;
+            var fileSeconds = FileSeconds(CutOuts.Kept(entry.StartTime.TotalSeconds, entry.EndTime?.TotalSeconds ?? entry.VodLengthSeconds,
+                CutOuts.Read(entry.FileCuts)), middle);
             return GetAsync(entry.VodId, middle, file is null ? null : (file, fileSeconds), cancellationToken);
         }
 

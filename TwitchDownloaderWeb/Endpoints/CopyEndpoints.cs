@@ -32,8 +32,21 @@ namespace TwitchDownloaderWeb.Endpoints
             if (source is null)
                 return Results.Problem(detail: "That marker is gone.", statusCode: StatusCodes.Status404NotFound);
 
-            if (await CheckTargetAsync(db, access, team, source.VodId, request.RowId, TimelineRowKind.Video, cancellationToken) is { } problem)
+            var (copy, problem) = await CopyMarkerAsync(source, request.RowId, team, db, access, cancellationToken);
+            if (problem is not null)
                 return problem;
+            var liveEntry = await liveEntries.MarkersChangedAsync(db, copy!.VodId, cancellationToken, makeLiveEntry);
+
+            var names = await TimelineEndpoints.UserNamesAsync(db, [copy.CreatedByUserId], cancellationToken);
+            return Results.Created($"/api/markers/{copy.Id}", TimelineEndpoints.ToDto(copy, names, team) with { LiveEntry = liveEntry });
+        }
+
+        /// <summary>Copies a segment or moment onto one of the caller's video rows and saves it (the caller updates the live markers entry).</summary>
+        internal static async Task<(VodMarker? Copy, IResult? Problem)> CopyMarkerAsync(VodMarker source, int? rowId, TeamContext team, LibraryDbContext db,
+            TeamChannelAccess access, CancellationToken cancellationToken)
+        {
+            if (await CheckTargetAsync(db, access, team, source.VodId, rowId, TimelineRowKind.Video, cancellationToken) is { } problem)
+                return (null, problem);
 
             var copy = new VodMarker
             {
@@ -43,17 +56,14 @@ namespace TwitchDownloaderWeb.Endpoints
                 Label = source.Label,
                 Color = source.Color,
                 Cuts = source.Cuts,
-                RowId = request.RowId,
+                RowId = rowId,
                 CopiedFromMarkerId = source.Id,
                 CreatedAtUtc = DateTime.UtcNow,
             };
             db.Markers.Add(copy);
             db.Audit(AuditActions.MarkerAdded, null, $"VOD {copy.VodId} {TimelineEndpoints.Describe(copy)} (copy of marker {source.Id})");
             await db.SaveChangesAsync(cancellationToken);
-            var liveEntry = await liveEntries.MarkersChangedAsync(db, copy.VodId, cancellationToken, makeLiveEntry);
-
-            var names = await TimelineEndpoints.UserNamesAsync(db, [copy.CreatedByUserId], cancellationToken);
-            return Results.Created($"/api/markers/{copy.Id}", TimelineEndpoints.ToDto(copy, names, team) with { LiveEntry = liveEntry });
+            return (copy, null);
         }
 
         /// <summary>
@@ -66,13 +76,26 @@ namespace TwitchDownloaderWeb.Endpoints
             var source = await db.Entries.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
             if (source is null)
                 return Results.Problem(detail: $"Entry {id} was not found.", statusCode: StatusCodes.Status404NotFound);
-            if (source.Kind != EntryKind.Vod)
-                return Results.Problem(detail: "Twitch clips can't be copied.", statusCode: StatusCodes.Status409Conflict);
-            if (source.Status == EntryStatus.VodUnavailable)
-                return Results.Problem(detail: "The VOD is gone from Twitch, so this clip can't be copied.", statusCode: StatusCodes.Status410Gone);
 
-            if (await CheckTargetAsync(db, access, team, source.VodId, request.RowId, TimelineRowKind.Clip, cancellationToken) is { } problem)
+            var (copy, problem) = await CopyEntryAsync(source, request.RowId, team, db, access, storage, queue, loggerFactory, cancellationToken);
+            if (problem is not null)
                 return problem;
+
+            var names = await EntryEndpoints.UsernamesAsync(db, [copy!.AddedByUserId], cancellationToken);
+            return Results.Created($"/api/entries/{copy.Id}", EntryDto.From(copy) with { AddedBy = copy.AddedByUserId is { } u ? names.GetValueOrDefault(u) : null });
+        }
+
+        /// <summary>Copies a VOD clip onto one of the caller's clip rows (its file too when it's stored and ready) and saves it.</summary>
+        internal static async Task<(LibraryEntry? Copy, IResult? Problem)> CopyEntryAsync(LibraryEntry source, int? rowId, TeamContext team, LibraryDbContext db,
+            TeamChannelAccess access, LibraryStorage storage, DownloadQueue queue, ILoggerFactory loggerFactory, CancellationToken cancellationToken)
+        {
+            if (source.Kind != EntryKind.Vod)
+                return (null, Results.Problem(detail: "Twitch clips can't be copied.", statusCode: StatusCodes.Status409Conflict));
+            if (source.Status == EntryStatus.VodUnavailable)
+                return (null, Results.Problem(detail: "The VOD is gone from Twitch, so this clip can't be copied.", statusCode: StatusCodes.Status410Gone));
+
+            if (await CheckTargetAsync(db, access, team, source.VodId, rowId, TimelineRowKind.Clip, cancellationToken) is { } problem)
+                return (null, problem);
 
             var now = DateTime.UtcNow;
             var sourceFile = source is { Status: EntryStatus.Ready, FilePath: { } path } ? Path.Combine(storage.RootFolder, path) : null;
@@ -92,7 +115,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 AddedAtUtc = now,
                 UpdatedAtUtc = now,
                 Status = source.Status == EntryStatus.ReferenceOnly ? EntryStatus.ReferenceOnly : EntryStatus.Queued,
-                RowId = request.RowId,
+                RowId = rowId,
                 CopiedFromEntryId = source.Id,
                 Cuts = source.Cuts,
             };
@@ -112,6 +135,7 @@ namespace TwitchDownloaderWeb.Endpoints
                         File.Copy(sourceFile, target, overwrite: true);
                         copy.FilePath = relative;
                         copy.FileSizeBytes = new FileInfo(target).Length;
+                        copy.FileCuts = source.FileCuts;
                         copy.AudioRestoredSeconds = source.AudioRestoredSeconds;
                         copy.AudioMutedSeconds = source.AudioMutedSeconds;
                         copy.Status = EntryStatus.Ready;
@@ -131,9 +155,7 @@ namespace TwitchDownloaderWeb.Endpoints
 
             if (copy.Status == EntryStatus.Queued)
                 queue.Enqueue(copy.Id, DownloadJobKind.Store);
-
-            var names = await EntryEndpoints.UsernamesAsync(db, [copy.AddedByUserId], cancellationToken);
-            return Results.Created($"/api/entries/{copy.Id}", EntryDto.From(copy) with { AddedBy = copy.AddedByUserId is { } u ? names.GetValueOrDefault(u) : null });
+            return (copy, null);
         }
 
         /// <summary>A segment at exactly the clip's times on one of the caller's video rows (Alt+drag of a clip onto a video row).</summary>

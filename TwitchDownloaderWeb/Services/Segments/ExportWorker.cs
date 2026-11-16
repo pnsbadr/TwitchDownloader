@@ -253,7 +253,10 @@ namespace TwitchDownloaderWeb.Services.Segments
             item.AudioMutedSeconds = restore is { StillMutedSeconds: > 0 } ? restore.StillMutedSeconds : null;
         }
 
-        /// <summary>The clip's stored file, if it is exactly what the item asks for (same cut, cut-out parts and quality).</summary>
+        /// <summary>
+        /// The clip's stored file, if it is exactly what the item asks for (same cut, quality, and the file leaves out exactly the item's
+        /// cut-out parts: files hold the whole range, so that is a clip without any, or a file made before 2026-11-16 with the same ones).
+        /// </summary>
         private async Task<(string Path, LibraryEntry Entry)?> CopyableClipFileAsync(LibraryDbContext db, ExportItem item, CancellationToken token)
         {
             if (item.EntryId is not { } entryId)
@@ -262,7 +265,7 @@ namespace TwitchDownloaderWeb.Services.Segments
             if (entry is not { Status: EntryStatus.Ready, FilePath: { } path } || entry.Quality != item.Quality || entry.TrimMode != item.TrimMode
                 || Math.Abs(entry.StartTime.TotalSeconds - item.StartSeconds) > 0.005
                 || Math.Abs((entry.EndTime?.TotalSeconds ?? entry.VodLengthSeconds) - item.EndSeconds) > 0.005
-                || CutOuts.Write(CutOuts.Normalize(CutOuts.Read(entry.Cuts), item.StartSeconds, item.EndSeconds)) != item.Cuts)
+                || CutOuts.Write(CutOuts.Normalize(CutOuts.Read(entry.FileCuts), item.StartSeconds, item.EndSeconds)) != item.Cuts)
                 return null;
             var full = _storage.Resolve(path);
             return File.Exists(full) ? (full, entry) : null;

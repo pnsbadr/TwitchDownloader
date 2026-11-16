@@ -123,5 +123,12 @@ namespace TwitchDownloaderWeb.Data
 
         /// <summary>Cut-out parts (<see cref="CutOuts"/>), JSON in VOD seconds; null = none.</summary>
         public string? Cuts { get; set; }
+
+        /// <summary>
+        /// The cut-out parts left out of the entry's file (stored or generated), or null when the file covers the whole range. Files are made
+        /// of the whole range since 2026-11-16 (so changing cut-out parts needs no new download; they're left out when a file is made from it
+        /// and in preview); only files made before that have this set, until they are made again.
+        /// </summary>
+        public string? FileCuts { get; set; }
     }
 }

@@ -86,6 +86,11 @@ namespace TwitchDownloaderWeb.Data
         public const string ExportFailed = "export.failed";
         public const string ExportDeleted = "export.deleted";
         public const string ExportExpired = "export.expired";
+        /// <summary>Saved edits in Player 2 (reference only); applying one sets the item's cut-out parts, reverting puts them back.</summary>
+        public const string EditAdded = "edit.added";
+        public const string EditDeleted = "edit.deleted";
+        public const string EditApplied = "edit.applied";
+        public const string EditReverted = "edit.reverted";
         /// <summary>The app Owner turned a team feature (e.g. joined segment downloads) on or off.</summary>
         public const string TeamFeaturesChanged = "team.features_changed";
     }
