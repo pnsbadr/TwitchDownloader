@@ -31,6 +31,9 @@ namespace TwitchDownloaderWeb.Services
         private static readonly TimeSpan PlaylistCacheTime = TimeSpan.FromMinutes(2);
         private static readonly TimeSpan MakeTimeout = TimeSpan.FromSeconds(60);
 
+        /// <summary>How long a frame may wait for its turn; it isn't a failure when it runs out (the next showing asks again).</summary>
+        private static readonly TimeSpan QueueTimeout = TimeSpan.FromMinutes(5);
+
         // Each frame needs a Twitch request and an ffmpeg run; a library page asks for many at once
         private readonly SemaphoreSlim _gate = new(3);
         private readonly ConcurrentDictionary<string, Task<bool>> _running = new();
@@ -138,14 +141,16 @@ namespace TwitchDownloaderWeb.Services
         private async Task<bool> MakeAsync(long vodId, double vodSeconds, (string Path, double Seconds)? file, string path)
         {
             await Task.Yield();
+            // Only time the work itself: a library page asks for many frames at once, and frames waiting their turn used to run out of
+            // their 60 s in the queue and be remembered as failed for 10 minutes (the cards then showed the VOD's thumbnail)
+            if (!await _gate.WaitAsync(QueueTimeout))
+                return false;
+
             using var timeout = new CancellationTokenSource(MakeTimeout);
             var token = timeout.Token;
             string? work = null;
-            var entered = false;
             try
             {
-                await _gate.WaitAsync(token);
-                entered = true;
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
                 var temp = path + ".tmp.jpg";
                 var ffmpeg = configuration["Ffmpeg:Path"] is { Length: > 0 } configured ? configured : "ffmpeg";
@@ -197,8 +202,7 @@ namespace TwitchDownloaderWeb.Services
             }
             finally
             {
-                if (entered)
-                    _gate.Release();
+                _gate.Release();
                 if (work is not null)
                 {
                     try { Directory.Delete(work, true); } catch (IOException) { }
