@@ -441,7 +441,9 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   brackets, moments a line + triangle, clips solid violet bars (reference ones translucent), cut-out parts darker.
 - **Timeline editing** (`ui/timeline-edit.js`, mixed into `Timeline`, steps 3b and 4): tools bar tools Pointer / Cut / Zoom / Hand (V/C/Z/H), snapping (N,
   `clipLibrary.snap`, 8 px; **new kinds of timeline items must add their times to `snapPoints()`**), undo/redo (last 10 per VOD, this tab:
-  marker add/delete/change/split and clip re-trims). Pointer: click selects (white outline) and seeks; only the selected item's edges drag
+  marker add/delete/change/split and clip re-trims; steps name items through refs shared per VOD (`ref` / `moveRef`), because undoing a
+  delete makes the marker again with a new ID and older steps must follow it; presses queue while a step is sent; a stored clip's re-trim
+  still waiting its 3 s is dropped by undo, sent by redo; a "change" that didn't touch cut-out parts sends `cuts: null` so it keeps them). Pointer: click selects (white outline) and seeks; only the selected item's edges drag
   (segments, and VOD clips via `PUT /trim`; a **stored** clip's re-trim is saved 3 s after the last change (`scheduleTrim`, "saving…" next to
   Player 1's title, flushed on `pagehide` with a keepalive fetch: it downloads again), capped at the stored-clip limit over its whole range);
   I/O set them at the playhead; Space plays the
@@ -522,7 +524,8 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   presets made for the video's shape, plus your own saved in `localStorage` `clipco.vertical.presets`; team-wide presets would need the
   backend), **safe zones** overlay (TikTok / Shorts / Reels, approximate; `clipco.vertical.safeZone`), **snapping** of boxes to the video's
   edges, middle and each other (shares `clipLibrary.snap`; Alt drags freely, dashed guides), a selected box moves with the arrow keys,
-  **undo/redo** of box/layout/split/trim/part changes (50 steps, page only), keys in keybinds.js scopes `vertical` / `vertical-box`.
+  **undo/redo** of box/layout/split/trim/part changes (50 steps, page only; while it's open Ctrl+Z, its buttons and the tools bar's undo
+  whichever of it and the Player 2 edit changed last, by `nextUndoSeq()` numbers: `screenUndo` in `ui/editor.js`), keys in keybinds.js scopes `vertical` / `vertical-box`.
   **Parts** (vertical part 2, badrfly 2026-11-15): S splits the file at the playhead into parts, each with its own layout (`vx.parts`, a
   partition of the whole file; the part under the playhead is live in `vx.mode/ratio/boxes`, `stash()` / `loadPart()`); presets, One/Two boxes
   and box edits change that part only ("Use this layout on every part" copies it). Delete leaves a part out (skipped in the preview, the render

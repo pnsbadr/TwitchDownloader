@@ -165,6 +165,13 @@ export function wireIconButtons(root = document) {
   }
 }
 
+// Undo steps across the editor get increasing numbers, so with the vertical editor open Ctrl+Z can undo whichever of it
+// and Player 2's edit changed last
+let undoSeq = 0;
+export function nextUndoSeq() {
+  return ++undoSeq;
+}
+
 // ---------- toasts ----------
 
 export function toast(text, kind = "") {

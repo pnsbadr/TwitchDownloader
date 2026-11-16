@@ -13,7 +13,7 @@ import { SourceTimeline, ago } from "./source-timeline.js";
 import { skipCut, keptSeconds, normalizeCuts } from "./cuts.js";
 import { setUpExport, addToExport, exportShown, pausePreview } from "./export.js";
 import { showShortcuts } from "./shortcuts.js";
-import { setUpVertical, openVertical, setVerticalEdit, closeVertical, verticalOpen, verticalEntryId, pauseVertical, verticalEntryChanged, handleVerticalKey, verticalTime, verticalSeek, setVerticalPartStarts } from "./vertical.js";
+import { setUpVertical, openVertical, setVerticalEdit, closeVertical, verticalOpen, verticalEntryId, pauseVertical, verticalEntryChanged, handleVerticalKey, verticalTime, verticalSeek, setVerticalPartStarts, verticalUndo, verticalRedo, verticalUndoSeqs, refreshVerticalUndo } from "./vertical.js";
 
 // Phosphor icons, bold weight, as <sl-icon library="ph" name="…">
 registerIconLibrary("ph", {
@@ -806,6 +806,11 @@ function setUpPlayer2() {
       parts: info.parts.map((part) => ({ ...part, start: fileToSource(part.start), end: fileToSource(part.end), keys: (part.keys ?? []).map(fileToSource) })),
       trim: { start: fileToSource(info.trim.start), end: fileToSource(info.trim.end) },
     }),
+    // One undo for the screen: the vertical editor's steps and the edit's in Player 2's timeline below, newest first
+    undo: () => screenUndo(false),
+    redo: () => screenUndo(true),
+    undoState: () => screenUndoState(),
+    onUndoChanged: () => renderTools(),
   });
   $("p2-vertical").addEventListener("click", () => toggleVertical(true));
   $("p2-show").addEventListener("click", showInPlayer1);
@@ -861,6 +866,7 @@ function toggleVertical(on = !verticalOpen()) {
     if (!verticalOpen()) return;
     closeVertical();
     $("view-editor").classList.remove("vertical-mode");
+    renderTools();
     return;
   }
   if (p2Item?.kind !== "clip") {
@@ -872,6 +878,7 @@ function toggleVertical(on = !verticalOpen()) {
   $("view-editor").classList.add("vertical-mode");
   timelineTabs.pick("p2");
   openVertical(p2Item.id, verticalEdit());
+  renderTools();
 }
 
 // The vertical editor works on the edit shown in Player 2: renders are made for it (Original: the clip itself) and what it
@@ -904,8 +911,39 @@ function renderTools() {
     button.disabled = !canCreate;
     button.toggleAttribute("data-active", canCreate && (kind === "video" ? Boolean(t.linking) : t.marking?.kind === kind));
   }
-  document.querySelector('#tools [data-keybind="undo"]').disabled = !t.canUndo();
-  document.querySelector('#tools [data-keybind="redo"]').disabled = !t.canRedo();
+  const undo = screenUndoState();
+  document.querySelector('#tools [data-keybind="undo"]').disabled = !undo.canUndo;
+  document.querySelector('#tools [data-keybind="redo"]').disabled = !undo.canRedo;
+  refreshVerticalUndo();
+}
+
+// Undo / redo for what's on screen: the active timeline, or with the vertical editor open whichever of it and Player 2's
+// edit changed last (before, Ctrl+Z there only undid box changes while the tools bar's undo undid the edit, so the two
+// buttons did different things)
+function screenUndo(redo) {
+  if (!verticalOpen()) {
+    const t = activeTimeline();
+    if (t.vodId) redo ? t.redo() : t.undo();
+    return;
+  }
+  const own = verticalUndoSeqs();
+  const v = redo ? own.redo : own.undo;
+  const t = redo ? timeline2.redoSeq() : timeline2.undoSeq();
+  if (v == null && t == null) return;
+  // Undo takes the newest step; redo the one undone last, which is the older of the two waiting
+  const vertical = t == null || (v != null && (redo ? v < t : v > t));
+  if (vertical) redo ? verticalRedo() : verticalUndo();
+  else redo ? timeline2.redo() : timeline2.undo();
+  renderTools();
+}
+
+function screenUndoState() {
+  if (!verticalOpen()) {
+    const t = activeTimeline();
+    return { canUndo: t.canUndo(), canRedo: t.canRedo() };
+  }
+  const own = verticalUndoSeqs();
+  return { canUndo: own.undo != null || timeline2.canUndo(), canRedo: own.redo != null || timeline2.canRedo() };
 }
 
 function setUpTools() {
@@ -914,8 +952,8 @@ function setUpTools() {
     button.addEventListener("click", () => activeTimeline().setTool(button.dataset.tool));
   }
   document.querySelector('#tools [data-keybind="toggleSnap"]').addEventListener("click", () => activeTimeline().toggleSnap());
-  document.querySelector('#tools [data-keybind="undo"]').addEventListener("click", () => activeTimeline().undo());
-  document.querySelector('#tools [data-keybind="redo"]').addEventListener("click", () => activeTimeline().redo());
+  document.querySelector('#tools [data-keybind="undo"]').addEventListener("click", () => screenUndo(false));
+  document.querySelector('#tools [data-keybind="redo"]').addEventListener("click", () => screenUndo(true));
   const create = {
     marker: () => activeTimeline().addMoment(),
     segment: () => activeTimeline().mark("segment"),
@@ -1081,8 +1119,8 @@ function setUpKeys() {
       clip: () => on && t.mark("clip"),
       setStart: () => on && t.setEdgeAtPlayhead("start"),
       setEnd: () => on && t.setEdgeAtPlayhead("end"),
-      undo: () => on && t.undo(),
-      redo: () => on && t.redo(),
+      undo: () => on && screenUndo(false),
+      redo: () => on && screenUndo(true),
       deleteSelected: () => on && t.deleteSelected(),
       escape: () => on && t.escape(),
       verticalToggle: () => toggleVertical(),

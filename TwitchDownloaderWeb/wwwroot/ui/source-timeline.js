@@ -15,7 +15,7 @@
 //
 // Times on this timeline are seconds into the source ("source time"); sourceParts() maps them to the VOD for the player.
 
-import { api, me, can, toast } from "./core.js";
+import { api, me, can, toast, nextUndoSeq } from "./core.js";
 import { Timeline } from "./timeline.js";
 import { normalizeCuts, MIN_KEPT_SECONDS } from "./cuts.js";
 import { confirmAction, askText } from "./dialogs.js";
@@ -253,7 +253,10 @@ export class SourceTimeline extends Timeline {
     const kind = { clip: "clip", marker: "segment", video: "video" }[focus.type];
     // Edits with changes on their way keep what's on screen
     const busy = this.edits.filter((e) => e.id != null && (e.dirty || e.saving));
-    const server = list.map((data) => busy.find((e) => e.id === data.id) ?? this.fromServer(data, kind, focus));
+    // The same edit keeps its object (updated in place): undo steps and the edit on show point at it. A new object for every
+    // read made the undo history vanish whenever the edit picker opened (it reads the list again).
+    const server = list.map((data) => busy.find((e) => e.id === data.id)
+      ?? Object.assign(this.edits.find((e) => e.id === data.id) ?? {}, this.fromServer(data, kind, focus)));
     this.edits = [...server, ...this.edits.filter((e) => e.id == null && !e.deleted)];
     this.applies = Array.isArray(result) ? [] : result?.applies ?? [];
     this.serverCanApply = Array.isArray(result) ? null : result?.canApply ?? null;
@@ -1125,6 +1128,13 @@ export class SourceTimeline extends Timeline {
   // ---------- undo / redo (the edit on show, this visit only) ----------
 
   remember(step) {
+    // Changes to the item itself (a segment's title or color from the right-click menu) aren't part of the edit: they're
+    // Player 1 steps, undone on Player 1's timeline. They used to wipe this edit's undo history.
+    if (!step.edit) {
+      super.remember(step);
+      return;
+    }
+    step.seq = nextUndoSeq();
     if (step.edit !== this.historyEdit) {
       this.editHistory = { undo: [], redo: [] };
       this.historyEdit = step.edit;
@@ -1136,6 +1146,15 @@ export class SourceTimeline extends Timeline {
 
   canUndo() {
     return this.historyEdit === this.edit && this.editHistory.undo.length > 0 && !me?.support;
+  }
+
+  // The number of the step undo / redo would take (null = none): the vertical editor's and these are ordered by it
+  undoSeq() {
+    return this.canUndo() ? this.editHistory.undo.at(-1).seq ?? 0 : null;
+  }
+
+  redoSeq() {
+    return this.canRedo() ? this.editHistory.redo.at(-1).seq ?? 0 : null;
   }
 
   canRedo() {
