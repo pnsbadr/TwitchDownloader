@@ -193,11 +193,16 @@ namespace TwitchDownloaderWeb.Endpoints
             if (TeamChannelAccess.Refusal(await access.CheckVodAsync(team.TeamId, vodId, cancellationToken), vodId) is { } refused)
                 return refused;
 
+            // Two separate Twitch lookups (video info; access token + master playlist): ask both at once
+            var qualitiesTask = vodInfo.GetQualitiesAsync(vodId);
             var details = await vodInfo.GetVodAsync(vodId);
             if (details is null)
+            {
+                _ = qualitiesTask.ContinueWith(t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted); // a missing VOD's lookup may throw
                 return VodNotFound(vodId);
+            }
 
-            var qualities = await vodInfo.GetQualitiesAsync(vodId);
+            var qualities = await qualitiesTask;
 
             return Results.Ok(new VodInfoDto(vodId, details.Title, details.ChannelName, details.LengthSeconds,
                 TrimTime.Format(TimeSpan.FromSeconds(details.LengthSeconds)), details.StreamDateUtc, details.ThumbnailUrl,
