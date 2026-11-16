@@ -93,6 +93,15 @@ namespace TwitchDownloaderWeb.Endpoints
                     return Results.ValidationProblem(new Dictionary<string, string[]> { ["layout"] = [editError] });
                 layout = restricted.Normalize();
             }
+            else if (ItemEditEndpoints.ClipOwnFileParts(entry) is { } own)
+            {
+                // The file holds the whole clip, so a plain render leaves out the clip's own cut-out parts like its other files do
+                if (ShortformLayout.KeepOnly(layout, own, fileSeconds) is not { } restricted)
+                    return Results.ValidationProblem(new Dictionary<string, string[]> { ["layout"] = ["The clip's cut-out parts leave nothing of this layout."] });
+                if (restricted.Validate(fileSeconds) is { } cutError)
+                    return Results.ValidationProblem(new Dictionary<string, string[]> { ["layout"] = [cutError] });
+                layout = restricted.Normalize();
+            }
 
             var relativePath = entry.Status == EntryStatus.Ready ? entry.FilePath
                 : EntryDto.HasUnexpiredGeneratedFile(entry) ? entry.GeneratedFilePath

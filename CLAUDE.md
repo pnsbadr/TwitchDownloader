@@ -139,7 +139,7 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   each kept part re-encoded like Exact trims, then joined), for edits and plain clips with cut-out parts alike. **Vertical renders of an edit**:
   `POST /shortform` with `editId` (body or query; must be an edit of that clip): the layout is cut down to what the edit keeps in file seconds
   (`ShortformLayout.KeepOnly`, `ItemEditEndpoints.ClipEditFilePartsAsync`), the render's json keeps `editId`, renders list `editId`, the state
-  `renderingEditId`; the newest 5 are kept per edit (and for the clip itself), and "layout" in `GET /shortform` is the newest clip render's.
+  `renderingEditId`; a render without `editId` is cut down the same way to what the clip's own cut-out parts keep (`ItemEditEndpoints.ClipOwnFileParts`, since the file holds the whole clip); the newest 5 are kept per edit (and for the clip itself), and "layout" in `GET /shortform` is the newest clip render's.
 - `ExportBatches` + `ExportItems` (cascade): **exports** (badrfly, 2026-11-15, the Export tab's list; `ExportEndpoints`, `ExportWorker`). One
   `POST /api/exports` (`GenerateFiles`) with items of kind `vod` (a VOD range dropped on the list: **a one-off, never an entry**), `clip`
   (horizontal and/or vertical: two items), `video` (a `.zip` of one file per segment, or `joined` into one file, which needs the team's

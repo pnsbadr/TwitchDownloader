@@ -147,6 +147,13 @@ namespace TwitchDownloaderWeb.Tests
             var parts = started.GetProperty("layout").GetProperty("parts").EnumerateArray()
                 .Select(x => (x.GetProperty("start").GetDouble(), x.GetProperty("end").GetDouble())).ToArray();
             Assert.Equal([(0.0, 2.0), (4.0, 10.0)], parts);
+
+            // A plain render of a clip with cut-out parts leaves them out too (its file holds the whole clip: 20..30)
+            Assert.Equal(HttpStatusCode.OK, (await owner.PutAsJsonAsync($"/api/entries/{otherClip}/trim",
+                new { startTime = "20", endTime = "30", cuts = new[] { new { start = 25, end = 27 } } }, ct)).StatusCode);
+            var plain = await PostJsonAsync(owner, $"/api/entries/{otherClip}/shortform", layout, HttpStatusCode.Accepted);
+            Assert.Equal([(0.0, 5.0), (7.0, 10.0)], plain.GetProperty("layout").GetProperty("parts").EnumerateArray()
+                .Select(x => (x.GetProperty("start").GetDouble(), x.GetProperty("end").GetDouble())).ToArray());
         }
     }
 }
