@@ -417,27 +417,39 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
 - **Timeline editing** (`ui/timeline-edit.js`, mixed into `Timeline`, steps 3b and 4): tools bar tools Pointer / Cut / Zoom / Hand (V/C/Z/H), snapping (N,
   `clipLibrary.snap`, 8 px; **new kinds of timeline items must add their times to `snapPoints()`**), undo/redo (last 10 per VOD, this tab:
   marker add/delete/change/split and clip re-trims). Pointer: click selects (white outline) and seeks; only the selected item's edges drag
-  (segments, and reference-only VOD clips via `PUT /trim`; stored clips are trimmed in Player 2); I/O set them at the playhead; Space plays the
+  (segments, and VOD clips via `PUT /trim`; a **stored** clip's re-trim is saved 3 s after the last change (`scheduleTrim`, "saving…" next to
+  Player 1's title, flushed on `pagehide` with a keepalive fetch: it downloads again), capped at the stored-clip limit over its whole range);
+  I/O set them at the playhead; Space plays the
   selection, Shift+Space its last 3 s; Del deletes; double-click or right-click → title/color. S / X mark a segment / clip (start, then end,
   dashed preview; clips capped at `maxStoredClipSeconds`), M a moment; the tools bar's title/color editor names it and it's saved on the
   member's own row clicked last (else their first; locked rows are skipped). Others' items: view only; with `EditAnyEntries` every change asks
   **Edit original / Make a copy** (`chooseEditTarget`, Enter = copy); right-click → "Make a copy on my row" (`POST .../copy`). Locked rows
   (page only) can't be edited. Hooks to `editor.js`: `openItemEditor` (`colors: false` for clips, `onColor` live preview), `onChange`
   (`renderTools`), `onClipsChanged` (library refresh), `onCreated` (Player 2, step 4). The right-click menu is `ui/menu.js` (shared with cards).
-- **Player 2** (step 4, `openInPlayer2` in `ui/editor.js`): plays one segment or clip, loaded by dropping a clip card (or "Load in Player 2"),
+- **Player 2** (step 4, `openInPlayer2` in `ui/editor.js`): plays one segment, clip or video, loaded by dropping a card (or "Load in Player 2"),
   by dragging an item's body off the Player 1 timeline (`startDrag`; only edges of the selected item resize), or by itself when a segment or
-  clip is made on Player 1 (`onCreated`, without switching the tab). It's a second `MediaPlayer` and a second `Timeline` in mode `"item"`:
-  one row with just that item, the view locked to a window around it (25 % of its length each side, 5–60 s, `updateWindow`; outside the item
-  is shaded), seeks stay in the window and Play plays only the item. Its edges trim the item itself (`PUT /api/markers/{id}`, `PUT /trim`);
-  **stored clips are trimmed only here**, capped at the stored-clip limit (plus cut-out parts), and saved 3 s after the last change
-  (`scheduleTrim`; "saving…" in the header; flushed when something else loads and on `pagehide` with a keepalive fetch). After any save
-  each timeline calls `onEdited` and the other one reads the VOD again, so Player 1 moves too. Header: type, length (what's left after
-  cuts) and title; icons Show in Player 1 (opens the VOD there if needed, selects and zooms to the item), rename, **unload** (eject),
-  volume, fullscreen. **Nothing is deleted from Player 2** (badrfly 2026-11-16: deleting there used to delete the clip/segment for good):
-  its Delete key, eject icon and right-click "Unload from Player 2" only clear it (`hooks.onUnload` → `closePlayer2`); real deletes are on
-  Player 1's timeline and the library cards. Only one player plays at a time. The tools bar and keys work on the player whose timeline tab is open; clicking a player
-  with something loaded opens its tab. In Player 2 the create tools are off and the cut tool cuts parts out (step 7). Undo/redo
-  history is shared by both timelines. Old Twitch clips without a VOD can't.
+  clip is made on Player 1 (`onCreated`, without switching the tab). It's a second `MediaPlayer` and a `SourceTimeline` (**saved edits**,
+  below). Header: the **edit picker**, then type, length (what the edit keeps) and title; icons Show in Player 1 (opens the VOD there if
+  needed, selects and zooms to the item), **Apply to Player 1**, vertical, rename (the item itself), **unload** (eject), volume, fullscreen.
+  **Nothing is deleted from Player 2** (badrfly 2026-11-16): its Delete key, eject icon and right-click "Unload from Player 2" only clear it
+  (`hooks.onUnload` → `closePlayer2`); real deletes are on Player 1's timeline and the library cards. Only one player plays at a time. The
+  tools bar and keys work on the player whose timeline tab is open; clicking a player with something loaded opens its tab. In Player 2 the
+  create tools are off. Old Twitch clips without a VOD can't.
+- **Saved edits in Player 2** (badrfly 2026-11-16, Premiere-style; design and API in the project file `rework/player2-edits-spec.md`;
+  `ui/source-timeline.js`, `SourceTimeline extends Timeline`, mode `"item"`): the item in Player 2 is the **source**; its timeline runs in
+  **source time** from 0:00 to the item's length (a video: its segments end to end, in play order), nothing outside it is shown and nothing
+  can be dragged past it (extend the item on Player 1). What's done there is an **edit**: the ends trimmed inward (the white outline's
+  grips, I / O) and parts cut out (cut tool drag; click or right-click a cut part to put it back); Player 1 doesn't change. Edits are kept
+  per part in VOD seconds (`partCuts`, like the item's own cut-out parts; a video's segments' own cut-out parts stay out of every edit) and
+  saved ~0.6 s after the last change (`POST/PUT /api/edits`, one request at a time, keepalive on `pagehide`). **Original** = the item as on
+  Player 1, view only: the first change makes a new edit ("Edit N"); a teammate's edit is view only too and the first change makes your own
+  copy ("Copy of …"). The picker (`renderEditMenu` in `ui/editor.js`) lists Original, your edits, each member's edits (length, "applied"),
+  New edit (the whole item), Apply to Player 1 (or "to a copy on my row" when `applyMakesCopy`), Undo last apply, Revert to original
+  (`POST /api/{entries|markers|videos}/{id}/revert`), Make my own copy, Rename, Delete. **Apply** makes what the edit leaves out the item's
+  cut-out parts (grayed out on Player 1); `onApplied` reloads Player 1 and the cards. The edit last open per item is remembered in
+  `localStorage` `clipco.p2.lastEdit`. Undo/redo in Player 2 = changes to the edit on show (this visit). Playback (`p2Position` / `p2Seek` /
+  `p2Tick` in `ui/editor.js`, over `sourceParts()`) plays what the edit keeps: it skips left-out parts, goes from one part of a video to the
+  next and stops at the edit's end. Twitch clips: view only.
 - **Dropping on rows** (step 5, `dropPlan` / `runDrop` in `ui/timeline-edit.js`): the Player 1 track is a drop target for timeline items and
   clip cards of the same VOD, on the member's **own, unlocked** rows only. Own segment/moment on another own video row → moved (`PUT /api/markers/{id}`
   with `rowId`); own clip on another own clip row → moved (`PUT /api/entries/{id}/row`); someone else's (or own with Alt) → copied there
@@ -447,20 +459,14 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
 - **Videos** (step 6): the tools bar's **link** tool (Player 1, `startLinking` / `toggleLink` / `saveLink` in `ui/timeline-edit.js`): click
   segments on one of your own rows in play order (numbered badges; clicking again takes one out), type a title, press ✓ →
   `POST /api/vods/{id}/videos`; the video shows in VIDEOS and loads in Player 2. Player 1 marks segments that are in a video with their
-  position (tip: "In video "x" (n of m)"). In Player 2 a video is laid out in **video time** (`isVideoLayout`, `videoItems`: parts back to
-  back, each with its VOD offset); `p2Position` / `p2Seek` / `p2Tick` in `ui/editor.js` map video time to the VOD and jump to the next part
-  while playing. Dragging a part's edge trims the segment itself (`PUT /api/markers/{id}`, so every video using it changes); its right-click menu
-  = title/color, Move earlier/later and Take out of the video (Del too) (`PUT /api/videos/{id}` with the whole `markerIds`), Make a copy.
-  Others' videos: view only, or with `EditAnyEntries` the Edit original / Make a copy choice (`POST /api/videos/{id}/copy`). Rename on
+  position (tip: "In video "x" (n of m)"). In Player 2 a video is a source of saved edits (above); its parts' right-click menu also has the
+  video's own changes: title/color, Move earlier/later and Take out of the video (`PUT /api/videos/{id}` with the whole `markerIds`), Make a
+  copy. Others' videos: view only, or with `EditAnyEntries` the Edit original / Make a copy choice (`POST /api/videos/{id}/copy`). Rename on
   Player 2's icon and the card's menu; delete on the card's menu.
-- **Cut-out parts** (step 7, `ui/cuts.js` mirrors the server's `CutOuts` rules; `cutTarget` / `cutOut` / `saveCuts` / `cutOutOfVideo` in
-  `ui/timeline-edit.js`): Player 2's cut tool (C) dragged across its item cuts that part out: a segment's own cuts (`PUT /api/markers/{id}`),
-  a reference clip's (`PUT /trim` with `cuts`), a stored clip's (`PUT /trim`, waiting 3 s like its trims, and refused past the stored-clip limit
-  counted after cuts), or in a video only that video's cuts, split per segment it crosses (`PUT /api/videos/{id}` `cuts`, undo step `videoCuts`).
-  Clicking a cut-out part with the cut tool or "Put this part back" / "Put back all…" in the right-click menu puts it back; others' items go
-  through Edit original / Make a copy. Cut parts are drawn faded on both timelines (tip: "Cut out … · left out of files") and their edges are
-  snap points. Playback skips them (`skipCut` / `jumpCuts` in `ui/editor.js`): Player 2 always, a video part by part, Player 1 while a selected
-  segment or clip plays on its own. Lengths in Player 2's header count what's left.
+- **Cut-out parts** (step 7, `ui/cuts.js` mirrors the server's `CutOuts` rules): made in Player 2 as part of an edit and put on the item by
+  Apply to Player 1 (a video: its own per-segment cuts). Drawn darker on both timelines (tip: "Cut out … · left out of files", Player 2:
+  "left out of this edit") and their edges are snap points. Playback skips them (`skipCut` / `jumpCuts` in `ui/editor.js`): Player 2 always,
+  Player 1 while a selected segment or clip plays on its own.
 - **Export screen** (step 8, `ui/export.js`, EXPORT tab): same left panel; a view-only preview player (plays the selected item's kept parts
   in order, skipping cut-out parts; a video part by part), settings for the selected item (file name, quality from `/api/vods/info`, clip
   Horizontal/Vertical checkboxes: vertical uses the member's own newest render, or with `DownloadTeamVerticals` a picked team render, grayed
@@ -488,7 +494,7 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   render's `trimStart`/`trimEnd` opens as left-out parts at the ends (`trimToParts`); the bar shows the vertical video's length.
   `currentLayout()` sends kept parts inside the trim with same-looking neighbors joined: one → a plain layout as before, more → `parts`.
   The parts show in a **Layout row** under the clip in the Player 2 timeline (`hooks.onParts` → `Timeline.setVerticalParts`, file seconds
-  mapped to the VOD with `fileToVod`; `hasLayoutRow` / `drawVerticalParts` / `layoutPartAt`): a white line at each split, "n · One box /
+  mapped to source time with `fileToSource`; `hasLayoutRow` / `drawVerticalParts` / `layoutPartAt`): a white line at each split, "n · One box /
   Two boxes / Left out" labels, the part under the playhead with a white bar, left-out parts hatched; click seeks. Dragging a split line moves it, dragging a part
   slides it (keeps its length, pushes into its neighbors; the file's start/end stay put; parts ≥ 0.5 s; snaps like other edges; one
   undo step): `layoutGrab` / `dragLayout` in `ui/timeline-edit.js` → `hooks.onLayoutParts` → `setVerticalPartStarts`. `vx.trim` is always the
@@ -499,8 +505,9 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   (drag, arrows, a preset) sets the keyframe at the playhead (`keyHere`). Splitting keeps each side's keyframes plus the nearest one past
   the split, so motion doesn't change; J keeps the earlier part's; "Use this layout on every part" drops them. Diamonds on the Layout row
   (click = go there). The Player 2
-  timeline stays below and follows the preview (`fileToVod` / `vodToFile` in `ui/editor.js` map file seconds over the clip's kept parts);
-  trimming or cutting the clip there reloads the file (`verticalEntryChanged`), and a clip without a file says why (long clips get "Make
+  timeline stays below and follows the preview (`fileToSource` / `sourceToFile` in `ui/editor.js`: files keep the whole clip, so file
+  seconds are source time, except an old file with `fileHasCuts`, which skips the clip's cut-out parts); a changed file is reloaded
+  (`verticalEntryChanged`), and a clip without a file says why (long clips get "Make
   the file", `POST /generate`). While it's open only the timeline's tool and zoom keys still work.
 - `/?demo` fills sample cards (nothing is sent to the server) to try the shell.
 

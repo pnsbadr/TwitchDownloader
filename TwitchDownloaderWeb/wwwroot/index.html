@@ -145,6 +145,16 @@
             <section class="player" id="player2" aria-label="Player 2">
               <header class="player-head">
                 <span class="player-name display">Player 2</span>
+                <!-- Saved edits: the edit on show (Original = the item as on Player 1) and what can be done with it -->
+                <sl-dropdown id="p2-edit-menu" placement="bottom-start" hoist distance="4" hidden>
+                  <button slot="trigger" type="button" class="edit-pick" id="p2-edit-pick" aria-label="Edit on show (pick another)">
+                    <sl-icon library="ph" name="stack"></sl-icon>
+                    <span class="edit-pick-name" id="p2-edit-name">Original</span>
+                    <span class="edit-pick-state" id="p2-edit-state"></span>
+                    <sl-icon library="ph" name="caret-down" class="edit-pick-caret"></sl-icon>
+                  </button>
+                  <sl-menu id="p2-edit-items" class="edit-menu"></sl-menu>
+                </sl-dropdown>
                 <span class="player-info p2-info" id="p2-info"></span>
               </header>
               <div class="player-screen" id="p2-screen">
@@ -162,8 +172,9 @@
                 <sl-icon-button library="ph" id="p2-fwd" name="arrow-clockwise" label="Forward 10 s" data-keybind="fwd10" disabled></sl-icon-button>
                 <span class="controls-gap"></span>
                 <sl-icon-button library="ph" id="p2-show" name="crosshair" label="Show in Player 1" disabled></sl-icon-button>
+                <sl-icon-button library="ph" id="p2-apply" name="arrow-fat-line-up" label="Apply this edit to Player 1 (can be undone)" disabled hidden></sl-icon-button>
                 <sl-icon-button library="ph" name="device-mobile" label="Vertical (9:16) editor" data-keybind="verticalToggle" disabled hidden id="p2-vertical"></sl-icon-button>
-                <sl-icon-button library="ph" id="p2-rename" name="pencil-simple" label="Rename" disabled></sl-icon-button>
+                <sl-icon-button library="ph" id="p2-rename" name="pencil-simple" label="Rename the item" disabled></sl-icon-button>
                 <sl-icon-button library="ph" id="p2-delete" name="eject" label="Unload from Player 2 (nothing is deleted)" data-keybind="deleteSelected" disabled></sl-icon-button>
                 <sl-icon-button library="ph" id="p2-mute" name="speaker-high" label="Mute" disabled></sl-icon-button>
                 <sl-range id="p2-volume" class="volume" min="0" max="100" value="100" tooltip="none" aria-label="Volume" disabled></sl-range>

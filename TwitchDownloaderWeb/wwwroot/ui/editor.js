@@ -9,7 +9,8 @@ import { setUpLibrary, showList, refreshClips, refreshVideos } from "./library.j
 import { MARKER_COLORS } from "./colors.js";
 import { MediaPlayer, formatClock } from "./media.js";
 import { Timeline } from "./timeline.js";
-import { skipCut, keptSeconds, keptParts } from "./cuts.js";
+import { SourceTimeline, ago } from "./source-timeline.js";
+import { skipCut, keptSeconds, normalizeCuts } from "./cuts.js";
 import { setUpExport, addToExport, exportShown, pausePreview } from "./export.js";
 import { showShortcuts } from "./shortcuts.js";
 import { setUpVertical, openVertical, closeVertical, verticalOpen, verticalEntryId, pauseVertical, verticalEntryChanged, handleVerticalKey, verticalTime, verticalSeek, setVerticalPartStarts } from "./vertical.js";
@@ -188,11 +189,11 @@ function exportFromTimeline(item) {
 
 // ---------- players ----------
 //
-// Player 1 plays VODs with every member's rows on its timeline. Player 2 plays one segment, clip or video, locked to it:
-// its timeline (the Player 2 tab) shows only that item, and playback stays inside it. A video plays its segments one after
-// the other; its timeline is in video time, so Player 2's position is mapped between VOD and video time (p2Position). Both edit the same items, so a change
-// in one is read again by the other. The keys and the tools bar work on the player whose timeline tab is open; clicking
-// a player that has something loaded opens its tab.
+// Player 1 plays VODs with every member's rows on its timeline. Player 2 plays one segment, clip or video as a SOURCE
+// (ui/source-timeline.js): its timeline runs from 0:00 to the item's length (a video: its segments end to end), and what's
+// done there is a saved edit of it that doesn't change Player 1 until it's applied. Player 2's position is mapped between
+// VOD seconds and source time (p2Position). A change to an item on one is read again by the other. The keys and the tools
+// bar work on the player whose timeline tab is open; clicking a player that has something loaded opens its tab.
 
 const PLAYER_KINDS = { p1: ["vod"], p2: ["video", "clip", "segment"] };
 const FRAME_SECONDS = 1 / 30;
@@ -255,9 +256,9 @@ function playerNotes(player) {
   return notes.join(" ");
 }
 
-// Player 2: a segment or clip. show = open the Player 2 timeline tab (not for new items made on Player 1's timeline,
-// so marking can go on there)
-async function openInPlayer2({ kind, data }, { show = true } = {}) {
+// Player 2: a segment, clip or video. show = open the Player 2 timeline tab (not for new items made on Player 1's timeline,
+// so marking can go on there); editId = the saved edit to show (else the one last open for the item, else Original)
+async function openInPlayer2({ kind, data }, { show = true, editId } = {}) {
   if (DEMO) {
     toast("Playback isn't available in the demo.");
     return;
@@ -271,6 +272,7 @@ async function openInPlayer2({ kind, data }, { show = true } = {}) {
   const firstPart = kind === "video" ? [...(data.segments ?? [])].sort((a, b) => a.position - b.position)[0] : null;
   const start = kind === "clip" ? (data.startSeconds ?? data.start ?? 0) : kind === "video" ? (firstPart?.startSeconds ?? 0) : data.seconds;
   p2Part = 0;
+  p2StopAt = null;
   const target = { type, id: data.id, vodId, kind, title: data.title ?? data.label ?? "" };
   if (verticalOpen() && !(type === "clip" && verticalEntryId() === data.id)) toggleVertical(false);
   p2Item = target;
@@ -280,7 +282,7 @@ async function openInPlayer2({ kind, data }, { show = true } = {}) {
   if (show) timelineTabs.pick("p2");
   showNote("p2", "Loading…");
   const lengthSeconds = data.vodLengthSeconds || (p1Vod && String(p1Vod.vodId) === vodId ? p1Vod.lengthSeconds : 0);
-  const loaded = timeline2.openItem({ type, id: data.id, vodId, lengthSeconds });
+  const loaded = timeline2.openItem({ type, id: data.id, vodId, lengthSeconds, editId: editId ?? data.editId });
   try {
     if (player2.ready && player2.vodId === vodId) {
       player2.pause();
@@ -296,6 +298,8 @@ async function openInPlayer2({ kind, data }, { show = true } = {}) {
     showNote("p2", `Couldn't play this ${kind}: ${error.message}`);
   }
   await loaded;
+  // Start where the edit on show starts
+  if (p2Item === target && player2.ready && !player2.playing() && !verticalOpen()) p2Seek(timeline2.keptRange().start);
   renderPlayer2();
 }
 
@@ -323,78 +327,78 @@ function showNote(which, text, hideAfter = 0) {
   if (text && hideAfter) noteTimers[which] = setTimeout(() => { note.hidden = true; }, hideAfter);
 }
 
-// ---------- a video in Player 2: VOD seconds <-> video time ----------
+// ---------- Player 2 in source time (saved edits) ----------
+//
+// Player 2's timeline is in source time: seconds into its item (a video: its segments end to end). sourceParts() says where
+// each part is in the VOD; p2Part is the one playing. Playing skips what the edit on show leaves out and stops at its end.
 
-function videoParts() {
-  return p2Item?.type === "video" ? timeline2.videoParts() : [];
+let p2StopAt = null;   // source time Player 2 stops at (Shift+Space), else the edit's end
+
+function p2Parts() {
+  return timeline2?.sourceParts() ?? [];
 }
 
-// Player 2's position on its timeline: VOD seconds, or for a video the time into the video
+function partLength(part) {
+  return part.vodEnd - part.vodStart;
+}
+
+// Player 2's position on its timeline (source time)
 function p2Position() {
   if (verticalOpen()) {
     const t = verticalTime();
-    return t == null ? null : fileToVod(t);
+    return t == null ? null : fileToSource(t);
   }
   if (!player2.ready) return null;
   const position = player2.position();
-  if (position == null || p2Item?.type !== "video") return position;
-  const parts = videoParts();
-  if (!parts.length) return null;
+  const parts = p2Parts();
+  if (position == null || !parts.length) return null;
   const inPart = (part) => position >= part.vodStart - 0.05 && position <= part.vodEnd + 0.05;
   if (!parts[p2Part] || !inPart(parts[p2Part])) {
     const found = parts.findIndex(inPart);
     if (found >= 0) p2Part = found;
   }
   const part = parts[Math.min(p2Part, parts.length - 1)];
-  return part.offset + Math.min(Math.max(position - part.vodStart, 0), part.vodEnd - part.vodStart);
+  return part.offset + Math.min(Math.max(position - part.vodStart, 0), partLength(part));
 }
 
 function p2Seek(seconds) {
   if (verticalOpen()) {
-    const t = vodToFile(seconds);
+    const t = sourceToFile(seconds);
     if (t != null) verticalSeek(t);
     return;
   }
-  if (p2Item?.type !== "video") {
-    player2.seek(seconds);
-    return;
-  }
-  const parts = videoParts();
+  const parts = p2Parts();
   if (!parts.length) return;
-  let index = parts.findIndex((part) => seconds < part.offset + (part.vodEnd - part.vodStart));
+  let index = parts.findIndex((part) => seconds < part.offset + partLength(part));
   if (index < 0) index = parts.length - 1;
   p2Part = index;
   const part = parts[index];
-  player2.seek(part.vodStart + Math.min(Math.max(seconds - part.offset, 0), part.vodEnd - part.vodStart));
+  player2.seek(part.vodStart + Math.min(Math.max(seconds - part.offset, 0), partLength(part)));
 }
 
-// The vertical editor plays the clip's file: its kept parts back to back. Seconds into the file <-> VOD seconds, so the
-// Player 2 timeline below shows (and seeks) where the vertical preview is.
-function clipParts() {
+// The vertical editor plays the clip's file. Files made since saved edits keep the whole clip, so seconds into the file are
+// source time; an older file was made without the clip's cut-out parts (fileHasCuts), so its seconds skip those.
+function fileCuts() {
   const item = timeline2.focusItem();
-  return item && item.end != null ? keptParts(item.start, item.end, item.cuts ?? []) : [];
+  return item?.data?.fileHasCuts ? normalizeCuts(item.data.cuts ?? [], item.vodStart, item.vodEnd)
+    .map((c) => ({ start: c.start - item.vodStart, end: c.end - item.vodStart })) : [];
 }
 
-function fileToVod(t) {
-  const parts = clipParts();
-  let left = t;
-  for (const part of parts) {
-    const length = part.end - part.start;
-    if (left <= length) return part.start + left;
-    left -= length;
+function fileToSource(t) {
+  let at = t;
+  for (const cut of fileCuts()) {
+    if (at >= cut.start) at += cut.end - cut.start;
   }
-  return parts.length ? parts[parts.length - 1].end : null;
+  return Math.min(at, timeline2.length());
 }
 
-function vodToFile(seconds) {
-  const parts = clipParts();
-  if (!parts.length) return null;
-  let offset = 0;
-  for (const part of parts) {
-    if (seconds < part.end) return offset + Math.max(seconds - part.start, 0);
-    offset += part.end - part.start;
+function sourceToFile(seconds) {
+  let t = seconds;
+  for (const cut of [...fileCuts()].reverse()) {
+    if (seconds >= cut.end) t -= cut.end - cut.start;
+    else if (seconds > cut.start) t -= seconds - cut.start;
   }
-  return offset;
+  return Math.max(0, t);
 }
 
 // Cut-out parts are skipped while playing: jumps over the one at position (or stops when it runs to end). true = jumped.
@@ -417,34 +421,32 @@ function p1Tick(position) {
   if (item?.cuts?.length) jumpCuts(player1, item.cuts, position, player1.stopAt);
 }
 
-// Player 2 skips its item's cut-out parts. While a video plays, the end of one part jumps to the start of the next (also
-// when the rest of a part is cut out); the last one stops.
-function p2Tick(position) {
-  if (!player2.playing()) return;
-  if (p2Item?.type !== "video") {
-    const item = timeline2.focusItem();
-    if (item?.cuts?.length && item.end != null && position >= item.start - 0.05 && position < item.end) jumpCuts(player2, item.cuts, position, item.end);
-    return;
-  }
-  const parts = videoParts();
+// Player 2 plays what its edit keeps: it jumps over left-out parts, from the end of one part of a video to the next, and
+// stops at the edit's end (or where Shift+Space said)
+function p2Tick() {
+  if (!player2.playing() || verticalOpen()) return;
+  const parts = p2Parts();
   const part = parts[p2Part];
-  if (!part) return;
-  if (player2.stopAt != null) {
-    jumpCuts(player2, part.cuts, position, player2.stopAt);
-    return;
-  }
-  const to = skipCut(part.cuts, position, part.vodEnd);
-  if (typeof to === "number") {
-    player2.seek(to);
-    return;
-  }
-  if (to !== "end" && position < part.vodEnd - 0.04) return;
-  if (p2Part + 1 < parts.length) {
-    p2Part++;
-    player2.seek(parts[p2Part].vodStart);
-  } else {
+  const now = p2Position();
+  if (!part || now == null) return;
+  const kept = timeline2.keptRange();
+  const stop = Math.min(p2StopAt ?? kept.end, kept.end);
+  if (now >= stop - 0.04) {
+    p2StopAt = null;
     player2.pause();
+    return;
   }
+  const cut = timeline2.removedRanges().find((r) => now >= r.start && now < r.end - 0.04);
+  if (cut) {
+    if (cut.end >= stop - 0.05) {
+      p2StopAt = null;
+      player2.pause();
+    } else {
+      p2Seek(cut.end);
+    }
+    return;
+  }
+  if (player2.position() >= part.vodEnd - 0.04 && p2Part + 1 < parts.length) p2Seek(parts[p2Part + 1].offset);
 }
 
 // Play / pause / volume / fullscreen buttons of player n (1 or 2)
@@ -476,21 +478,17 @@ function renderPlayer2() {
   // The vertical editor works on a clip's file
   $("p2-vertical").hidden = p2Item?.kind !== "clip";
   $("p2-vertical").disabled = p2Item?.kind !== "clip" || DEMO;
-  if (p2Item?.type === "video") {
-    const video = timeline2.video;
-    const editable = Boolean(video) && !me?.support;
-    $("p2-show").disabled = !video;
-    $("p2-rename").disabled = !editable || !video.canEdit;
-    $("p2-delete").disabled = false;
-    return;
-  }
-  const item = p2Item ? timeline2.focusItem() : null;
-  $("p2-show").disabled = !item;
-  $("p2-rename").disabled = !item || !timeline2.canEditItem(item);
+  const source = p2Item ? timeline2.source : null;
+  $("p2-show").disabled = !source;
+  // Rename = the item itself (its title on Player 1 and the cards); edits are renamed in the edit picker
+  $("p2-rename").disabled = !source || Boolean(me?.support) || !source.canEdit;
+  $("p2-apply").hidden = !source;
+  $("p2-apply").disabled = !timeline2.canApply();
   $("p2-delete").disabled = !p2Item;
+  renderEditPicker();
 }
 
-// Top right of Player 2: type, length (what's left after cut-out parts) and title
+// Top right of Player 2: type, length (what the edit on show keeps) and title
 function renderP2Info() {
   const info = $("p2-info");
   if (!p2Item) {
@@ -505,18 +503,109 @@ function renderP2Info() {
     el("span", { class: "p2-kind" }, kind),
     length != null ? el("span", { class: "p2-length num" }, formatDuration(Math.round(length))) : null,
     el("span", { class: "p2-title", title }, title),
-    timeline2.pendingTrim ? el("span", { class: "p2-saving" }, "saving…") : null,
   ].filter(Boolean));
 }
 
-// The range Player 2 plays changed (trimmed here or on Player 1): a running preview stops at the new end
+// The item or the edit on show changed
 function onP2FocusChanged(info) {
   if (!p2Item || !info) return;
   verticalEntryChanged();
   p2Item.title = info.title;
-  if (p2Item.type !== "video" && player2.stopAt != null && info.end != null) player2.stopAt = info.end;
   renderP2Info();
   renderPlayer2();
+}
+
+// ---------- Player 2's edit picker (saved edits) ----------
+//
+// Top left of Player 2: the edit on show (Original = the item as on Player 1). Its menu lists Original and the team's edits
+// of the item (yours first), New edit, Apply to Player 1, Undo last apply, Revert to original, and for the edit on show:
+// Make my own copy (someone else's), Rename, Delete.
+
+function renderEditPicker() {
+  const t = timeline2;
+  const shown = Boolean(p2Item && t?.source);
+  $("p2-edit-menu").hidden = !shown;
+  if (!shown) return;
+  const edit = t.edit;
+  const saving = t.edits.some((e) => e.saving || e.dirty);
+  const failed = t.edits.some((e) => e.failed);
+  $("p2-edit-name").textContent = t.editName(edit);
+  $("p2-edit-state").textContent = saving ? "saving…" : failed ? "not saved" : edit?.original ? (t.canMakeEdits() ? "view only" : "") : t.isApplied(edit) ? "applied" : "";
+  $("p2-edit-state").classList.toggle("bad", failed && !saving);
+  $("p2-edit-pick").title = edit?.original
+    ? "The item as it is on Player 1. Trim it or cut a part out to make a new edit."
+    : `${t.editName(edit)}${edit?.own ? "" : ` by ${edit?.createdBy ?? "a teammate"} (view only: a change makes your own copy)`}`;
+  if ($("p2-edit-menu").open) renderEditMenu();
+}
+
+function renderEditMenu() {
+  const t = timeline2;
+  const current = t.edit;
+  const item = (value, label, { icon = null, checked = null, disabled = false, detail = null } = {}) => el("sl-menu-item", {
+    value, disabled, ...(checked != null ? { type: "checkbox", checked } : {}),
+  }, icon ? el("sl-icon", { slot: "prefix", library: "ph", name: icon }) : null, label, detail ? el("span", { slot: "suffix", class: "edit-detail" }, detail) : null);
+  const detailOf = (edit) => [formatDuration(Math.round(t.keptTotal(t.fitted(edit.partCuts)))), t.isApplied(edit) ? "applied" : null].filter(Boolean).join(" · ");
+  const entries = [item("original", "Original", { checked: Boolean(current?.original), detail: "as on Player 1" })];
+  const index = (edit) => t.edits.indexOf(edit);
+  const newest = (a, b) => String(b.updatedAtUtc ?? b.createdAtUtc ?? "").localeCompare(String(a.updatedAtUtc ?? a.createdAtUtc ?? ""));
+  const own = t.edits.filter((e) => e.own).sort(newest);
+  if (own.length) {
+    entries.push(el("sl-divider"), el("sl-menu-label", {}, "Your edits"));
+    for (const edit of own) entries.push(item(`edit:${index(edit)}`, t.editName(edit), { checked: edit === current, detail: detailOf(edit) }));
+  }
+  const byMember = new Map();
+  for (const edit of t.edits.filter((e) => !e.own).sort(newest)) {
+    const name = edit.createdBy ?? "A teammate";
+    if (!byMember.has(name)) byMember.set(name, []);
+    byMember.get(name).push(edit);
+  }
+  for (const [name, edits] of byMember) {
+    entries.push(el("sl-divider"), el("sl-menu-label", {}, `${name}'s edits`));
+    for (const edit of edits) entries.push(item(`edit:${index(edit)}`, t.editName(edit), { checked: edit === current, detail: detailOf(edit) }));
+  }
+  const can = t.canMakeEdits();
+  entries.push(el("sl-divider"), item("new", "New edit", { icon: "plus", disabled: !can }));
+  const last = t.applies[0];
+  const applyName = (apply) => {
+    const edit = t.edits.find((e) => e.id === apply.editId);
+    return edit ? t.editName(edit) : apply.editTitle || "a deleted edit";
+  };
+  entries.push(el("sl-divider"),
+    item("apply", t.applyMakesCopy ? "Apply to a copy on my row" : "Apply to Player 1", { icon: "arrow-fat-line-up", disabled: !t.canApply() }),
+    item("undo-apply", "Undo last apply", {
+      icon: "arrow-u-up-left", disabled: !t.canRevert(),
+      detail: last ? `${applyName(last)}${last.username ? ` · ${last.username}` : ""} · ${ago(last.appliedAtUtc)}` : null,
+    }),
+    item("revert", "Revert to original", { icon: "clock-counter-clockwise", disabled: !t.canRevert() }));
+  if (current && !current.original) {
+    entries.push(el("sl-divider"));
+    if (!current.own) entries.push(item("copy", "Make my own copy", { icon: "copy", disabled: !can }));
+    if (current.own) entries.push(item("rename", "Rename this edit", { icon: "pencil-simple", disabled: Boolean(me?.support) }));
+    if (current.canDelete ?? current.own) entries.push(item("delete", "Delete this edit", { icon: "trash", disabled: Boolean(me?.support) }));
+  }
+  $("p2-edit-items").replaceChildren(...entries);
+}
+
+function setUpEditPicker() {
+  $("p2-edit-menu").addEventListener("sl-show", (event) => {
+    if (event.target !== $("p2-edit-menu")) return;
+    renderEditMenu();
+    timeline2.loadEdits();
+  });
+  $("p2-edit-items").addEventListener("sl-select", (event) => {
+    const value = event.detail.item.value;
+    const t = timeline2;
+    if (value === "original") t.pickEdit(null);
+    else if (value.startsWith("edit:")) t.pickEdit(t.edits[Number(value.slice(5))] ?? null);
+    else if (value === "new") t.startNewEdit();
+    else if (value === "apply") t.applyEdit();
+    else if (value === "undo-apply") t.revert("previous");
+    else if (value === "revert") t.revert("original");
+    else if (value === "copy") t.copyEdit();
+    else if (value === "rename") t.renameEdit();
+    else if (value === "delete") t.deleteEdit();
+  });
+  $("p2-apply").addEventListener("click", () => timeline2.applyEdit());
 }
 
 function renderClock(position) {
@@ -585,7 +674,11 @@ function setUpPlayer1() {
     getPosition: () => (player1.ready ? player1.position() : null),
     openItemEditor,
     closeItemEditor: () => closeItemEditor(false),
-    onChange: renderTools,
+    onChange: () => {
+      renderTools();
+      // A stored clip's re-trim waits 3 s (it downloads again)
+      $("p1-info").toggleAttribute("data-saving", Boolean(timeline?.pendingTrim));
+    },
     onClipsChanged: refreshClips,
     onVideosChanged: refreshVideos,
     onExport: exportFromTimeline,
@@ -626,12 +719,11 @@ function setUpPlayer2() {
     },
     onDetails: (details) => timeline2.setDetails(details),
   });
-  timeline2 = new Timeline({
-    mode: "item",
+  timeline2 = new SourceTimeline({
     // Delete / "Unload from Player 2" only clears Player 2; nothing is deleted
     onUnload: () => closePlayer2(),
-    // Split lines dragged in the Layout row (VOD seconds -> seconds into the clip's file)
-    onLayoutParts: (starts) => setVerticalPartStarts(starts.map(vodToFile)),
+    // Split lines dragged in the Layout row (source time -> seconds into the clip's file)
+    onLayoutParts: (starts) => setVerticalPartStarts(starts.map(sourceToFile)),
     onSeek: p2Seek,
     getPosition: p2Position,
     openItemEditor,
@@ -648,6 +740,18 @@ function setUpPlayer2() {
       verticalEntryChanged();
     },
     onFocusChanged: onP2FocusChanged,
+    onEditsChanged: () => {
+      renderEditPicker();
+      renderP2Info();
+      renderPlayer2();
+      if (activePlayer === "p2") renderTools();
+    },
+    // An edit was applied (or undone): Player 1 and the cards show the item's new cut-out parts
+    onApplied: () => {
+      if (timeline.vodId && timeline.vodId === timeline2.vodId) timeline.load();
+      refreshClips();
+      refreshVideos();
+    },
     // The first change to someone else's item made a copy: Player 2 goes on with it
     onFocusMoved: (focus) => {
       if (!p2Item) return;
@@ -661,10 +765,10 @@ function setUpPlayer2() {
   wirePlayerButtons(2, "p2");
   setUpVertical($("player2"), {
     onExit: () => toggleVertical(false),
-    // The vertical editor's parts on the clip in Player 2's row (file seconds -> VOD seconds)
+    // The vertical editor's parts on the clip in Player 2's row (file seconds -> source time)
     onParts: (info) => timeline2.setVerticalParts(info && {
-      parts: info.parts.map((part) => ({ ...part, start: fileToVod(part.start), end: fileToVod(part.end), keys: (part.keys ?? []).map(fileToVod) })),
-      trim: { start: fileToVod(info.trim.start), end: fileToVod(info.trim.end) },
+      parts: info.parts.map((part) => ({ ...part, start: fileToSource(part.start), end: fileToSource(part.end), keys: (part.keys ?? []).map(fileToSource) })),
+      trim: { start: fileToSource(info.trim.start), end: fileToSource(info.trim.end) },
     }),
   });
   $("p2-vertical").addEventListener("click", () => toggleVertical(true));
@@ -678,6 +782,7 @@ function setUpPlayer2() {
     if (item) timeline2.editTitle(item);
   });
   $("p2-delete").addEventListener("click", () => closePlayer2());
+  setUpEditPicker();
   renderPlayer2();
 }
 
@@ -685,11 +790,10 @@ function setUpPlayer2() {
 async function showInPlayer1() {
   if (!p2Item) return;
   // A video: its first part selected, all its parts in view
-  const parts = videoParts();
-  const item = p2Item.type === "video"
-    ? (parts.length ? { start: parts[0].vodStart, range: { start: Math.min(...parts.map((p) => p.vodStart)), end: Math.max(...parts.map((p) => p.vodEnd)) } } : null)
-    : timeline2.focusItem();
-  if (!item) return;
+  const parts = p2Parts();
+  if (!parts.length) return;
+  const start = parts[0].vodStart;
+  const range = p2Item.type === "video" ? { start: Math.min(...parts.map((p) => p.vodStart)), end: Math.max(...parts.map((p) => p.vodEnd)) } : null;
   const focus = p2Item.type === "video" ? { type: "marker", id: parts[0].id } : { ...timeline2.focus };
   const vodId = p2Item.vodId;
   player2.pause();
@@ -701,13 +805,13 @@ async function showInPlayer1() {
       toast(error.message, "error");
       return;
     }
-    await openVod({ vodId: info.vodId, title: info.title, lengthSeconds: info.lengthSeconds, isLive: info.isLive }, { start: item.start, paused: true });
+    await openVod({ vodId: info.vodId, title: info.title, lengthSeconds: info.lengthSeconds, isLive: info.isLive }, { start, paused: true });
   } else {
     player1.pause();
-    player1.seek(item.start);
+    player1.seek(start);
   }
   timelineTabs.pick("p1");
-  timeline.reveal(focus, item.range ?? null);
+  timeline.reveal(focus, range);
 }
 
 // ---------- vertical (9:16) editor in Player 2 (ui/vertical.js) ----------
@@ -778,18 +882,24 @@ function setUpTools() {
 }
 
 // Play / pause: with a segment or clip selected (Player 2: always its item) and the player paused, play just it
+// Play / pause: with a segment or clip selected and the player paused, play just it. Player 2 plays what its edit keeps
+// (from where it is, or from the edit's start once it has ended)
 function playPause(which = activePlayer) {
   const { player, timeline: t } = pair(which);
   if (!player.ready) return;
-  // A video plays on from where it is (from the start once it has ended)
-  if (which === "p2" && p2Item?.type === "video") {
+  if (which === "p2") {
     if (player.playing()) {
       player.pause();
       return;
     }
+    const kept = t.keptRange();
+    let from = p2Position();
+    if (from == null || from < kept.start - 0.01 || from >= kept.end - 0.05) from = kept.start;
+    const cut = t.removedRanges().find((r) => from >= r.start && from < r.end);
+    if (cut) from = cut.end;
+    p2StopAt = null;
     player.stopAt = null;
-    const now = p2Position();
-    if (now == null || now >= t.length() - 0.05) p2Seek(0);
+    if (Math.abs(from - (p2Position() ?? -1)) > 0.01) p2Seek(from);
     player.play();
     return;
   }
@@ -803,14 +913,25 @@ function playPause(which = activePlayer) {
   player.togglePlay();
 }
 
+// Shift+Space: the last 3 s of the selected item (Player 2: of its edit)
 function playLastSeconds(which = activePlayer) {
   const { player, timeline: t } = pair(which);
-  const range = t.selectedVodRange();
-  if (!player.ready || !range) return;
+  if (!player.ready) return;
+  if (which === "p2") {
+    const kept = t.keptRange();
+    if (kept.end <= kept.start) return;
+    p2Seek(Math.max(kept.start, kept.end - 3));
+    p2StopAt = kept.end;
+    player.stopAt = null;
+    player.play();
+    return;
+  }
+  const range = t.selectedRange();
+  if (!range) return;
   player.playRange(Math.max(range.start, range.end - 3), range.end);
 }
 
-// Seeking stays inside what the timeline can show (Player 2: the window around its item)
+// Seeking stays inside what the timeline can show (Player 2: its item)
 function skip(which, delta) {
   const { player, timeline: t } = pair(which);
   const now = t.getPosition();
