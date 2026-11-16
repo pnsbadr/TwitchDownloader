@@ -197,7 +197,8 @@ Plan and badrfly's decisions: Claude Doc "Logins, teams and permissions plan". B
   **strictly**: the VOD's channel (GQL owner, cached 12 h; matched by Twitch user ID, then login) must be assigned; work already on a VOD
   doesn't open it. Exception (badrfly 2026-11-16): a VOD **Twitch no longer has** stays open when the team's entries/videos on it name one of
   its assigned channels (`ChannelName`, login or display name), so stored clips stay exportable after the VOD is deleted (an export
-  then uses the stored file's quality whatever was asked). Removing a channel takes a mode (badrfly): `?mode=revoke` deletes the row (every VOD closes now, work included) **and hides
+  then uses the stored file's quality whatever was asked; `ExportWorker` cuts its kept parts out of the stored file when the VOD is gone,
+  for any Exact file, mapping past an older file's `FileCuts` with `ExportWorker.FileParts`; Safe files can't be, their offset needs the playlist). Removing a channel takes a mode (badrfly): `?mode=revoke` deletes the row (every VOD closes now, work included) **and hides
   the team's work on its VODs** (badrfly 2026-11-15, "Hide it all": `RevokedChannels` + `HiddenVods`, the VODs the team had entries, markers,
   rows, videos or exports on, found per VOD via Twitch (`TeamChannelAccess.GetVodChannelAsync`; a VOD gone from Twitch goes by the channel
   name on its entries/videos; Twitch unreachable → 502, nothing changes). The team query filters on entries, markers, rows, videos, segment
