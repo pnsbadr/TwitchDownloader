@@ -456,8 +456,12 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   the caller's first and tinted. Canvases for the ruler (ticks; muted red / saved audio green along the bottom, from hls.js fragments) and the
   rows; row headers are DOM (delete checkbox when allowed, kind icon, name (double-click renames own, `PUT /api/rows/{id}`), owner, hide / solo /
   lock (page only)). Footer: add video row / clip row (`POST /api/vods/{id}/rows`), delete checked rows, zoom slider (log scale, min 10 s), Fit.
-  Click seeks (on an item: to its start), wheel zooms, Shift+wheel pans; the view follows the playhead until panned. Segments hatched with
+  Click seeks (on an item: to its start); wheel, middle drag and cursors as in **Timeline input** below; the view follows the playhead until panned. Segments hatched with
   brackets, moments a line + triangle, clips solid violet bars (reference ones translucent), cut-out parts darker.
+- **Timeline input** (`ui/timeline-input.js`, badrfly 2026-11-16: "universal throughout the app"): both timelines take their cursors
+  (`timelineCursor` / `rulerCursor`: arrow, grab over a draggable item/piece, ew-resize on edges, the Premiere-like razor (red-crossed
+  where it can't cut), zoom-in, grab/grabbing hand, col-resize on the ruler) and the wheel (`timelineWheel`: wheel scrolls, Ctrl+wheel
+  zooms around the mouse, Shift+wheel scrolls rows; middle drag pans) from it. Change them there, never in one timeline.
 - **Timeline editing** (`ui/timeline-edit.js`, mixed into `Timeline`, steps 3b and 4): tools bar tools Pointer / Cut / Zoom / Hand (V/C/Z/H), snapping (N,
   `clipLibrary.snap`, 8 px; **new kinds of timeline items must add their times to `snapPoints()`**), undo/redo (last 10 per VOD, this tab:
   marker add/delete/change/split and clip re-trims; steps name items through refs shared per VOD (`ref` / `moveRef`), because undoing a
@@ -484,7 +488,9 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   Add to the export list, Rename, Duplicate / Make my own copy, Delete, Close); the open project is remembered in `localStorage`
   `clipco.p2.project`. Loading a clip, segment or video in Player 2 (drop on its screen or timeline, card menu, dragging off Player 1) adds
   it to the open project at the playhead, or starts a new one. A segment or clip made on Player 1 is added by itself only while an editable
-  project is open. Others' projects: view only (copy to edit). The left panel has a PROJECTS tab (`library.js` `projectCard`).
+  project is open. **M / X on Player 2** make a moment / clip on the VOD under the playhead (its VOD second; a clip starts and ends on
+  the same VOD, ≤ 3 min) on the member's own rows of that VOD, like Player 1 (`p2AddMoment` / `p2MarkClip` in `ui/editor.js`); in a gap nothing
+  is made. They aren't added to the project (the piece already plays that part). Others' projects: view only (copy to edit). The left panel has a PROJECTS tab (`library.js` `projectCard`).
   **Timeline**: ruler from 0:00 to past the end (scroll and zoom freely: wheel scrolls, Ctrl+wheel zooms, Shift+wheel scrolls rows, middle
   button pans, scrollbar under the rows); rows top to bottom (unnamed rows are named "V1, V2…" once and keep their name), row heads with grip
   (drag to reorder), name (double-click), hide / mute / lock, right-click insert above/below, rename, paste, delete (asks when it holds

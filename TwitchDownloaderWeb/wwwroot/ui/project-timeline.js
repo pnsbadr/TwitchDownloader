@@ -8,6 +8,7 @@
 // dropped on a row land where they're dropped (a ghost shows it); dropped under the last row they make a new row.
 // Every change is one undo step of the store, which saves the project shortly after.
 
+import { timelineCursor, rulerCursor, timelineWheel } from "./timeline-input.js";
 import { $, el, api, toast, formatDuration, withTooltip, loadSetting, saveSetting } from "./core.js";
 import { askText, confirmAction } from "./dialogs.js";
 import { MARKER_COLORS } from "./colors.js";
@@ -468,14 +469,12 @@ export class ProjectTimeline {
     this.changed();
   }
 
+  // Cursors come from ui/timeline-input.js, the same as Player 1's timeline
   updateCursor(over = null) {
-    const cursor = {
-      pointer: over === "edge" ? "ew-resize" : over === "piece" ? "grab" : "default",
-      cut: over === "piece" ? "crosshair" : "not-allowed",
-      zoom: "zoom-in",
-      hand: this.press?.kind === "hand" ? "grabbing" : "grab",
-    }[this.tool];
-    this.track.style.cursor = cursor;
+    const kind = this.press?.kind;
+    const pressing = kind === "hand" ? "pan" : kind === "edge" && this.press.moved ? "edge" : kind === "move" && this.press.moved ? "drag" : null;
+    this.track.style.cursor = timelineCursor({ tool: this.tool, over, pressing, canCut: over === "piece" });
+    this.ruler.style.cursor = rulerCursor(this.tool === "hand" ? "pointer" : this.tool);
   }
 
   // ---------- geometry ----------
@@ -588,21 +587,12 @@ export class ProjectTimeline {
       canvas.addEventListener("wheel", (event) => {
         if (!this.content) return;
         const { x, width } = this.local(event, canvas);
-        if (event.ctrlKey || event.metaKey) {
-          event.preventDefault();
-          this.follow = false;
-          this.zoomBy(event.deltaY > 0 ? 1.25 : 0.8, this.xToTime(x, width));
-          return;
-        }
-        if (event.shiftKey && Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
-          // Shift+wheel: scroll the rows up and down
-          event.preventDefault();
-          document.querySelector(".tl-body").scrollTop += event.deltaY;
-          return;
-        }
-        event.preventDefault();
-        const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
-        this.pan((delta / width) * this.span());
+        timelineWheel(event, {
+          x, width, span: this.span(), xToTime: (px, w) => this.xToTime(px, w),
+          zoomAt: (factor, at) => { this.follow = false; this.zoomBy(factor, at); },
+          panBy: (seconds) => this.pan(seconds),
+          rows: document.querySelector(".tl-body"),
+        });
       }, { passive: false });
     }
   }
@@ -699,14 +689,17 @@ export class ProjectTimeline {
         this.dirty = true;
       } else if (this.tool === "pointer") {
         const editable = hit?.piece && this.store.canEdit && !this.isLocked(hit.piece.trackId);
-        this.updateCursor(editable ? (hit.edge ? "edge" : "piece") : null);
+        this.updateCursor(editable ? (hit.edge ? "edge" : "item") : null);
       }
       this.renderTip(hit);
       return;
     }
     if (press.kind === "hand") return;
     if (!press.moved && Math.hypot(event.clientX - press.startX, event.clientY - press.startY) < DRAG_PX) return;
-    press.moved = true;
+    if (!press.moved) {
+      press.moved = true;
+      this.updateCursor();
+    }
     this.tip.hidden = true;
     if (press.kind === "empty") {
       this.marquee = { x1: press.x0, y1: press.y0, x2: p.x, y2: p.y };
@@ -819,6 +812,7 @@ export class ProjectTimeline {
     const press = this.press;
     if (!press || press.kind === "hand") return;
     this.press = null;
+    this.updateCursor();
     const preview = this.preview;
     const invalid = this.invalid;
     const newRow = this.newRowPreview;

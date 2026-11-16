@@ -9,9 +9,10 @@ import { setUpLibrary, showList, refreshClips, refreshVideos, refreshProjectCard
 import { MARKER_COLORS } from "./colors.js";
 import { MediaPlayer, formatClock } from "./media.js";
 import { Timeline } from "./timeline.js";
+import { trimValue } from "./timeline-edit.js";
 import { skipCut, keptSeconds } from "./cuts.js";
 import { askText, confirmAction } from "./dialogs.js";
-import { ProjectStore, piecesFromItem } from "./project.js";
+import { ProjectStore, piecesFromItem, flatten, stretchAt } from "./project.js";
 import { ProjectTimeline } from "./project-timeline.js";
 import { ProjectPlayback } from "./project-playback.js";
 import { setUpExport, addToExport, exportShown, pausePreview } from "./export.js";
@@ -333,6 +334,8 @@ async function closeProject() {
   await store.close();
   saveSetting(LAST_PROJECT_KEY, null);
   timeline2.refresh({ reset: true });
+  // Closing the store re-reads the (now empty) content, which seeks and shows the gap's black: stop again so the hint shows
+  playback.stop();
   $("p2-media").hidden = true;
   $("p2-hint").hidden = false;
   showNote("p2", "");
@@ -770,6 +773,117 @@ async function showInPlayer1(piece) {
   timeline.reveal(focus, { start: piece.start, end: piece.end });
 }
 
+// ---------- moments and clips made from Player 2 ----------
+//
+// M / X on Player 2 work like on Player 1, on the VOD under the playhead: the moment or clip goes on the member's own rows of that
+// VOD (Player 1's timeline shows it). In a gap there's no VOD, so nothing is made. A clip starts and ends on the same VOD.
+
+let p2Marking = null; // { vodId, start } while a clip waits for its end
+
+function p2CanCreate() {
+  return Boolean(store?.open) && !DEMO && !me?.support && can("AddEntries");
+}
+
+// The VOD and VOD second under Player 2's playhead, or null in a gap
+function p2VodPoint() {
+  const t = p2Position();
+  if (t == null) return null;
+  const s = stretchAt(flatten(store.content), t);
+  if (!s?.piece) return null;
+  return { vodId: String(s.piece.vodId), seconds: Math.round((s.vodStart + (t - s.at)) * 100) / 100 };
+}
+
+// The row Player 1 would use when it shows that VOD (it knows which rows are locked); otherwise the server picks the first one
+function p1RowFor(vodId, kind) {
+  if (String(timeline?.vodId) !== vodId) return undefined;
+  const row = timeline.targetRow(kind);
+  return row === false ? false : row ? row.id : undefined;
+}
+
+function p2NoVod() {
+  toast("The playhead is on a gap: move it onto a piece to mark its VOD.");
+}
+
+function p2AddMoment() {
+  if (!p2CanCreate()) return;
+  const point = p2VodPoint();
+  if (!point) return p2NoVod();
+  const rowId = p1RowFor(point.vodId, "video");
+  if (rowId === false) return toast("Your video rows are locked.");
+  playback.pause();
+  openItemEditor({
+    title: "",
+    color: timeline.lastColor,
+    colors: true,
+    placeholder: "Marker title",
+    onApply: async (title, color) => {
+      timeline.lastColor = color;
+      try {
+        const marker = await api("POST", `/api/vods/${point.vodId}/markers`, { seconds: point.seconds, endSeconds: null, label: title, color, rowId });
+        if (marker.liveEntry) refreshClips();
+        p1Reload(point.vodId);
+        toast("Moment added to the VOD.");
+      } catch (error) {
+        toast(error.message, "error");
+      }
+    },
+  });
+}
+
+function p2MarkClip() {
+  if (!p2CanCreate()) return;
+  const point = p2VodPoint();
+  if (!point) return p2NoVod();
+  if (!p2Marking) {
+    if (p1RowFor(point.vodId, "clip") === false) return toast("Your clip rows are locked.");
+    p2Marking = { vodId: point.vodId, start: point.seconds };
+    toast("Clip started: press X again where it ends.");
+    renderTools();
+    return;
+  }
+  const marking = p2Marking;
+  p2Marking = null;
+  renderTools();
+  if (marking.vodId !== point.vodId) return toast("A clip starts and ends on the same VOD: the playhead is on another VOD now.", "error");
+  let start = Math.min(marking.start, point.seconds);
+  let end = Math.max(marking.start, point.seconds);
+  if (end - start < 0.5) return toast("Too short: move the playhead at least half a second away from the start.");
+  const max = timeline.maxStoredClipSeconds;
+  if (end - start > max) {
+    if (point.seconds < marking.start) start = end - max;
+    else end = start + max;
+    toast(`Clips are at most ${formatClock(max).replace(/^0:0?|\.00$/g, "")}; the clip was shortened.`);
+  }
+  playback.pause();
+  openItemEditor({
+    title: "",
+    color: timeline.lastColor,
+    colors: false,
+    placeholder: "Clip title (blank = the VOD's title)",
+    onApply: async (title) => {
+      try {
+        await api("POST", "/api/entries", {
+          vodId: marking.vodId,
+          title: title || null,
+          trimMode: "Exact",
+          startTime: trimValue(start),
+          endTime: trimValue(end),
+          rowId: p1RowFor(marking.vodId, "clip") || undefined,
+        });
+        refreshClips();
+        p1Reload(marking.vodId);
+        toast("Clip added to the VOD.");
+      } catch (error) {
+        toast(error.message, "error");
+      }
+    },
+  });
+}
+
+function p1Reload(vodId) {
+  if (String(timeline?.vodId) === vodId) timeline.load().catch(() => {});
+}
+
 // "Apply this trim to the original": the clip or segment a piece was copied from gets the range of every piece made from it in
 // this project, and what's between them as its cut-out parts (can be undone with Ctrl+Z on Player 1 only for segments)
 async function applyToOriginal(piece) {
@@ -839,7 +953,10 @@ function renderTools() {
   if (DEMO || !timeline || !timeline2) return;
   const t = activeTimeline();
   const on = Boolean(t.vodId);
-  const canCreate = activePlayer === "p1" && on && t.canCreate();
+  const p2 = activePlayer === "p2";
+  const canCreate = !p2 && on && t.canCreate();
+  // Player 2: moments and clips on the VOD under the playhead; S splits there and linking is Player 1's
+  const p2Create = p2 && p2CanCreate();
   for (const button of document.querySelectorAll("#tools [data-tool]")) {
     button.disabled = !on;
     button.toggleAttribute("data-active", on && t.tool === button.dataset.tool);
@@ -849,6 +966,12 @@ function renderTools() {
   snap.toggleAttribute("data-active", on && t.snap);
   for (const button of document.querySelectorAll("#tools [data-create]")) {
     const kind = button.dataset.create;
+    if (p2) {
+      const enabled = p2Create && (kind === "marker" || kind === "clip");
+      button.disabled = !enabled;
+      button.toggleAttribute("data-active", enabled && kind === "clip" && Boolean(p2Marking));
+      continue;
+    }
     button.disabled = !canCreate;
     button.toggleAttribute("data-active", canCreate && (kind === "video" ? Boolean(t.linking) : t.marking?.kind === kind));
   }
@@ -881,9 +1004,9 @@ function setUpTools() {
   document.querySelector('#tools [data-keybind="undo"]').addEventListener("click", () => screenUndo(false));
   document.querySelector('#tools [data-keybind="redo"]').addEventListener("click", () => screenUndo(true));
   const create = {
-    marker: () => timeline.addMoment(),
+    marker: () => (activePlayer === "p2" ? p2AddMoment() : timeline.addMoment()),
     segment: () => timeline.mark("segment"),
-    clip: () => timeline.mark("clip"),
+    clip: () => (activePlayer === "p2" ? p2MarkClip() : timeline.mark("clip")),
     video: () => timeline.startLinking(),
   };
   for (const button of document.querySelectorAll("#tools [data-create]")) {
@@ -1028,9 +1151,9 @@ function setUpKeys() {
       toolZoom: () => on && t.setTool("zoom"),
       toolHand: () => on && t.setTool("hand"),
       toggleSnap: () => on && t.toggleSnap(),
-      marker: () => !p2 && on && t.addMoment(),
+      marker: () => (p2 ? p2AddMoment() : on && t.addMoment()),
       segment: () => (p2 ? on && t.splitAtPlayhead() : on && t.mark("segment")),
-      clip: () => !p2 && on && t.mark("clip"),
+      clip: () => (p2 ? p2MarkClip() : on && t.mark("clip")),
       setStart: () => on && t.setEdgeAtPlayhead("start"),
       setEnd: () => on && t.setEdgeAtPlayhead("end"),
       undo: () => screenUndo(false),
@@ -1040,7 +1163,14 @@ function setUpKeys() {
       copyPieces: () => p2 && on && t.copySelected(),
       pastePieces: () => p2 && on && t.paste(),
       addRow: () => p2 && on && t.addTrack(),
-      escape: () => on && t.escape(),
+      escape: () => {
+        if (p2 && p2Marking) {
+          p2Marking = null;
+          renderTools();
+          return;
+        }
+        if (on) t.escape();
+      },
       verticalToggle: () => toggleVertical(),
     }[id];
     if (!run) return;

@@ -27,18 +27,7 @@ import { api, me, can, toast } from "./core.js";
 import { confirmAction, chooseEditTarget } from "./dialogs.js";
 import { openMenu } from "./menu.js";
 
-// The cut tool's cursor, like Premiere Pro's Razor: a blade with a dotted line through the hotspot (where the cut goes); crossed out
-// in red where a click can't cut
-const razorSvg = (blocked) => `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 28 28">`
-  + `<line x1="5.5" y1="1" x2="5.5" y2="27" stroke="#000" stroke-width="3"/>`
-  + `<line x1="5.5" y1="1" x2="5.5" y2="27" stroke="#fff" stroke-width="1.5" stroke-dasharray="2 2"/>`
-  + `<g transform="translate(16 12) rotate(40)"><rect x="-8" y="-4.5" width="16" height="9" rx="1.5" fill="${blocked ? "#9a9a9a" : "#fff"}" stroke="#000" stroke-width="1.5"/>`
-  + `<rect x="-4.5" y="-1.2" width="9" height="2.4" rx="1.2" fill="#000"/><line x1="-8" y1="3" x2="8" y2="3" stroke="#000" stroke-width="1"/></g>`
-  + (blocked ? `<line x1="8" y1="21" x2="24" y2="3" stroke="#e5484d" stroke-width="3" stroke-linecap="round"/>` : "")
-  + `</svg>`;
-const razorCursor = (blocked) => `url("data:image/svg+xml,${encodeURIComponent(razorSvg(blocked))}") 5 14, ${blocked ? "not-allowed" : "crosshair"}`;
-const RAZOR = razorCursor(false);
-const RAZOR_BLOCKED = razorCursor(true);
+import { timelineCursor, rulerCursor } from "./timeline-input.js";
 import { formatClock } from "./media.js";
 import { startDrag, dropTarget } from "./drag.js";
 
@@ -269,14 +258,18 @@ export const editing = {
     this.changed();
   },
 
-  updateCursor(edge = false) {
-    const cursor = this.press?.kind === "pan" || (this.press?.kind === "layout" && this.press.grab === "slide") ? "grabbing"
-      : edge === "grab" ? "grab"
-      : this.press?.kind === "edge" || this.press?.kind === "layout" || edge ? "ew-resize"
-        : this.tool === "cut" ? (this.razorAt ? RAZOR : RAZOR_BLOCKED)
-        : { pointer: "pointer", zoom: "zoom-in", hand: "grab" }[this.tool];
-    this.track.style.cursor = cursor;
-    this.ruler.style.cursor = this.tool === "hand" ? cursor : this.tool === "zoom" ? "zoom-in" : "pointer";
+  // Cursors come from ui/timeline-input.js, shared with Player 2's timeline. over: true / "edge" = an edge that trims, "item" = an item
+  // that can be dragged
+  updateCursor(over = null) {
+    const kind = this.press?.kind;
+    const pressing = kind === "pan" ? "pan" : kind === "edge" ? "edge" : kind === "item" && this.press.moved ? "drag" : null;
+    this.track.style.cursor = timelineCursor({
+      tool: this.tool,
+      over: over === true ? "edge" : over,
+      pressing,
+      canCut: this.razorAt != null,
+    });
+    this.ruler.style.cursor = rulerCursor(this.tool, kind === "pan" ? "pan" : null);
   },
 
   // Cut tool hover: where a click would cut (snapped like the click), drawn as a line through the row; null = nothing to cut there
@@ -372,7 +365,17 @@ export const editing = {
   },
 
   pointerDown(event, canvas) {
-    if (!this.vodId || event.button !== 0) return;
+    if (!this.vodId) return;
+    // Middle button: scroll the view like the hand tool (as on Player 2)
+    if (event.button === 1) {
+      event.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      this.press = { kind: "pan", lastX: event.clientX, width: rect.width };
+      canvas.setPointerCapture(event.pointerId);
+      this.updateCursor();
+      return;
+    }
+    if (event.button !== 0) return;
     const rect = canvas.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
@@ -459,7 +462,9 @@ export const editing = {
       if (this.tool === "pointer" && this.hover?.canvas === this.track) {
         const selected = this.selectedItem();
         const edge = selected && this.canMoveEdges(selected) && this.edgeAt(selected, this.hover.x, this.hover.y, this.hover.width);
-        this.updateCursor(Boolean(edge));
+        // an item's body can be dragged (to Player 2, another row, the export list)
+        const item = !edge && this.mode === "vod" ? this.itemAt(this.hover.x, this.hover.y, this.hover.width) : null;
+        this.updateCursor(edge ? "edge" : item ? "item" : null);
       }
       return;
     }
