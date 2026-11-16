@@ -29,7 +29,7 @@ namespace TwitchDownloaderWeb.Services
                 if (!int.TryParse(parts[i], NumberStyles.None, CultureInfo.InvariantCulture, out var unit))
                     return false;
 
-                totalSeconds += unit * multiplier;
+                totalSeconds += (double)unit * multiplier; // in double: "999999999:00:00" overflowed int into a negative time
                 multiplier *= 60;
             }
 
