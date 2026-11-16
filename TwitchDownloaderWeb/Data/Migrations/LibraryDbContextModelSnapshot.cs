@@ -123,6 +123,8 @@ namespace TwitchDownloaderWeb.Data.Migrations
 
                     b.HasIndex("UserId");
 
+                    b.HasIndex("TeamId", "TimestampUtc");
+
                     b.ToTable("AuditEvents");
                 });
 
@@ -579,6 +581,8 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.HasIndex("StreamDateUtc");
 
                     b.HasIndex("TeamId");
+
+                    b.HasIndex("TeamId", "VodId");
 
                     b.ToTable("LibraryEntries", (string)null);
                 });
