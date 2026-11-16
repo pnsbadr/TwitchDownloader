@@ -125,6 +125,15 @@ namespace TwitchDownloaderWeb.Tests
             var other = await WaitForExportAsync(member, (await theirs.Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("id").GetInt32());
             Assert.Equal("owner's vertical", await member.GetStringAsync(other.GetProperty("items")[0].GetProperty("fileUrl").GetString(), ct));
 
+            // A stored clip is copied from its file even once its VOD is gone from Twitch (here between the request's check, still cached, and the job)
+            _vods.Gone[450] = true;
+            var afterGone = await Export(member, new { kind = "clip", entryId = clip, horizontal = true, vertical = false });
+            Assert.Equal(HttpStatusCode.Accepted, afterGone.StatusCode);
+            var goneDone = await WaitForExportAsync(member, (await afterGone.Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("id").GetInt32());
+            Assert.Equal("Ready", goneDone.GetProperty("status").GetString());
+            _vods.Gone.TryRemove(450, out _);
+            Assert.Equal(HttpStatusCode.NoContent, (await member.DeleteAsync($"/api/exports/{goneDone.GetProperty("id").GetInt32()}", ct)).StatusCode);
+
             // Listed for the member who made them; only they (or DeleteAnyEntries) delete them
             Assert.Equal(2, (await GetJsonAsync(member, "/api/exports")).GetArrayLength());
             Assert.Empty((await GetJsonAsync(owner, "/api/exports")).EnumerateArray());

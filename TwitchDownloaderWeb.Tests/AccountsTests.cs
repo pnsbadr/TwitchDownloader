@@ -71,9 +71,12 @@ namespace TwitchDownloaderWeb.Tests
 
             public readonly System.Collections.Concurrent.ConcurrentDictionary<long, VodDetails> Vods = new();
 
+            /// <summary>VODs deleted from Twitch since (answers null).</summary>
+            public readonly System.Collections.Concurrent.ConcurrentDictionary<long, bool> Gone = new();
+
             public Task<VodDetails?> GetVodAsync(long vodId)
             {
-                if (vodId >= MissingFrom)
+                if (vodId >= MissingFrom || Gone.ContainsKey(vodId))
                     return Task.FromResult<VodDetails?>(null);
                 var vod = Vods.GetValueOrDefault(vodId) ?? new VodDetails(vodId, $"Stream {vodId}", "Arky", 36000, new DateTime(2026, 11, 1, 18, 0, 0, DateTimeKind.Utc), null);
                 return Task.FromResult<VodDetails?>(vod.ChannelLogin is null

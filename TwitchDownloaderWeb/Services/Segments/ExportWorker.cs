@@ -129,7 +129,9 @@ namespace TwitchDownloaderWeb.Services.Segments
 
                     try
                     {
+                        // A clip made from its stored file doesn't need the VOD (nor Twitch to answer)
                         if (item.Kind is not (ExportItemKind.ClipVertical or ExportItemKind.Project or ExportItemKind.ProjectVertical)
+                            && !(item.Kind == ExportItemKind.Clip && await UsesStoredFileAsync(db, item, token))
                             && await IsVodGoneAsync(item.VodId, vodGone))
                             throw new InvalidOperationException(SegmentExportWorker.VodGoneMessage);
 
@@ -283,6 +285,9 @@ namespace TwitchDownloaderWeb.Services.Segments
             item.AudioRestoredSeconds = restore is { Downloaded: true, RestoredSeconds: > 0 } ? restore.RestoredSeconds : null;
             item.AudioMutedSeconds = restore is { StillMutedSeconds: > 0 } ? restore.StillMutedSeconds : null;
         }
+
+        private async Task<bool> UsesStoredFileAsync(LibraryDbContext db, ExportItem item, CancellationToken token) =>
+            await CopyableClipFileAsync(db, item, token) is not null || await WholeStoredFileAsync(db, item, token) is not null;
 
         /// <summary>
         /// The clip's stored file, if it is exactly what the item asks for (same cut, quality, and the file leaves out exactly the item's
