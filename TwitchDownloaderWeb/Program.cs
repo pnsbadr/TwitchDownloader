@@ -95,6 +95,7 @@ app.MapExportEndpoints();
 app.MapCopyEndpoints();
 app.MapVideoEndpoints();
 app.MapItemEditEndpoints();
+app.MapProjectEndpoints();
 
 app.Run();
 

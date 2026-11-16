@@ -59,7 +59,7 @@ namespace TwitchDownloaderWeb.Services.Shortform
         }
 
         /// <summary>Checks the mode, boxes and split ratio only (a part's length is checked by <see cref="ValidateParts"/>).</summary>
-        private string? ValidateBoxes()
+        internal string? ValidateBoxes()
         {
             if (!IsSplit && !string.Equals(Mode, "single", StringComparison.OrdinalIgnoreCase))
                 return "Mode must be \"single\" or \"split\".";

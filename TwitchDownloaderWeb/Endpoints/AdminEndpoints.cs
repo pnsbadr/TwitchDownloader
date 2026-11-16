@@ -465,7 +465,7 @@ namespace TwitchDownloaderWeb.Endpoints
         }
 
         /// <summary>
-        /// The VODs of <paramref name="channel"/> the team has work on (entries, markers, rows, videos, exports), found by asking Twitch for each
+        /// The VODs of <paramref name="channel"/> the team has work on (entries, markers, rows, videos, exports, projects), found by asking Twitch for each
         /// VOD's channel (cached). A VOD Twitch no longer has counts when the team's entries or videos on it name the channel.
         /// </summary>
         private static async Task<List<long>> FindChannelVodsWithWorkAsync(LibraryDbContext db, TeamChannelAccess access, int teamId, SavedChannel channel,
@@ -478,6 +478,8 @@ namespace TwitchDownloaderWeb.Endpoints
             vodIds.UnionWith(await db.Videos.IgnoreQueryFilters().Where(x => x.TeamId == teamId).Select(x => x.VodId).Distinct().ToListAsync(cancellationToken));
             vodIds.UnionWith(await db.SegmentExports.IgnoreQueryFilters().Where(x => x.TeamId == teamId).Select(x => x.VodId).Distinct().ToListAsync(cancellationToken));
             vodIds.UnionWith(await db.ExportItems.Where(x => db.ExportBatches.IgnoreQueryFilters().Any(b => b.Id == x.BatchId && b.TeamId == teamId) && x.VodId != 0)
+                .Select(x => x.VodId).Distinct().ToListAsync(cancellationToken));
+            vodIds.UnionWith(await db.ProjectVods.Where(x => db.Projects.IgnoreQueryFilters().Any(p => p.Id == x.ProjectId && p.TeamId == teamId))
                 .Select(x => x.VodId).Distinct().ToListAsync(cancellationToken));
             // VODs already hidden by an earlier revoke of another channel stay as they are
             vodIds.ExceptWith(await db.HiddenVods.Where(x => x.TeamId == teamId).Select(x => x.VodId).ToListAsync(cancellationToken));

@@ -17,7 +17,7 @@ const ACTION_LABELS = {
   "marker.added": "added a marker", "marker.changed": "changed a marker", "marker.deleted": "deleted a marker", "row.deleted": "deleted a timeline row",
   "video.added": "made a video", "video.changed": "changed a video", "video.deleted": "deleted a video", "entry.moved_row": "moved a clip to another row",
   "entry.followed_markers": "moved with the markers", "segments.requested": "asked for segment files", "segments.deleted": "deleted segment files",
-  "edit.added": "saved an edit", "edit.deleted": "deleted an edit", "edit.applied": "applied an edit", "edit.reverted": "undid an applied edit",
+  "edit.added": "saved an edit", "edit.deleted": "deleted an edit", "edit.applied": "applied an edit", "edit.reverted": "undid an applied edit", "project.added": "made a project", "project.deleted": "deleted a project",
   "export.requested": "started an export", "export.ready": "export ready", "export.failed": "export failed", "export.deleted": "deleted an export",
   "download.failed": "download failed", "shortform.rendered": "vertical render ready", "shortform.failed": "vertical render failed",
 };

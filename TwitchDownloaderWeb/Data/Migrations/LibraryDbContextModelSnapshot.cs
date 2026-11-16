@@ -126,6 +126,53 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.ToTable("AuditEvents");
                 });
 
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.EditProject", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasMaxLength(2000000)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("CopiedFromProjectId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<double>("LengthSeconds")
+                        .HasColumnType("REAL");
+
+                    b.Property<int>("PieceCount")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Revision")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("TeamId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TeamId", "UserId");
+
+                    b.ToTable("Projects", (string)null);
+                });
+
             modelBuilder.Entity("TwitchDownloaderWeb.Data.ExportBatch", b =>
                 {
                     b.Property<int>("Id")
@@ -554,6 +601,28 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("MemberVods");
+                });
+
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.ProjectVod", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("ProjectId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("VodId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("VodId");
+
+                    b.HasIndex("ProjectId", "VodId")
+                        .IsUnique();
+
+                    b.ToTable("ProjectVods");
                 });
 
             modelBuilder.Entity("TwitchDownloaderWeb.Data.RescuedAudioSegment", b =>
@@ -1257,6 +1326,15 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Navigation("Team");
                 });
 
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.EditProject", b =>
+                {
+                    b.HasOne("TwitchDownloaderWeb.Data.Team", null)
+                        .WithMany()
+                        .HasForeignKey("TeamId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("TwitchDownloaderWeb.Data.ExportBatch", b =>
                 {
                     b.HasOne("TwitchDownloaderWeb.Data.Team", null)
@@ -1353,6 +1431,15 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.HasOne("TwitchDownloaderWeb.Data.Team", null)
                         .WithMany()
                         .HasForeignKey("TeamId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.ProjectVod", b =>
+                {
+                    b.HasOne("TwitchDownloaderWeb.Data.EditProject", null)
+                        .WithMany("Vods")
+                        .HasForeignKey("ProjectId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });
@@ -1493,6 +1580,11 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("Row");
+                });
+
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.EditProject", b =>
+                {
+                    b.Navigation("Vods");
                 });
 
             modelBuilder.Entity("TwitchDownloaderWeb.Data.ExportBatch", b =>
