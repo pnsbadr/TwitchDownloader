@@ -135,8 +135,11 @@ export class ProjectPlayback {
     else this.play();
   }
 
-  // The player itself was paused (its own controls, the space bar on the video, the other player starting)
+  // The player's own state changed (play/pause events). It started by itself (the video element autoplays once a VOD has
+  // loaded, e.g. the project reopened after a reload) while the project isn't playing: stop it, or it would play on past the
+  // piece with nothing moving to the next one. It was paused by itself (the other player starting): the project pauses too.
   playerPaused() {
+    this.stopStrayPlay();
     if (this.playingFlag && this.current?.piece && !this.opening && this.player.ready && !this.player.playing() && !this.advancing) {
       this.t = this.time();
       this.playingFlag = false;
@@ -144,8 +147,15 @@ export class ProjectPlayback {
     }
   }
 
+  stopStrayPlay() {
+    if (!this.playingFlag && !this.opening && this.player.ready && this.player.playing()) this.player.pause();
+  }
+
   tick() {
-    if (!this.playingFlag) return;
+    if (!this.playingFlag) {
+      this.stopStrayPlay(); // Twitch's embed sends no play events
+      return;
+    }
     const s = this.current;
     const t = this.time();
     const end = s ? s.at + s.duration : this.length;
