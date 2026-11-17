@@ -12,7 +12,14 @@ namespace TwitchDownloaderWeb.Endpoints
     /// <param name="Content">Only from <c>GET /api/projects/{id}</c>, POST, PUT and copy (not in lists).</param>
     public sealed record ProjectDto(int Id, int UserId, string? CreatedBy, string Title, int Revision, double LengthSeconds, int PieceCount,
         IReadOnlyList<long> VodIds, int? CopiedFromProjectId, DateTime CreatedAtUtc, DateTime UpdatedAtUtc, bool CanEdit, bool CanDelete,
-        ProjectContent? Content);
+        ProjectContent? Content)
+    {
+        /// <summary>May make their own copy of it (own: AddEntries; a teammate's: also see it and EditAnyEntries).</summary>
+        public bool CanCopy { get; init; }
+
+        /// <summary>May put it on the export list (own, or a teammate's with DownloadTeamVerticals).</summary>
+        public bool CanDownload { get; init; }
+    }
 
     /// <summary>
     /// Projects: the multi-track Player 2 timeline (see <see cref="EditProject"/>). The page saves the whole content as it works; only
@@ -32,11 +39,20 @@ namespace TwitchDownloaderWeb.Endpoints
             return app;
         }
 
+        // Projects are vertical edits: a teammate's are seen, changed, copied, deleted and exported only as VerticalAccess allows
+        // (badrfly 2026-11-17); one the caller may not see answers 404 like a missing one
+        internal static bool CanSee(TeamContext team, EditProject project) => VerticalAccess.CanSee(team, project.UserId);
+
         internal static bool CanEdit(TeamContext team, EditProject project) =>
-            !team.IsSupport && team.CanOnOwnOrAny(project.UserId.ToString(), TeamPermission.AddEntries, TeamPermission.EditAnyEntries);
+            VerticalAccess.IsOwn(team, project.UserId) ? team.Can(TeamPermission.AddEntries) : VerticalAccess.CanReEditTeam(team);
 
         private static bool CanDelete(TeamContext team, EditProject project) =>
-            !team.IsSupport && team.CanOnOwnOrAny(project.UserId.ToString(), TeamPermission.AddEntries, TeamPermission.DeleteAnyEntries);
+            VerticalAccess.IsOwn(team, project.UserId) ? team.Can(TeamPermission.AddEntries) : VerticalAccess.CanDeleteTeam(team);
+
+        private static bool CanCopy(TeamContext team, EditProject project) =>
+            !team.IsSupport && team.Can(TeamPermission.AddEntries) && (VerticalAccess.IsOwn(team, project.UserId) || VerticalAccess.CanReEditTeam(team));
+
+        internal static bool CanDownload(TeamContext team, EditProject project) => VerticalAccess.CanDownload(team, project.UserId);
 
         private static async Task<List<ProjectDto>> ToDtosAsync(LibraryDbContext db, IReadOnlyList<EditProject> projects, TeamContext team,
             bool withContent, CancellationToken cancellationToken)
@@ -44,7 +60,11 @@ namespace TwitchDownloaderWeb.Endpoints
             var names = await TimelineEndpoints.UserNamesAsync(db, projects.Select(x => x.UserId), cancellationToken);
             return projects.Select(x => new ProjectDto(x.Id, x.UserId, names.GetValueOrDefault(x.UserId), x.Title, x.Revision,
                 Math.Round(x.LengthSeconds, 2), x.PieceCount, x.Vods.Select(v => v.VodId).OrderBy(v => v).ToList(), x.CopiedFromProjectId,
-                x.CreatedAtUtc, x.UpdatedAtUtc, CanEdit(team, x), CanDelete(team, x), withContent ? ProjectContent.Read(x.Content) : null)).ToList();
+                x.CreatedAtUtc, x.UpdatedAtUtc, CanEdit(team, x), CanDelete(team, x), withContent ? ProjectContent.Read(x.Content) : null)
+            {
+                CanCopy = CanCopy(team, x),
+                CanDownload = CanDownload(team, x),
+            }).ToList();
         }
 
         private static async Task<ProjectDto> ToDtoAsync(LibraryDbContext db, EditProject project, TeamContext team, CancellationToken cancellationToken) =>
@@ -59,6 +79,11 @@ namespace TwitchDownloaderWeb.Endpoints
                 query = query.Where(x => x.UserId == user);
             if (vodId is { } vod)
                 query = query.Where(x => x.Vods.Any(v => v.VodId == vod));
+            if (!VerticalAccess.CanSeeTeam(team))
+            {
+                var own = team.UserId;
+                query = query.Where(x => x.UserId == own);
+            }
 
             var projects = await query.OrderByDescending(x => x.UpdatedAtUtc).Take(Math.Clamp(limit ?? 200, 1, 1000)).ToListAsync(cancellationToken);
             return Results.Ok(await ToDtosAsync(db, projects, team, false, cancellationToken));
@@ -67,7 +92,7 @@ namespace TwitchDownloaderWeb.Endpoints
         private static async Task<IResult> Get(int id, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
         {
             var project = await db.Projects.Include(x => x.Vods).AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
-            return project is null ? NotFound() : Results.Ok(await ToDtoAsync(db, project, team, cancellationToken));
+            return project is null || !CanSee(team, project) ? NotFound() : Results.Ok(await ToDtoAsync(db, project, team, cancellationToken));
         }
 
         private static IResult NotFound() => Results.Problem(detail: "Project not found.", statusCode: StatusCodes.Status404NotFound);
@@ -148,7 +173,7 @@ namespace TwitchDownloaderWeb.Endpoints
             CancellationToken cancellationToken)
         {
             var project = await db.Projects.Include(x => x.Vods).FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
-            if (project is null)
+            if (project is null || !CanSee(team, project))
                 return NotFound();
             if (!CanEdit(team, project))
                 return Results.Problem(detail: "You can't change this project. Make your own copy.", statusCode: StatusCodes.Status403Forbidden);
@@ -215,7 +240,7 @@ namespace TwitchDownloaderWeb.Endpoints
         private static async Task<IResult> Delete(int id, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
         {
             var project = await db.Projects.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
-            if (project is null)
+            if (project is null || !CanSee(team, project))
                 return NotFound();
             if (!CanDelete(team, project))
                 return Results.Problem(detail: "You can't delete this project.", statusCode: StatusCodes.Status403Forbidden);
@@ -226,13 +251,16 @@ namespace TwitchDownloaderWeb.Endpoints
             return Results.NoContent();
         }
 
-        /// <summary>The caller's own copy of any project the team can see (with a new title, or "Copy of …").</summary>
+        /// <summary>The caller's own copy of a project they may copy (with a new title, or "Copy of …").</summary>
         private static async Task<IResult> Copy(int id, ProjectRequest? request, TeamContext team, LibraryDbContext db, TeamChannelAccess access,
             CancellationToken cancellationToken)
         {
             var source = await db.Projects.Include(x => x.Vods).AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
-            if (source is null)
+            if (source is null || !CanSee(team, source))
                 return NotFound();
+            if (!CanCopy(team, source))
+                return Results.Problem(detail: "Your role doesn't let you copy teammates' vertical edits. Start your own from the original clip.",
+                    statusCode: StatusCodes.Status403Forbidden);
 
             var (title, titleProblem) = CheckTitle(request?.Title);
             if (titleProblem is not null)

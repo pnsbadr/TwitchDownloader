@@ -104,6 +104,10 @@ export function addToExport(item, { quiet = true } = {}) {
     toast("Twitch clips can't be exported here.", "error");
     return;
   }
+  if (item.kind === "project" && data.canDownload === false) {
+    toast("Your role doesn't let you export teammates' vertical edits.", "error");
+    return;
+  }
   const made = item.kind === "edit" ? fromEdit(data) : fromDrop(item.kind, data);
   if (!made) return;
   const existing = list.find((x) => x.key === made.key);
