@@ -156,7 +156,11 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   from (a segment or VOD range: on the VOD itself). A VOD counts as worked on once something is on its timeline: `GET /api/vods/work`.
   `ProjectVods` (rebuilt on save) feed the hidden-VOD filter (a project using any hidden VOD is hidden whole) and the revoke search; every
   VOD newly added to a project must be open to the team (403 `channel-not-assigned`). Copies are new work (`CopiedFromProjectId`).
-  **Projects are vertical edits** (badrfly 2026-11-17, `VerticalAccess`): own ones need `AddEntries`; a teammate's are listed/opened only with
+  **Horizontal or vertical** (badrfly 2026-11-17, thread "Separate the vertical editor from Player 2"): `Projects.Vertical` (POST `vertical`,
+  fixed once made, copies keep it, `GET /api/projects?vertical=`). A horizontal edit (Player 2) keeps **no layouts** (dropped on save) and
+  exports landscape; a vertical edit opens in the vertical editor, keeps boxes/keyframes and exports 9:16 (export `horizontal`/`vertical`
+  flags are ignored for projects: the kind decides). Migration `VerticalEdits` made every project with a layout vertical.
+  **Projects are vertical edits** (badrfly 2026-11-17, `VerticalAccess`; horizontal edits follow the same rule for now): own ones need `AddEntries`; a teammate's are listed/opened only with
   `ViewTeamVerticals` (bit 19) or `DownloadTeamVerticals` (bit 18, includes seeing), else 404 / left out of lists; exported (`kind: "project"`,
   400 otherwise) with `DownloadTeamVerticals`; changed or copied with seeing + `EditAnyEntries`; deleted with seeing + `DeleteAnyEntries`.
   DTOs carry `canCopy` / `canDownload`. The same rule covers 9:16 renders (`/shortform`: list filtered, inline play = see, download = Download,
@@ -557,16 +561,22 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   Export = one `POST /api/exports` for the whole list; a one-item export downloads by itself when ready. A refused request (400) marks the
   rows named in `errors["items[i]"]` (`api` errors carry the response body as `error.problem`). Items re-read their card when selected
   (a deleted one is marked gone). **Projects** go on the list from Player 2's export icon /
-  project menu or a PROJECTS card (key `project:{id}`, Horizontal / Vertical checkboxes, re-read with `GET /api/projects/{id}`, no preview)
-  and are sent as `{ kind: "project", projectId, horizontal, vertical }`. Rows saved as `edit:{id}` by older pages still export.
-- **9:16 view of the project** (E / the phone icon on Player 2, `ui/project-vertical.js`): Player 2 takes the whole width (`.vertical-mode`)
+  tree (key `project:{id}`, its format fixed by the edit's kind: Horizontal or Vertical (9:16), re-read with `GET /api/projects/{id}`, no
+  preview) and are sent as `{ kind: "project", projectId, horizontal, vertical }`. Rows saved as `edit:{id}` by older pages still export.
+- **The vertical editor** (`ui/project-vertical.js`, badrfly 2026-11-17: separate from Player 2): it shows a **vertical edit** with its own
+  timeline (the shared timeline DOM, "Player 2" reads "Vertical"); Player 2's horizontal edits never show boxes, keyframes or layout menu
+  items. A vertical edit loaded from anywhere (tree, last loaded) opens straight in it (`syncVerticalView` in `ui/editor.js`). The phone
+  button / E on Player 2 makes a **new vertical edit** (`newVerticalEdit`: a draft copied from what's loaded, layouts dropped, named
+  "item · Vertical n", saved on its first change; Render saves it first via `ProjectStore.ensureSaved`); in the vertical editor it goes back
+  (`leaveVertical`: what was loaded before, else the edit's clip/video, else unloads). The tree shows vertical edits with a phone icon and
+  "9:16", horizontal ones with a monitor. Player 2 takes the whole width (`.vertical-mode`)
   with the landscape source (Player 2's own `<video>` drawn on a canvas; with Twitch's embed the boxes can't be previewed and a note says so)
   and the live 9:16 preview. It edits the **layout of the piece under the playhead** (in a gap: the selected one): One / Two boxes (1 / 2),
   presets (built-in + own in `clipco.vertical.presets`), box drag/resize with snapping (Alt = free), arrow keys move the selected box, split
   pill, safe zones (G, `clipco.vertical.safeZone`), **moving boxes**: F adds/removes a keyframe at the playhead (VOD seconds), `[` / `]` jump,
-  once a piece has keys a box change sets the key at the playhead; "Use this layout on every piece". Every change is a project edit (same
+  once a piece has keys a box change sets the key at the playhead; "Use this layout on every piece". Every change is an edit change (same
   undo). **Render 9:16** (Ctrl+Enter) = `POST /api/exports` `{ kind: "project", vertical: true }` after saving; its renders (the caller's
-  ProjectVertical export items of this project) are listed with progress and download. The project timeline stays below. Keys: scopes
+  ProjectVertical export items of this edit) are listed with progress and download. The vertical edit's timeline is below. Keys: scopes
   `vertical` / `vertical-box` in keybinds.js. The old clip-file vertical editor (`ui/vertical.js`, Layout row) is gone; `/shortform` stays on
   the server (old renders expire as before).
 - `/?demo` fills sample cards (nothing is sent to the server) to try the shell.

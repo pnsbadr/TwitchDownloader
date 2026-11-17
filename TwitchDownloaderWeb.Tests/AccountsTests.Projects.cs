@@ -28,14 +28,15 @@ namespace TwitchDownloaderWeb.Tests
             var clipper = await CreateRoleAsync(owner, "Clipper", "ViewLibrary", "AddEntries");
             await AssignAsync(owner, memberId, clipper);
 
-            // A new project has one empty row
-            var created = await member.PostAsJsonAsync("/api/projects", new { title = "Best of the week" }, ct);
+            // A new project has one empty row (a vertical edit: only those keep boxes)
+            var created = await member.PostAsJsonAsync("/api/projects", new { title = "Best of the week", vertical = true }, ct);
             Assert.Equal(HttpStatusCode.Created, created.StatusCode);
             var project = await created.Content.ReadFromJsonAsync<JsonElement>(ct);
             var id = project.GetProperty("id").GetInt32();
             Assert.Equal(1, project.GetProperty("revision").GetInt32());
             Assert.Single(project.GetProperty("content").GetProperty("tracks").EnumerateArray());
             Assert.Equal("pj1member", project.GetProperty("createdBy").GetString());
+            Assert.True(project.GetProperty("vertical").GetBoolean());
 
             // Pieces on two rows, with a moving layout
             var layout = new
@@ -108,6 +109,7 @@ namespace TwitchDownloaderWeb.Tests
             var copy = await owner.PostAsJsonAsync($"/api/projects/{id}/copy", new { }, ct);
             Assert.Equal(HttpStatusCode.Created, copy.StatusCode);
             var copied = await copy.Content.ReadFromJsonAsync<JsonElement>(ct);
+            Assert.True(copied.GetProperty("vertical").GetBoolean()); // a copy keeps the kind
             Assert.Equal("Copy of Best of the week", copied.GetProperty("title").GetString());
             Assert.Equal(id, copied.GetProperty("copiedFromProjectId").GetInt32());
             Assert.Equal(3, copied.GetProperty("content").GetProperty("pieces").GetArrayLength());
@@ -191,19 +193,34 @@ namespace TwitchDownloaderWeb.Tests
             // It keeps both VODs when saved again
             Assert.Equal(HttpStatusCode.OK, (await owner.PutAsJsonAsync($"/api/projects/{id}", new { content }, ct)).StatusCode);
 
-            Assert.Equal(HttpStatusCode.BadRequest,
-                (await owner.PostAsJsonAsync("/api/exports", new { items = new[] { new { kind = "project", projectId = id, horizontal = false, vertical = false } } }, ct)).StatusCode);
+            // The edit's kind decides the shape, whatever the checkboxes say: a horizontal edit exports landscape...
             var response = await owner.PostAsJsonAsync("/api/exports",
                 new { items = new[] { new { kind = "project", projectId = id, horizontal = true, vertical = true, quality = "480p30" } } }, ct);
             Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
             var batch = await response.Content.ReadFromJsonAsync<JsonElement>(ct);
-            Assert.Equal(["Project", "ProjectVertical"], batch.GetProperty("items").EnumerateArray().Select(x => x.GetProperty("kind").GetString()));
+            Assert.Equal(["Project"], batch.GetProperty("items").EnumerateArray().Select(x => x.GetProperty("kind").GetString()));
             Assert.Equal(4.5, batch.GetProperty("items")[0].GetProperty("lengthSeconds").GetDouble());
-
             var done = await WaitForExportAsync(owner, batch.GetProperty("id").GetInt32());
             Assert.Equal("Ready", done.GetProperty("status").GetString());
-            var items = done.GetProperty("items");
-            Assert.Equal(4, items[0].GetProperty("partsTotal").GetInt32()); // gap, under, top, under again
+            var landscape = done.GetProperty("items")[0];
+            Assert.Equal(4, landscape.GetProperty("partsTotal").GetInt32()); // gap, under, top, under again
+
+            // ... and a vertical one 9:16
+            using (var scope = _factory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+                var row = await db.Projects.IgnoreQueryFilters().SingleAsync(x => x.Id == id, ct);
+                row.Vertical = true;
+                await db.SaveChangesAsync(ct);
+            }
+            response = await owner.PostAsJsonAsync("/api/exports",
+                new { items = new[] { new { kind = "project", projectId = id, horizontal = true, vertical = false, quality = "480p30" } } }, ct);
+            Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+            batch = await response.Content.ReadFromJsonAsync<JsonElement>(ct);
+            Assert.Equal(["ProjectVertical"], batch.GetProperty("items").EnumerateArray().Select(x => x.GetProperty("kind").GetString()));
+            done = await WaitForExportAsync(owner, batch.GetProperty("id").GetInt32());
+            Assert.Equal("Ready", done.GetProperty("status").GetString());
+            var items = new[] { landscape, done.GetProperty("items")[0] };
             Assert.Equal(id, items[1].GetProperty("projectId").GetInt32());
 
             // The VOD ranges cut: the lower piece around the top one
@@ -222,6 +239,41 @@ namespace TwitchDownloaderWeb.Tests
                 Assert.Contains("Audio", streams);
                 Assert.InRange(seconds, 4.3, 4.8);
             }
+        }
+
+        private static bool HasLayout(JsonElement project) =>
+            project.GetProperty("content").GetProperty("pieces")[0].TryGetProperty("layout", out var layout) && layout.ValueKind == JsonValueKind.Object;
+
+        [Fact]
+        public async Task HorizontalEditsKeepNoBoxesAndVerticalOnesAreSeparate()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            var (owner, _, _, _) = await TeamWithMemberAsync("pjv");
+            var layout = new { mode = "single", top = new { x = 0.2, y = 0, width = 0.316, height = 1 } };
+
+            // A horizontal edit (the default) drops boxes when it's saved
+            var horizontal = await (await owner.PostAsJsonAsync("/api/projects",
+                new { title = "Clip · Edit 1", content = TwoTracks(Piece("a", "t1", 0, 530, 100, 110, layout)) }, ct)).Content.ReadFromJsonAsync<JsonElement>(ct);
+            Assert.False(horizontal.GetProperty("vertical").GetBoolean());
+            Assert.False(HasLayout(horizontal));
+            var id = horizontal.GetProperty("id").GetInt32();
+            var saved = await (await owner.PutAsJsonAsync($"/api/projects/{id}",
+                new { content = TwoTracks(Piece("a", "t1", 0, 530, 100, 108, layout)) }, ct)).Content.ReadFromJsonAsync<JsonElement>(ct);
+            Assert.False(HasLayout(saved));
+
+            // A vertical edit of the same VOD keeps them; the kind can't be changed by a save
+            var vertical = await (await owner.PostAsJsonAsync("/api/projects",
+                new { title = "Clip · Vertical 1", vertical = true, content = TwoTracks(Piece("a", "t1", 0, 530, 100, 110, layout)) }, ct)).Content.ReadFromJsonAsync<JsonElement>(ct);
+            Assert.True(vertical.GetProperty("vertical").GetBoolean());
+            Assert.True(HasLayout(vertical));
+            var verticalId = vertical.GetProperty("id").GetInt32();
+            var again = await (await owner.PutAsJsonAsync($"/api/projects/{verticalId}", new { title = "Renamed", vertical = false }, ct)).Content.ReadFromJsonAsync<JsonElement>(ct);
+            Assert.True(again.GetProperty("vertical").GetBoolean());
+
+            // Lists say which is which and filter on it
+            Assert.Equal([verticalId], (await GetJsonAsync(owner, "/api/projects?vodId=530&vertical=true")).EnumerateArray().Select(x => x.GetProperty("id").GetInt32()));
+            Assert.Equal([id], (await GetJsonAsync(owner, "/api/projects?vodId=530&vertical=false")).EnumerateArray().Select(x => x.GetProperty("id").GetInt32()));
+            Assert.Equal(2, (await GetJsonAsync(owner, "/api/projects?vodId=530")).GetArrayLength());
         }
 
         /// <summary>The stream lines and duration ffmpeg prints for a file.</summary>

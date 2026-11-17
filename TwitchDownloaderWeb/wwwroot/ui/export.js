@@ -24,10 +24,10 @@ const KINDS = {
   vod: { icon: "broadcast", label: "VOD range" },
   clip: { icon: "film-strip", label: "Clip" },
   video: { icon: "film-slate", label: "Video" },
-  project: { icon: "device-mobile", label: "Edit" },
+  project: { icon: "monitor", label: "Edit" },
   segment: { icon: "brackets-square", label: "Segment" },
 };
-const kindLabel = (item) => (item.editId ? `${KINDS[item.kind].label} edit` : KINDS[item.kind].label);
+const kindLabel = (item) => (item.editId ? `${KINDS[item.kind].label} edit` : item.kind === "project" && item.vertical ? "Vertical edit" : KINDS[item.kind].label);
 const ITEM_KIND_ICON = { VodRange: "broadcast", Clip: "film-strip", ClipVertical: "device-mobile", Video: "film-slate", Segment: "brackets-square", Project: "stack", ProjectVertical: "device-mobile" };
 
 let list = [];
@@ -203,9 +203,14 @@ function videoFields(video) {
 }
 
 // A project (Player 2): its length and pieces; files are made from what its timeline plays (gaps black)
+// An edit's kind decides its shape (badrfly 2026-11-17): a horizontal edit makes a landscape file, a vertical one a 9:16 file.
 function projectFields(project) {
   const length = project.lengthSeconds ?? 0;
-  return { title: project.title, length, pieceCount: project.pieceCount ?? project.content?.pieces?.length ?? 0, start: 0, end: length };
+  const vertical = Boolean(project.vertical);
+  return {
+    title: project.title, length, pieceCount: project.pieceCount ?? project.content?.pieces?.length ?? 0, start: 0, end: length,
+    horizontal: !vertical, vertical,
+  };
 }
 
 const thumbOf = twitchThumb;
@@ -288,7 +293,7 @@ function row(item) {
   },
   el("span", { class: "xl-handle", title: "Drag to change the order" }, el("sl-icon", { library: "ph", name: "dots-six-vertical" })),
   el("div", { class: "xl-thumb", style: thumbStyle(item.frame, item.thumb) },
-    el("span", { class: "xl-kind" }, el("sl-icon", { library: "ph", name: kind.icon }))),
+    el("span", { class: "xl-kind" }, el("sl-icon", { library: "ph", name: item.kind === "project" && item.vertical ? "device-mobile" : kind.icon }))),
   el("div", { class: "xl-main" },
     el("div", { class: "xl-title" }, el("span", { class: "xl-kind-label" }, kindLabel(item)), el("span", { class: "xl-name", title: item.title }, item.title)),
     el("div", { class: "xl-meta num" }, [
@@ -482,21 +487,14 @@ function setRange(item, start, end) {
   changed(item, { preview: true });
 }
 
-// A project: one landscape file and/or one 9:16 file with each piece's boxes (Player 2's 9:16 view)
+// An edit: one landscape file (a horizontal edit) or one 9:16 file with each piece's boxes (a vertical edit)
 function projectFormat(item) {
-  const horizontal = el("sl-checkbox", { checked: item.horizontal }, "Horizontal");
-  const vertical = el("sl-checkbox", { checked: item.vertical }, "Vertical (9:16)");
-  horizontal.addEventListener("sl-change", () => {
-    item.horizontal = horizontal.checked;
-    changed(item, { settings: true });
-  });
-  vertical.addEventListener("sl-change", () => {
-    item.vertical = vertical.checked;
-    changed(item, { settings: true });
-  });
   return el("div", { class: "xs-format" },
-    el("div", { class: "xs-label" }, "Format"), el("div", { class: "xs-checks" }, horizontal, vertical),
-    el("p", { class: "faint xs-note" }, "Made from what the edit's timeline plays, top row first; gaps are black. Vertical uses each piece's boxes (Player 2's 9:16 view; pieces without boxes get a centered crop)."));
+    el("div", { class: "xs-label" }, "Format"),
+    el("div", { class: "xs-checks" }, item.vertical ? "Vertical (9:16)" : "Horizontal"),
+    el("p", { class: "faint xs-note" }, item.vertical
+      ? "Made from what the vertical edit's timeline plays, top row first, with each piece's boxes (pieces without boxes get a centered crop); gaps are black."
+      : "Made from what the edit's timeline plays, top row first; gaps are black. For a 9:16 version, make a vertical edit with the phone button on Player 2."));
 }
 
 function clipFormat(item) {

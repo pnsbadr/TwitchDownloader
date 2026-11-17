@@ -1,15 +1,16 @@
-// The 9:16 view of the project in Player 2 (multi-track step 5). Player 2 takes the whole width: on the left the landscape picture of
-// the piece under the playhead with its crop boxes, in the middle the live 9:16 result, on the right the layout tools and the
-// project's vertical renders. The project timeline stays below and plays as usual (the picture is Player 2's own video, drawn
-// on canvases).
+// The vertical editor (multi-track step 5; its own edits since badrfly 2026-11-17, "Separate the vertical editor from Player 2"). A
+// vertical edit is a separate edit from Player 2's horizontal ones, with its own timeline (the timeline below shows the vertical edit;
+// Player 2's horizontal edits never show boxes or keyframes). Player 2 takes the whole width: on the left the landscape picture of the
+// piece under the playhead with its crop boxes, in the middle the live 9:16 result, on the right the layout tools and the edit's 9:16
+// renders (the picture is Player 2's own video, drawn on canvases).
 //
 // The layout belongs to each piece (piece.layout, the server's ProjectLayout: mode, top, bottom, splitRatio, keys; boxes are
 // fractions of the video, key times VOD seconds). Different layouts in one clip = razor the piece and give each half its own.
-// Every change is a project change (one undo history with the timeline): a box drag is one step when it's let go.
+// Every change is an edit change (one undo history with the timeline): a box drag is one step when it's let go.
 //
 // Moving boxes: a piece can have keyframes; its boxes glide between them (eased like the server's ShortformLayout.Ease) and
 // hold before the first / after the last. F adds one at the playhead or removes the one there, [ / ] go to the previous / next;
-// once a piece has one, moving a box sets the keyframe at the playhead. The diamonds show on the piece in the timeline.
+// once a piece has one, moving a box sets the keyframe at the playhead. The diamonds show on the piece in the vertical timeline.
 
 import { el, api, toast, formatDate, formatDuration, iconButton, withTooltip, loadSetting, saveSetting } from "./core.js";
 import { askText, confirmAction } from "./dialogs.js";
@@ -396,7 +397,7 @@ function build() {
     vx.hooks.player.setVolume(Number(volume.value) / 100, false);
     renderBar();
   });
-  const exit = iconButton({ icon: "device-mobile", label: "Back to the normal player", keybind: "verticalToggle", onClick: () => vx.hooks.onExit?.() });
+  const exit = iconButton({ icon: "device-mobile", label: "Back to Player 2 (horizontal)", keybind: "verticalToggle", onClick: () => vx.hooks.onExit?.() });
   exit.querySelector("sl-icon-button").toggleAttribute("data-active", true);
   const bar = el("div", { class: "vx2-bar player-controls" }, play, time, el("span", { class: "vx2-bar-gap" }), pieceText, mute, volume, exit);
 
@@ -814,11 +815,12 @@ async function startRender() {
     toast("Your role doesn't let you render teammates' vertical edits. Start your own from the original clip.", "error");
     return;
   }
-  await store().saveNow();
+  await store().ensureSaved();
+  if (!store().project?.id) return;
   vx.dom.message.textContent = "";
   vx.dom.message.classList.remove("error");
   try {
-    await api("POST", "/api/exports", { items: [{ kind: "project", projectId: project.id, vertical: true, horizontal: false }] });
+    await api("POST", "/api/exports", { items: [{ kind: "project", projectId: store().project.id, vertical: true, horizontal: false }] });
     vx.dom.message.textContent = "Rendering… you can keep working; it's also on the Export tab.";
     vx.rendering = true;
     await loadRenders();
