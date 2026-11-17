@@ -32,6 +32,18 @@ namespace TwitchDownloaderWeb.Data
         public double LengthSeconds { get; set; }
         public int PieceCount { get; set; }
 
+        /// <summary>
+        /// The VOD this belongs to (badrfly 2026-11-17: "the VOD is the project"; the page calls these <b>edits</b>). New edits only use this
+        /// VOD; older multi-VOD projects keep their other VODs. 0 = not known yet (no pieces; set from the first piece when it gets one).
+        /// </summary>
+        public long VodId { get; set; }
+
+        /// <summary>The clip (library entry) this is an edit of (FK, SetNull: deleting the clip leaves the edit on its VOD).</summary>
+        public int? EntryId { get; set; }
+
+        /// <summary>The video this is an edit of (FK, SetNull). At most one of <see cref="EntryId"/> / <see cref="VideoId"/> is set.</summary>
+        public int? VideoId { get; set; }
+
         /// <summary>A copy of another project (no FK).</summary>
         public int? CopiedFromProjectId { get; set; }
 

@@ -50,6 +50,9 @@ namespace TwitchDownloaderWeb.Tests
                 Assert.Equal(3, await SavedEditConversion.RunAsync(db, NullLogger.Instance, ct));
                 // Once only
                 Assert.Equal(0, await SavedEditConversion.RunAsync(db, NullLogger.Instance, ct));
+                // Then each goes under its VOD and clip/video (2026-11-17), once
+                Assert.Equal(3, await ProjectParents.AssignAsync(db, NullLogger.Instance, ct));
+                Assert.Equal(0, await ProjectParents.AssignAsync(db, NullLogger.Instance, ct));
             }
 
             var projects = (await GetJsonAsync(owner, "/api/projects")).EnumerateArray().ToList();
@@ -57,6 +60,13 @@ namespace TwitchDownloaderWeb.Tests
                 GetJsonAsync(owner, $"/api/projects/{projects.Single(x => x.GetProperty("title").GetString() == title).GetProperty("id").GetInt32()}").Result;
             static (double At, double Start, double End)[] Pieces(JsonElement project) => project.GetProperty("content").GetProperty("pieces").EnumerateArray()
                 .Select(x => (x.GetProperty("at").GetDouble(), x.GetProperty("start").GetDouble(), x.GetProperty("end").GetDouble())).ToArray();
+
+            Assert.All(projects, x => Assert.Equal(480, x.GetProperty("vodId").GetInt64()));
+            Assert.Equal(clipId, Full("Stored clip · Vertical").GetProperty("entryId").GetInt32());
+            Assert.Equal(videoId, Full("Pair (edit)").GetProperty("videoId").GetInt32());
+            Assert.Equal(JsonValueKind.Null, Full("Segment · Tight").GetProperty("entryId").ValueKind); // a segment's edit sits on the VOD
+            Assert.Single((await GetJsonAsync(owner, $"/api/projects?entryId={clipId}")).EnumerateArray());
+            Assert.Single((await GetJsonAsync(owner, $"/api/projects?videoId={videoId}")).EnumerateArray());
 
             var seg = Full("Segment · Tight");
             Assert.Equal([(0.0, 15.0, 20.0), (5.0, 22.0, 30.0)], Pieces(seg));

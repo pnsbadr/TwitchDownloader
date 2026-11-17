@@ -73,6 +73,9 @@ using (var scope = app.Services.CreateScope())
     // Saved edits (the old Player 2) become projects, once each
     await TwitchDownloaderWeb.Services.Projects.SavedEditConversion.RunAsync(startupDb,
         scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("SavedEditConversion"));
+    // Projects made before "the VOD is the project" go under their VOD and clip/video, once each
+    await TwitchDownloaderWeb.Services.Projects.ProjectParents.AssignAsync(startupDb,
+        scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("ProjectParents"));
 }
 
 app.UseExceptionHandler();
@@ -106,6 +109,7 @@ app.MapCopyEndpoints();
 app.MapVideoEndpoints();
 app.MapItemEditEndpoints();
 app.MapProjectEndpoints();
+app.MapVodWorkEndpoints();
 
 app.Run();
 
