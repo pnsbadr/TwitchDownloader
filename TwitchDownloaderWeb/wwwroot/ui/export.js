@@ -7,8 +7,8 @@
 // Export sends the whole list as one POST /api/exports and clears it. With one item on the list its files download by
 // themselves once ready; with several they're queued and downloaded from "Your exports". A VOD dropped on the list opens a
 // pop-up (player, title, start/end) for a one-off range: it never becomes a library entry. Videos are a .zip of their
-// segments or, when the team has "render as one" on, one file. Clips are horizontal and/or vertical; the vertical render is
-// picked from the team's (DownloadTeamVerticals) or is the member's own newest.
+// segments or, when the team has "render as one" on, one file. Clips are horizontal and/or vertical; the vertical is one of the
+// clip's vertical edits (the member's own newest by default) or an older clip render, the team's ones with DownloadTeamVerticals.
 
 import { $, el, api, me, can, toast, formatDate, formatDuration, loadSetting, saveSetting, iconButton, twitchThumb, thumbStyle } from "./core.js";
 import { dropTarget } from "./drag.js";
@@ -39,6 +39,7 @@ let otherPlayers = () => [];
 const autoDownload = new Set();   // exports of a one-item list: download their files once ready
 const vodInfos = new Map();       // vodId -> promise of /api/vods/info
 const renderLists = new Map();    // entryId -> renders of the clip
+const verticalEditLists = new Map(); // entryId -> the clip's vertical edits this member may see
 
 let xp = null;                    // the preview MediaPlayer
 let preview = null;               // { key, vodId, parts: [{ start, end }], index, ended, settleUntil }
@@ -125,7 +126,7 @@ export function addToExport(item, { quiet = true } = {}) {
 
 function fromDrop(kind, data) {
   const base = {
-    kind, id: data.id, vodId: String(data.vodId ?? ""), fileName: "", quality: "", horizontal: true, vertical: false, renderId: "",
+    kind, id: data.id, vodId: String(data.vodId ?? ""), fileName: "", quality: "", horizontal: true, vertical: false, renderId: "", verticalEditId: null,
     joined: false, thumb: thumbOf(data.thumbnailUrl), frame: data.frameUrl ?? null,
   };
   if (kind === "clip") {
@@ -393,16 +394,18 @@ function vodInfo(vodId) {
 }
 
 async function loadRenders(item) {
-  try {
-    const state = await api("GET", `/api/entries/${item.id}/shortform`);
-    renderLists.set(item.id, state.renders ?? []);
-  } catch {
-    renderLists.set(item.id, []);
-  }
-  // Vertical can't be kept without a render to use
+  const [renders, edits] = await Promise.all([
+    api("GET", `/api/entries/${item.id}/shortform`).then((state) => state.renders ?? []).catch(() => []),
+    item.editId ? Promise.resolve([]) : api("GET", `/api/projects?entryId=${item.id}&vertical=true`).catch(() => []),
+  ]);
+  renderLists.set(item.id, renders);
+  verticalEditLists.set(item.id, edits);
+  // Vertical can't be kept without something to make it from
   const usable = usableRenders(item);
-  if (item.vertical && !usable.length) item.vertical = false;
+  const editsUsable = usableVerticalEdits(item);
   if (item.renderId && !usable.some((r) => r.id === item.renderId)) item.renderId = "";
+  if (item.verticalEditId && !editsUsable.some((p) => p.id === item.verticalEditId)) item.verticalEditId = null;
+  if (item.vertical && !usable.length && !editsUsable.length) item.vertical = false;
   save();
   renderList();
   if (item.key === selectedKey) renderSettings();
@@ -414,6 +417,17 @@ function usableRenders(item) {
   if (can("DownloadTeamVerticals")) return renders;
   const own = renders.filter((r) => r.createdByUserId === me?.id).sort((a, b) => b.createdAtUtc.localeCompare(a.createdAtUtc));
   return own.slice(0, 1);
+}
+
+// The clip's vertical edits this member may export (badrfly 2026-11-17: the vertical editor makes these), newest first
+function usableVerticalEdits(item) {
+  if (item.editId) return [];
+  return (verticalEditLists.get(item.id) ?? []).filter((p) => p.canDownload !== false)
+    .sort((a, b) => (b.updatedAtUtc ?? "").localeCompare(a.updatedAtUtc ?? ""));
+}
+
+function newestOwnVerticalEdit(item) {
+  return usableVerticalEdits(item).find((p) => p.userId === me?.id) ?? null;
 }
 
 // ---------- settings of the selected item ----------
@@ -500,8 +514,9 @@ function projectFormat(item) {
 function clipFormat(item) {
   const renders = renderLists.has(item.id) ? rendersOf(item) : undefined;
   const usable = usableRenders(item);
+  const edits = usableVerticalEdits(item);
   const horizontal = el("sl-checkbox", { checked: item.horizontal }, "Horizontal");
-  const vertical = el("sl-checkbox", { checked: item.vertical, disabled: !usable.length }, "Vertical (9:16)");
+  const vertical = el("sl-checkbox", { checked: item.vertical, disabled: !usable.length && !edits.length }, "Vertical (9:16)");
   horizontal.addEventListener("sl-change", () => {
     item.horizontal = horizontal.checked;
     changed(item, { settings: true });
@@ -513,27 +528,55 @@ function clipFormat(item) {
   const parts = [el("div", { class: "xs-label" }, "Format"), el("div", { class: "xs-checks" }, horizontal, vertical)];
   if (renders === undefined) {
     parts.push(el("p", { class: "faint xs-note" }, "Looking for vertical versions…"));
-  } else if (!usable.length) {
-    parts.push(el("p", { class: "faint xs-note" }, renders.length
+    return el("div", { class: "xs-format" }, ...parts);
+  }
+  if (!usable.length && !edits.length) {
+    parts.push(el("p", { class: "faint xs-note" }, renders.length || (verticalEditLists.get(item.id) ?? []).length
       ? "Only the team's vertical versions exist, and your role can only export your own. Make one in the vertical editor."
       : item.editId
         ? "No vertical version of this edit yet. Load the edit in Player 2 and make one in the vertical editor."
-        : "No vertical version yet. Make one in the vertical editor first."));
-  } else if (can("DownloadTeamVerticals")) {
-    const choice = el("sl-select", { label: "Vertical version", size: "small", hoist: true, value: item.renderId || "own", disabled: !item.vertical },
-      el("sl-option", { value: "own" }, "My newest"),
-      ...usable.map((r) => el("sl-option", { value: r.id }, `${r.createdBy ?? "Someone"} · ${formatDate(r.createdAtUtc)}`)));
-    choice.addEventListener("sl-change", () => {
-      item.renderId = choice.value === "own" ? "" : choice.value;
-      changed(item, { settings: true });
-    });
-    parts.push(choice);
-    parts.push(renderPreview(item, item.renderId ? usable.find((r) => r.id === item.renderId) : newestOwn(item)));
+        : "No vertical edit of this clip yet. Load the clip in Player 2 and press the phone button to make one."));
+    return el("div", { class: "xs-format" }, ...parts);
+  }
+
+  // What the 9:16 file is made from: "" = my newest (vertical edit, else render), "edit:ID" or "render:ID"
+  const ownEdit = newestOwnVerticalEdit(item);
+  const ownRender = newestOwn(item);
+  const hasOwn = Boolean(ownEdit || ownRender);
+  const options = [];
+  if (hasOwn) options.push(el("sl-option", { value: "own" }, ownEdit ? `My newest vertical edit (${ownEdit.title})` : "My newest vertical version"));
+  for (const p of edits) {
+    if (p.userId === me?.id && p === ownEdit) continue;
+    options.push(el("sl-option", { value: `edit:${p.id}` }, `${p.title}${p.userId === me?.id ? "" : ` · ${p.createdBy ?? "Someone"}`}`));
+  }
+  const pickableRenders = can("DownloadTeamVerticals") ? usable : [];
+  for (const r of pickableRenders) options.push(el("sl-option", { value: `render:${r.id}` }, `Older render · ${r.createdBy ?? "Someone"} · ${formatDate(r.createdAtUtc)}`));
+  let value = item.verticalEditId ? `edit:${item.verticalEditId}` : item.renderId ? `render:${item.renderId}` : "own";
+  if (value === "own" && !hasOwn) {
+    // Nothing of my own: the first one I may use
+    value = options[0]?.value ?? "own";
+    pickVertical(item, value);
+  }
+  const choice = el("sl-select", { label: "Vertical version", size: "small", hoist: true, value, disabled: !item.vertical }, ...options);
+  choice.addEventListener("sl-change", () => {
+    pickVertical(item, choice.value);
+    changed(item, { settings: true });
+  });
+  parts.push(choice);
+  const picked = item.verticalEditId ? edits.find((p) => p.id === item.verticalEditId)
+    : item.renderId ? null : ownEdit;
+  if (picked) {
+    parts.push(el("p", { class: "faint xs-note" },
+      `Rendered from the vertical edit "${picked.title}" (${formatDuration(picked.lengthSeconds ?? 0)}) with its boxes and moving boxes when you export.`));
   } else {
-    parts.push(el("p", { class: "faint xs-note" }, `Uses your newest vertical version (${formatDate(usable[0].createdAtUtc)}).`));
-    parts.push(renderPreview(item, usable[0]));
+    parts.push(renderPreview(item, item.renderId ? usable.find((r) => r.id === item.renderId) : ownRender));
   }
   return el("div", { class: "xs-format" }, ...parts);
+}
+
+function pickVertical(item, value) {
+  item.verticalEditId = value.startsWith("edit:") ? Number(value.slice(5)) : null;
+  item.renderId = value.startsWith("render:") ? value.slice(7) : "";
 }
 
 // A clip's own renders, or an edit's: the server only exports a render made for the same one
@@ -870,7 +913,12 @@ function requestOf(item) {
   }
   if (item.kind === "vod") return { ...common, vodId: Number(item.vodId), start: item.start, end: item.end };
   if (item.kind === "project") return { ...common, projectId: item.id, horizontal: item.horizontal, vertical: item.vertical };
-  if (item.kind === "clip") return { ...common, entryId: item.id, horizontal: item.horizontal, vertical: item.vertical, renderId: item.vertical ? item.renderId || null : null };
+  if (item.kind === "clip") {
+    return {
+      ...common, entryId: item.id, horizontal: item.horizontal, vertical: item.vertical,
+      renderId: item.vertical ? item.renderId || null : null, projectId: item.vertical ? item.verticalEditId || null : null,
+    };
+  }
   if (item.kind === "video") return { ...common, videoId: item.id, joined: Boolean(item.joined && me?.combineSegmentDownloads) };
   return { ...common, markerId: item.id };
 }

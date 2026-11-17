@@ -25,7 +25,8 @@ namespace TwitchDownloaderWeb.Endpoints
     /// as one file: landscape for a horizontal edit, 9:16 with each piece's boxes for a vertical one; Horizontal/Vertical are ignored).</param>
     /// <param name="FileName">The download's name (no extension); blank = the item's title.</param>
     /// <param name="Quality">Blank = best (a clip: its own quality, so a stored clip is just copied). Ignored for vertical.</param>
-    /// <param name="RenderId">Vertical: one of the clip's renders (someone else's needs DownloadTeamVerticals); blank = the caller's own newest.</param>
+    /// <param name="RenderId">Vertical: one of the clip's older renders (someone else's needs DownloadTeamVerticals). With neither this nor
+    /// <paramref name="ProjectId"/>, a clip's vertical is the caller's newest vertical edit of it, else their own newest render.</param>
     public sealed record ExportItemRequest(string? Kind, string? FileName = null, string? Quality = null, long? VodId = null, double? Start = null,
         double? End = null, int? EntryId = null, bool Horizontal = true, bool Vertical = false, string? RenderId = null, int? VideoId = null,
         bool Joined = false, int? MarkerId = null, int? EditId = null, int? ProjectId = null);
@@ -266,7 +267,7 @@ namespace TwitchDownloaderWeb.Endpoints
                     var entry = request.EntryId is { } entryId ? await db.Entries.AsNoTracking().FirstOrDefaultAsync(x => x.Id == entryId, cancellationToken) : null;
                     if (entry is null)
                         return ([], Invalid(index, "That clip is gone."));
-                    return await BuildClipAsync(index, request, entry, fileName, CutOuts.Read(entry.Cuts), null, team, cache, shortform, cancellationToken);
+                    return await BuildClipAsync(index, request, entry, fileName, CutOuts.Read(entry.Cuts), null, team, db, cache, shortform, cancellationToken);
                 }
 
                 case "edit":
@@ -279,7 +280,7 @@ namespace TwitchDownloaderWeb.Endpoints
                     switch (source.Kind)
                     {
                         case ItemEditKind.Clip:
-                            return await BuildClipAsync(index, request, source.Entry!, name, source.Cuts, edit.Id, team, cache, shortform, cancellationToken);
+                            return await BuildClipAsync(index, request, source.Entry!, name, source.Cuts, edit.Id, team, db, cache, shortform, cancellationToken);
                         case ItemEditKind.Segment:
                         {
                             var marker = source.Marker!;
@@ -325,8 +326,8 @@ namespace TwitchDownloaderWeb.Endpoints
         /// whose vertical is a render made for that edit; a plain clip's vertical is a render made without one).
         /// </summary>
         private static async Task<(List<ExportItem> Items, IResult? Problem)> BuildClipAsync(int index, ExportItemRequest request, LibraryEntry entry,
-            string? fileName, IReadOnlyList<CutRange> cuts, int? editId, TeamContext team, VodInfoCache cache, ShortformService shortform,
-            CancellationToken cancellationToken)
+            string? fileName, IReadOnlyList<CutRange> cuts, int? editId, TeamContext team, LibraryDbContext db, VodInfoCache cache,
+            ShortformService shortform, CancellationToken cancellationToken)
         {
             if (!request.Horizontal && !request.Vertical)
                 return ([], Invalid(index, "Pick horizontal, vertical or both."));
@@ -362,7 +363,18 @@ namespace TwitchDownloaderWeb.Endpoints
                 });
             }
 
-            if (request.Vertical)
+            if (request.Vertical && editId is null && await VerticalEditOfClipAsync(request, entry, team, db, cancellationToken) is var (project, editError)
+                && (project is not null || editError is not null))
+            {
+                // A vertical edit of the clip (badrfly 2026-11-17: the vertical editor makes these now, not clip renders)
+                if (editError is not null)
+                    return ([], Coded(StatusCodes.Status409Conflict, "no-vertical", $"\"{entry.Title}\": {editError}"));
+                var (items, problem) = await ProjectItemsAsync(index, project!, request.Quality, name, cache, cancellationToken);
+                if (problem is not null)
+                    return ([], problem);
+                made.AddRange(items);
+            }
+            else if (request.Vertical)
             {
                 if (PickRender(shortform.ListRenders(entry.Id).Where(x => x.EditId == editId).ToList(), request.RenderId, team, out var error) is not { } render)
                     return ([], Coded(StatusCodes.Status409Conflict, "no-vertical", $"\"{entry.Title}\": {error}"));
@@ -390,6 +402,39 @@ namespace TwitchDownloaderWeb.Endpoints
             if (!ProjectEndpoints.CanDownload(team, project))
                 return ([], Invalid(index, "Your role doesn't let you export teammates' vertical edits."));
 
+            var name = string.IsNullOrEmpty(fileName) ? (project.Title.Length > 0 ? project.Title : "Untitled project") : fileName;
+            return await ProjectItemsAsync(index, project, request.Quality, name, cache, cancellationToken);
+        }
+
+        /// <summary>
+        /// The vertical edit a clip's vertical file is made from: the one asked for (<see cref="ExportItemRequest.ProjectId"/>, one of the
+        /// clip's vertical edits the caller may export), else the caller's newest vertical edit of the clip when no render was asked for.
+        /// (null, null) = none: older clip renders are used.
+        /// </summary>
+        private static async Task<(EditProject? Project, string? Error)> VerticalEditOfClipAsync(ExportItemRequest request, LibraryEntry entry,
+            TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
+        {
+            if (request.ProjectId is { } projectId)
+            {
+                var project = await db.Projects.AsNoTracking().FirstOrDefaultAsync(x => x.Id == projectId, cancellationToken);
+                if (project is null || project.EntryId != entry.Id || !project.Vertical || !ProjectEndpoints.CanSee(team, project))
+                    return (null, "That vertical edit is gone.");
+                if (!ProjectEndpoints.CanDownload(team, project))
+                    return (null, "Your role doesn't let you export teammates' vertical edits.");
+                return (project, null);
+            }
+            if (!string.IsNullOrWhiteSpace(request.RenderId))
+                return (null, null);
+            var own = await db.Projects.AsNoTracking()
+                .Where(x => x.EntryId == entry.Id && x.Vertical && x.UserId == team.UserId)
+                .OrderByDescending(x => x.UpdatedAtUtc).FirstOrDefaultAsync(cancellationToken);
+            return (own, null);
+        }
+
+        /// <summary>A project's file: what it plays now is copied (landscape for a horizontal edit, 9:16 for a vertical one).</summary>
+        private static async Task<(List<ExportItem> Items, IResult? Problem)> ProjectItemsAsync(int index, EditProject project, string? requestedQuality,
+            string name, VodInfoCache cache, CancellationToken cancellationToken)
+        {
             var content = ProjectContent.Read(project.Content);
             var stretches = ProjectTimeline.Flatten(content);
             if (stretches.All(x => x.IsGap))
@@ -404,11 +449,10 @@ namespace TwitchDownloaderWeb.Endpoints
                     return ([], problem);
             }
 
-            var quality = string.IsNullOrWhiteSpace(request.Quality) ? null : request.Quality.Trim();
+            var quality = string.IsNullOrWhiteSpace(requestedQuality) ? null : requestedQuality.Trim();
             if (quality is not null && (VodInfoService.IsAudioQuality(quality) || quality.Length > 64))
                 return ([], Invalid(index, "Pick a video quality."));
 
-            var name = string.IsNullOrEmpty(fileName) ? (project.Title.Length > 0 ? project.Title : "Untitled project") : fileName;
             var first = stretches.First(x => !x.IsGap);
             var json = content.Write();
             var made = new List<ExportItem>();

@@ -556,8 +556,10 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   project leaves them out of its pieces.
 - **Export screen** (step 8, `ui/export.js`, EXPORT tab): same left panel; a view-only preview player (plays the selected item's kept parts
   in order, skipping cut-out parts; a video part by part), settings for the selected item (file name, quality from `/api/vods/info`, clip
-  Horizontal/Vertical checkboxes: vertical uses the member's own newest render, or with `DownloadTeamVerticals` a picked team render, grayed
-  out with neither; video `.zip` of separate files or joined, grayed out unless `me.combineSegmentDownloads`), the **drop list** (clip / video
+  Horizontal/Vertical checkboxes: vertical is one of the clip's **vertical edits** (`GET /api/projects?entryId=&vertical=true`; badrfly
+  2026-11-17), the member's own newest by default, a teammate's with `DownloadTeamVerticals`, or an older clip render; grayed out with none.
+  Sent as clip `projectId` (or `renderId`); without either the server uses the caller's newest vertical edit of the clip, else their newest
+  render, and makes a `ProjectVertical` item named like the clip's file; video `.zip` of separate files or joined, grayed out unless `me.combineSegmentDownloads`), the **drop list** (clip / video
   / segment cards and Player 1 items via right-click "Add to the export list"; reorder by the handle with SortableJS; kept in `localStorage`
   `clipco.export.list`; Twitch clips and moments refused) and the caller's exports (`GET /api/exports`, polled every 2 s while running;
   download, delete). Dropping a **VOD** opens a pop-up (own `MediaPlayer`, title, start/end time boxes): a one-off range, never an entry.

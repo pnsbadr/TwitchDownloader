@@ -56,6 +56,55 @@ namespace TwitchDownloaderWeb.Tests
         }
 
         [Fact]
+        public async Task ClipVerticalExportsUseItsVerticalEdits()
+        {
+            // badrfly 2026-11-17: a vertical edit made from a clip is that clip's vertical version on the export list
+            var ct = TestContext.Current.CancellationToken;
+            var (owner, member, teamId, memberId) = await TeamWithMemberAsync("ex9");
+            var maker = await CreateRoleAsync(owner, "Maker", "ViewLibrary", "AddEntries", "GenerateFiles");
+            await AssignAsync(owner, memberId, maker);
+            var clip = AddStoredClip(teamId, memberId, 450, 30, 40, "landscape");
+            var layout = new { mode = "single", top = new { x = 0.2, y = 0, width = 0.316, height = 1 } };
+
+            async Task<int> VerticalEdit(HttpClient client, string title) =>
+                (await (await client.PostAsJsonAsync("/api/projects",
+                    new { title, entryId = clip, vertical = true, content = TwoTracks(Piece("a", "t1", 0, 450, 30, 40, layout)) }, ct))
+                    .Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("id").GetInt32();
+            async Task<HttpResponseMessage> Export(HttpClient client, object item) =>
+                await client.PostAsJsonAsync("/api/exports", new { items = new[] { item } }, ct);
+
+            var ownersEdit = await VerticalEdit(owner, "Owner · Vertical 1");
+            // Not theirs and no render: nothing to make it from
+            var none = await Export(member, new { kind = "clip", entryId = clip, horizontal = false, vertical = true });
+            Assert.Equal("no-vertical", await CodeOf(none));
+            // A teammate's vertical edit needs the role
+            Assert.Equal(HttpStatusCode.Conflict, (await Export(member, new { kind = "clip", entryId = clip, horizontal = false, vertical = true, projectId = ownersEdit })).StatusCode);
+
+            // Their own newest vertical edit by default, even with an older clip render around
+            AddRender(clip, "20261117a", memberId, DateTime.UtcNow.AddMinutes(-5), "old render");
+            await VerticalEdit(member, "Mine · Vertical 1");
+            var newest = await VerticalEdit(member, "Mine · Vertical 2");
+            var mine = await Export(member, new { kind = "clip", entryId = clip, horizontal = true, vertical = true, fileName = "Best bit" });
+            Assert.Equal(HttpStatusCode.Accepted, mine.StatusCode);
+            var items = (await mine.Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("items");
+            Assert.Equal(["Clip", "ProjectVertical"], items.EnumerateArray().Select(x => x.GetProperty("kind").GetString()));
+            Assert.Equal(newest, items[1].GetProperty("projectId").GetInt32());
+            Assert.Equal("Best bit", items[1].GetProperty("fileName").GetString());
+
+            // An older render can still be picked by its ID
+            var render = await Export(member, new { kind = "clip", entryId = clip, horizontal = false, vertical = true, renderId = "20261117a" });
+            Assert.Equal("ClipVertical", (await render.Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("items")[0].GetProperty("kind").GetString());
+
+            // With "Download teammates' vertical edits" a teammate's can be picked; an edit of another clip can't
+            var picker = await CreateRoleAsync(owner, "Picker", "ViewLibrary", "AddEntries", "GenerateFiles", "DownloadTeamVerticals");
+            await AssignAsync(owner, memberId, picker);
+            var theirs = await Export(member, new { kind = "clip", entryId = clip, horizontal = false, vertical = true, projectId = ownersEdit });
+            Assert.Equal(HttpStatusCode.Accepted, theirs.StatusCode);
+            var otherClip = AddStoredClip(teamId, memberId, 450, 50, 60, "other");
+            Assert.Equal(HttpStatusCode.Conflict, (await Export(member, new { kind = "clip", entryId = otherClip, horizontal = false, vertical = true, projectId = ownersEdit })).StatusCode);
+        }
+
+        [Fact]
         public async Task ExportsCheckEachItemAndPickVerticalRendersByRole()
         {
             var ct = TestContext.Current.CancellationToken;
