@@ -19,6 +19,8 @@ export const MIN_STRETCH = 0.1;
 const OVERLAP_TOLERANCE = 0.01;
 const SAVE_DELAY_MS = 600;
 const HISTORY_LIMIT = 100;
+// The open edit's undo history survives a reload of the tab (sessionStorage: this tab only, gone when it's closed)
+const HISTORY_KEY = "clipco.p2.history";
 
 export const round = (seconds) => Math.round(seconds * 1000) / 1000;
 export const pieceEnd = (piece) => piece.at + (piece.end - piece.start);
@@ -207,6 +209,131 @@ export function splitLayout(layout, t) {
   return [{ ...structuredClone(layout), keys: structuredClone(left) }, { ...structuredClone(layout), keys: structuredClone(right) }];
 }
 
+// ---------- Player 1 changes flowing in (the server's ProjectSourceSync) ----------
+//
+// When a clip's or segment's kept range changes on Player 1 (a trim, cut-out parts, an undo there), the server changes every edit with
+// pieces copied from it and sends the rules it used in the X-Source-Sync header. applySourceRule is the same change, so the open edit
+// and every step of its undo history follow it too (a Player 2 undo never brings back what Player 1 took out).
+
+const TOUCH = 0.05;
+const SLIVER = 0.01;
+
+function minusSpans(a, b) {
+  const result = [];
+  for (const span of a) {
+    let pieces = [span];
+    for (const cut of b) {
+      const next = [];
+      for (const p of pieces) {
+        if (cut.end <= p.start || cut.start >= p.end) {
+          next.push(p);
+          continue;
+        }
+        if (cut.start > p.start) next.push({ start: p.start, end: cut.start });
+        if (cut.end < p.end) next.push({ start: cut.end, end: p.end });
+      }
+      pieces = next;
+    }
+    result.push(...pieces.filter((x) => x.end - x.start >= SLIVER));
+  }
+  return result.sort((x, y) => x.start - y.start);
+}
+
+function ruleMatches(piece, rule) {
+  const source = piece.source;
+  return Boolean(source) && source.kind === rule.kind && Number(source.id) === Number(rule.id) && Number(piece.vodId) === Number(rule.vodId)
+    && (!rule.within || (piece.start >= rule.within.start - TOUCH && piece.end <= rule.within.end + TOUCH));
+}
+
+// The content with a rule applied (a copy), or null when nothing changes
+export function applySourceRule(content, rule) {
+  const pieces = content?.pieces ?? [];
+  if (!pieces.some((p) => ruleMatches(p, rule))) return null;
+  let result = pieces.map((p) => ({ ...p }));
+  if (rule.removed?.length) result = removeFromPieces(result, rule);
+  if (rule.added?.length) result = addToPieces(result, rule);
+  const key = (list) => JSON.stringify([...list].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)));
+  return key(result) === key(pieces) ? null : { ...content, pieces: result };
+}
+
+function byTrack(pieces) {
+  const tracks = new Map();
+  for (const p of pieces) {
+    if (!tracks.has(p.trackId)) tracks.set(p.trackId, []);
+    tracks.get(p.trackId).push(p);
+  }
+  return [...tracks.values()].map((list) => list.sort((a, b) => a.at - b.at));
+}
+
+function removeFromPieces(pieces, rule) {
+  const result = [];
+  for (const track of byTrack(pieces)) {
+    let shift = 0;
+    for (const piece of track) {
+      const at = round(piece.at - shift);
+      if (!ruleMatches(piece, rule)) {
+        result.push({ ...piece, at });
+        continue;
+      }
+      const parts = minusSpans([{ start: piece.start, end: piece.end }], rule.removed).filter((x) => x.end - x.start >= MIN_PIECE - 0.0005);
+      let kept = 0;
+      parts.forEach((part, i) => {
+        result.push({
+          ...piece,
+          id: i === 0 ? piece.id : `${piece.id.slice(0, 24)}s${i}${Math.floor(Math.random() * 4096).toString(16)}`,
+          at: round(at + kept),
+          start: round(part.start),
+          end: round(part.end),
+          layout: piece.layout ? structuredClone(piece.layout) : piece.layout,
+        });
+        kept += round(part.end) - round(part.start);
+      });
+      shift += (piece.end - piece.start) - kept;
+    }
+  }
+  return result;
+}
+
+function addToPieces(pieces, rule) {
+  const result = [];
+  const used = new Set();
+  for (const ordered of byTrack(pieces)) {
+    let shift = 0;
+    for (let i = 0; i < ordered.length; i++) {
+      const piece = ordered[i];
+      const at = round(piece.at + shift);
+      if (!ruleMatches(piece, rule)) {
+        result.push({ ...piece, at });
+        continue;
+      }
+      let { start, end } = piece;
+      let grow = 0;
+      // The next piece, when a cut that's gone now had split it from this one (still right after it, same source). An inner range (a
+      // cut-out part taken back) only joins those two; it never fills a gap the member left
+      const following = ordered[i + 1];
+      const next = following && ruleMatches(following, rule) && Math.abs(following.at - (piece.at + piece.end - piece.start)) < TOUCH ? following : null;
+      const after = rule.added.find((r) => !used.has(r) && Math.abs(r.start - end) < TOUCH && (!r.inner || (next && Math.abs(next.start - r.end) < TOUCH)));
+      const before = after ? null : rule.added.find((r) => !used.has(r) && !r.inner && Math.abs(r.end - start) < TOUCH);
+      if (after) {
+        used.add(after);
+        grow += after.end - after.start;
+        end = after.end;
+        if (after.inner) {
+          end = next.end;
+          i++;
+        }
+      } else if (before) {
+        used.add(before);
+        grow += before.end - before.start;
+        start = before.start;
+      }
+      result.push({ ...piece, at, start: round(start), end: round(end) });
+      shift += grow;
+    }
+  }
+  return result;
+}
+
 // ---------- the open project ----------
 
 function createBody(draft, content) {
@@ -276,6 +403,7 @@ export class ProjectStore {
     this.set({ ...rest, id: null, draft: true, userId: null, canDelete: false, vodIds: [draft.vodId], content });
     this.history = [];
     this.future = [];
+    this.persistHistory();
     this.failed = false;
     this.dirty = false;
     this.hooks.onChange?.();
@@ -294,6 +422,7 @@ export class ProjectStore {
     this.set(project);
     this.history = [];
     this.future = [];
+    this.restoreHistory();
     this.failed = false;
     this.hooks.onChange?.();
     return project;
@@ -316,7 +445,107 @@ export class ProjectStore {
     this.content = null;
     this.history = [];
     this.future = [];
+    this.persistHistory();
     this.hooks.onChange?.();
+  }
+
+  // ---------- undo history across reloads ----------
+
+  // What's kept: the edit's ID and the revision its history belongs to (pending: a save was sent as the page closed, so the server
+  // should be one revision further). A loaded original that was changed just before closing has no ID yet: draftOf says what it was.
+  persistHistory({ pending = false } = {}) {
+    let saved = null;
+    if (this.project && (this.history.length || this.future.length)) {
+      saved = {
+        id: this.project.id ?? null,
+        draftOf: this.isDraft ? { kind: this.project.source?.kind, id: this.project.source?.id, at: Date.now() } : null,
+        revision: this.isDraft ? 0 : this.project.revision,
+        pending,
+        history: this.history.slice(-HISTORY_LIMIT),
+        future: this.future.slice(-HISTORY_LIMIT),
+      };
+    }
+    for (;;) {
+      try {
+        if (saved) sessionStorage.setItem(HISTORY_KEY, JSON.stringify(saved));
+        else sessionStorage.removeItem(HISTORY_KEY);
+        return;
+      } catch {
+        // Too big for the browser's storage: keep the newer half of the steps
+        if (!saved || (saved.history.length <= 1 && saved.future.length <= 1)) return;
+        saved.history = saved.history.slice(Math.floor(saved.history.length / 2));
+        saved.future = saved.future.slice(Math.floor(saved.future.length / 2));
+      }
+    }
+  }
+
+  restoreHistory() {
+    let saved = null;
+    try {
+      saved = JSON.parse(sessionStorage.getItem(HISTORY_KEY) ?? "null");
+    } catch {
+      saved = null;
+    }
+    if (!saved || !this.project?.id || saved.id !== this.project.id) return;
+    const revision = this.project.revision;
+    if (saved.revision !== revision && !(saved.pending && saved.revision + 1 === revision)) return;
+    this.history = saved.history ?? [];
+    this.future = saved.future ?? [];
+  }
+
+  // A loaded original changed just before the page closed was saved as a new edit while it closed: { kind, id, at } of it, else null
+  static pendingDraft() {
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(HISTORY_KEY) ?? "null");
+      return saved?.draftOf && !saved.id ? saved.draftOf : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // That new edit was found: its history goes with it
+  static claimDraft(id) {
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(HISTORY_KEY) ?? "null");
+      if (!saved?.draftOf) return;
+      sessionStorage.setItem(HISTORY_KEY, JSON.stringify({ ...saved, id, draftOf: null, revision: 1, pending: false }));
+    } catch {
+      // The edit opens without its undo steps
+    }
+  }
+
+  // ---------- Player 1 changes flowing in ----------
+
+  // changes = the X-Source-Sync header: [{ rules, projects: [{ id, revision }] }]. The content and every undo/redo step follow the rules.
+  followSources(changes) {
+    if (!this.content) return false;
+    let any = false;
+    for (const change of changes ?? []) {
+      const rules = change.rules ?? [];
+      const step = (content) => {
+        let next = content;
+        for (const rule of rules) next = applySourceRule(next, rule) ?? next;
+        return next;
+      };
+      const mine = !this.isDraft && this.project.id ? (change.projects ?? []).find((p) => p.id === this.project.id) : null;
+      if (mine && mine.revision > this.project.revision) this.project = { ...this.project, revision: mine.revision };
+      const next = step(this.content);
+      if (next === this.content) continue;
+      this.content = next;
+      this.history = this.history.map((json) => JSON.stringify(step(JSON.parse(json))));
+      this.future = this.future.map((json) => JSON.stringify(step(JSON.parse(json))));
+      any = true;
+      // The server changed its copy too (unless this edit has changes it hasn't saved yet, or it couldn't)
+      if (!this.isDraft && (!mine || this.dirty)) {
+        this.dirty = true;
+        this.scheduleSave();
+      }
+    }
+    if (any) {
+      this.persistHistory();
+      this.hooks.onChange?.();
+    }
+    return any;
   }
 
   // One undo step: fn(content) changes a copy of the content; returning false drops it (nothing changes)
@@ -360,6 +589,7 @@ export class ProjectStore {
   changed() {
     this.dirty = true;
     this.scheduleSave();
+    this.persistHistory();
     this.hooks.onChange?.();
   }
 
@@ -390,7 +620,9 @@ export class ProjectStore {
       const saved = await api("PUT", `/api/projects/${id}`, { content: JSON.parse(sent), revision: this.project.revision });
       if (this.project?.id === id) {
         const { content, ...rest } = saved;
-        this.project = rest;
+        // A Player 1 change may have moved the edit on while this was sent (followSources took its revision)
+        this.project = { ...rest, revision: Math.max(rest.revision, this.project.revision ?? 0) };
+        this.persistHistory();
       }
       this.failed = false;
     } catch (error) {
@@ -400,6 +632,7 @@ export class ProjectStore {
         this.set(error.problem.project);
         this.history = [];
         this.future = [];
+        this.persistHistory();
         this.failed = false;
         toast("This edit was changed somewhere else, so the newer version is shown. Your last change wasn't saved.", "error");
         this.hooks.onReplaced?.();
@@ -427,6 +660,7 @@ export class ProjectStore {
         const { content, ...rest } = made;
         this.project = rest;
         if (JSON.stringify(this.content) !== sent) this.dirty = true;
+        this.persistHistory();
       }
       this.failed = false;
       this.hooks.onCreated?.(made);
@@ -446,6 +680,7 @@ export class ProjectStore {
   flushOnExit() {
     if (!this.project || !this.dirty) return;
     clearTimeout(this.timer);
+    this.persistHistory({ pending: !this.isDraft });
     if (this.isDraft) {
       fetch("/api/projects", {
         method: "POST",
