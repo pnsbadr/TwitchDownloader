@@ -34,11 +34,11 @@ namespace TwitchDownloaderWeb.Endpoints
             var markers = db.Markers.AsNoTracking();
             var videos = db.Videos.AsNoTracking();
             var projects = db.Projects.AsNoTracking().Where(x => x.VodId > 0);
-            // Edits: only the caller's own unless they may see teammates' (VerticalAccess)
+            // Edits: teammates' vertical ones only for members who may see them (VerticalAccess); horizontal ones are everyone's
             if (!VerticalAccess.CanSeeTeam(team))
             {
                 var own = team.UserId;
-                projects = projects.Where(x => x.UserId == own);
+                projects = projects.Where(x => x.UserId == own || !x.Vertical);
             }
             if (ids.Count > 0)
             {

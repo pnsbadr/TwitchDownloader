@@ -11,6 +11,41 @@ namespace TwitchDownloaderWeb.Tests
     public sealed partial class AccountsTests
     {
         [Fact]
+        public async Task TeammatesHorizontalEditsAreOpenToTheTeam()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            var (owner, member, _, memberId) = await TeamWithMemberAsync("va2");
+            Assert.Equal(HttpStatusCode.NoContent, await AssignAsync(owner, memberId,
+                await CreateRoleAsync(owner, "Editor", "ViewLibrary", "AddEntries", "GenerateFiles")));
+            var ownerId = (await GetJsonAsync(owner, "/api/auth/me")).GetProperty("id").GetInt32();
+
+            // badrfly 2026-11-17: anyone can open the clip a teammate cut and make their own vertical edit from it
+            var content = TwoTracks(Piece("a", "t1", 0, 521, 200, 203.5));
+            var horizontal = (await (await owner.PostAsJsonAsync("/api/projects", new { title = "Owner's cut", content }, ct)).Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("id").GetInt32();
+            var vertical = (await (await owner.PostAsJsonAsync("/api/projects", new { title = "Owner's 9:16", content, vertical = true }, ct)).Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("id").GetInt32();
+
+            Assert.Equal(["Owner's cut"], (await GetJsonAsync(member, "/api/projects")).EnumerateArray().Select(x => x.GetProperty("title").GetString()));
+            var seen = await GetJsonAsync(member, $"/api/projects/{horizontal}");
+            Assert.True(seen.GetProperty("canCopy").GetBoolean());
+            Assert.True(seen.GetProperty("canDownload").GetBoolean());
+            Assert.False(seen.GetProperty("canEdit").GetBoolean()); // changing it in place still needs Edit anyone's
+            Assert.False(seen.GetProperty("canDelete").GetBoolean());
+            Assert.Equal(HttpStatusCode.Forbidden, (await member.PutAsJsonAsync($"/api/projects/{horizontal}", new { title = "Taken" }, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await member.DeleteAsync($"/api/projects/{horizontal}", ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Created, (await member.PostAsJsonAsync($"/api/projects/{horizontal}/copy", new { }, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Accepted, (await member.PostAsJsonAsync("/api/exports",
+                new { items = new[] { new { kind = "project", projectId = horizontal, quality = "480p30" } } }, ct)).StatusCode);
+
+            // Their vertical edits stay behind the role
+            Assert.Equal(HttpStatusCode.NotFound, (await member.GetAsync($"/api/projects/{vertical}", ct)).StatusCode);
+
+            // "Edited by" filters and the VOD's work count the horizontal edit
+            var work = (await GetJsonAsync(member, "/api/vods/work?vodIds=521")).EnumerateArray().Single();
+            Assert.Equal(2, work.GetProperty("edits").GetInt32()); // the owner's horizontal one + the member's copy
+            Assert.Empty((await GetJsonAsync(member, $"/api/entries?editedBy={ownerId}")).EnumerateArray()); // no clip parent here
+        }
+
+        [Fact]
         public async Task TeammatesVerticalEditsFollowTheRole()
         {
             var ct = TestContext.Current.CancellationToken;
@@ -22,7 +57,7 @@ namespace TwitchDownloaderWeb.Tests
                     await CreateRoleAsync(owner, "R" + Guid.NewGuid().ToString("N")[..8], ["ViewLibrary", "AddEntries", "GenerateFiles", .. permissions])));
 
             var content = TwoTracks(Piece("a", "t1", 0, 520, 200, 203.5));
-            var ownersProject = (await (await owner.PostAsJsonAsync("/api/projects", new { title = "Owner's cut", content }, ct))
+            var ownersProject = (await (await owner.PostAsJsonAsync("/api/projects", new { title = "Owner's cut", content, vertical = true }, ct))
                 .Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("id").GetInt32();
             var clip = AddStoredClip(teamId, memberId, 450, 30, 40, "landscape");
             AddRender(clip, "20261117a", ownerId, DateTime.UtcNow.AddMinutes(-5), "owner's vertical");
@@ -84,7 +119,7 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal(HttpStatusCode.NoContent, Status(await member.DeleteAsync($"/api/projects/{ownersProject}", ct)));
 
             // Edit anyone's alone (a clipper role) doesn't reach teammates' vertical edits
-            var another = (await (await owner.PostAsJsonAsync("/api/projects", new { title = "Owner's other" }, ct))
+            var another = (await (await owner.PostAsJsonAsync("/api/projects", new { title = "Owner's other", vertical = true }, ct))
                 .Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("id").GetInt32();
             await Role("EditAnyEntries", "DeleteAnyEntries", "DeleteRenders");
             Assert.Equal(HttpStatusCode.NotFound, Status(await member.PutAsJsonAsync($"/api/projects/{another}", new { title = "Taken" }, ct)));

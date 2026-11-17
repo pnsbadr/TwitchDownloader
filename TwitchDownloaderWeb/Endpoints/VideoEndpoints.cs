@@ -148,9 +148,9 @@ namespace TwitchDownloaderWeb.Endpoints
                 query = query.Where(x => x.UserId == user);
             if (editedBy is { } editor)
             {
-                // Who made which vertical edit is only told to members who may see teammates' edits (VerticalAccess)
+                // Who made which vertical edit is only told to members who may see teammates' (VerticalAccess); horizontal edits are everyone's
                 if (editor != team.UserId && !VerticalAccess.CanSeeTeam(team))
-                    query = query.Where(x => false);
+                    query = query.Where(x => db.Projects.Any(p => p.VideoId == x.Id && p.UserId == editor && !p.Vertical));
                 else
                     query = query.Where(x => db.Projects.Any(p => p.VideoId == x.Id && p.UserId == editor));
             }
