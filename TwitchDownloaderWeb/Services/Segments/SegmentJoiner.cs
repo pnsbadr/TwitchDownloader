@@ -22,7 +22,8 @@ namespace TwitchDownloaderWeb.Services.Segments
 
             try
             {
-                await FfmpegRunner.RunAsync(ffmpegPath, Args(list, outputFile, ["-c", "copy"]), workDirectory, logger, cancellationToken);
+                await FfmpegRunner.RunAsync(ffmpegPath, Args(list, outputFile, ["-c", "copy"]), workDirectory, logger, cancellationToken,
+                    step: $"Joining {files.Count} parts");
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -31,7 +32,7 @@ namespace TwitchDownloaderWeb.Services.Segments
                 [
                     "-c:v", "libx264", "-preset", preset, "-crf", crf.ToString(CultureInfo.InvariantCulture), "-pix_fmt", "yuv420p",
                     "-c:a", "aac", "-b:a", "192k",
-                ]), workDirectory, logger, cancellationToken);
+                ]), workDirectory, logger, cancellationToken, step: $"Joining {files.Count} parts (re-encoding)");
             }
         }
 

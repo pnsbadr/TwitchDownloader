@@ -49,11 +49,22 @@ namespace TwitchDownloaderWeb.Services
             {
                 var files = new List<string>();
                 var restores = new List<AudioRestoreResult>();
+                var outerPrefix = JobProgress.Current?.Prefix;
                 for (var i = 0; i < parts.Count; i++)
                 {
                     var file = Path.Combine(work, $"{i + 1}.mp4");
-                    if (await _cutter.CutAsync(db, Part(cut, parts[i]), file, logger, onRestoreFailed, cancellationToken) is { } restore)
-                        restores.Add(restore);
+                    var name = $"Kept part {i + 1} of {parts.Count}";
+                    JobProgress.SetPrefix(outerPrefix is null ? name : $"{outerPrefix} · {name}");
+                    logger.LogInformation("{Part} ({Start}-{End}).", name, JobProgress.FormatTime(parts[i].Start), JobProgress.FormatTime(parts[i].End));
+                    try
+                    {
+                        if (await _cutter.CutAsync(db, Part(cut, parts[i]), file, logger, onRestoreFailed, cancellationToken) is { } restore)
+                            restores.Add(restore);
+                    }
+                    finally
+                    {
+                        JobProgress.SetPrefix(outerPrefix);
+                    }
                     files.Add(file);
                 }
 

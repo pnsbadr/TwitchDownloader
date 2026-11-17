@@ -10,7 +10,7 @@
 // segments or, when the team has "render as one" on, one file. Clips are horizontal and/or vertical; the vertical is one of the
 // clip's vertical edits (the member's own newest by default) or an older clip render, the team's ones with DownloadTeamVerticals.
 
-import { $, el, api, me, can, toast, formatDate, formatDuration, loadSetting, saveSetting, iconButton, twitchThumb, thumbStyle } from "./core.js";
+import { $, el, api, me, can, toast, formatDate, formatDuration, loadSetting, saveSetting, iconButton, twitchThumb, thumbStyle, stepText } from "./core.js";
 import { dropTarget } from "./drag.js";
 import { MediaPlayer, formatClock } from "./media.js";
 import { timeBox } from "./timebox.js";
@@ -1021,8 +1021,11 @@ function batchNode(batch) {
 
 function batchItemNode(item) {
   const name = item.kind === "Video" && !item.joined ? `${item.fileName}.zip` : item.kind === "ClipVertical" || item.kind === "ProjectVertical" ? `${item.fileName} (vertical).mp4` : `${item.fileName}.mp4`;
+  const step = item.status === "Running" ? item.progress : null;
+  // A video's bar counts its segments; one file's bar follows the step it's on (download, audio swap, re-encode...)
   const progress = item.status === "Running" && item.partsTotal > 1
     ? el("sl-progress-bar", { value: String(Math.round((item.partsDone / item.partsTotal) * 100)) })
+    : step?.percent != null ? el("sl-progress-bar", { value: String(Math.round(step.percent)) })
     : item.status === "Running" ? el("sl-progress-bar", { indeterminate: true }) : null;
   return el("div", { class: "xb-item" },
     el("sl-icon", { library: "ph", name: ITEM_KIND_ICON[item.kind] ?? "file" }),
@@ -1033,6 +1036,7 @@ function batchItemNode(item) {
         item.quality,
         item.status === "Ready" && item.fileSizeBytes ? formatSize(item.fileSizeBytes) : STATUS_TEXT[item.status],
       ].filter(Boolean).join(" · ")),
+      step?.step ? el("div", { class: "faint xb-step num" }, stepText(step)) : null,
       progress,
       item.error ? el("div", { class: "xl-error" }, item.error) : null),
     item.fileUrl ? iconButton({ icon: "download-simple", label: "Download", onClick: () => download(item.fileUrl) }) : null);

@@ -20,6 +20,7 @@ namespace TwitchDownloaderWeb.Services.Segments
     {
         private readonly Channel<int> _channel = Channel.CreateUnbounded<int>();
         private readonly ConcurrentDictionary<int, CancellationTokenSource> _running = new();
+        private readonly ConcurrentDictionary<int, (int Position, JobProgress Progress)> _progress = new();
 
         public ChannelReader<int> Reader => _channel.Reader;
 
@@ -51,8 +52,21 @@ namespace TwitchDownloaderWeb.Services.Segments
 
         internal void EndJob(int exportId)
         {
+            _progress.TryRemove(exportId, out _);
             if (_running.TryRemove(exportId, out var cts))
                 cts.Dispose();
         }
+
+        /// <summary>Makes a new progress for the item at <paramref name="position"/> that the job works on now.</summary>
+        internal JobProgress StartItem(int exportId, int position)
+        {
+            var progress = new JobProgress();
+            _progress[exportId] = (position, progress);
+            return progress;
+        }
+
+        /// <summary>The step the item is on, while the job works on it (the page shows it on the export's card).</summary>
+        public JobProgressSnapshot? ProgressOf(int exportId, int position) =>
+            _progress.TryGetValue(exportId, out var current) && current.Position == position ? current.Progress.Read() : null;
     }
 }

@@ -184,3 +184,14 @@ export function toast(text, kind = "") {
   box.append(item);
   setTimeout(() => item.remove(), kind === "error" ? 6000 : 3500);
 }
+
+/** "Re-encoding for the exact cut · 42% · about 38 min left" */
+export function stepText({ step, percent, etaSeconds }) {
+  return [step, percent != null ? `${Math.floor(percent)}%` : null, etaSeconds != null ? timeLeft(etaSeconds) : null].filter(Boolean).join(" · ");
+}
+
+function timeLeft(seconds) {
+  if (seconds >= 3600) return `about ${Math.floor(seconds / 3600)} h ${Math.floor((seconds % 3600) / 60)} min left`;
+  if (seconds >= 90) return `about ${Math.round(seconds / 60)} min left`;
+  return `about ${Math.max(1, Math.round(seconds))} s left`;
+}

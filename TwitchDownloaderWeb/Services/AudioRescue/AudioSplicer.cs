@@ -51,7 +51,7 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
             args.AddRange(["-filter_complex", BuildFilter(inputAudioStartSeconds, runs), "-map", "0:v?", "-map", "[a]",
                 "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", SampleRate.ToString(CultureInfo.InvariantCulture), outputFile]);
 
-            await FfmpegRunner.RunAsync(ffmpegPath, args, workDirectory, logger, cancellationToken);
+            await FfmpegRunner.RunAsync(ffmpegPath, args, workDirectory, logger, cancellationToken, step: "Swapping in the saved clean audio");
         }
 
         /// <remarks>
