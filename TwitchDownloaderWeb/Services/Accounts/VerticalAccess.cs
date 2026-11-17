@@ -8,6 +8,7 @@ namespace TwitchDownloaderWeb.Services.Accounts
     /// includes seeing them), downloaded or exported with DownloadTeamVerticals, edited in place or copied with EditAnyEntries and deleted
     /// with DeleteAnyEntries, each on top of seeing them. Without any, a member starts their own from the original horizontal clip.
     /// A support visit sees everything (read-only anyway). Renders from before their maker was kept (<c>null</c>) count as a teammate's.
+    /// Horizontal (Player 2) edits don't follow these rules: they're open to the whole team (see <c>ProjectEndpoints.CanSee</c>).
     /// </summary>
     public static class VerticalAccess
     {

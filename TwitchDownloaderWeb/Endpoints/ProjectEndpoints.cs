@@ -50,20 +50,25 @@ namespace TwitchDownloaderWeb.Endpoints
             return app;
         }
 
-        // Projects are vertical edits: a teammate's are seen, changed, copied, deleted and exported only as VerticalAccess allows
-        // (badrfly 2026-11-17); one the caller may not see answers 404 like a missing one
-        internal static bool CanSee(TeamContext team, EditProject project) => VerticalAccess.CanSee(team, project.UserId);
+        // A teammate's VERTICAL edits are seen, changed, copied, deleted and exported only as VerticalAccess allows (badrfly 2026-11-17);
+        // one the caller may not see answers 404 like a missing one. HORIZONTAL edits are open to the whole team (badrfly 2026-11-17: anyone
+        // can open a clip someone cut and make their own vertical edit from it): seen by everyone, copied with AddEntries, exported by anyone
+        // who may make files, changed with EditAnyEntries and deleted with DeleteAnyEntries.
+        internal static bool CanSee(TeamContext team, EditProject project) => !project.Vertical || VerticalAccess.CanSee(team, project.UserId);
 
         internal static bool CanEdit(TeamContext team, EditProject project) =>
-            VerticalAccess.IsOwn(team, project.UserId) ? team.Can(TeamPermission.AddEntries) : VerticalAccess.CanReEditTeam(team);
+            VerticalAccess.IsOwn(team, project.UserId) ? team.Can(TeamPermission.AddEntries)
+            : project.Vertical ? VerticalAccess.CanReEditTeam(team) : !team.IsSupport && team.Can(TeamPermission.EditAnyEntries);
 
         private static bool CanDelete(TeamContext team, EditProject project) =>
-            VerticalAccess.IsOwn(team, project.UserId) ? team.Can(TeamPermission.AddEntries) : VerticalAccess.CanDeleteTeam(team);
+            VerticalAccess.IsOwn(team, project.UserId) ? team.Can(TeamPermission.AddEntries)
+            : project.Vertical ? VerticalAccess.CanDeleteTeam(team) : !team.IsSupport && team.Can(TeamPermission.DeleteAnyEntries);
 
         private static bool CanCopy(TeamContext team, EditProject project) =>
-            !team.IsSupport && team.Can(TeamPermission.AddEntries) && (VerticalAccess.IsOwn(team, project.UserId) || VerticalAccess.CanReEditTeam(team));
+            !team.IsSupport && team.Can(TeamPermission.AddEntries)
+            && (!project.Vertical || VerticalAccess.IsOwn(team, project.UserId) || VerticalAccess.CanReEditTeam(team));
 
-        internal static bool CanDownload(TeamContext team, EditProject project) => VerticalAccess.CanDownload(team, project.UserId);
+        internal static bool CanDownload(TeamContext team, EditProject project) => !project.Vertical || VerticalAccess.CanDownload(team, project.UserId);
 
         private static async Task<List<ProjectDto>> ToDtosAsync(LibraryDbContext db, IReadOnlyList<EditProject> projects, TeamContext team,
             bool withContent, CancellationToken cancellationToken)
@@ -111,8 +116,9 @@ namespace TwitchDownloaderWeb.Endpoints
                 query = query.Where(x => x.Vertical == isVertical);
             if (!VerticalAccess.CanSeeTeam(team))
             {
+                // Teammates' vertical edits need a role that shows them; horizontal ones are everyone's
                 var own = team.UserId;
-                query = query.Where(x => x.UserId == own);
+                query = query.Where(x => x.UserId == own || !x.Vertical);
             }
 
             var projects = await query.OrderByDescending(x => x.UpdatedAtUtc).Take(Math.Clamp(limit ?? 200, 1, 1000)).ToListAsync(cancellationToken);

@@ -28,7 +28,7 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal(490, edit.GetProperty("vodId").GetInt64());
             Assert.Equal(clipA, edit.GetProperty("entryId").GetInt32());
             await PostJsonAsync(member, "/api/projects", new { entryId = clipA, content = TwoTracks(Piece("a", "t1", 0, 491, 10, 30)) }, HttpStatusCode.BadRequest);
-            var videoEdit = await PostJsonAsync(owner, "/api/projects", new { videoId }, HttpStatusCode.Created);
+            var videoEdit = await PostJsonAsync(owner, "/api/projects", new { videoId, vertical = true }, HttpStatusCode.Created);
             Assert.Equal(490, videoEdit.GetProperty("vodId").GetInt64());
             Assert.Equal(videoId, videoEdit.GetProperty("videoId").GetInt32());
             await PostJsonAsync(owner, "/api/projects", new { entryId = 99999 }, HttpStatusCode.BadRequest);
@@ -48,8 +48,9 @@ namespace TwitchDownloaderWeb.Tests
             // Video filters
             Assert.Equal([videoId], Ids(await GetJsonAsync(owner, $"/api/videos?editedBy={ownerId}")));
             Assert.Empty(Ids(await GetJsonAsync(owner, $"/api/videos?editedBy={memberId}")));
-            // A member who can't see teammates' vertical edits isn't told who made them
+            // A member who can't see teammates' vertical edits isn't told who made them (horizontal edits are everyone's)
             Assert.Empty(Ids(await GetJsonAsync(member, $"/api/videos?editedBy={ownerId}")));
+            Assert.Equal([clipA], Ids(await GetJsonAsync(member, $"/api/entries?editedBy={ownerId}"))); // the owner's horizontal copy
             Assert.Equal([clipA], Ids(await GetJsonAsync(member, $"/api/entries?editedBy={memberId}")));
 
             // Work per VOD

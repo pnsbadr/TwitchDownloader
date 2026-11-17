@@ -101,7 +101,7 @@ namespace TwitchDownloaderWeb.Tests
             // Others' projects are vertical edits: without a role that shows them they aren't there (see AccountsTests.VerticalAccess)
             var memberSees = await GetJsonAsync(member, $"/api/projects/{id}");
             Assert.True(memberSees.GetProperty("canEdit").GetBoolean());
-            var ownersProject = (await (await owner.PostAsJsonAsync("/api/projects", new { title = "Owner's" }, ct)).Content.ReadFromJsonAsync<JsonElement>(ct))
+            var ownersProject = (await (await owner.PostAsJsonAsync("/api/projects", new { title = "Owner's", vertical = true }, ct)).Content.ReadFromJsonAsync<JsonElement>(ct))
                 .GetProperty("id").GetInt32();
             Assert.Equal(HttpStatusCode.NotFound, (await member.GetAsync($"/api/projects/{ownersProject}", ct)).StatusCode);
             Assert.Equal(HttpStatusCode.NotFound, (await member.PutAsJsonAsync($"/api/projects/{ownersProject}", new { title = "Mine" }, ct)).StatusCode);

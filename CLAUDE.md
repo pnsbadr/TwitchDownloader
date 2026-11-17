@@ -160,7 +160,10 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   fixed once made, copies keep it, `GET /api/projects?vertical=`). A horizontal edit (Player 2) keeps **no layouts** (dropped on save) and
   exports landscape; a vertical edit opens in the vertical editor, keeps boxes/keyframes and exports 9:16 (export `horizontal`/`vertical`
   flags are ignored for projects: the kind decides). Migration `VerticalEdits` made every project with a layout vertical.
-  **Projects are vertical edits** (badrfly 2026-11-17, `VerticalAccess`; horizontal edits follow the same rule for now): own ones need `AddEntries`; a teammate's are listed/opened only with
+  **Teammates' horizontal edits are open to the whole team** (badrfly 2026-11-17: anyone can open a clip someone cut and make their own
+  vertical edit from it): listed/opened with `ViewLibrary`, copied with `AddEntries`, exported with `GenerateFiles`, changed in place with
+  `EditAnyEntries`, deleted with `DeleteAnyEntries` (`ProjectEndpoints.CanSee` etc.; `editedBy` filters and `/api/vods/work` count them too).
+  **Vertical edits follow `VerticalAccess`** (badrfly 2026-11-17): own ones need `AddEntries`; a teammate's are listed/opened only with
   `ViewTeamVerticals` (bit 19) or `DownloadTeamVerticals` (bit 18, includes seeing), else 404 / left out of lists; exported (`kind: "project"`,
   400 otherwise) with `DownloadTeamVerticals`; changed or copied with seeing + `EditAnyEntries`; deleted with seeing + `DeleteAnyEntries`.
   DTOs carry `canCopy` / `canDownload`. The same rule covers 9:16 renders (`/shortform`: list filtered, inline play = see, download = Download,
