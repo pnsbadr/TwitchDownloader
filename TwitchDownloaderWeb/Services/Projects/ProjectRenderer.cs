@@ -95,7 +95,9 @@ namespace TwitchDownloaderWeb.Services.Projects
                         args = PieceArgs(raw, stretch, vertical, format);
                     }
 
-                    await FfmpegRunner.RunAsync(ffmpegPath, [.. args, .. Encoding(settings), file], work, logger, cancellationToken);
+                    await FfmpegRunner.RunAsync(ffmpegPath, [.. args, .. Encoding(settings), file], work, logger, cancellationToken,
+                        step: stretch.Piece is null ? $"Making gap {i + 1} of {stretches.Count}" : $"Encoding part {i + 1} of {stretches.Count}",
+                        expectedSeconds: stretch.Duration);
                     files.Add(file);
                     if (stretch.Piece is not null)
                         _storage.TryDelete(Path.Combine(work, $"{i + 1}.cut.mp4"));

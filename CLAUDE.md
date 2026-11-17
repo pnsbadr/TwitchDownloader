@@ -182,7 +182,11 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   copied at request time (ranges, cut-out parts, a video's segments in `Parts` JSON, the vertical `RenderId`). The worker (one export at a
   time, separate from the other queues) makes items in list order with `KeptPartsCutter`; a **stored clip at its own quality is copied**
   (no download), so is a vertical render; one failing item doesn't stop the rest. Progress: `partsDone/partsTotal` per item, `itemsDone`
-  per export (the page polls). Files in `downloads/exports/{id}/{position}.mp4` (a .zip video: folder `{position}/`, zipped when served);
+  per export (the page polls). **Step progress** (badrfly 2026-11-17: a 3 h export sat at "Making files" with a silent console for an hour):
+  the worker makes a `JobProgress` per item the ambient one (`JobProgress.Use`, AsyncLocal; in memory, `IdJobQueue.ProgressOf`), Core's
+  download (`LoggerTaskProgress`, steps in plain words) and every `FfmpegRunner.RunAsync` given a `step:` report into it (ffmpeg's stderr
+  `time=`/`speed=` vs `expectedSeconds` or the first input's `Duration:`), and log start / every 5 % (or minute) with speed and time left / done.
+  Items carry `progress: { step, percent, etaSeconds }` while Running; the export card shows it. Give any new long ffmpeg run a `step:`. Files in `downloads/exports/{id}/{position}.mp4` (a .zip video: folder `{position}/`, zipped when served);
   they expire after `Downloads:GeneratedFileHours`, cleaned like segment downloads; disk counts for the member. Limits: `Downloads:MaxExportItems`
   (50), `MaxExportSeconds` (3 h, verticals not counted), `MaxActiveExportsPerTeam` (3). `GET /api/exports` = the caller's own. Twitch clip
   entries aren't exported (their card's download still works). Audited `export.requested` ("generated") / `export.ready` / `export.failed` /

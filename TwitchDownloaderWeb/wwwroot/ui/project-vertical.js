@@ -12,7 +12,7 @@
 // hold before the first / after the last. F adds one at the playhead or removes the one there, [ / ] go to the previous / next;
 // once a piece has one, moving a box sets the keyframe at the playhead. The diamonds show on the piece in the vertical timeline.
 
-import { el, api, toast, formatDate, formatDuration, iconButton, withTooltip, loadSetting, saveSetting } from "./core.js";
+import { el, api, toast, formatDate, formatDuration, iconButton, withTooltip, loadSetting, saveSetting, stepText } from "./core.js";
 import { askText, confirmAction } from "./dialogs.js";
 import { flatten, stretchAt, pieceEnd, round } from "./project.js";
 // "1:05.20"
@@ -869,7 +869,7 @@ function renderRenders() {
   list.replaceChildren(...vx.exports.map(({ batch, item }) => {
     const ready = item.status === "Ready" && item.fileUrl;
     const state = ready ? `${formatSize(item.fileSizeBytes)} · until ${formatDate(batch.expiresAtUtc)}`
-      : item.status === "Failed" ? `Failed: ${item.error ?? ""}` : item.status === "Running" ? `Rendering ${item.partsDone}/${item.partsTotal}` : "Waiting";
+      : item.status === "Failed" ? `Failed: ${item.error ?? ""}` : item.status === "Running" ? [`Rendering ${item.partsDone}/${item.partsTotal}`, item.progress?.step ? stepText(item.progress) : null].filter(Boolean).join(" · ") : "Waiting";
     return el("li", { class: "vx2-render-item" },
       el("div", { class: "vx2-thumb" }, el("sl-icon", { library: "ph", name: ready ? "film-strip" : item.status === "Failed" ? "warning" : "hourglass" })),
       el("div", {},

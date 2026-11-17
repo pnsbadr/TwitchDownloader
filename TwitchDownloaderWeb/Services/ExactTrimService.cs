@@ -113,7 +113,8 @@ namespace TwitchDownloaderWeb.Services
                 outputFile,
             ]);
 
-            return FfmpegRunner.RunAsync(ffmpegPath, args, workDirectory, logger, cancellationToken);
+            return FfmpegRunner.RunAsync(ffmpegPath, args, workDirectory, logger, cancellationToken,
+                step: "Re-encoding for the exact cut", expectedSeconds: lengthSeconds);
         }
     }
 }

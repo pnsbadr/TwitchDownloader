@@ -127,6 +127,15 @@ namespace TwitchDownloaderWeb.Services.Segments
                     if (!await SaveIgnoringDeletedAsync(db, stoppingToken))
                         return;
 
+                    var progress = _queue.StartItem(batch.Id, item.Position);
+                    progress.SetStep("Starting");
+                    using var ambient = JobProgress.Use(progress);
+                    var itemClock = System.Diagnostics.Stopwatch.StartNew();
+                    _logger.LogInformation("Export {BatchId}, item {Position} of {Count}: {Kind} \"{FileName}\"{Details}.", batch.Id, item.Position,
+                        batch.Items.Count, item.Kind, item.FileName,
+                        item.EndSeconds > item.StartSeconds
+                            ? $" (VOD {item.VodId}, {JobProgress.FormatTime(item.StartSeconds)}-{JobProgress.FormatTime(item.EndSeconds)}{(item.Quality is null ? "" : $", {item.Quality}")})"
+                            : "");
                     try
                     {
                         // A clip made from its stored file doesn't need the VOD (nor Twitch to answer)
@@ -138,6 +147,8 @@ namespace TwitchDownloaderWeb.Services.Segments
                         await MakeItemAsync(db, batch, item, vodGone, () => SaveIgnoringDeletedAsync(db, stoppingToken), token);
                         item.Status = ExportStatus.Ready;
                         item.PartsDone = item.PartsTotal;
+                        _logger.LogInformation("Export {BatchId}, item {Position} is ready ({Elapsed}, {Megabytes} MB).", batch.Id, item.Position,
+                            JobProgress.FormatTime(itemClock.Elapsed.TotalSeconds), (item.FileSizeBytes ?? 0) / 1_000_000);
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException || !token.IsCancellationRequested)
                     {
@@ -209,11 +220,17 @@ namespace TwitchDownloaderWeb.Services.Segments
             var fullPath = _storage.Resolve(relativePath);
             AudioRestoreResult? restore = null;
             var copied = false;
+            void Step(string step)
+            {
+                JobProgress.Current?.SetStep(step);
+                _logger.LogInformation("{Step}.", step);
+            }
 
             switch (item.Kind)
             {
                 case ExportItemKind.ClipVertical:
                     item.PartsTotal = 1;
+                    Step("Copying the vertical render");
                     if (item.EntryId is not { } verticalOf || item.RenderId is null || _shortform.RenderPath(verticalOf, item.RenderId, "mp4") is not { } render
                         || !File.Exists(render))
                         throw new InvalidOperationException("That vertical render has expired or was deleted.");
@@ -223,6 +240,7 @@ namespace TwitchDownloaderWeb.Services.Segments
 
                 case ExportItemKind.Clip when await CopyableClipFileAsync(db, item, token) is { } stored:
                     item.PartsTotal = 1;
+                    Step("Copying the stored clip");
                     File.Copy(stored.Path, fullPath, overwrite: true);
                     item.AudioRestoredSeconds = stored.Entry.AudioRestoredSeconds;
                     item.AudioMutedSeconds = stored.Entry.AudioMutedSeconds;
@@ -439,12 +457,16 @@ namespace TwitchDownloaderWeb.Services.Segments
             for (var i = 0; i < parts.Count; i++)
             {
                 var file = Path.Combine(partsFolder, $"{i + 1}.mp4");
+                JobProgress.SetPrefix($"Segment {i + 1} of {parts.Count}");
+                _logger.LogInformation("Export {BatchId}, item {Position}: segment {Number} of {Count} ({Start}-{End}).", batch.Id, item.Position, i + 1,
+                    parts.Count, JobProgress.FormatTime(parts[i].Start), JobProgress.FormatTime(parts[i].End));
                 if (await CutAsync(db, batch, item, parts[i].Start, parts[i].End, parts[i].Cuts, file, token) is { } restore)
                     restores.Add(restore);
                 files.Add(file);
                 item.PartsDone = i + 1;
                 await saveProgress();
             }
+            JobProgress.SetPrefix(null);
 
             if (item.Joined)
             {

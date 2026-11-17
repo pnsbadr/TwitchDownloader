@@ -101,6 +101,8 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
                 return new AudioRestoreResult(0, mutedSeconds, false);
             }
 
+            logger.LogInformation("VOD {VodId}: {Restorable} of {Muted} muted in this cut have saved clean audio; downloading, then swapping it in.",
+                entry.VodId, JobProgress.FormatTime(MutedSeconds(runs.SelectMany(x => x), entry.StartTime, entry.EndTime)), JobProgress.FormatTime(mutedSeconds));
             var ffmpegPath = _configuration["Ffmpeg:Path"] is { Length: > 0 } configured ? configured : "ffmpeg";
             var work = _storage.CreateWorkFolder($"restore-{entry.Id}");
             try
@@ -110,6 +112,7 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
                     safeFile, info => info, logger, cancellationToken);
 
                 var startSegment = segments[range.GetOffsetAndLength(segments.Count).Offset];
+                JobProgress.Current?.SetStep("Lining up the saved audio");
                 var firstHead = await ReadHeadAsync(http, rendition, startSegment, cancellationToken);
                 var runHeads = new List<TsTimestamps>(runs.Count);
                 foreach (var run in runs)

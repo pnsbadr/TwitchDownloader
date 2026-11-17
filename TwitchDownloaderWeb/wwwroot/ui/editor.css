@@ -635,6 +635,7 @@ button.team-pill:hover { background: var(--bg-4); }
 .xb-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .xb-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
 .xb-meta { font-size: 12px; }
+.xb-step { font-size: 12px; overflow-wrap: anywhere; }
 .xb-main sl-progress-bar { --height: 4px; --indicator-color: var(--accent); }
 .xb-expires { font-size: 12px; }
 

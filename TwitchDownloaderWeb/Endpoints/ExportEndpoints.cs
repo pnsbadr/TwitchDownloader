@@ -44,6 +44,9 @@ namespace TwitchDownloaderWeb.Endpoints
 
         /// <summary>The project it's made from (kind Project or ProjectVertical).</summary>
         public int? ProjectId { get; init; }
+
+        /// <summary>While it's being made: the step it's on, with that step's percent and time left when known.</summary>
+        public JobProgressSnapshot? Progress { get; init; }
     }
 
     public sealed record ExportBatchDto(int Id, string Status, string? Error, int CreatedByUserId, string? CreatedBy, DateTime CreatedAtUtc,
@@ -177,7 +180,7 @@ namespace TwitchDownloaderWeb.Endpoints
             await db.SaveChangesAsync(cancellationToken);
 
             queue.Enqueue(batch.Id);
-            return Results.Accepted($"/api/exports/{batch.Id}", await ToDtoAsync(db, team, batch, cancellationToken));
+            return Results.Accepted($"/api/exports/{batch.Id}", await ToDtoAsync(db, team, batch, queue, cancellationToken));
         }
 
         private static double LengthOf(ExportItem item) => item.Kind switch
@@ -492,20 +495,20 @@ namespace TwitchDownloaderWeb.Endpoints
         }
 
         /// <summary>The caller's unexpired exports, newest first.</summary>
-        private static async Task<IResult> List(TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
+        private static async Task<IResult> List(TeamContext team, LibraryDbContext db, ExportQueue queue, CancellationToken cancellationToken)
         {
             var now = DateTime.UtcNow;
             var batches = await db.ExportBatches.AsNoTracking().Include(x => x.Items)
                 .Where(x => x.CreatedByUserId == team.UserId && (x.ExpiresAtUtc == null || x.ExpiresAtUtc > now))
                 .OrderByDescending(x => x.Id).Take(50).ToListAsync(cancellationToken);
             var names = await TimelineEndpoints.UserNamesAsync(db, [team.UserId], cancellationToken);
-            return Results.Ok(batches.Select(x => ToDto(x, names, team)).ToList());
+            return Results.Ok(batches.Select(x => ToDto(x, names, team, queue)).ToList());
         }
 
-        private static async Task<IResult> Get(int id, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
+        private static async Task<IResult> Get(int id, TeamContext team, LibraryDbContext db, ExportQueue queue, CancellationToken cancellationToken)
         {
             var batch = await FindAsync(db, id, cancellationToken);
-            return batch is null ? NotFound(id) : Results.Ok(await ToDtoAsync(db, team, batch, cancellationToken));
+            return batch is null ? NotFound(id) : Results.Ok(await ToDtoAsync(db, team, batch, queue, cancellationToken));
         }
 
         private static async Task<ExportBatch?> FindAsync(LibraryDbContext db, int id, CancellationToken cancellationToken)
@@ -608,10 +611,11 @@ namespace TwitchDownloaderWeb.Endpoints
 
         private static string Safe(string text) => FilenameService.ReplaceInvalidFilenameChars(text)?.Trim().TrimEnd('.') ?? "";
 
-        private static async Task<ExportBatchDto> ToDtoAsync(LibraryDbContext db, TeamContext team, ExportBatch batch, CancellationToken cancellationToken) =>
-            ToDto(batch, await TimelineEndpoints.UserNamesAsync(db, [batch.CreatedByUserId], cancellationToken), team);
+        private static async Task<ExportBatchDto> ToDtoAsync(LibraryDbContext db, TeamContext team, ExportBatch batch, ExportQueue queue,
+            CancellationToken cancellationToken) =>
+            ToDto(batch, await TimelineEndpoints.UserNamesAsync(db, [batch.CreatedByUserId], cancellationToken), team, queue);
 
-        private static ExportBatchDto ToDto(ExportBatch x, IReadOnlyDictionary<int, string> names, TeamContext team)
+        private static ExportBatchDto ToDto(ExportBatch x, IReadOnlyDictionary<int, string> names, TeamContext team, ExportQueue queue)
         {
             var url = $"/api/exports/{x.Id}";
             return new ExportBatchDto(x.Id, x.Status.ToString(), x.Error, x.CreatedByUserId, names.GetValueOrDefault(x.CreatedByUserId), x.CreatedAtUtc,
@@ -619,7 +623,12 @@ namespace TwitchDownloaderWeb.Endpoints
                 x.Items.OrderBy(i => i.Position).Select(i => new ExportItemDto(i.Position, i.Kind.ToString(), i.FileName, i.Quality, i.VodId, i.StartSeconds,
                     i.EndSeconds, CutOuts.Read(i.Cuts), i.EntryId, i.MarkerId, i.VideoId, i.RenderId, i.Joined, Math.Round(LengthOf(i), 2), i.Status.ToString(),
                     i.Error, i.PartsDone, i.PartsTotal, i.FileSizeBytes, i.AudioRestoredSeconds, i.AudioMutedSeconds,
-                    i.Status == ExportStatus.Ready ? $"{url}/items/{i.Position}/file" : null) { EditId = i.EditId, ProjectId = i.ProjectId }).ToList());
+                    i.Status == ExportStatus.Ready ? $"{url}/items/{i.Position}/file" : null)
+                {
+                    EditId = i.EditId,
+                    ProjectId = i.ProjectId,
+                    Progress = i.Status == ExportStatus.Running ? queue.ProgressOf(x.Id, i.Position) : null,
+                }).ToList());
         }
     }
 }
