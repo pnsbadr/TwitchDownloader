@@ -13,5 +13,8 @@ namespace TwitchDownloaderWeb.Services.Accounts
         public int? UserId { get; set; }
         public int? TeamId { get; set; }
         public int? StaffId { get; set; }
+
+        /// <summary>Player 2 edits that followed a clip or segment changed by this request (sent to the page as the X-Source-Sync header).</summary>
+        public List<Projects.ProjectSourceSync.Change> SourceSyncs { get; } = [];
     }
 }

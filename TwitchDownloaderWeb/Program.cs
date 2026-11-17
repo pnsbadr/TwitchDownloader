@@ -92,6 +92,19 @@ app.UseAuthentication();
 // After authentication: checks the login and team for /api requests and scopes the database to that team
 app.UseTeamScope();
 app.UseStaffScope();
+// Player 2 edits that followed a clip/segment changed by this request: the page brings its open edit (and undo history) in step
+app.Use(async (context, next) =>
+{
+    context.Response.OnStarting(() =>
+    {
+        var syncs = context.RequestServices.GetService<TwitchDownloaderWeb.Services.Accounts.RequestActor>()?.SourceSyncs;
+        if (syncs is { Count: > 0 })
+            context.Response.Headers[TwitchDownloaderWeb.Services.Projects.ProjectSourceSync.HeaderName] =
+                System.Text.Json.JsonSerializer.Serialize(syncs);
+        return Task.CompletedTask;
+    });
+    await next(context);
+});
 
 app.MapAuthEndpoints();
 app.MapAdminEndpoints();

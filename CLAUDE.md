@@ -168,6 +168,18 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   400 otherwise) with `DownloadTeamVerticals`; changed or copied with seeing + `EditAnyEntries`; deleted with seeing + `DeleteAnyEntries`.
   DTOs carry `canCopy` / `canDownload`. The same rule covers 9:16 renders (`/shortform`: list filtered, inline play = see, download = Download,
   delete with `DeleteRenders` only of ones they see; renders with no `createdByUserId` count as a teammate's). Support view sees everything. Audited `project.added` / `project.deleted`.
+  **Edits follow Player 1** (badrfly 2026-11-17, `ProjectSourceSync`, hooked into `LibraryDbContext.SaveChangesAsync`): when a VOD clip's or
+  segment's kept range changes (trim, cut-out parts, P1 undo, apply/revert, live markers entry), every team edit with pieces whose `source` is
+  it (a segment's videos too: pieces of the video within the segment's old range, minus the video's own cut-out parts) follows: removed parts
+  leave the pieces (split around a cut; later pieces on the same row slide left, gaps the member left stay), parts taken back grow the piece
+  ending/starting at that old end, and an inner part (a cut taken back) only re-joins two pieces still next to each other. A range moved
+  with nothing in common is ignored; results that wouldn't validate are skipped. `Revision` goes up. The rules go to the page in the
+  `X-Source-Sync` header (core.js `api` fires `clipco:source-sync`); `ui/project.js` `applySourceRule` mirrors the server, and
+  `ProjectStore.followSources` applies it to the open edit (or loaded original) and every undo/redo step, so a Player 2 undo never brings
+  back what Player 1 took out. Player 2's own changes stay undoable only in Player 2.
+  **Undo across reloads**: `ProjectStore` keeps the open edit's undo/redo steps in `sessionStorage` `clipco.p2.history` (this tab) with the
+  revision they belong to; reopening that edit at that revision (or the next, when a save was sent as the page closed) restores them. A
+  loaded original changed just before closing is saved as a new edit while closing: `restoreLastLoaded` finds it (`ProjectStore.pendingDraft`).
   **Rendering** (`Services/Projects/`): `ProjectTimeline.Flatten` = what plays, in order: the highest visible track's piece at every moment,
   else a gap (stretches under 0.1 s join the one before). `ProjectRenderer` cuts each stretch from its VOD with `IVodCutter` (Exact, saved
   audio; the export's quality where a VOD has it), encodes every stretch to one format (`OutputFormat`: 9:16 = 1080x1920 with the piece's

@@ -388,6 +388,22 @@ async function restoreLastLoaded() {
   if (!last || DEMO) return;
   if (typeof last === "number") return openProject(last, { show: false, quiet: true });
   if (last.edit) return openProject(last.edit, { show: false, quiet: true });
+  // A loaded clip / video / segment changed just before the page closed was saved as a new edit as it closed: open that edit
+  const pending = ProjectStore.pendingDraft();
+  if (pending && pending.kind === last.kind && Number(pending.id) === Number(last.id) && me?.id) {
+    try {
+      const query = last.kind === "clip" ? `entryId=${last.id}` : last.kind === "video" ? `videoId=${last.id}` : `vodId=${last.vodId}`;
+      const edits = await api("GET", `/api/projects?${query}&userId=${me.id}&limit=20`);
+      const made = edits.filter((e) => !e.vertical && Date.parse(e.createdAtUtc) >= pending.at - 60_000)
+        .sort((a, b) => Date.parse(b.createdAtUtc) - Date.parse(a.createdAtUtc))[0];
+      if (made) {
+        ProjectStore.claimDraft(made.id);
+        return openProject(made.id, { show: false, quiet: true });
+      }
+    } catch {
+      // Falls back to the original
+    }
+  }
   try {
     let data = null;
     if (last.kind === "clip") data = await api("GET", `/api/entries/${last.id}`);
@@ -806,6 +822,11 @@ function setUpPlayer2() {
     onChange: onProjectChanged,
     onCreated: onEditCreated,
     onReplaced: () => timeline2.refresh(),
+  });
+  // A clip or segment changed on Player 1 (a trim, cut-out parts, an undo there): edits made from it follow on the server, and the open
+  // one follows here, undo steps included, so a Player 2 undo never brings back what Player 1 took out
+  window.addEventListener("clipco:source-sync", (event) => {
+    store.followSources(event.detail);
   });
   playback = new ProjectPlayback(player2, {
     getContent: () => store.content,

@@ -28,6 +28,16 @@ export async function api(method, url, body) {
     options.body = JSON.stringify(body);
   }
   const response = await fetch(url, options);
+  // Player 2 edits that followed a clip or segment this request changed (the server's ProjectSourceSync): editor.js keeps the open
+  // edit and its undo history in step
+  const synced = response.headers.get("X-Source-Sync");
+  if (synced) {
+    try {
+      window.dispatchEvent(new CustomEvent("clipco:source-sync", { detail: JSON.parse(synced) }));
+    } catch {
+      // Only keeps the open edit in step; its next save would bring it in line anyway
+    }
+  }
   const text = await response.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = null; }

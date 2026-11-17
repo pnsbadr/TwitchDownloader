@@ -1,3 +1,4 @@
+using TwitchDownloaderWeb.Services.Projects;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using TwitchDownloaderWeb.Services.Accounts;
@@ -330,16 +331,18 @@ namespace TwitchDownloaderWeb.Data
             });
         }
 
-        public override int SaveChanges(bool acceptAllChangesOnSuccess)
-        {
-            FillOwnershipAsync(CancellationToken.None).GetAwaiter().GetResult();
-            return base.SaveChanges(acceptAllChangesOnSuccess);
-        }
+        public override int SaveChanges(bool acceptAllChangesOnSuccess) =>
+            SaveChangesAsync(acceptAllChangesOnSuccess).GetAwaiter().GetResult();
 
         public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
         {
             await FillOwnershipAsync(cancellationToken);
-            return await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+            // Clips and segments whose kept range changes: Player 2 edits made from them follow (ProjectSourceSync)
+            var sources = ProjectSourceSync.Collect(this);
+            var saved = await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+            if (sources.Count > 0 && await ProjectSourceSync.ApplyAsync(this, sources, cancellationToken) is { } change)
+                _actor.SourceSyncs.Add(change);
+            return saved;
         }
 
         /// <summary>
