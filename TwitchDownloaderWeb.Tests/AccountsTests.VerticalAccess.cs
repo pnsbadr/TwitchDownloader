@@ -18,7 +18,7 @@ namespace TwitchDownloaderWeb.Tests
             var ownerId = (await GetJsonAsync(owner, "/api/auth/me")).GetProperty("id").GetInt32();
 
             async Task Role(params string[] permissions) =>
-                Assert.Equal(HttpStatusCode.OK, await AssignAsync(owner, memberId,
+                Assert.Equal(HttpStatusCode.NoContent, await AssignAsync(owner, memberId,
                     await CreateRoleAsync(owner, "R" + Guid.NewGuid().ToString("N")[..8], ["ViewLibrary", "AddEntries", "GenerateFiles", .. permissions])));
 
             var content = TwoTracks(Piece("a", "t1", 0, 520, 200, 203.5));
