@@ -1063,7 +1063,7 @@ export const editing = {
     if (!this.isOwn(item)) {
       const ok = await confirmAction({
         heading: `Delete ${item.by ? `${item.by}'s` : "this"} ${this.whatIs(item)}?`,
-        text: "It's deleted for the whole team. Undo (Ctrl+Z) brings it back on your own row.",
+        text: "It's deleted for the whole team. Undo (Ctrl+Z) brings it back where it was.",
         confirm: "Delete",
       });
       if (!ok) return;
@@ -1072,7 +1072,8 @@ export const editing = {
       await this.deleteMarker(item.id);
       const ref = this.ref("marker", item.id);
       this.forgetRef(ref);
-      this.remember({ type: "delete", ref, data: { ...markerBody(item.data), rowId: this.isOwn(item) ? item.data.rowId ?? undefined : undefined } });
+      // Undo puts it back on the row it was on, a teammate's too (as theirs)
+      this.remember({ type: "delete", ref, data: { ...markerBody(item.data), rowId: item.data.rowId ?? undefined } });
       this.select(null);
     } catch (error) {
       toast(error.message, "error");
@@ -1476,7 +1477,7 @@ export const editing = {
         break;
       case "delete":
         if (reverse) {
-          this.moveRef(step.ref, (await this.postMarker(this.ownRowOnly(step.data))).id);
+          this.moveRef(step.ref, (await this.restoreMarker(step.data)).id);
         } else {
           await this.deleteMarker(step.ref.id);
           this.forgetRef(step.ref);
@@ -1503,6 +1504,20 @@ export const editing = {
         this.edited();
         break;
     }
+  },
+
+  // Undoing a delete: back on the row it was on, as its creator's (the server allows a teammate's row for members who may delete
+  // anyone's markers, which deleting it needed). A row that's gone since (or a refusal) puts it on the caller's own row.
+  async restoreMarker(data) {
+    const row = this.rows.find((r) => r.id === data.rowId);
+    if (row && row.userId !== me?.id) {
+      try {
+        return await this.postMarker({ ...data, restore: true });
+      } catch (error) {
+        if (error.status !== 400 && error.status !== 403) throw error;
+      }
+    }
+    return this.postMarker(this.ownRowOnly(data));
   },
 
   // A re-added marker may only name one of the caller's rows that still exists
