@@ -88,14 +88,14 @@ namespace TwitchDownloaderWeb.Tests
             var audit = await GetJsonAsync(owner, "/api/team/audit");
             Assert.Single(audit.EnumerateArray(), x => x.GetProperty("action").GetString() == "project.added");
 
-            // Others: view only without EditAnyEntries; they make their own copy
+            // Others' projects are vertical edits: without a role that shows them they aren't there (see AccountsTests.VerticalAccess)
             var memberSees = await GetJsonAsync(member, $"/api/projects/{id}");
             Assert.True(memberSees.GetProperty("canEdit").GetBoolean());
             var ownersProject = (await (await owner.PostAsJsonAsync("/api/projects", new { title = "Owner's" }, ct)).Content.ReadFromJsonAsync<JsonElement>(ct))
                 .GetProperty("id").GetInt32();
-            Assert.False((await GetJsonAsync(member, $"/api/projects/{ownersProject}")).GetProperty("canEdit").GetBoolean());
-            Assert.Equal(HttpStatusCode.Forbidden, (await member.PutAsJsonAsync($"/api/projects/{ownersProject}", new { title = "Mine" }, ct)).StatusCode);
-            Assert.Equal(HttpStatusCode.Forbidden, (await member.DeleteAsync($"/api/projects/{ownersProject}", ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, (await member.GetAsync($"/api/projects/{ownersProject}", ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, (await member.PutAsJsonAsync($"/api/projects/{ownersProject}", new { title = "Mine" }, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, (await member.DeleteAsync($"/api/projects/{ownersProject}", ct)).StatusCode);
             var copy = await owner.PostAsJsonAsync($"/api/projects/{id}/copy", new { }, ct);
             Assert.Equal(HttpStatusCode.Created, copy.StatusCode);
             var copied = await copy.Content.ReadFromJsonAsync<JsonElement>(ct);

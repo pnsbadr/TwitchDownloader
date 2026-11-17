@@ -488,7 +488,7 @@ function projectCard(project) {
     dragData: item,
     menu: () => [
       { label: "Open in Player 2", icon: "film-strip", run: () => handlers.onLoad({ kind: "project", data: item }) },
-      can("AddEntries") && !me?.support && { label: project.canEdit ? "Duplicate" : "Make my own copy", icon: "copy", run: () => copyProject(item) },
+      can("AddEntries") && !me?.support && project.canCopy !== false && { label: project.canEdit ? "Duplicate" : "Make my own copy", icon: "copy", run: () => copyProject(item) },
       project.canEdit && { label: "Rename", icon: "pencil-simple", run: () => renameProject(item) },
       project.canDelete && { label: "Delete", icon: "trash", danger: true, run: () => deleteProject(item) },
     ].filter(Boolean),

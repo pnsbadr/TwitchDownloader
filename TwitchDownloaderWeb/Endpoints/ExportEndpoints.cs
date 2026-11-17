@@ -80,7 +80,7 @@ namespace TwitchDownloaderWeb.Endpoints
         internal static ShortformRender? PickRender(IReadOnlyList<ShortformRender> renders, string? renderId, TeamContext team, out string? error)
         {
             error = null;
-            var anyone = team.Can(TeamPermission.DownloadTeamVerticals);
+            var anyone = VerticalAccess.CanDownload(team, null);
             if (!string.IsNullOrWhiteSpace(renderId))
             {
                 var render = renders.FirstOrDefault(x => x.Id == renderId.Trim());
@@ -313,7 +313,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 }
 
                 case "project":
-                    return await BuildProjectAsync(index, request, fileName, db, cache, cancellationToken);
+                    return await BuildProjectAsync(index, request, fileName, team, db, cache, cancellationToken);
 
                 default:
                     return ([], Invalid(index, "Kind must be vod, clip, video, segment, edit or project."));
@@ -380,15 +380,17 @@ namespace TwitchDownloaderWeb.Endpoints
         /// streamed far enough; the quality asked for is used where a VOD has it (each VOD's best otherwise, the output is one size anyway).
         /// </summary>
         private static async Task<(List<ExportItem> Items, IResult? Problem)> BuildProjectAsync(int index, ExportItemRequest request, string? fileName,
-            LibraryDbContext db, VodInfoCache cache, CancellationToken cancellationToken)
+            TeamContext team, LibraryDbContext db, VodInfoCache cache, CancellationToken cancellationToken)
         {
             if (!request.Horizontal && !request.Vertical)
                 return ([], Invalid(index, "Pick horizontal, vertical or both."));
             var project = request.ProjectId is { } projectId
                 ? await db.Projects.AsNoTracking().FirstOrDefaultAsync(x => x.Id == projectId, cancellationToken)
                 : null;
-            if (project is null)
+            if (project is null || !ProjectEndpoints.CanSee(team, project))
                 return ([], Invalid(index, "That project is gone."));
+            if (!ProjectEndpoints.CanDownload(team, project))
+                return ([], Invalid(index, "Your role doesn't let you export teammates' vertical edits."));
 
             var content = ProjectContent.Read(project.Content);
             var stretches = ProjectTimeline.Flatten(content);

@@ -149,8 +149,12 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   where tracks overlap the higher one plays and renders, lower ones are covered and silent; gaps are black. Nothing ends after 3 h. The page
   saves the whole content (`PUT`, unaudited) with the `revision` it last saw: a newer one → 409 `code: "project-changed"` with the project.
   `ProjectVods` (rebuilt on save) feed the hidden-VOD filter (a project using any hidden VOD is hidden whole) and the revoke search; every
-  VOD newly added to a project must be open to the team (403 `channel-not-assigned`). Same permission rules as videos; copies are new work
-  (`CopiedFromProjectId`). Audited `project.added` / `project.deleted`.
+  VOD newly added to a project must be open to the team (403 `channel-not-assigned`). Copies are new work (`CopiedFromProjectId`).
+  **Projects are vertical edits** (badrfly 2026-11-17, `VerticalAccess`): own ones need `AddEntries`; a teammate's are listed/opened only with
+  `ViewTeamVerticals` (bit 19) or `DownloadTeamVerticals` (bit 18, includes seeing), else 404 / left out of lists; exported (`kind: "project"`,
+  400 otherwise) with `DownloadTeamVerticals`; changed or copied with seeing + `EditAnyEntries`; deleted with seeing + `DeleteAnyEntries`.
+  DTOs carry `canCopy` / `canDownload`. The same rule covers 9:16 renders (`/shortform`: list filtered, inline play = see, download = Download,
+  delete with `DeleteRenders` only of ones they see; renders with no `createdByUserId` count as a teammate's). Support view sees everything. Audited `project.added` / `project.deleted`.
   **Rendering** (`Services/Projects/`): `ProjectTimeline.Flatten` = what plays, in order: the highest visible track's piece at every moment,
   else a gap (stretches under 0.1 s join the one before). `ProjectRenderer` cuts each stretch from its VOD with `IVodCutter` (Exact, saved
   audio; the export's quality where a VOD has it), encodes every stretch to one format (`OutputFormat`: 9:16 = 1080x1920 with the piece's
@@ -610,8 +614,8 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   Audit summary adds ", moving boxes". Tests in `ShortformPartsTests` (one renders a pan and a zoom).
 - **Who made a render** (badrfly, 2026-11-15, frontend rework): the `.json` keeps `createdByUserId` (null for older renders); renders in
   `GET /shortform` carry `createdByUserId`/`createdBy`. Exporting a clip as vertical uses the member's **own newest** render, or with
-  `TeamPermission.DownloadTeamVerticals` ("Download team vertical entries", bit 18) any of the team's renders of that clip they pick; neither
-  → the page grays the checkbox out. Downloading a render from the editor's list is still `ViewLibrary`.
+  `TeamPermission.DownloadTeamVerticals` ("Download teammates' vertical edits", bit 18) any of the team's renders of that clip they pick; neither
+  → the page grays the checkbox out. Seeing teammates' renders at all needs `ViewTeamVerticals` or that (see Projects, `VerticalAccess`). Downloading a render from the editor's list is still `ViewLibrary`.
 
 ### Gotchas
 - Core silently falls back to the best quality when the requested one doesn't exist — always validate first.

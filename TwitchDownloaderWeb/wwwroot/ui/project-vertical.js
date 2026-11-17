@@ -201,7 +201,7 @@ function changeLayout(fn) {
   const piece = vx.piece;
   if (!piece) return;
   if (!canChange()) {
-    toast(store().canEdit ? "That piece's row is locked." : "This project is view only. Make your own copy to change it.");
+    toast(store().canEdit ? "That piece's row is locked." : (store().project?.canCopy === false ? "This project is view only." : "This project is view only. Make your own copy to change it."));
     return;
   }
   store().edit((content) => {
@@ -808,6 +808,10 @@ async function startRender() {
   const project = store().project;
   if (!project || !store().content?.pieces.length) {
     toast("Put something on the timeline first.");
+    return;
+  }
+  if (project.canDownload === false) {
+    toast("Your role doesn't let you render teammates' vertical edits. Start your own from the original clip.", "error");
     return;
   }
   await store().saveNow();

@@ -30,6 +30,9 @@ namespace TwitchDownloaderWeb.Services.Shortform
     {
         /// <summary>The saved edit the running render is for (null = the clip itself, or nothing running).</summary>
         public int? RenderingEditId { get; init; }
+
+        /// <summary>Who started the running render (null = nothing running, or not known).</summary>
+        public int? RenderingUserId { get; init; }
     }
 
     /// <summary>
@@ -89,7 +92,7 @@ namespace TwitchDownloaderWeb.Services.Shortform
         {
             var renders = ListRenders(entryId);
             if (_jobs.TryGetValue(entryId, out var job))
-                return new ShortformState(job.Status, job.Progress, job.Error, job.Layout, renders) { RenderingEditId = job.EditId };
+                return new ShortformState(job.Status, job.Progress, job.Error, job.Layout, renders) { RenderingEditId = job.EditId, RenderingUserId = job.UserId };
 
             return new ShortformState(ShortformStatus.None, 0, null, renders.FirstOrDefault(x => x.EditId is null)?.Layout, renders);
         }
