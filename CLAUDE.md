@@ -551,7 +551,9 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   loads it; segments and edits load with a click; pencil / right-click renames (creator or EditAnyEntries; edits follow `canEdit`, copy and
   export follow `canCopy` / `canDownload`). **Loading a clip, video or segment** (cards, tree, drop on Player 2's screen) replaces what's
   loaded and opens it as itself (`ProjectStore.openDraft`, state "original"): nothing is saved until the first change, which POSTs a new edit
-  of it (`entryId` / `videoId`, else `vodId`) named "title · Edit n" (rename it from the menu; "Save as a new edit…" names it first). Dropping
+  of it (`entryId` / `videoId`, else `vodId`) named "title · Edit n". **Except** (badrfly 2026-11-17): from cards, drops and the last-loaded
+  restore, an item the member already has a horizontal edit of opens their newest one (`newestOwnEdit`; a segment's: own VOD edits whose
+  pieces all come from it); the tree and the vertical editor's way back load the original (`loadInPlayer2(item, { original: true })`). New edits are (rename it from the menu; "Save as a new edit…" names it first). Dropping
   more on Player 2's timeline adds them only from the same VOD (`store.takesVod`). Player 1's new segments/clips go into an open saved edit
   of their VOD only. Last loaded is remembered in `clipco.p2.project` (`{ edit }` or `{ kind, id, vodId }`).
 - **Library filters** (`ui/library.js`): CLIPS and VIDEOS filter by VOD and member (Made by / Edited by: made an edit of it), shared between the

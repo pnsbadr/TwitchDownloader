@@ -310,7 +310,7 @@ function itemTitle({ kind, data }) {
 }
 
 // A clip, video or segment on its own in Player 2 (replaces what was loaded). Nothing is saved until it's changed.
-async function loadInPlayer2(item, { show = true, quiet = false } = {}) {
+async function loadInPlayer2(item, { show = true, quiet = false, original = false } = {}) {
   if (DEMO) {
     toast("Player 2 isn't available in the demo.");
     return false;
@@ -331,6 +331,13 @@ async function loadInPlayer2(item, { show = true, quiet = false } = {}) {
     const query = parent.entryId ? `entryId=${parent.entryId}` : parent.videoId ? `videoId=${parent.videoId}` : `vodId=${vodId}`;
     const edits = await api("GET", `/api/projects?${query}&limit=1000`);
     count = parent.entryId || parent.videoId ? edits.length : edits.filter((e) => !e.entryId && !e.videoId && e.title.startsWith(`${title} · `)).length;
+    // badrfly 2026-11-17: something you already edited opens as your newest edit of it, so your work never looks lost behind the
+    // original (Player 2's menu still loads the original: original = true)
+    const mine = original ? null : await newestOwnEdit(item, edits);
+    if (mine && opened === p2Opened) {
+      if (!quiet) toast(`Opened your latest edit "${mine.title}". The original is in Player 2's menu.`);
+      return openProject(mine.id, { show, quiet });
+    }
   } catch {
     // The name is only a starting point
   }
@@ -351,6 +358,20 @@ async function loadInPlayer2(item, { show = true, quiet = false } = {}) {
   projectOpened();
   if (show) timelineTabs.pick("p2");
   return true;
+}
+
+// The member's newest horizontal edit of an item, from its edits list (a segment's edits sit on the VOD: their pieces tell)
+async function newestOwnEdit(item, edits) {
+  if (!me?.id) return null;
+  const own = edits.filter((e) => e.userId === me.id && !e.vertical)
+    .sort((a, b) => Date.parse(b.updatedAtUtc) - Date.parse(a.updatedAtUtc));
+  if (item.kind !== "segment") return own[0] ?? null;
+  for (const edit of own.filter((e) => !e.entryId && !e.videoId).slice(0, 10)) {
+    const full = await api("GET", `/api/projects/${edit.id}`);
+    const pieces = full.content?.pieces ?? [];
+    if (pieces.length && pieces.every((p) => p.source?.kind === "segment" && Number(p.source.id) === Number(item.data.id))) return edit;
+  }
+  return null;
 }
 
 // Where Player 2 is in the VOD tree (ui/p2-tree.js)
@@ -657,7 +678,7 @@ function setUpProjectPicker() {
     loaded: p2Loaded,
     player1VodId: () => timeline?.vodId ?? 0,
     knownVodTitle: (vodId) => (Number(p1Vod?.vodId) === Number(vodId) ? p1Vod.title : knownVodTitle(vodId)),
-    onLoadItem: (item) => loadInPlayer2(item),
+    onLoadItem: (item) => loadInPlayer2(item, { original: true }),
     onOpenEdit: (id) => openProject(id),
     onLoadVod: (vodId, title) => {
       const known = knownVod(vodId);
@@ -1181,7 +1202,7 @@ async function leaveVertical() {
   const project = store.project;
   let ok = false;
   if (back?.edit) ok = await openProject(back.edit, { quiet: true });
-  else if (back?.item) ok = await loadInPlayer2(back.item, { quiet: true });
+  else if (back?.item) ok = await loadInPlayer2(back.item, { quiet: true, original: true });
   else {
     try {
       if (project.entryId) ok = await loadInPlayer2({ kind: "clip", data: await api("GET", `/api/entries/${project.entryId}`) }, { quiet: true });
