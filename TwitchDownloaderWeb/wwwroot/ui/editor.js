@@ -826,7 +826,7 @@ function setUpPlayer2() {
   // A clip or segment changed on Player 1 (a trim, cut-out parts, an undo there): edits made from it follow on the server, and the open
   // one follows here, undo steps included, so a Player 2 undo never brings back what Player 1 took out
   window.addEventListener("clipco:source-sync", (event) => {
-    if (store.followSources(event.detail)) playback.refresh();
+    store.followSources(event.detail);
   });
   playback = new ProjectPlayback(player2, {
     getContent: () => store.content,
