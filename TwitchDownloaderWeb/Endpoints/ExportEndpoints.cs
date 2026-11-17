@@ -22,7 +22,7 @@ namespace TwitchDownloaderWeb.Endpoints
     /// <paramref name="Joined"/> = one file, else a .zip of its segments), "segment" (<paramref name="MarkerId"/>) or "edit" (<paramref name="EditId"/>:
     /// a saved edit of a clip, segment or video, made like that item but without what the edit removes; a clip edit takes horizontal/vertical,
     /// its vertical a render made for that edit; a video edit takes joined) or "project" (<paramref name="ProjectId"/>: the whole timeline rendered
-    /// as one file; <paramref name="Horizontal"/> and/or <paramref name="Vertical"/>, the vertical with each piece's boxes).</param>
+    /// as one file: landscape for a horizontal edit, 9:16 with each piece's boxes for a vertical one; Horizontal/Vertical are ignored).</param>
     /// <param name="FileName">The download's name (no extension); blank = the item's title.</param>
     /// <param name="Quality">Blank = best (a clip: its own quality, so a stored clip is just copied). Ignored for vertical.</param>
     /// <param name="RenderId">Vertical: one of the clip's renders (someone else's needs DownloadTeamVerticals); blank = the caller's own newest.</param>
@@ -382,8 +382,6 @@ namespace TwitchDownloaderWeb.Endpoints
         private static async Task<(List<ExportItem> Items, IResult? Problem)> BuildProjectAsync(int index, ExportItemRequest request, string? fileName,
             TeamContext team, LibraryDbContext db, VodInfoCache cache, CancellationToken cancellationToken)
         {
-            if (!request.Horizontal && !request.Vertical)
-                return ([], Invalid(index, "Pick horizontal, vertical or both."));
             var project = request.ProjectId is { } projectId
                 ? await db.Projects.AsNoTracking().FirstOrDefaultAsync(x => x.Id == projectId, cancellationToken)
                 : null;
@@ -396,6 +394,8 @@ namespace TwitchDownloaderWeb.Endpoints
             var stretches = ProjectTimeline.Flatten(content);
             if (stretches.All(x => x.IsGap))
                 return ([], Invalid(index, "That project has nothing on its visible rows."));
+            // The edit's kind decides its shape (badrfly 2026-11-17): a vertical edit exports 9:16, a horizontal one landscape, whatever
+            // the request's checkboxes say
 
             foreach (var vod in stretches.Where(x => !x.IsGap).GroupBy(x => x.Piece!.VodId))
             {
@@ -412,7 +412,7 @@ namespace TwitchDownloaderWeb.Endpoints
             var first = stretches.First(x => !x.IsGap);
             var json = content.Write();
             var made = new List<ExportItem>();
-            foreach (var vertical in new[] { false, true }.Where(v => v ? request.Vertical : request.Horizontal))
+            foreach (var vertical in new[] { project.Vertical })
                 made.Add(new ExportItem
                 {
                     Kind = vertical ? ExportItemKind.ProjectVertical : ExportItemKind.Project, ProjectId = project.Id, VodId = first.Piece!.VodId,

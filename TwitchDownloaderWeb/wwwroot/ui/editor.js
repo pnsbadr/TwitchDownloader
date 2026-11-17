@@ -13,7 +13,7 @@ import { Timeline } from "./timeline.js";
 import { trimValue } from "./timeline-edit.js";
 import { skipCut, keptSeconds } from "./cuts.js";
 import { askText, confirmAction } from "./dialogs.js";
-import { ProjectStore, piecesFromItem, flatten, stretchAt, emptyContent } from "./project.js";
+import { ProjectStore, piecesFromItem, flatten, stretchAt, emptyContent, withoutLayouts } from "./project.js";
 import { ProjectTimeline } from "./project-timeline.js";
 import { ProjectPlayback } from "./project-playback.js";
 import { setUpExport, addToExport, exportShown, pausePreview } from "./export.js";
@@ -368,12 +368,15 @@ function p2Loaded() {
 
 function projectOpened() {
   const project = store.project;
-  saveSetting(LAST_PROJECT_KEY, store.isDraft ? { kind: project.source.kind, id: project.source.id, vodId: project.vodId } : { edit: project.id });
+  // (a new vertical edit isn't remembered until it's saved: reloading then opens what it was made from)
+  if (!store.isDraft) saveSetting(LAST_PROJECT_KEY, { edit: project.id });
+  else if (!store.isVertical) saveSetting(LAST_PROJECT_KEY, { kind: project.source.kind, id: project.source.id, vodId: project.vodId });
   playback.stop();
   playback.seek(0, { quiet: true });
   timeline2.refresh({ reset: true });
   $("p2-hint").hidden = true;
   $("p2-media").hidden = false;
+  syncVerticalView();
   if (projectVerticalOpen()) refreshProjectVertical();
   renderPlayer2();
   renderTools();
@@ -398,7 +401,8 @@ async function restoreLastLoaded() {
 }
 
 async function closeProject() {
-  toggleVertical(false);
+  verticalReturn = null;
+  hideVerticalView();
   p2Opened++;
   playback.stop();
   player2.close();
@@ -478,6 +482,7 @@ function renderPlayer2() {
   renderPlayerButtons(2, player2, { ready: hasPieces, playing: playback.playing() });
   $("p2-vertical").hidden = false;
   $("p2-vertical").disabled = !open || DEMO;
+  $("p2-vertical").label = open && store.isVertical ? "Back to Player 2 (horizontal)" : "New vertical edit (9:16) of what's loaded";
   $("p2-show").disabled = !hasPieces;
   $("p2-rename").disabled = !open || !store.canEdit;
   $("p2-delete").disabled = !open;
@@ -512,12 +517,15 @@ function shortClock(seconds) {
 function renderProjectPicker() {
   const open = store.open;
   const project = store.project;
-  $("p2-project-name").textContent = open ? project.title || "Untitled edit" : "Nothing loaded";
+  // A new vertical edit shows the name it will get (it's saved with its first change)
+  const newVertical = open && store.isDraft && store.isVertical;
+  $("p2-project-name").textContent = open ? (newVertical ? project.editTitle : project.title) || "Untitled edit" : "Nothing loaded";
   const state = open ? store.stateText() : "";
   $("p2-project-state").textContent = state;
   $("p2-project-state").classList.toggle("bad", state === "not saved");
   $("p2-project-pick").title = open
-    ? `${project.title}${store.isDraft ? (store.canEdit ? " (the original: your first change saves a new edit of it)" : "") : ""}${project.createdBy && !store.canEdit ? ` by ${project.createdBy} (${project.canCopy === false ? "view only" : "view only: make your own copy to change it"})` : ""}`
+    ? newVertical ? `${project.editTitle} (a new vertical edit: your first change saves it)`
+    : `${project.title}${store.isDraft ? (store.canEdit ? " (the original: your first change saves a new edit of it)" : "") : ""}${project.createdBy && !store.canEdit ? ` by ${project.createdBy} (${project.canCopy === false ? "view only" : "view only: make your own copy to change it"})` : ""}`
     : "Pick a clip, video or segment, or one of their edits";
   if ($("p2-project-menu").open) renderProjectMenu();
 }
@@ -600,8 +608,13 @@ async function deleteProject() {
 }
 
 // The loaded clip / video / segment as itself, or the edit
-function exportProject() {
+async function exportProject() {
   if (!store.open) return;
+  if (store.isDraft && store.isVertical) {
+    // A new vertical edit is exported as itself: save it first
+    await store.ensureSaved();
+    if (store.isDraft) return;
+  }
   if (store.isDraft) {
     addToExport(store.project.sourceItem, { quiet: false });
     return;
@@ -1030,28 +1043,133 @@ async function applyToOriginal(piece) {
   }
 }
 
-// ---------- 9:16 view of the project (ui/project-vertical.js) ----------
+// ---------- the vertical editor (ui/project-vertical.js) ----------
 //
-// Player 2 takes the whole width and shows the landscape source of the piece under the playhead with its crop boxes, the live
-// 9:16 result and the layout tools; the project timeline stays below. Boxes are saved on the pieces (one undo history).
+// badrfly 2026-11-17 ("Separate the vertical editor from Player 2"): a vertical (9:16) edit is its own edit with its own timeline. Player 2
+// takes the whole width and shows the landscape source of the piece under the playhead with its crop boxes, the live 9:16 result and
+// the layout tools; the timeline below is the vertical edit's. Horizontal edits (Player 2) have no boxes or keyframes. The phone button
+// makes a NEW vertical edit, copied from what Player 2 has loaded (its pieces and cuts, no boxes); after that the two are separate.
+// A vertical edit loaded from anywhere opens straight in the vertical editor.
 
-function toggleVertical(on = !projectVerticalOpen()) {
-  if (!on) {
-    if (!projectVerticalOpen()) return;
-    closeProjectVertical();
-    $("view-editor").classList.remove("vertical-mode");
-    renderTools();
-    return;
+let verticalReturn = null; // what Player 2 had loaded before the phone button: { edit: id } or { item: { kind, data } }
+
+function showVerticalView() {
+  if (projectVerticalOpen()) return;
+  player1.pause();
+  $("view-editor").classList.add("vertical-mode");
+  timelineTabs.pick("p2");
+  setPlayer2Name(true);
+  openProjectVertical();
+  renderTools();
+}
+
+// "Player 2" reads "Vertical" while the vertical editor is open (above the player and on the timeline's tab)
+function setPlayer2Name(vertical) {
+  const name = vertical ? "Vertical" : "Player 2";
+  document.querySelector("#player2 .player-name").textContent = name;
+  document.querySelector('.tl-tab[data-tl="p2"]').textContent = name;
+}
+
+function hideVerticalView() {
+  if (!projectVerticalOpen()) return;
+  closeProjectVertical();
+  $("view-editor").classList.remove("vertical-mode");
+  setPlayer2Name(false);
+  renderTools();
+}
+
+// What's loaded decides the view: a vertical edit opens in the vertical editor, anything else in Player 2
+function syncVerticalView() {
+  if (store.open && store.isVertical) showVerticalView();
+  else {
+    verticalReturn = null;
+    hideVerticalView();
   }
+}
+
+// The phone button (E): from Player 2, a new vertical edit of what's loaded; from the vertical editor, back to Player 2
+async function toggleVertical(on = !projectVerticalOpen()) {
+  if (!on) return leaveVertical();
   if (!store.open) {
     toast("Load a clip, video or segment in Player 2 first.");
     return;
   }
-  player1.pause();
-  $("view-editor").classList.add("vertical-mode");
-  timelineTabs.pick("p2");
-  openProjectVertical();
-  renderTools();
+  if (store.isVertical) {
+    showVerticalView();
+    return;
+  }
+  if (!can("AddEntries") || me?.support) {
+    toast("Your role doesn't let you make vertical edits.", "error");
+    return;
+  }
+  await newVerticalEdit();
+}
+
+// A new vertical edit starting from what Player 2 has now: same pieces and cuts, no boxes. Nothing is saved until its first change.
+async function newVerticalEdit() {
+  await store.saveNow();
+  const from = store.project;
+  const content = withoutLayouts(store.content);
+  if (!content.pieces.length) {
+    toast("Put something on Player 2's timeline first.");
+    return;
+  }
+  const opened = ++p2Opened;
+  const back = store.isDraft ? { item: from.sourceItem } : { edit: from.id };
+  // Named after the clip or video it belongs to: "clip · Vertical n"
+  let name = store.isDraft ? from.title : (from.title || "").split(" · ")[0] || "Untitled";
+  let count = 0;
+  try {
+    if (!store.isDraft && from.entryId) name = (await api("GET", `/api/entries/${from.entryId}`)).title || name;
+    else if (!store.isDraft && from.videoId) name = (await api("GET", `/api/videos/${from.videoId}`)).title || name;
+    const query = from.entryId ? `entryId=${from.entryId}` : from.videoId ? `videoId=${from.videoId}` : `vodId=${store.vodId}`;
+    const edits = await api("GET", `/api/projects?${query}&vertical=true&limit=1000`);
+    count = from.entryId || from.videoId ? edits.length : edits.filter((e) => !e.entryId && !e.videoId).length;
+  } catch {
+    // The name is only a starting point
+  }
+  if (opened !== p2Opened) return;
+  await store.openDraft({
+    title: name,
+    editTitle: `${name} · Vertical ${count + 1}`,
+    vodId: store.vodId,
+    entryId: from.entryId ?? null,
+    videoId: from.videoId ?? null,
+    vertical: true,
+    source: store.isDraft ? from.source : { kind: "edit", id: from.id },
+    sourceItem: from.sourceItem ?? null,
+    canEdit: true,
+    content,
+  });
+  if (opened !== p2Opened) return;
+  projectOpened();
+  verticalReturn = back;
+  toast("New vertical edit: it's saved with your first change. The phone button goes back to Player 2.");
+}
+
+// Leaving the vertical editor: back to what Player 2 had before the phone button, else the clip or video this is an edit of
+async function leaveVertical() {
+  if (!projectVerticalOpen()) return;
+  const back = verticalReturn;
+  verticalReturn = null;
+  if (!store.open || !store.isVertical) {
+    hideVerticalView();
+    return;
+  }
+  await store.saveNow();
+  const project = store.project;
+  let ok = false;
+  if (back?.edit) ok = await openProject(back.edit, { quiet: true });
+  else if (back?.item) ok = await loadInPlayer2(back.item, { quiet: true });
+  else {
+    try {
+      if (project.entryId) ok = await loadInPlayer2({ kind: "clip", data: await api("GET", `/api/entries/${project.entryId}`) }, { quiet: true });
+      else if (project.videoId) ok = await loadInPlayer2({ kind: "video", data: await api("GET", `/api/videos/${project.videoId}`) }, { quiet: true });
+    } catch {
+      // The clip or video is gone or not open to the team any more
+    }
+  }
+  if (!ok) await closeProject();
 }
 
 // ---------- tools bar (works on the timeline whose tab is open) ----------

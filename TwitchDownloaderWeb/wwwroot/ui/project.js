@@ -34,6 +34,13 @@ export function emptyContent() {
   return { tracks: [{ id: "t1", name: null, hidden: false, muted: false, locked: false }], pieces: [] };
 }
 
+// The same content with no vertical boxes or keyframes (a new vertical edit starts from what Player 2 has, without its layouts)
+export function withoutLayouts(content) {
+  const copy = structuredClone(content);
+  for (const piece of copy.pieces ?? []) delete piece.layout;
+  return copy;
+}
+
 export function projectLength(content) {
   return Math.max(0, ...(content?.pieces ?? []).map(pieceEnd));
 }
@@ -203,7 +210,7 @@ export function splitLayout(layout, t) {
 // ---------- the open project ----------
 
 function createBody(draft, content) {
-  const body = { title: draft.editTitle ?? draft.title, content };
+  const body = { title: draft.editTitle ?? draft.title, content, vertical: Boolean(draft.vertical) };
   if (draft.entryId) body.entryId = draft.entryId;
   else if (draft.videoId) body.videoId = draft.videoId;
   else body.vodId = draft.vodId;
@@ -243,13 +250,26 @@ export class ProjectStore {
     return this.project?.vodId || this.content?.pieces[0]?.vodId || 0;
   }
 
+  // A vertical (9:16) edit: it opens in the vertical editor and keeps boxes and keyframes on its pieces. Horizontal edits (Player 2)
+  // never show or keep them (badrfly 2026-11-17: the vertical editor is its own timeline, separate from Player 2's)
+  get isVertical() {
+    return Boolean(this.project?.vertical);
+  }
+
+  // Saves a loaded original as its edit now, even without a change (the 9:16 render needs an edit to render)
+  async ensureSaved() {
+    if (!this.project) return;
+    if (this.isDraft && this.canEdit) this.dirty = true;
+    await this.saveNow();
+  }
+
   // Whether pieces of this VOD may go in (it's this edit's VOD, or one an older edit already uses)
   takesVod(vodId) {
     const own = this.vodId;
     return !own || Number(vodId) === Number(own) || (this.project?.vodIds ?? []).includes(Number(vodId));
   }
 
-  // draft = { title (shown), editTitle (the new edit's name), vodId, entryId?, videoId?, source: { kind, id }, canEdit, content }
+  // draft = { title (shown), editTitle (the new edit's name), vodId, entryId?, videoId?, vertical?, source: { kind, id }, canEdit, content }
   async openDraft(draft) {
     await this.saveNow();
     const { content, ...rest } = draft;
@@ -462,6 +482,7 @@ export class ProjectStore {
   stateText() {
     if (this.saving || (this.dirty && !this.failed)) return "saving…";
     if (this.failed) return "not saved";
+    if (this.isDraft && this.isVertical) return "new";
     if (this.isDraft) return this.canEdit ? "original" : "view only";
     return this.canEdit ? "" : "view only";
   }

@@ -389,13 +389,14 @@ function editRow(edit, depth, loaded) {
   const who = edit.userId === me?.id ? "you" : edit.createdBy ?? "teammate";
   const canMake = can("AddEntries") && !me?.support;
   return row({
-    depth, icon: "device-mobile", label: edit.title || "Untitled edit", current: Number(loaded?.editId) === edit.id,
-    detail: `${who} · ${formatDuration(Math.round(edit.lengthSeconds ?? 0))}`,
-    title: `${edit.title || "Untitled edit"} · by ${who}${others}${edit.canEdit ? "" : edit.canCopy === false ? " (view only)" : " (view only: make your own copy to change it)"}`,
+    // Vertical (9:16) edits open in the vertical editor, horizontal ones in Player 2 (badrfly 2026-11-17)
+    depth, icon: edit.vertical ? "device-mobile" : "monitor", label: edit.title || "Untitled edit", current: Number(loaded?.editId) === edit.id,
+    detail: `${edit.vertical ? "9:16 · " : ""}${who} · ${formatDuration(Math.round(edit.lengthSeconds ?? 0))}`,
+    title: `${edit.vertical ? "Vertical (9:16) edit" : "Horizontal edit"}: ${edit.title || "Untitled edit"} · by ${who}${others}${edit.canEdit ? "" : edit.canCopy === false ? " (view only)" : " (view only: make your own copy to change it)"}`,
     onClick: open,
     actions: edit.canEdit ? [iconButton({ icon: "pencil-simple", label: "Rename", onClick: () => renameEdit(edit) })] : [],
     menu: () => [
-      { label: "Load in Player 2", icon: "film-strip", run: open },
+      { label: edit.vertical ? "Open in the vertical editor" : "Load in Player 2", icon: edit.vertical ? "device-mobile" : "film-strip", run: open },
       edit.canEdit && { label: "Rename", icon: "pencil-simple", run: () => renameEdit(edit) },
       // A teammate's vertical edit is copied and exported only with the role permissions for that (canCopy / canDownload)
       canMake && edit.canCopy !== false && { label: edit.canEdit ? "Duplicate" : "Make my own copy", icon: "copy", run: () => hooks.onCopyEdit(edit) },

@@ -527,7 +527,7 @@ export class ProjectTimeline {
     for (const piece of this.content?.pieces ?? []) {
       if (except.has(piece.id)) continue;
       points.push(piece.at, pieceEnd(piece));
-      for (const key of piece.layout?.keys ?? []) {
+      for (const key of (this.store.isVertical ? piece.layout?.keys : null) ?? []) {
         const t = piece.at + key.time - piece.start;
         if (t >= piece.at && t <= pieceEnd(piece)) points.push(t);
       }
@@ -1075,14 +1075,18 @@ export class ProjectTimeline {
         items.push({ icon: "scissors", label: "Split at the playhead", run: () => this.splitAtPlayhead() });
       }
       items.push({ icon: "copy", label: pieces.length > 1 ? `Copy ${pieces.length} pieces` : "Copy", run: () => this.copySelected() });
-      items.push({ icon: "squares-four", label: "Copy layout", run: () => {
-        layoutClipboard = structuredClone(piece.layout ?? null);
-        toast(piece.layout ? "Layout copied." : "This piece has no layout yet (it uses the centered box). Copied that.");
-      } });
-      if (canEdit && layoutClipboard !== null) {
+      // Layouts belong to vertical edits only (Player 2's horizontal edits have none)
+      const vertical = this.store.isVertical;
+      if (vertical) {
+        items.push({ icon: "squares-four", label: "Copy layout", run: () => {
+          layoutClipboard = structuredClone(piece.layout ?? null);
+          toast(piece.layout ? "Layout copied." : "This piece has no layout yet (it uses the centered box). Copied that.");
+        } });
+      }
+      if (vertical && canEdit && layoutClipboard !== null) {
         items.push({ icon: "clipboard-text", label: pieces.length > 1 ? `Paste layout on ${pieces.length} pieces` : "Paste layout", run: () => this.pasteLayout(pieces) });
       }
-      if (canEdit && this.content.pieces.length > 1) {
+      if (vertical && canEdit && this.content.pieces.length > 1) {
         items.push({ icon: "stack", label: "Use this layout on every piece", run: () => this.layoutEverywhere(piece) });
       }
       items.push({ icon: "crosshair", label: "Show in Player 1", run: () => this.hooks.onShowInPlayer1?.(piece) });
@@ -1240,6 +1244,7 @@ export class ProjectTimeline {
       let t = at;
       for (const piece of pieces) {
         const copy = { ...structuredClone(piece), id: newId("p"), trackId, at: round(t) };
+        if (!this.store.isVertical) delete copy.layout; // pasted from a vertical edit: horizontal edits keep no boxes
         if (!copy.layout && layout) copy.layout = structuredClone(layout);
         layout = copy.layout ? { ...structuredClone(copy.layout), keys: null } : layout;
         c.pieces.push(copy);
@@ -1574,8 +1579,8 @@ export class ProjectTimeline {
       ctx.fillText(formatDuration(pieceLength(piece), { short: false }), Math.max(x1, 0) + 6, y + 22);
       ctx.restore();
     }
-    // moving-box keyframes: diamonds along the bottom
-    const keys = piece.layout?.keys ?? [];
+    // moving-box keyframes: diamonds along the bottom (vertical edits only)
+    const keys = (this.store.isVertical ? piece.layout?.keys : null) ?? [];
     if (keys.length && !faint) {
       ctx.fillStyle = "#fff";
       ctx.strokeStyle = "#0b0b10";

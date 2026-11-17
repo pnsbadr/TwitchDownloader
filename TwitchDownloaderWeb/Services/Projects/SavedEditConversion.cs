@@ -60,6 +60,7 @@ namespace TwitchDownloaderWeb.Services.Projects
                     continue;
                 }
 
+                project.Vertical = content.HasLayouts;
                 project.Content = content.Write();
                 project.LengthSeconds = content.LengthSeconds;
                 project.PieceCount = content.Pieces.Count;

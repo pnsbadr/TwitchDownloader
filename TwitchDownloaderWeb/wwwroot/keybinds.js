@@ -16,8 +16,8 @@ const KEYBIND_SCOPES = [
   { id: "player", title: "Editor", description: "Anywhere on the Editor screen except while typing. They work on the player whose timeline tab is open (Player 2 = what it has loaded)." },
   { id: "timeline-mouse", title: "Timeline (mouse)", description: "On the Player 1 and Player 2 timelines." },
   { id: "library", title: "Cards and lists", description: "A focused card in the left panel or a row of the export list." },
-  { id: "vertical", title: "9:16 view", description: "While Player 2 shows the 9:16 view. The editor's keys above still work there." },
-  { id: "vertical-box", title: "9:16 view: selected box", description: "After clicking a crop box." },
+  { id: "vertical", title: "Vertical editor", description: "While a vertical (9:16) edit is open. The editor's keys above still work there." },
+  { id: "vertical-box", title: "Vertical editor: selected box", description: "After clicking a crop box." },
   { id: "form", title: "Titles and dialogs", description: "In the tools bar's title box and in pop-ups." },
 ];
 
@@ -43,14 +43,14 @@ const KEYBINDS = [
   { id: "toolCut", scope: "player", keys: ["C"], description: "Cut tool (razor): click a segment (Player 1) or a piece (Player 2) to split it there" },
   { id: "toolZoom", scope: "player", keys: ["Z"], description: "Zoom tool: click the timeline to zoom in, right click to zoom out" },
   { id: "toolHand", scope: "player", keys: ["H"], description: "Hand tool: drag the timeline to scroll it (only moves the view)" },
-  { id: "toggleSnap", scope: "player", keys: ["N"], description: "Snapping on/off: dragged edges stick to other items' edges, the playhead and 0:00 (also boxes in the 9:16 view; Alt there: free)" },
-  { id: "undo", scope: "player", keys: ["Ctrl+Z"], description: "Undo (Player 1: your last 10 changes on the VOD; Player 2: the project's last 100, box changes in the 9:16 view included)" },
+  { id: "toggleSnap", scope: "player", keys: ["N"], description: "Snapping on/off: dragged edges stick to other items' edges, the playhead and 0:00 (also boxes in the vertical editor; Alt there: free)" },
+  { id: "undo", scope: "player", keys: ["Ctrl+Z"], description: "Undo (Player 1: your last 10 changes on the VOD; Player 2 and the vertical editor: the open edit's last 100, box changes included)" },
   { id: "redo", scope: "player", keys: ["Ctrl+Shift+Z", "Ctrl+Y"], description: "Redo" },
   { id: "deleteSelected", scope: "player", keys: ["Delete", "Backspace"], description: "Player 1: delete the selected item. Player 2: take the selected pieces out of the edit, leaving a gap (the clips they came from stay)" },
   { id: "rippleDelete", scope: "player", keys: ["Shift+Delete", "Shift+Backspace"], description: "Player 2: take the selected pieces out and slide what comes after them on their rows left to close the gap" },
   { id: "copyPieces", scope: "player", keys: ["Ctrl+C"], description: "Player 2: copy the selected pieces" },
   { id: "pastePieces", scope: "player", keys: ["Ctrl+V"], description: "Player 2: paste them at the playhead on the picked row" },
-  { id: "verticalToggle", scope: "player", keys: ["E"], description: "Player 2: the 9:16 view (crop boxes per piece) and back" },
+  { id: "verticalToggle", scope: "player", keys: ["E"], description: "Player 2: a new vertical (9:16) edit of what's loaded, with its own timeline; in the vertical editor: back to Player 2" },
   { id: "shortcutsHelp", scope: "player", keys: ["?"], description: "Show this list of shortcuts" },
   { id: "escape", scope: "player", keys: ["Escape"], description: "Cancel marking, linking or a drag, back to the pointer tool, or unselect" },
 

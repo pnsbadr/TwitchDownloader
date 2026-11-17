@@ -175,6 +175,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<int>("UserId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<bool>("Vertical")
+                        .HasColumnType("INTEGER");
+
                     b.Property<int?>("VideoId")
                         .HasColumnType("INTEGER");
 
