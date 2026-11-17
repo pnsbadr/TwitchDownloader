@@ -2,6 +2,8 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using TwitchDownloaderWeb.Data;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using TwitchDownloaderWeb.Services;
 
 namespace TwitchDownloaderWeb.Tests
@@ -19,7 +21,7 @@ namespace TwitchDownloaderWeb.Tests
         };
 
         [Fact]
-        public async Task ProjectsSaveTracksAndPiecesFromSeveralVods()
+        public async Task ProjectsSaveTracksAndPiecesOfTheirVod()
         {
             var ct = TestContext.Current.CancellationToken;
             var (owner, member, _, memberId) = await TeamWithMemberAsync("pj1");
@@ -35,7 +37,7 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Single(project.GetProperty("content").GetProperty("tracks").EnumerateArray());
             Assert.Equal("pj1member", project.GetProperty("createdBy").GetString());
 
-            // Pieces of two VODs on two rows, with a moving layout
+            // Pieces on two rows, with a moving layout
             var layout = new
             {
                 mode = "split", splitRatio = 0.4,
@@ -46,14 +48,20 @@ namespace TwitchDownloaderWeb.Tests
                     new { time = 108.0, top = new { x = 0.6, y = 0.05, width = 0.25, height = 0.3 }, bottom = new { x = 0.1, y = 0.1, width = 0.5, height = 0.8 } },
                 },
             };
-            var content = TwoTracks(Piece("a", "t1", 0, 500, 100, 110, layout), Piece("b", "t1", 12, 501, 40, 45.5), Piece("c", "t2", 2, 500, 200, 230));
+            var content = TwoTracks(Piece("a", "t1", 0, 500, 100, 110, layout), Piece("b", "t1", 12, 500, 40, 45.5), Piece("c", "t2", 2, 500, 200, 230));
             var saved = await member.PutAsJsonAsync($"/api/projects/{id}", new { content, revision = 1 }, ct);
             Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
             var after = await saved.Content.ReadFromJsonAsync<JsonElement>(ct);
             Assert.Equal(2, after.GetProperty("revision").GetInt32());
             Assert.Equal(32, after.GetProperty("lengthSeconds").GetDouble()); // piece c ends at 2 + 30
             Assert.Equal(3, after.GetProperty("pieceCount").GetInt32());
-            Assert.Equal([500L, 501L], after.GetProperty("vodIds").EnumerateArray().Select(x => x.GetInt64()));
+            Assert.Equal([500L], after.GetProperty("vodIds").EnumerateArray().Select(x => x.GetInt64()));
+            Assert.Equal(500, after.GetProperty("vodId").GetInt64()); // took its first piece's VOD
+
+            // Everything in an edit comes from its VOD (2026-11-17)
+            var otherVod = await member.PutAsJsonAsync($"/api/projects/{id}",
+                new { content = TwoTracks(Piece("a", "t1", 0, 500, 100, 110), Piece("z", "t2", 0, 501, 0, 10)) }, ct);
+            Assert.Equal(HttpStatusCode.BadRequest, otherVod.StatusCode);
             var keys = after.GetProperty("content").GetProperty("pieces")[0].GetProperty("layout").GetProperty("keys");
             Assert.Equal(108, keys[1].GetProperty("time").GetDouble());
             Assert.True(after.GetProperty("content").GetProperty("tracks")[1].GetProperty("muted").GetBoolean());
@@ -67,7 +75,8 @@ namespace TwitchDownloaderWeb.Tests
             var list = await GetJsonAsync(owner, "/api/projects");
             Assert.Single(list.EnumerateArray());
             Assert.Equal(JsonValueKind.Null, list[0].GetProperty("content").ValueKind);
-            Assert.Single((await GetJsonAsync(owner, "/api/projects?vodId=501")).EnumerateArray());
+            Assert.Single((await GetJsonAsync(owner, "/api/projects?vodId=500")).EnumerateArray());
+            Assert.Single((await GetJsonAsync(owner, "/api/projects?vodIds=500,501")).EnumerateArray());
             Assert.Empty((await GetJsonAsync(owner, "/api/projects?vodId=502")).EnumerateArray());
 
             // Bad content is refused
@@ -125,7 +134,7 @@ namespace TwitchDownloaderWeb.Tests
             var added = await staff.PostAsJsonAsync($"/api/admin/teams/{teamId}/channels", new { login = "ellsya" }, ct);
             var channelId = (await added.Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("id").GetInt32();
             var created = await owner.PostAsJsonAsync("/api/projects",
-                new { content = TwoTracks(Piece("a", "t1", 0, 510, 0, 10), Piece("b", "t2", 0, 511, 0, 10)) }, ct);
+                new { content = TwoTracks(Piece("a", "t1", 0, 510, 0, 10), Piece("b", "t2", 0, 510, 20, 30)) }, ct);
             Assert.Equal(HttpStatusCode.Created, created.StatusCode);
             var id = (await created.Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("id").GetInt32();
             var arkyOnly = (await (await owner.PostAsJsonAsync("/api/projects", new { content = TwoTracks(Piece("a", "t1", 0, 512, 0, 10)) }, ct))
@@ -165,10 +174,22 @@ namespace TwitchDownloaderWeb.Tests
             var ct = TestContext.Current.CancellationToken;
             var (owner, _, _, _) = await TeamWithMemberAsync("pj3");
 
-            // A 1 s gap, then a piece of VOD 520 under a piece of VOD 521 on the top row
+            // A 1 s gap, then a piece of VOD 520 under a piece of VOD 521 on the top row (a project from before 2026-11-17: those could mix VODs)
             var content = TwoTracks(Piece("top", "t1", 2, 521, 30, 31.5), Piece("under", "t2", 1, 520, 200, 203.5));
-            var id = (await (await owner.PostAsJsonAsync("/api/projects", new { title = "Mix", content }, ct)).Content.ReadFromJsonAsync<JsonElement>(ct))
+            var mixed = TwoTracks(Piece("top", "t1", 2, 520, 30, 31.5), Piece("under", "t2", 1, 520, 200, 203.5));
+            var oldId = (await (await owner.PostAsJsonAsync("/api/projects", new { title = "Mix", content = mixed }, ct)).Content.ReadFromJsonAsync<JsonElement>(ct))
                 .GetProperty("id").GetInt32();
+            using (var scope = _factory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+                var row = await db.Projects.IgnoreQueryFilters().Include(x => x.Vods).SingleAsync(x => x.Id == oldId, ct);
+                row.Content = ProjectContent.Read(System.Text.Json.JsonSerializer.Serialize(content)).Write();
+                row.Vods.Add(new ProjectVod { VodId = 521 });
+                await db.SaveChangesAsync(ct);
+            }
+            var id = oldId;
+            // It keeps both VODs when saved again
+            Assert.Equal(HttpStatusCode.OK, (await owner.PutAsJsonAsync($"/api/projects/{id}", new { content }, ct)).StatusCode);
 
             Assert.Equal(HttpStatusCode.BadRequest,
                 (await owner.PostAsJsonAsync("/api/exports", new { items = new[] { new { kind = "project", projectId = id, horizontal = false, vertical = false } } }, ct)).StatusCode);

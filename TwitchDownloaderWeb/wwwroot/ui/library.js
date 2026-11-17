@@ -1,9 +1,10 @@
-// The left panel (frontend rework step 2): VODS / VIDEOS / CLIPS / PROJECTS lists with simple cards, a filter popover, a right-click
+// The left panel (frontend rework step 2): VODS / VIDEOS / CLIPS lists with simple cards, a filter popover, a right-click
 // menu and the export icon. The same panel is used on the Editor and Export screens.
 //
-// VODs come only from the channels the app Owner assigned to the team (GET /api/channels, then /api/channels/{login}/vods).
-// Clips are the team's library entries (GET /api/entries); videos are segments linked on one row (GET /api/videos); projects
-// are Player 2's multi-track timelines (GET /api/projects), opened in Player 2.
+// VODs come only from the channels the app Owner assigned to the team (GET /api/channels, then /api/channels/{login}/vods); a VOD
+// with work on it (badrfly 2026-11-17: "the VOD is the project") shows what's on it (GET /api/vods/work). Clips are the team's library
+// entries (GET /api/entries); videos are segments linked on one row (GET /api/videos). Both filter by VOD and by member: made by, or
+// edited by (made an edit of it in Player 2).
 
 import { $, el, api, me, can, formatDate, formatDuration, loadSetting, saveSetting, toast, iconButton, withTooltip, twitchThumb, thumbStyle } from "./core.js";
 import { draggable } from "./drag.js";
@@ -31,9 +32,13 @@ const state = {
   videos: [],
   videosLoaded: false,
   videosError: "",
-  projects: [],
-  projectsLoaded: false,
-  projectsError: "",
+  // VODs: what the team made on each (vodId → GET /api/vods/work row) and the "only with work" switch
+  work: new Map(),
+  onlyWorked: false,
+  // Clips and videos: one VOD and / or one member (made by, or edited by)
+  who: { vodId: "", memberId: "", mode: "made" },
+  members: new Map(),   // userId → name, from what's been loaded
+  workedVods: [],       // GET /api/vods/work, for the VOD filter
 };
 
 let handlers = { onLoad: () => {}, onExport: () => {} };
@@ -61,7 +66,6 @@ function showSample(sample) {
   state.clipsLoaded = true;
   state.videos = sample.videos;
   state.videosLoaded = true;
-  state.projectsLoaded = true;
   renderChannelPicker();
   render();
 }
@@ -73,7 +77,30 @@ export function showList(list) {
   render();
   if (list === "clips" && !state.clipsLoaded) loadClips();
   if (list === "videos" && !state.videosLoaded) loadVideos();
-  if (list === "projects") loadProjects();
+}
+
+// A VOD from the loaded lists (Player 2's tree uses its title)
+export function knownVod(vodId) {
+  return state.vods.find((v) => Number(v.vodId) === Number(vodId)) ?? null;
+}
+
+export function knownVodTitle(vodId) {
+  return knownVod(vodId)?.title ?? null;
+}
+
+// Clips / videos of one VOD (card menus, Player 2's tree)
+export function showVodWork(vodId, list = "clips") {
+  state.who.vodId = String(vodId);
+  if (handlers.onPickList) handlers.onPickList(list);
+  else showList(list);
+  reloadWho();
+}
+
+// Something was made, renamed or deleted elsewhere: counts and lists follow
+export function refreshLibraryFilters() {
+  loadWorkFor(state.vods.map((v) => v.vodId));
+  if (state.clipsLoaded) loadClips();
+  if (state.videosLoaded) loadVideos();
 }
 
 // ---------- loading ----------
@@ -118,6 +145,7 @@ async function loadMoreVods(first = false) {
     state.vods.push(...page.items);
     state.vodCursor = page.nextCursor;
     if (first) checkLive(login);
+    loadWorkFor(page.items.map((v) => v.vodId));
   } catch (error) {
     state.vodsError = error.message;
   } finally {
@@ -141,10 +169,47 @@ async function checkLive(login) {
   }
 }
 
+// What the team made on these VODs (badges on their cards)
+async function loadWorkFor(vodIds) {
+  const ids = [...new Set(vodIds.map(String))].filter(Boolean);
+  for (let i = 0; i < ids.length; i += 200) {
+    const part = ids.slice(i, i + 200);
+    try {
+      const rows = await api("GET", `/api/vods/work?vodIds=${part.join(",")}`);
+      for (const id of part) state.work.delete(id);
+      for (const row of rows) state.work.set(String(row.vodId), row);
+    } catch {
+      // Cards just show no badge
+    }
+  }
+  if (state.list === "vods") render();
+}
+
+function rememberMembers(pairs) {
+  for (const [id, name] of pairs) if (id != null && name) state.members.set(String(id), name);
+}
+
+// The VOD and member filters on the query of clips (entries) or videos
+function whoQuery(query, list) {
+  const who = state.who;
+  if (who.vodId) query.set(list === "clips" ? "vodId" : "vodIds", who.vodId);
+  if (who.memberId) {
+    if (who.mode === "edited") query.set("editedBy", who.memberId);
+    else query.set(list === "clips" ? "madeBy" : "userId", who.memberId);
+  }
+}
+
+function reloadWho() {
+  renderFilter();
+  if (state.list === "videos" || state.videosLoaded) loadVideos();
+  if (state.list === "clips" || state.clipsLoaded) loadClips();
+}
+
 async function loadClips() {
   const f = state.clipFilter;
   const query = new URLSearchParams({ sort: f.sort, order: f.order, limit: "500" });
   if (f.search) query.set("search", f.search);
+  whoQuery(query, "clips");
   const dateField = f.sort;
   if (f.last24h) {
     query.set("from", new Date(Date.now() - 86400_000).toISOString());
@@ -158,6 +223,7 @@ async function loadClips() {
   }
   try {
     state.clips = await api("GET", `/api/entries?${query}`);
+    rememberMembers(state.clips.map((c) => [c.addedByUserId, c.addedBy]));
     state.clipsError = "";
   } catch (error) {
     state.clipsError = error.message;
@@ -176,7 +242,10 @@ function schedulePoll() {
 // The team's videos (segments linked on one row), newest first
 async function loadVideos() {
   try {
-    state.videos = await api("GET", "/api/videos?limit=500");
+    const query = new URLSearchParams({ limit: "500" });
+    whoQuery(query, "videos");
+    state.videos = await api("GET", `/api/videos?${query}`);
+    rememberMembers(state.videos.map((v) => [v.userId, v.createdBy]));
     state.videosError = "";
   } catch (error) {
     state.videosError = error.message;
@@ -193,50 +262,33 @@ export function refreshClips() {
   return loadClips();
 }
 
-// The team's projects, yours first, then newest first
-async function loadProjects() {
-  try {
-    const projects = await api("GET", "/api/projects?limit=200");
-    state.projects = [...projects].sort((a, b) => Number(b.userId === me?.id) - Number(a.userId === me?.id)
-      || String(b.updatedAtUtc).localeCompare(String(a.updatedAtUtc)));
-    state.projectsError = "";
-  } catch (error) {
-    state.projectsError = error.message;
-  }
-  state.projectsLoaded = true;
-  if (state.list === "projects") render();
-}
-
-export function refreshProjectCards() {
-  if (state.projectsLoaded || state.list === "projects") return loadProjects();
-  return null;
-}
-
 // ---------- rendering ----------
 
 const EMPTY = {
   vods: () => state.vodsError || (state.channels.length
     ? (state.vodsLoading ? "Loading VODs…" : "No VODs here yet.")
     : "Your team has no channels yet. The app owner assigns them."),
-  videos: () => state.videosError || (state.videosLoaded ? "No videos yet. Link segments on a VOD's timeline to make one." : "Loading videos…"),
+  videos: () => state.videosError || (state.videosLoaded
+    ? (filtersOn() ? "No videos match the filter." : "No videos yet. Link segments on a VOD's timeline to make one.")
+    : "Loading videos…"),
   clips: () => state.clipsError || (state.clipsLoaded ? (filtersOn() ? "No clips match the filter." : "No clips yet.") : "Loading clips…"),
-  projects: () => state.projectsError || (state.projectsLoaded
-    ? "No projects yet. Drag clips, segments or videos onto Player 2 to start one."
-    : "Loading projects…"),
 };
 
 function visibleItems() {
   if (state.list === "vods") {
     const search = state.vodSearch.toLowerCase();
-    return search ? state.vods.filter((v) => v.title.toLowerCase().includes(search)) : state.vods;
+    return state.vods.filter((v) => (!search || v.title.toLowerCase().includes(search)) && (!state.onlyWorked || state.work.has(String(v.vodId))));
   }
-  if (state.list === "projects") return state.projects;
+  if (state.list === "videos" && state.clipFilter.search) {
+    const search = state.clipFilter.search.toLowerCase();
+    return state.videos.filter((v) => v.title.toLowerCase().includes(search));
+  }
   return state.list === "clips" ? state.clips : state.videos;
 }
 
 function render() {
   const items = visibleItems();
-  const noun = { vods: "VOD", videos: "video", clips: "clip", projects: "project" }[state.list];
+  const noun = { vods: "VOD", videos: "video", clips: "clip" }[state.list];
   const more = state.list === "vods" && state.vodCursor ? "+" : "";
   $("side-count").textContent = items.length ? `${items.length}${more} ${noun}${items.length === 1 && !more ? "" : "s"}` : "";
   $("side-filter").toggleAttribute("data-active", filtersOn());
@@ -244,8 +296,7 @@ function render() {
     $("side-list").replaceChildren(el("p", { class: "side-empty" }, EMPTY[state.list]()));
     return;
   }
-  const cards = items.map((item) => (state.list === "vods" ? vodCard(item) : state.list === "clips" ? clipCard(item)
-    : state.list === "projects" ? projectCard(item) : videoCard(item)));
+  const cards = items.map((item) => (state.list === "vods" ? vodCard(item) : state.list === "clips" ? clipCard(item) : videoCard(item)));
   if (state.list === "vods" && state.vodsLoading) cards.push(el("p", { class: "side-empty" }, "Loading more…"));
   $("side-list").replaceChildren(...cards);
 }
@@ -321,19 +372,32 @@ function vodCard(vod) {
   }
   actions.push(exportButton({ kind: "vod", data: vod }));
   const item = { ...vod, kind: "vod", channel: state.channel };
+  const work = state.work.get(String(vod.vodId));
   return card({
     kind: "vod",
     title: vod.title,
     thumb,
     badges,
-    meta: [[formatDate(vod.createdAtUtc, false), vod.game].filter(Boolean).join(" · ")],
+    meta: [[formatDate(vod.createdAtUtc, false), vod.game].filter(Boolean).join(" · "), work ? workLine(work) : null],
     actions,
     dragData: item,
     menu: () => [
       { label: "Load in Player 1", icon: "broadcast", run: () => handlers.onLoad({ kind: "vod", data: item }) },
       { label: "Export", icon: "download-simple", run: () => handlers.onExport({ kind: "vod", data: item }) },
-    ],
+      work?.clips && { label: "Show its clips", icon: "scissors", run: () => showVodWork(vod.vodId, "clips") },
+      work?.videos && { label: "Show its videos", icon: "film-strip", run: () => showVodWork(vod.vodId, "videos") },
+    ].filter(Boolean),
   });
+}
+
+// "3 clips · 1 video · 2 edits" on a VOD card (segments and moments when there's nothing else)
+function workLine(work) {
+  const n = (count, word) => (count ? `${count} ${word}${count === 1 ? "" : "s"}` : null);
+  const made = [n(work.clips, "clip"), n(work.videos, "video"), n(work.edits, "edit")].filter(Boolean);
+  const marks = [n(work.segments, "segment"), n(work.moments, "moment")].filter(Boolean);
+  const text = (made.length ? made : marks).join(" · ");
+  return el("div", { class: "card-meta card-work", title: [...made, ...marks].join(" · ") },
+    el("sl-icon", { library: "ph", name: "stack" }), text);
 }
 
 async function startRescue(vod) {
@@ -390,6 +454,7 @@ function clipMenu(entry) {
   return [
     { label: "Load in Player 2", icon: "film-strip", run: () => handlers.onLoad({ kind: "clip", data: entry }) },
     { label: "Export", icon: "download-simple", run: () => handlers.onExport({ kind: "clip", data: entry }) },
+    entry.vodId && String(entry.vodId) !== state.who.vodId && { label: "Show this VOD's clips", icon: "funnel-simple", run: () => showVodWork(entry.vodId, "clips") },
     canOnEntry(entry, "EditOwnEntries", "EditAnyEntries") && { label: "Rename", icon: "pencil-simple", run: () => renameClip(entry) },
     canOnEntry(entry, "DeleteOwnEntries", "DeleteAnyEntries") && { label: "Delete", icon: "trash", danger: true, run: () => deleteClip(entry) },
   ].filter(Boolean);
@@ -437,6 +502,7 @@ function videoCard(video) {
     menu: () => [
       { label: "Load in Player 2", icon: "film-strip", run: () => handlers.onLoad({ kind: "video", data: item }) },
       { label: "Export", icon: "download-simple", run: () => handlers.onExport({ kind: "video", data: item }) },
+      String(video.vodId) !== state.who.vodId && { label: "Show this VOD's videos", icon: "funnel-simple", run: () => showVodWork(video.vodId, "videos") },
       video.canEdit && { label: "Rename", icon: "pencil-simple", run: () => renameVideo(item) },
       video.canDelete && { label: "Delete", icon: "trash", danger: true, run: () => deleteVideo(item) },
     ].filter(Boolean),
@@ -470,79 +536,34 @@ export async function deleteVideo(video) {
   }
 }
 
-// --- projects: Player 2's multi-track timelines (length, pieces, who made it). Double-click opens it in Player 2. ---
-
-function projectCard(project) {
-  const item = project;
-  return card({
-    kind: "project",
-    title: project.title,
-    thumb: [],
-    badges: [el("span", { class: "card-badge num" }, formatDuration(Math.round(project.lengthSeconds ?? 0)))],
-    meta: [
-      `${project.pieceCount} piece${project.pieceCount === 1 ? "" : "s"} · ${project.vodIds?.length ?? 0} VOD${project.vodIds?.length === 1 ? "" : "s"}`,
-      project.createdBy ? `by ${project.createdBy}${project.userId === me?.id ? " (you)" : ""}` : null,
-      `changed ${formatDate(project.updatedAtUtc)}`,
-    ],
-    actions: [],
-    dragData: item,
-    menu: () => [
-      { label: "Open in Player 2", icon: "film-strip", run: () => handlers.onLoad({ kind: "project", data: item }) },
-      can("AddEntries") && !me?.support && project.canCopy !== false && { label: project.canEdit ? "Duplicate" : "Make my own copy", icon: "copy", run: () => copyProject(item) },
-      project.canEdit && { label: "Rename", icon: "pencil-simple", run: () => renameProject(item) },
-      project.canDelete && { label: "Delete", icon: "trash", danger: true, run: () => deleteProject(item) },
-    ].filter(Boolean),
-  });
-}
-
-async function copyProject(project) {
-  try {
-    const copy = await api("POST", `/api/projects/${project.id}/copy`, {});
-    toast(`Made "${copy.title}".`);
-    await loadProjects();
-  } catch (error) {
-    toast(error.message, "error");
-  }
-}
-
-async function renameProject(project) {
-  const title = await askText({ heading: "Rename project", label: "Title", value: project.title, confirm: "Rename", maxLength: 200 });
-  if (title === null || !title.trim() || title.trim() === project.title) return;
-  try {
-    await api("PUT", `/api/projects/${project.id}`, { title: title.trim() });
-    await loadProjects();
-    handlers.onProjectChanged?.(project.id);
-  } catch (error) {
-    toast(error.message, "error");
-  }
-}
-
-async function deleteProject(project) {
-  const ok = await confirmAction({
-    heading: "Delete project?",
-    text: `"${project.title}" is deleted for the whole team. The clips, segments and videos in it stay as they are.`,
-    confirm: "Delete",
-  });
-  if (!ok) return;
-  try {
-    await api("DELETE", `/api/projects/${project.id}`);
-    toast(`Deleted "${project.title}".`);
-    await loadProjects();
-    handlers.onProjectChanged?.(project.id, { deleted: true });
-  } catch (error) {
-    toast(error.message, "error");
-  }
-}
-
 // ---------- filter popover ----------
 
 function filtersOn() {
-  if (state.list === "vods") return Boolean(state.vodSearch) || state.vodType !== "archive";
+  if (state.list === "vods") return Boolean(state.vodSearch) || state.vodType !== "archive" || state.onlyWorked;
+  const who = Boolean(state.who.vodId || state.who.memberId);
   if (state.list === "clips") {
     const f = state.clipFilter;
-    return Boolean(f.search || f.last24h || f.day);
+    return Boolean(f.search || f.last24h || f.day) || who;
   }
-  return false;
+  return who || Boolean(state.clipFilter.search);
+}
+
+// The filter popover opened: the VODs with work and the members known so far, for the pickers
+async function loadFilterOptions() {
+  try {
+    const [worked, edits] = await Promise.all([api("GET", "/api/vods/work?limit=200"), api("GET", "/api/projects?limit=1000")]);
+    state.workedVods = worked;
+    rememberMembers(edits.map((e) => [e.userId, e.createdBy]));
+  } catch {
+    // The pickers keep what they had
+  }
+  renderFilter();
+}
+
+function vodOptionLabel(work) {
+  const title = knownVodTitle(work.vodId);
+  const date = work.streamDateUtc ? formatDate(work.streamDateUtc, false) : null;
+  return title ? `${title}${date ? ` (${date})` : ""}` : [date, work.channelName].filter(Boolean).join(" · ") || `VOD ${work.vodId}`;
 }
 
 function setUpFilter() {
@@ -553,11 +574,33 @@ function setUpFilter() {
       if (state.list === "vods") {
         state.vodSearch = value;
         render();
+      } else if (state.list === "videos") {
+        state.clipFilter.search = value;
+        render();
       } else {
         state.clipFilter.search = value;
         loadClips();
       }
     }, 250);
+  });
+  $("filter-menu").addEventListener("sl-show", (event) => {
+    if (event.target === $("filter-menu") && state.list !== "vods") loadFilterOptions();
+  });
+  $("filter-work").addEventListener("sl-change", (event) => {
+    state.onlyWorked = event.target.checked;
+    render();
+  });
+  $("filter-vod").addEventListener("sl-change", (event) => {
+    state.who.vodId = event.target.value || "";
+    reloadWho();
+  });
+  $("filter-member").addEventListener("sl-change", (event) => {
+    state.who.memberId = event.target.value || "";
+    reloadWho();
+  });
+  $("filter-member-mode").addEventListener("sl-change", (event) => {
+    state.who.mode = event.target.value;
+    if (state.who.memberId) reloadWho();
   });
   $("filter-type").addEventListener("sl-change", (event) => {
     state.vodType = event.target.value;
@@ -595,6 +638,7 @@ function setUpFilter() {
   $("filter-clear").addEventListener("click", () => {
     if (state.list === "vods") {
       state.vodSearch = "";
+      state.onlyWorked = false;
       if (state.vodType !== "archive") {
         state.vodType = "archive";
         saveSetting("clipco.library.vodType", "archive");
@@ -602,7 +646,9 @@ function setUpFilter() {
       }
     } else {
       Object.assign(state.clipFilter, { search: "", last24h: false, day: "" });
+      Object.assign(state.who, { vodId: "", memberId: "" });
       loadClips();
+      if (state.videosLoaded) loadVideos();
     }
     renderFilter();
     render();
@@ -613,10 +659,23 @@ function setUpFilter() {
 function renderFilter() {
   const vods = state.list === "vods";
   const clips = state.list === "clips";
-  $("side-filter").disabled = state.list === "videos" || state.list === "projects";
+  const videos = state.list === "videos";
+  $("side-filter").disabled = false;
   $("filter-search").value = vods ? state.vodSearch : state.clipFilter.search;
   $("filter-search").placeholder = vods ? "Search loaded VODs" : "Search titles";
   $("filter-type-row").hidden = !vods;
+  $("filter-work-row").hidden = !vods;
+  $("filter-work").checked = state.onlyWorked;
+  for (const id of ["filter-vod-row", "filter-member-row"]) $(id).hidden = !(clips || videos);
+  // VODs: the ones with work, plus the one picked (it may have none left)
+  const vodChoices = [...state.workedVods];
+  if (state.who.vodId && !vodChoices.some((w) => String(w.vodId) === state.who.vodId)) vodChoices.unshift({ vodId: state.who.vodId });
+  $("filter-vod").replaceChildren(...vodChoices.map((w) => el("sl-option", { value: String(w.vodId) }, vodOptionLabel(w))));
+  $("filter-vod").value = state.who.vodId;
+  const members = [...state.members].sort((a, b) => a[1].localeCompare(b[1]));
+  $("filter-member").replaceChildren(...members.map(([id, name]) => el("sl-option", { value: id }, `${name}${id === String(me?.id) ? " (you)" : ""}`)));
+  $("filter-member").value = state.who.memberId;
+  $("filter-member-mode").value = state.who.mode;
   $("filter-type").value = state.vodType;
   for (const id of ["filter-sort-row", "filter-date-row"]) $(id).hidden = !clips;
   $("filter-sort").value = state.clipFilter.sort;

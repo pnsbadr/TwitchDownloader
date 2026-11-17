@@ -132,7 +132,10 @@ namespace TwitchDownloaderWeb.Endpoints
 
         /// <param name="vodIds">Only these VODs (comma separated); blank = all of the team's videos, newest first.</param>
         /// <param name="userId">Only this member's.</param>
-        private static async Task<IResult> List(string? vodIds, int? userId, int? limit, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
+        /// <param name="userId">Only videos this member made.</param>
+        /// <param name="editedBy">Only videos this member made an edit of (Player 2).</param>
+        private static async Task<IResult> List(string? vodIds, int? userId, int? editedBy, int? limit, TeamContext team, LibraryDbContext db,
+            CancellationToken cancellationToken)
         {
             var (ids, problem) = TimelineEndpoints.ParseVodIds(vodIds);
             if (problem is not null)
@@ -143,6 +146,14 @@ namespace TwitchDownloaderWeb.Endpoints
                 query = query.Where(x => ids.Contains(x.VodId));
             if (userId is { } user)
                 query = query.Where(x => x.UserId == user);
+            if (editedBy is { } editor)
+            {
+                // Who made which vertical edit is only told to members who may see teammates' edits (VerticalAccess)
+                if (editor != team.UserId && !VerticalAccess.CanSeeTeam(team))
+                    query = query.Where(x => false);
+                else
+                    query = query.Where(x => db.Projects.Any(p => p.VideoId == x.Id && p.UserId == editor));
+            }
 
             var videos = await query.OrderByDescending(x => x.CreatedAtUtc).Take(Math.Clamp(limit ?? 200, 1, 1000)).ToListAsync(cancellationToken);
             return Results.Ok(await ToDtosAsync(db, videos, team, cancellationToken));

@@ -50,7 +50,7 @@ const colorOf = (piece) => MARKER_COLORS[piece.color] ?? MARKER_COLORS.violet ??
 
 export class ProjectTimeline {
   // hooks: getPosition() → project seconds or null, onSeek(t), openItemEditor/closeItemEditor (tools bar title editor),
-  // ensureProject() → creates one when none is open, onChange() (selection, tool, history), onShowInPlayer1(piece),
+  // loadItem(item) → loads a dropped item when nothing is loaded, onChange() (selection, tool, history), onShowInPlayer1(piece),
   // onApplyToOriginal(pieces), onPieceDoubleClick?(piece)
   constructor(store, hooks) {
     this.store = store;
@@ -197,7 +197,7 @@ export class ProjectTimeline {
       this.heads.replaceChildren();
       if (this.active) {
         $("tl-empty").hidden = false;
-        $("tl-empty").textContent = "Drag clips, segments or videos onto Player 2 to start a project, or open one from the Projects list.";
+        $("tl-empty").textContent = "Load a clip, video or segment in Player 2 (double-click its card, or pick it from the menu above Player 2).";
       }
       return;
     }
@@ -258,7 +258,7 @@ export class ProjectTimeline {
   addTrack(index = this.content.tracks.length) {
     if (!this.store.canEdit) return null;
     if (this.content.tracks.length >= MAX_TRACKS) {
-      toast(`A project can have at most ${MAX_TRACKS} rows.`, "error");
+      toast(`An edit can have at most ${MAX_TRACKS} rows.`, "error");
       return null;
     }
     const id = newId("t");
@@ -285,7 +285,7 @@ export class ProjectTimeline {
   async deleteTrack(trackId = this.trackSel) {
     if (!this.store.canEdit || !trackId) return;
     if (this.content.tracks.length < 2) {
-      toast("A project needs at least one row.");
+      toast("An edit needs at least one row.");
       return;
     }
     const count = this.content.pieces.filter((p) => p.trackId === trackId).length;
@@ -885,7 +885,7 @@ export class ProjectTimeline {
       return;
     }
     if (this.content.pieces.length >= MAX_PIECES) {
-      toast(`A project can have at most ${MAX_PIECES} pieces.`, "error");
+      toast(`An edit can have at most ${MAX_PIECES} pieces.`, "error");
       return;
     }
     const vodT = round(piece.start + (t - piece.at));
@@ -986,7 +986,7 @@ export class ProjectTimeline {
     const base = this.trackIndex(trackId);
     if (base < 0) return false;
     if (this.content.pieces.length + clipboard.length > MAX_PIECES) {
-      toast(`A project can have at most ${MAX_PIECES} pieces.`, "error");
+      toast(`An edit can have at most ${MAX_PIECES} pieces.`, "error");
       return false;
     }
     const placed = [];
@@ -1186,8 +1186,11 @@ export class ProjectTimeline {
       }
     }
     if ((content?.pieces.length ?? 0) + pieces.length > MAX_PIECES) ok = false;
+    // Everything in one edit comes from one VOD
+    const otherVod = Boolean(content) && !this.store.takesVod(pieces[0].vodId);
+    if (otherVod) ok = false;
     if (newRow && rows >= MAX_TRACKS) ok = false;
-    this.ghost = { pieces, index, newRow, at, length, ok, label: item.label };
+    this.ghost = { pieces, index, newRow, at, length, ok, otherVod, label: item.label };
     this.dirty = true;
   }
 
@@ -1198,16 +1201,21 @@ export class ProjectTimeline {
     this.snapAt = null;
     this.dirty = true;
     if (!ghost) {
-      toast("That can't go in a project (it needs a VOD range).");
+      toast("That can't go in Player 2 (it needs a VOD range).");
+      return;
+    }
+    if (!this.content) {
+      // Nothing loaded: the item loads on its own
+      this.hooks.loadItem?.(item);
+      return;
+    }
+    if (ghost.otherVod) {
+      toast("Everything in one edit comes from one VOD. Load it on its own (double-click its card) to work on it.", "error");
       return;
     }
     if (!ghost.ok) {
       toast("It doesn't fit there: pieces on one row can't overlap, and locked rows can't change.");
       return;
-    }
-    if (!this.content) {
-      await this.hooks.ensureProject();
-      if (!this.content) return;
     }
     this.insertPieces(ghost.pieces, { trackIndex: ghost.newRow ? null : ghost.index, at: ghost.at, newRow: ghost.newRow });
   }

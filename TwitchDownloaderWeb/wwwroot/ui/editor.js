@@ -5,14 +5,15 @@
 import { registerIconLibrary } from "https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.20.1/cdn/utilities/icon-library.js";
 import { $, el, api, me, can, loadMe, sessionHandlers, TEAM_PAGE_PERMISSIONS, wireIconButtons, loadSetting, saveSetting, toast, formatDuration } from "./core.js";
 import { dropTarget } from "./drag.js";
-import { setUpLibrary, showList, refreshClips, refreshVideos, refreshProjectCards } from "./library.js";
+import { setUpLibrary, showList, refreshClips, refreshVideos, refreshLibraryFilters, knownVod, knownVodTitle } from "./library.js";
+import { setUpTree, openTree, forgetTree, render as renderTree } from "./p2-tree.js";
 import { MARKER_COLORS } from "./colors.js";
 import { MediaPlayer, formatClock } from "./media.js";
 import { Timeline } from "./timeline.js";
 import { trimValue } from "./timeline-edit.js";
 import { skipCut, keptSeconds } from "./cuts.js";
 import { askText, confirmAction } from "./dialogs.js";
-import { ProjectStore, piecesFromItem, flatten, stretchAt } from "./project.js";
+import { ProjectStore, piecesFromItem, flatten, stretchAt, emptyContent } from "./project.js";
 import { ProjectTimeline } from "./project-timeline.js";
 import { ProjectPlayback } from "./project-playback.js";
 import { setUpExport, addToExport, exportShown, pausePreview } from "./export.js";
@@ -233,7 +234,7 @@ function load(item) {
     openProject(item.data.id);
     return;
   }
-  addToProject(item);
+  loadInPlayer2(item);
 }
 
 async function openVod(vod, { start = 0, paused = false } = {}) {
@@ -276,18 +277,23 @@ function showNote(which, text, hideAfter = 0) {
   if (text && hideAfter) noteTimers[which] = setTimeout(() => { note.hidden = true; }, hideAfter);
 }
 
-// ---------- Player 2: projects ----------
+// ---------- Player 2: what's loaded (a clip, video or segment, or one of their edits) ----------
+//
+// badrfly 2026-11-17, "the VOD is the project": what Player 2 changes is saved as an EDIT of the clip or video it was loaded from (the
+// server's projects, never called that on the page). A clip, video or segment loads as itself (store.isDraft); the first change makes
+// it a new edit ("clip · Edit 2"). Everything in one edit comes from one VOD.
 
+// Opens a saved edit
 async function openProject(id, { show = true, quiet = false } = {}) {
   if (DEMO) {
-    toast("Projects aren't available in the demo.");
+    toast("Edits aren't available in the demo.");
     return false;
   }
   const opened = ++p2Opened;
   try {
     await store.openProject(id);
   } catch (error) {
-    if (!quiet) toast(`Couldn't open the project: ${error.message}`, "error");
+    if (!quiet) toast(`Couldn't open the edit: ${error.message}`, "error");
     if (error.status === 404) saveSetting(LAST_PROJECT_KEY, null);
     return false;
   }
@@ -297,26 +303,72 @@ async function openProject(id, { show = true, quiet = false } = {}) {
   return true;
 }
 
-async function newProject({ title = null, show = true } = {}) {
-  if (DEMO || me?.support || !can("AddEntries")) {
-    toast(me?.support ? "Support view is read-only." : "Your role can't make projects.", "error");
+// The title of an item as Player 2 shows it
+function itemTitle({ kind, data }) {
+  if (kind === "segment") return data.label || "Segment";
+  return data.title || (kind === "video" ? "Video" : "Clip");
+}
+
+// A clip, video or segment on its own in Player 2 (replaces what was loaded). Nothing is saved until it's changed.
+async function loadInPlayer2(item, { show = true, quiet = false } = {}) {
+  if (DEMO) {
+    toast("Player 2 isn't available in the demo.");
     return false;
   }
+  const pieces = piecesFromItem(item);
+  if (!pieces?.length) {
+    if (!quiet) toast(item.kind === "clip" ? "Twitch didn't say which VOD this clip is from, so it can't be loaded in Player 2." : "That can't be loaded in Player 2.", "error");
+    return false;
+  }
+  const opened = ++p2Opened;
+  const data = item.data;
+  const vodId = Number(data.vodId);
+  const title = itemTitle(item);
+  const parent = item.kind === "clip" ? { entryId: data.id } : item.kind === "video" ? { videoId: data.id } : {};
+  // The new edit's name: "clip · Edit n", counting the item's edits so far
+  let count = 0;
   try {
-    await store.create({ title });
-  } catch (error) {
-    toast(`Couldn't make a project: ${error.message}`, "error");
-    return false;
+    const query = parent.entryId ? `entryId=${parent.entryId}` : parent.videoId ? `videoId=${parent.videoId}` : `vodId=${vodId}`;
+    const edits = await api("GET", `/api/projects?${query}&limit=1000`);
+    count = parent.entryId || parent.videoId ? edits.length : edits.filter((e) => !e.entryId && !e.videoId && e.title.startsWith(`${title} · `)).length;
+  } catch {
+    // The name is only a starting point
   }
-  p2Opened++;
+  if (opened !== p2Opened) return false;
+  const content = emptyContent();
+  content.pieces = pieces.map((piece) => ({ ...piece, trackId: content.tracks[0].id }));
+  await store.openDraft({
+    title,
+    editTitle: `${title} · Edit ${count + 1}`,
+    vodId,
+    ...parent,
+    source: { kind: item.kind, id: data.id },
+    sourceItem: { kind: item.kind, data },
+    canEdit: can("AddEntries") && !me?.support,
+    content,
+  });
+  if (opened !== p2Opened) return false;
   projectOpened();
-  refreshProjects();
   if (show) timelineTabs.pick("p2");
   return true;
 }
 
+// Where Player 2 is in the VOD tree (ui/p2-tree.js)
+function p2Loaded() {
+  if (!store?.open) return null;
+  const project = store.project;
+  return {
+    vodId: store.vodId,
+    editId: store.isDraft ? null : project.id,
+    entryId: project.entryId ?? null,
+    videoId: project.videoId ?? null,
+    segmentId: store.isDraft && project.source?.kind === "segment" ? project.source.id : null,
+  };
+}
+
 function projectOpened() {
-  saveSetting(LAST_PROJECT_KEY, store.project.id);
+  const project = store.project;
+  saveSetting(LAST_PROJECT_KEY, store.isDraft ? { kind: project.source.kind, id: project.source.id, vodId: project.vodId } : { edit: project.id });
   playback.stop();
   playback.seek(0, { quiet: true });
   timeline2.refresh({ reset: true });
@@ -327,8 +379,27 @@ function projectOpened() {
   renderTools();
 }
 
+// What was in Player 2 last time: an edit, or a clip / video / segment (read again)
+async function restoreLastLoaded() {
+  const last = loadSetting(LAST_PROJECT_KEY, null);
+  if (!last || DEMO) return;
+  if (typeof last === "number") return openProject(last, { show: false, quiet: true });
+  if (last.edit) return openProject(last.edit, { show: false, quiet: true });
+  try {
+    let data = null;
+    if (last.kind === "clip") data = await api("GET", `/api/entries/${last.id}`);
+    else if (last.kind === "video") data = await api("GET", `/api/videos/${last.id}`);
+    else if (last.kind === "segment") data = (await api("GET", `/api/markers?vodIds=${last.vodId}`)).find((m) => m.id === last.id) ?? null;
+    if (data) await loadInPlayer2({ kind: last.kind, data }, { show: false, quiet: true });
+    else saveSetting(LAST_PROJECT_KEY, null);
+  } catch {
+    // Gone or not open to the team any more
+  }
+}
+
 async function closeProject() {
   toggleVertical(false);
+  p2Opened++;
   playback.stop();
   player2.close();
   await store.close();
@@ -343,21 +414,20 @@ async function closeProject() {
   renderTools();
 }
 
-// A card, Player 1 item or new item goes into the open project (a new one when none is open, or it can't be changed)
-async function addToProject(item, { show = true } = {}) {
+// A new segment or clip from Player 1 goes into the open edit (not a clip loaded on its own, and only from the edit's VOD)
+function addToProject(item) {
+  if (!store.open || store.isDraft || !store.canEdit) return;
   const pieces = piecesFromItem(item);
-  if (!pieces?.length) {
-    toast(item.kind === "clip" ? "Twitch didn't say which VOD this clip is from, so it can't go in a project." : "That can't go in a project.", "error");
-    return;
-  }
-  if (!store.open || !store.canEdit) {
-    if (!(await newProject({ show }))) return;
-  }
-  if (!timeline2.addItemAtPlayhead(pieces)) {
-    toast("It doesn't fit there. Pick an empty row or make one (+ Row).", "error");
-    return;
-  }
-  if (show) timelineTabs.pick("p2");
+  if (!pieces?.length || !store.takesVod(pieces[0].vodId)) return;
+  timeline2.addItemAtPlayhead(pieces);
+}
+
+// An edit was made from what was loaded (its first change): the tree and the library follow
+function onEditCreated(edit) {
+  saveSetting(LAST_PROJECT_KEY, { edit: edit.id });
+  forgetTree(edit.vodId);
+  refreshLibraryFilters();
+  toast(`Saved as a new edit: "${edit.title}". Rename it from the menu above Player 2.`);
 }
 
 // Store changes: the timeline, the preview and the buttons follow
@@ -437,105 +507,105 @@ function shortClock(seconds) {
   return `${formatDuration(Math.floor(hundredths / 100))}.${String(hundredths % 100).padStart(2, "0")}`;
 }
 
-// ---------- Player 2's project picker ----------
-
-let projectList = [];
-
-async function loadProjectList() {
-  try {
-    projectList = await api("GET", "/api/projects?limit=100");
-  } catch {
-    projectList = [];
-  }
-  if ($("p2-project-menu").open) renderProjectMenu();
-}
+// ---------- Player 2's picker: the VOD tree (ui/p2-tree.js) and what can be done with what's loaded ----------
 
 function renderProjectPicker() {
   const open = store.open;
-  $("p2-project-name").textContent = open ? store.project.title : "No project";
+  const project = store.project;
+  $("p2-project-name").textContent = open ? project.title || "Untitled edit" : "Nothing loaded";
   const state = open ? store.stateText() : "";
   $("p2-project-state").textContent = state;
   $("p2-project-state").classList.toggle("bad", state === "not saved");
   $("p2-project-pick").title = open
-    ? `${store.project.title}${store.project.createdBy && !store.canEdit ? ` by ${store.project.createdBy} (${store.project.canCopy === false ? "view only" : "view only: make your own copy to change it"})` : ""}`
-    : "Open or start a project";
+    ? `${project.title}${store.isDraft ? (store.canEdit ? " (the original: your first change saves a new edit of it)" : "") : ""}${project.createdBy && !store.canEdit ? ` by ${project.createdBy} (${project.canCopy === false ? "view only" : "view only: make your own copy to change it"})` : ""}`
+    : "Pick a clip, video or segment, or one of their edits";
   if ($("p2-project-menu").open) renderProjectMenu();
 }
 
 function renderProjectMenu() {
+  renderTree();
   const current = store.project;
-  const item = (value, label, { icon = null, checked = null, disabled = false, detail = null } = {}) => el("sl-menu-item", {
-    value, disabled, ...(checked != null ? { type: "checkbox", checked } : {}),
-  }, icon ? el("sl-icon", { slot: "prefix", library: "ph", name: icon }) : null, label, detail ? el("span", { slot: "suffix", class: "edit-detail" }, detail) : null);
+  const item = (value, label, { icon = null, disabled = false } = {}) => el("sl-menu-item", { value, disabled },
+    icon ? el("sl-icon", { slot: "prefix", library: "ph", name: icon }) : null, label);
   const entries = [];
   const canMake = can("AddEntries") && !me?.support && !DEMO;
-  entries.push(item("new", "New project", { icon: "plus", disabled: !canMake }));
-  const own = projectList.filter((p) => p.userId === me?.id).slice(0, 10);
-  const others = projectList.filter((p) => p.userId !== me?.id).slice(0, 10);
-  const line = (p) => item(`open:${p.id}`, p.title, { checked: p.id === current?.id, detail: formatDuration(Math.round(p.lengthSeconds)) });
-  if (own.length) entries.push(el("sl-divider"), el("sl-menu-label", {}, "Your projects"), ...own.map(line));
-  if (others.length) entries.push(el("sl-divider"), el("sl-menu-label", {}, "The team's projects"), ...others.map((p) => item(`open:${p.id}`, p.title, {
-    checked: p.id === current?.id, detail: `${p.createdBy ?? "teammate"} · ${formatDuration(Math.round(p.lengthSeconds))}`,
-  })));
-  entries.push(item("all", "All projects…", { icon: "list" }));
   if (current) {
-    entries.push(el("sl-divider"));
-    // A teammate's project (a vertical edit) is exported and copied only with the role permissions for that (canDownload / canCopy)
-    if (!DEMO) entries.push(item("export", "Add to the export list", { icon: "download-simple", disabled: !store.content.pieces.length || current.canDownload === false }));
-    if (store.canEdit) entries.push(item("rename", "Rename this project", { icon: "pencil-simple" }));
-    entries.push(item("copy", store.canEdit ? "Duplicate" : "Make my own copy", { icon: "copy", disabled: !canMake || current.canCopy === false }));
-    if (current.canDelete) entries.push(item("delete", "Delete this project", { icon: "trash" }));
-    entries.push(item("close", "Close (nothing is deleted)", { icon: "eject" }));
+    // A teammate's vertical edit is exported and copied only with the role permissions for that (canDownload / canCopy)
+    if (!DEMO) entries.push(item("export", store.isDraft ? "Add to the export list" : "Add this edit to the export list", { icon: "download-simple", disabled: !store.content.pieces.length || current.canDownload === false }));
+    if (store.canEdit) entries.push(item("rename", store.isDraft ? "Save as a new edit…" : "Rename this edit", { icon: "pencil-simple" }));
+    if (!store.isDraft) entries.push(item("copy", store.canEdit ? "Duplicate this edit" : "Make my own copy", { icon: "copy", disabled: !canMake || current.canCopy === false }));
+    if (!store.isDraft && current.canDelete) entries.push(item("delete", "Delete this edit", { icon: "trash" }));
+    entries.push(item("close", "Unload (nothing is deleted)", { icon: "eject" }));
   }
+  $("p2-project-items").hidden = !entries.length;
   $("p2-project-items").replaceChildren(...entries);
 }
 
 async function renameProject() {
   if (!store.open || !store.canEdit) return;
-  const title = await askText({ heading: "Rename the project", label: "Title", value: store.project.title });
+  const draft = store.isDraft;
+  const title = await askText({
+    heading: draft ? "Save as a new edit" : "Rename this edit",
+    label: "Name",
+    value: draft ? store.project.editTitle : store.project.title,
+    confirm: draft ? "Save" : "Rename",
+  });
   if (title == null || !title.trim()) return;
   try {
     await store.rename(title.trim());
-    refreshProjects();
+    forgetTree(store.vodId);
   } catch (error) {
     toast(error.message, "error");
   }
 }
 
-async function copyProject() {
-  if (!store.open) return;
-  await store.saveNow();
+async function copyEdit(id) {
+  if (store.project?.id === id) await store.saveNow();
   try {
-    const copy = await api("POST", `/api/projects/${store.project.id}/copy`, {});
+    const copy = await api("POST", `/api/projects/${id}/copy`, {});
+    forgetTree(copy.vodId);
     await openProject(copy.id);
-    refreshProjects();
     toast(`Made "${copy.title}".`);
   } catch (error) {
     toast(error.message, "error");
   }
 }
 
+async function deleteEdit(edit) {
+  if (store.project?.id === edit.id) {
+    await store.saveNow();
+    await api("DELETE", `/api/projects/${edit.id}`);
+    await closeProject();
+  } else {
+    await api("DELETE", `/api/projects/${edit.id}`);
+  }
+  forgetTree(edit.vodId);
+  refreshLibraryFilters();
+}
+
 async function deleteProject() {
-  if (!store.open) return;
+  if (!store.open || store.isDraft) return;
   const project = store.project;
   const ok = await confirmAction({
-    heading: "Delete this project?",
-    text: `"${project.title}" is deleted for the whole team. The clips, segments and videos in it stay as they are.`,
+    heading: "Delete this edit?",
+    text: `"${project.title || "Untitled edit"}" is deleted for the whole team. The clip, video and segments it was made from stay as they are.`,
     confirm: "Delete",
   });
   if (!ok) return;
   try {
-    await store.saveNow();
-    await api("DELETE", `/api/projects/${project.id}`);
-    await closeProject();
-    refreshProjects();
+    await deleteEdit(project);
   } catch (error) {
     toast(error.message, "error");
   }
 }
 
+// The loaded clip / video / segment as itself, or the edit
 function exportProject() {
   if (!store.open) return;
+  if (store.isDraft) {
+    addToExport(store.project.sourceItem, { quiet: false });
+    return;
+  }
   if (store.project.canDownload === false) {
     toast("Your role doesn't let you export teammates' vertical edits.", "error");
     return;
@@ -543,20 +613,49 @@ function exportProject() {
   addToExport({ kind: "project", data: { ...store.project, content: store.content } }, { quiet: false });
 }
 
+async function exportEdit(edit) {
+  try {
+    const full = await api("GET", `/api/projects/${edit.id}`);
+    addToExport({ kind: "project", data: full }, { quiet: false });
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
 function setUpProjectPicker() {
+  setUpTree({
+    root: $("p2-tree"),
+    loaded: p2Loaded,
+    player1VodId: () => timeline?.vodId ?? 0,
+    knownVodTitle: (vodId) => (Number(p1Vod?.vodId) === Number(vodId) ? p1Vod.title : knownVodTitle(vodId)),
+    onLoadItem: (item) => loadInPlayer2(item),
+    onOpenEdit: (id) => openProject(id),
+    onLoadVod: (vodId, title) => {
+      const known = knownVod(vodId);
+      openVod(known ?? { vodId: String(vodId), title });
+      timelineTabs.pick("p1");
+    },
+    onRenameEdit: (_edit, title) => store.rename(title),
+    onDeleteEdit: deleteEdit,
+    onCopyEdit: (edit) => copyEdit(edit.id),
+    onExportEdit: exportEdit,
+    onChanged: (kind) => {
+      if (kind === "clip") refreshClips();
+      if (kind === "video" || kind === "segment") refreshVideos();
+      refreshLibraryFilters();
+    },
+    close: () => $("p2-project-menu").hide(),
+  });
   $("p2-project-menu").addEventListener("sl-show", (event) => {
     if (event.target !== $("p2-project-menu")) return;
     renderProjectMenu();
-    loadProjectList();
+    openTree();
   });
   $("p2-project-items").addEventListener("sl-select", (event) => {
     const value = event.detail.item.value;
-    if (value === "new") newProject();
-    else if (value.startsWith("open:")) openProject(Number(value.slice(5)));
-    else if (value === "all") listTabs.pick("projects");
-    else if (value === "export") exportProject();
+    if (value === "export") exportProject();
     else if (value === "rename") renameProject();
-    else if (value === "copy") copyProject();
+    else if (value === "copy") copyEdit(store.project.id);
     else if (value === "delete") deleteProject();
     else if (value === "close") closeProject();
   });
@@ -639,10 +738,8 @@ function setUpPlayer1() {
     onClipsChanged: refreshClips,
     onVideosChanged: refreshVideos,
     onExport: exportFromTimeline,
-    // A new segment or clip goes into the project open in Player 2 (at its playhead), without switching the tab
-    onCreated: (item) => {
-      if (store.open && store.canEdit) addToProject({ kind: item.kind, data: { ...item.data, vodId: timeline.vodId, vodLengthSeconds: timeline.length() } }, { show: false });
-    },
+    // A new segment or clip goes into the edit open in Player 2 (at its playhead) when it's of the same VOD, without switching the tab
+    onCreated: (item) => addToProject({ kind: item.kind, data: { ...item.data, vodId: timeline.vodId, vodLengthSeconds: timeline.length() } }),
     onEdited: () => {},
   });
   wirePlayerButtons(1, "p1");
@@ -694,6 +791,7 @@ function setUpPlayer2() {
   });
   store = new ProjectStore({
     onChange: onProjectChanged,
+    onCreated: onEditCreated,
     onReplaced: () => timeline2.refresh(),
   });
   playback = new ProjectPlayback(player2, {
@@ -727,7 +825,7 @@ function setUpPlayer2() {
     onSeek: p2Seek,
     openItemEditor,
     closeItemEditor: () => closeItemEditor(false),
-    ensureProject: () => newProject({ show: false }),
+    loadItem: (item) => loadInPlayer2(item, { show: false }),
     onChange: () => {
       renderTools();
       if (projectVerticalOpen()) refreshProjectVertical();
@@ -755,22 +853,8 @@ function setUpPlayer2() {
   $("p2-export").addEventListener("click", exportProject);
   setUpProjectPicker();
   renderPlayer2();
-  // The project open last time
-  const last = loadSetting(LAST_PROJECT_KEY, null);
-  if (last && !DEMO) openProject(last, { show: false, quiet: true });
-}
-
-// A project card was renamed or deleted: the open one follows
-async function onProjectCardChanged(id, { deleted = false } = {}) {
-  loadProjectList();
-  if (store?.project?.id !== id) return;
-  if (deleted) await closeProject();
-  else await openProject(id, { show: false, quiet: true });
-}
-
-function refreshProjects() {
-  loadProjectList();
-  refreshProjectCards();
+  // What was loaded last time
+  restoreLastLoaded();
 }
 
 // Player 2's crosshair (or a piece's right-click): Player 1 opens the piece's VOD, goes to it and shows its range; the clip or
@@ -960,7 +1044,7 @@ function toggleVertical(on = !projectVerticalOpen()) {
     return;
   }
   if (!store.open) {
-    toast("Open a project in Player 2 first: drop clips, segments or videos on it.");
+    toast("Load a clip, video or segment in Player 2 first.");
     return;
   }
   player1.pause();
@@ -1330,7 +1414,7 @@ async function start() {
   setUpLayout();
   setUpExport({ demo: DEMO, otherPlayers: () => [player1, player2], onPausePlayers: () => playback?.pause() });
   screenTabs = tabs(document.querySelector(".main-tabs"), "data-view", showScreen, "clipco.editor.screen");
-  setUpLibrary({ onLoad: load, onExport: openExport, onProjectChanged: onProjectCardChanged, sample: DEMO ? demoSample() : null });
+  setUpLibrary({ onLoad: load, onExport: openExport, onPickList: (list) => listTabs.pick(list), sample: DEMO ? demoSample() : null });
   if (DEMO) wireDemoTools();
   listTabs = tabs(document.querySelector(".side-tabs"), "data-list", showList, "clipco.editor.list");
   setUpPlayers();

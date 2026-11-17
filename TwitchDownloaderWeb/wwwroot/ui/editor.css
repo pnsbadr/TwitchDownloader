@@ -313,6 +313,58 @@ button.team-pill:hover { background: var(--bg-4); }
 .edit-pick-state.bad { color: #ff8a8a; }
 .edit-menu { min-width: 280px; max-height: 70vh; overflow: auto; }
 .edit-menu .edit-detail { font-size: 12px; color: var(--text-dim); margin-left: 12px; }
+.edit-pick { max-width: 340px; }
+
+/* Player 2's picker: the VOD tree (ui/p2-tree.js) over the loaded item's actions */
+.tree-panel {
+  width: min(420px, calc(100vw - 32px));
+  max-height: 72vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.45);
+  overflow: hidden;
+}
+.p2-tree { overflow: auto; padding: 6px 0; flex: 1 1 auto; min-height: 60px; }
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 8px 0 calc(8px + var(--depth, 0) * 18px);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+.tree-row:hover { background: var(--bg-3); }
+.tree-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.tree-row.current { background: var(--accent-soft); }
+.tree-row.current .tree-label { font-weight: 600; }
+.tree-caret { font-size: 12px; color: var(--text-dim); flex: none; }
+.tree-row:not([aria-expanded]) .tree-caret { visibility: hidden; }
+.tree-icon { font-size: 15px; color: var(--text-dim); flex: none; }
+.tree-row.current .tree-icon { color: var(--accent-strong); }
+.tree-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-detail { flex: none; font-size: 12px; color: var(--text-dim); }
+.tree-actions { flex: none; display: flex; opacity: 0; }
+.tree-row:hover .tree-actions, .tree-row:focus-within .tree-actions { opacity: 1; }
+.tree-actions sl-icon-button { font-size: 14px; }
+.tree-actions sl-icon-button::part(base) { padding: 3px; }
+.tree-empty { margin: 2px 0; padding: 4px 8px 4px calc(26px + var(--depth, 0) * 18px); font-size: 12px; }
+.tree-hint { margin: 0; padding: 6px 12px; font-size: 12px; border-top: 1px solid var(--line); }
+.tree-panel .edit-menu { border: 0; border-top: 1px solid var(--line); border-radius: 0; min-width: 0; max-height: none; flex: none; }
+.tree-panel .edit-menu[hidden] { display: none; }
+@media (hover: none) { .tree-actions { opacity: 1; } }
+
+/* VOD cards: what the team made on it */
+.card-work { display: flex; align-items: center; gap: 4px; color: var(--accent-strong); }
+.card-work sl-icon { font-size: 13px; flex: none; }
+.filter-who sl-select { flex: 1 1 auto; min-width: 0; }
+#filter-member-row { flex-wrap: wrap; gap: 6px; }
+#filter-member-row sl-select { flex-basis: 100%; }
 .p2-info { display: flex; align-items: baseline; gap: 8px; justify-content: flex-end; }
 .p2-info .p2-kind { font: 600 12px/1 "Barlow Condensed", Barlow, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); flex: none; }
 .p2-info .p2-length { font-weight: 500; color: var(--text-dim); flex: none; }

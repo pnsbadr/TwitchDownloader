@@ -2,17 +2,24 @@ using Microsoft.EntityFrameworkCore;
 using TwitchDownloaderWeb.Data;
 using TwitchDownloaderWeb.Services;
 using TwitchDownloaderWeb.Services.Accounts;
+using TwitchDownloaderWeb.Services.Projects;
 
 namespace TwitchDownloaderWeb.Endpoints
 {
     /// <param name="Content">The whole timeline (null keeps it on PUT; an empty project on POST).</param>
     /// <param name="Revision">PUT: the revision the page last saw; a newer one on the server → 409 <c>project-changed</c> with the project.</param>
-    public sealed record ProjectRequest(string? Title, ProjectContent? Content = null, int? Revision = null);
+    /// <param name="EntryId">POST: the clip this is an edit of (its VOD is the edit's VOD).</param>
+    /// <param name="VideoId">POST: the video this is an edit of.</param>
+    /// <param name="VodId">POST: the VOD, for an edit of neither (else read from the clip/video, or from the content's first piece).</param>
+    public sealed record ProjectRequest(string? Title, ProjectContent? Content = null, int? Revision = null,
+        long? VodId = null, int? EntryId = null, int? VideoId = null);
 
     /// <param name="Content">Only from <c>GET /api/projects/{id}</c>, POST, PUT and copy (not in lists).</param>
+    /// <param name="VodId">The VOD it belongs to (0 = none yet); <paramref name="EntryId"/> / <paramref name="VideoId"/> = the clip or video
+    /// it's an edit of. <paramref name="VodIds"/> = every VOD its pieces use (more than one only for projects made before 2026-11-17).</param>
     public sealed record ProjectDto(int Id, int UserId, string? CreatedBy, string Title, int Revision, double LengthSeconds, int PieceCount,
         IReadOnlyList<long> VodIds, int? CopiedFromProjectId, DateTime CreatedAtUtc, DateTime UpdatedAtUtc, bool CanEdit, bool CanDelete,
-        ProjectContent? Content)
+        ProjectContent? Content, long VodId = 0, int? EntryId = null, int? VideoId = null)
     {
         /// <summary>May make their own copy of it (own: AddEntries; a teammate's: also see it and EditAnyEntries).</summary>
         public bool CanCopy { get; init; }
@@ -60,7 +67,8 @@ namespace TwitchDownloaderWeb.Endpoints
             var names = await TimelineEndpoints.UserNamesAsync(db, projects.Select(x => x.UserId), cancellationToken);
             return projects.Select(x => new ProjectDto(x.Id, x.UserId, names.GetValueOrDefault(x.UserId), x.Title, x.Revision,
                 Math.Round(x.LengthSeconds, 2), x.PieceCount, x.Vods.Select(v => v.VodId).OrderBy(v => v).ToList(), x.CopiedFromProjectId,
-                x.CreatedAtUtc, x.UpdatedAtUtc, CanEdit(team, x), CanDelete(team, x), withContent ? ProjectContent.Read(x.Content) : null)
+                x.CreatedAtUtc, x.UpdatedAtUtc, CanEdit(team, x), CanDelete(team, x), withContent ? ProjectContent.Read(x.Content) : null,
+                x.VodId, x.EntryId, x.VideoId)
             {
                 CanCopy = CanCopy(team, x),
                 CanDownload = CanDownload(team, x),
@@ -71,14 +79,28 @@ namespace TwitchDownloaderWeb.Endpoints
             (await ToDtosAsync(db, [project], team, true, cancellationToken))[0];
 
         /// <param name="userId">Only this member's.</param>
-        /// <param name="vodId">Only projects using this VOD.</param>
-        private static async Task<IResult> List(int? userId, long? vodId, int? limit, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
+        /// <param name="vodId">Only projects of this VOD (or using it).</param>
+        /// <param name="vodIds">Only projects of these VODs (comma separated, up to 200).</param>
+        /// <param name="entryId">Only edits of this clip.</param>
+        /// <param name="videoId">Only edits of this video.</param>
+        private static async Task<IResult> List(int? userId, long? vodId, string? vodIds, int? entryId, int? videoId, int? limit, TeamContext team,
+            LibraryDbContext db, CancellationToken cancellationToken)
         {
+            var (ids, problem) = TimelineEndpoints.ParseVodIds(vodIds);
+            if (problem is not null)
+                return problem;
+
             var query = db.Projects.Include(x => x.Vods).AsNoTracking();
             if (userId is { } user)
                 query = query.Where(x => x.UserId == user);
             if (vodId is { } vod)
-                query = query.Where(x => x.Vods.Any(v => v.VodId == vod));
+                query = query.Where(x => x.VodId == vod || x.Vods.Any(v => v.VodId == vod));
+            if (ids.Count > 0)
+                query = query.Where(x => ids.Contains(x.VodId));
+            if (entryId is { } entry)
+                query = query.Where(x => x.EntryId == entry);
+            if (videoId is { } video)
+                query = query.Where(x => x.VideoId == video);
             if (!VerticalAccess.CanSeeTeam(team))
             {
                 var own = team.UserId;
@@ -115,11 +137,16 @@ namespace TwitchDownloaderWeb.Endpoints
         /// Checks the content and that every VOD it uses that <paramref name="known"/> doesn't already have is one the team may open
         /// (a VOD already in the project stays usable, like other work on a channel the Owner stopped).
         /// </summary>
-        private static async Task<IResult?> CheckContentAsync(ProjectContent content, IReadOnlyCollection<long> known, TeamContext team,
+        private static async Task<IResult?> CheckContentAsync(ProjectContent content, IReadOnlyCollection<long> known, long projectVodId, TeamContext team,
             TeamChannelAccess access, CancellationToken cancellationToken)
         {
             if (content.Validate() is { } error)
                 return Invalid("content", error);
+
+            // Everything in an edit comes from its VOD (VODs an older project already uses stay)
+            var editVod = projectVodId != 0 ? projectVodId : content.VodIds.FirstOrDefault();
+            if (content.VodIds.Any(x => x != editVod && !known.Contains(x)))
+                return Invalid("content", "Everything in an edit has to come from its VOD.");
 
             foreach (var vodId in content.VodIds.Where(x => !known.Contains(x)))
                 if (TeamChannelAccess.Refusal(await access.CheckVodAsync(team.TeamId, vodId, cancellationToken), vodId) is { } refused)
@@ -155,11 +182,39 @@ namespace TwitchDownloaderWeb.Endpoints
                 return Invalid("project", $"You have {EditProject.MaxProjectsPerMember} projects. Delete some first.");
 
             var content = request.Content ?? ProjectContent.Empty;
-            if (await CheckContentAsync(content, [], team, access, cancellationToken) is { } problem)
+
+            // Where it belongs: the clip or video named, else the VOD named, else the content's first piece
+            long vodId = 0;
+            int? entryId = null, videoId = null;
+            if (request.EntryId is { } askedEntry)
+            {
+                var entry = await db.Entries.AsNoTracking().FirstOrDefaultAsync(x => x.Id == askedEntry, cancellationToken);
+                if (entry is null || entry.VodId <= 0)
+                    return Invalid("entryId", entry is null ? "Clip not found." : "Twitch didn't say which VOD this clip is from.");
+                (vodId, entryId) = (entry.VodId, entry.Id);
+            }
+            else if (request.VideoId is { } askedVideo)
+            {
+                var video = await db.Videos.AsNoTracking().FirstOrDefaultAsync(x => x.Id == askedVideo, cancellationToken);
+                if (video is null)
+                    return Invalid("videoId", "Video not found.");
+                (vodId, videoId) = (video.VodId, video.Id);
+            }
+            else if (request.VodId is > 0)
+                vodId = request.VodId.Value;
+            else if (await ProjectParents.FindAsync(db, team.TeamId, content, null, cancellationToken) is { } found)
+                (vodId, entryId, videoId) = (found.VodId, found.EntryId, found.VideoId);
+
+            if (vodId != 0 && TeamChannelAccess.Refusal(await access.CheckVodAsync(team.TeamId, vodId, cancellationToken), vodId) is { } refused)
+                return refused;
+            if (await CheckContentAsync(content, [], vodId, team, access, cancellationToken) is { } problem)
                 return problem;
 
             var now = DateTime.UtcNow;
-            var project = new EditProject { Title = title ?? "", Revision = 1, CreatedAtUtc = now, UpdatedAtUtc = now };
+            var project = new EditProject
+            {
+                Title = title ?? "", Revision = 1, CreatedAtUtc = now, UpdatedAtUtc = now, VodId = vodId, EntryId = entryId, VideoId = videoId,
+            };
             if (SetContent(project, content) is { } tooBig)
                 return tooBig;
             db.Projects.Add(project);
@@ -199,8 +254,10 @@ namespace TwitchDownloaderWeb.Endpoints
 
             if (request.Content is { } content)
             {
-                if (await CheckContentAsync(content, project.Vods.Select(x => x.VodId).ToList(), team, access, cancellationToken) is { } problem)
+                if (await CheckContentAsync(content, project.Vods.Select(x => x.VodId).ToList(), project.VodId, team, access, cancellationToken) is { } problem)
                     return problem;
+                if (project.VodId == 0)
+                    project.VodId = content.VodIds.FirstOrDefault();
                 var before = project.Content;
                 if (SetContent(project, content) is { } tooBig)
                     return tooBig;
@@ -270,8 +327,11 @@ namespace TwitchDownloaderWeb.Endpoints
 
             // The copy is new work, so its VODs must be open to the team now
             var content = ProjectContent.Read(source.Content);
-            if (await CheckContentAsync(content, [], team, access, cancellationToken) is { } problem)
+            if (await CheckContentAsync(content, source.Vods.Select(x => x.VodId).ToList(), source.VodId, team, access, cancellationToken) is { } problem)
                 return problem;
+            foreach (var vodId in content.VodIds)
+                if (TeamChannelAccess.Refusal(await access.CheckVodAsync(team.TeamId, vodId, cancellationToken), vodId) is { } refused)
+                    return refused;
 
             var now = DateTime.UtcNow;
             var copy = new EditProject
@@ -279,6 +339,9 @@ namespace TwitchDownloaderWeb.Endpoints
                 Title = string.IsNullOrEmpty(title) ? CopyTitle(source.Title) : title,
                 Revision = 1,
                 CopiedFromProjectId = source.Id,
+                VodId = source.VodId,
+                EntryId = source.EntryId,
+                VideoId = source.VideoId,
                 CreatedAtUtc = now,
                 UpdatedAtUtc = now,
             };

@@ -148,6 +148,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("TEXT");
 
+                    b.Property<int?>("EntryId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<double>("LengthSeconds")
                         .HasColumnType("REAL");
 
@@ -172,9 +175,21 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<int>("UserId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int?>("VideoId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("VodId")
+                        .HasColumnType("INTEGER");
+
                     b.HasKey("Id");
 
+                    b.HasIndex("EntryId");
+
+                    b.HasIndex("VideoId");
+
                     b.HasIndex("TeamId", "UserId");
+
+                    b.HasIndex("TeamId", "VodId");
 
                     b.ToTable("Projects", (string)null);
                 });
@@ -1339,11 +1354,21 @@ namespace TwitchDownloaderWeb.Data.Migrations
 
             modelBuilder.Entity("TwitchDownloaderWeb.Data.EditProject", b =>
                 {
+                    b.HasOne("TwitchDownloaderWeb.Data.LibraryEntry", null)
+                        .WithMany()
+                        .HasForeignKey("EntryId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("TwitchDownloaderWeb.Data.Team", null)
                         .WithMany()
                         .HasForeignKey("TeamId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.HasOne("TwitchDownloaderWeb.Data.Video", null)
+                        .WithMany()
+                        .HasForeignKey("VideoId")
+                        .OnDelete(DeleteBehavior.SetNull);
                 });
 
             modelBuilder.Entity("TwitchDownloaderWeb.Data.ExportBatch", b =>

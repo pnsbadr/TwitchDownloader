@@ -345,8 +345,11 @@ namespace TwitchDownloaderWeb.Endpoints
         /// Day boundaries are the client's job: it knows which time zone it is showing and converts that zone's midnights
         /// to UTC instants, so the server only ever compares UTC values.
         /// </remarks>
+        /// <param name="vodId">Only clips of this VOD.</param>
+        /// <param name="madeBy">Only clips this member added.</param>
+        /// <param name="editedBy">Only clips this member made an edit of (Player 2).</param>
         private static async Task<IResult> ListEntries(LibraryDbContext db, string? search, string? sort, string? order, int? limit,
-            string? from, string? to, string? dateField, CancellationToken cancellationToken)
+            string? from, string? to, string? dateField, long? vodId, int? madeBy, int? editedBy, TeamContext team, CancellationToken cancellationToken)
         {
             if (!TryParseInstant(from, out var fromUtc))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["from"] = ["Use an ISO 8601 date-time with an offset, e.g. 2026-10-09T07:00:00Z."] });
@@ -370,6 +373,22 @@ namespace TwitchDownloaderWeb.Endpoints
             }
 
             var query = db.Entries.AsNoTracking();
+
+            if (vodId is { } vod)
+                query = query.Where(x => x.VodId == vod);
+            if (madeBy is { } maker)
+            {
+                var makerText = maker.ToString();
+                query = query.Where(x => x.AddedByUserId == makerText);
+            }
+            if (editedBy is { } editor)
+            {
+                // Who made which vertical edit is only told to members who may see teammates' edits (VerticalAccess)
+                if (editor != team.UserId && !VerticalAccess.CanSeeTeam(team))
+                    query = query.Where(x => false);
+                else
+                    query = query.Where(x => db.Projects.Any(p => p.EntryId == x.Id && p.UserId == editor));
+            }
 
             if (fromUtc is { } lower)
                 query = useStreamDate ? query.Where(x => x.StreamDateUtc >= lower) : query.Where(x => x.AddedAtUtc >= lower);

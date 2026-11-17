@@ -24,7 +24,7 @@ const KINDS = {
   vod: { icon: "broadcast", label: "VOD range" },
   clip: { icon: "film-strip", label: "Clip" },
   video: { icon: "film-slate", label: "Video" },
-  project: { icon: "stack", label: "Project" },
+  project: { icon: "device-mobile", label: "Edit" },
   segment: { icon: "brackets-square", label: "Segment" },
 };
 const kindLabel = (item) => (item.editId ? `${KINDS[item.kind].label} edit` : KINDS[item.kind].label);
@@ -496,7 +496,7 @@ function projectFormat(item) {
   });
   return el("div", { class: "xs-format" },
     el("div", { class: "xs-label" }, "Format"), el("div", { class: "xs-checks" }, horizontal, vertical),
-    el("p", { class: "faint xs-note" }, "Made from what the project's timeline plays, top row first; gaps are black. Vertical uses each piece's boxes (Player 2's 9:16 view; pieces without boxes get a centered crop)."));
+    el("p", { class: "faint xs-note" }, "Made from what the edit's timeline plays, top row first; gaps are black. Vertical uses each piece's boxes (Player 2's 9:16 view; pieces without boxes get a centered crop)."));
 }
 
 function clipFormat(item) {

@@ -201,7 +201,7 @@ function changeLayout(fn) {
   const piece = vx.piece;
   if (!piece) return;
   if (!canChange()) {
-    toast(store().canEdit ? "That piece's row is locked." : (store().project?.canCopy === false ? "This project is view only." : "This project is view only. Make your own copy to change it."));
+    toast(store().canEdit ? "That piece's row is locked." : (store().project?.canCopy === false ? "This edit is view only." : "This edit is view only. Make your own copy to change it."));
     return;
   }
   store().edit((content) => {
@@ -425,7 +425,7 @@ function build() {
   const progress = el("sl-progress-bar", { class: "vx2-progress", value: "0", hidden: true });
   const message = el("p", { class: "vx2-message faint" });
   const list = el("ul", { class: "vx2-renders" });
-  const empty = el("p", { class: "faint vx2-empty" }, "No 9:16 renders of this project yet. Render makes one (the Export tab has more options).");
+  const empty = el("p", { class: "faint vx2-empty" }, "No 9:16 renders of this edit yet. Render makes one (the Export tab has more options).");
 
   const side = el("aside", { class: "vx2-side" },
     el("div", { class: "vx2-group faint" }, "Layout of this piece"),
@@ -435,7 +435,7 @@ function build() {
     el("div", { class: "vx2-tools", "data-tip-placement": "bottom" }, keyButton, prevKey, nextKey, clearKeys),
     keyInfo,
     safeName,
-    el("div", { class: "vx2-render-row" }, withTooltip(render, "Render the whole project as one 9:16 video", "verticalRender"), progress),
+    el("div", { class: "vx2-render-row" }, withTooltip(render, "Render the whole edit as one 9:16 video", "verticalRender"), progress),
     message,
     el("h3", { class: "vx2-heading display" }, "9:16 renders"),
     empty,

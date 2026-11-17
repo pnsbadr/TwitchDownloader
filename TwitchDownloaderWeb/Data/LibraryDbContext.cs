@@ -256,7 +256,10 @@ namespace TwitchDownloaderWeb.Data
                 // Two saves of one revision at once: the second one's update finds no row and is refused (409 project-changed)
                 entity.Property(x => x.Revision).IsConcurrencyToken();
                 entity.HasIndex(x => new { x.TeamId, x.UserId });
+                entity.HasIndex(x => new { x.TeamId, x.VodId });
                 entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne<LibraryEntry>().WithMany().HasForeignKey(x => x.EntryId).OnDelete(DeleteBehavior.SetNull);
+                entity.HasOne<Video>().WithMany().HasForeignKey(x => x.VideoId).OnDelete(DeleteBehavior.SetNull);
                 entity.HasMany(x => x.Vods).WithOne().HasForeignKey(x => x.ProjectId).OnDelete(DeleteBehavior.Cascade);
                 // A project using any VOD hidden from the team is hidden whole (like exports)
                 entity.HasQueryFilter(x => !ScopedToTeam || (x.TeamId == ScopeTeamId
