@@ -11,8 +11,9 @@ namespace TwitchDownloaderWeb.Endpoints
     /// <param name="EntryId">POST: the clip this is an edit of (its VOD is the edit's VOD).</param>
     /// <param name="VideoId">POST: the video this is an edit of.</param>
     /// <param name="VodId">POST: the VOD, for an edit of neither (else read from the clip/video, or from the content's first piece).</param>
+    /// <param name="Vertical">POST: a vertical (9:16) edit; false or left out = a horizontal one, whose layouts are dropped. Fixed once made.</param>
     public sealed record ProjectRequest(string? Title, ProjectContent? Content = null, int? Revision = null,
-        long? VodId = null, int? EntryId = null, int? VideoId = null);
+        long? VodId = null, int? EntryId = null, int? VideoId = null, bool? Vertical = null);
 
     /// <param name="Content">Only from <c>GET /api/projects/{id}</c>, POST, PUT and copy (not in lists).</param>
     /// <param name="VodId">The VOD it belongs to (0 = none yet); <paramref name="EntryId"/> / <paramref name="VideoId"/> = the clip or video
@@ -26,6 +27,9 @@ namespace TwitchDownloaderWeb.Endpoints
 
         /// <summary>May put it on the export list (own, or a teammate's with DownloadTeamVerticals).</summary>
         public bool CanDownload { get; init; }
+
+        /// <summary>A vertical (9:16) edit; false = a horizontal (Player 2) one.</summary>
+        public bool Vertical { get; init; }
     }
 
     /// <summary>
@@ -72,6 +76,7 @@ namespace TwitchDownloaderWeb.Endpoints
             {
                 CanCopy = CanCopy(team, x),
                 CanDownload = CanDownload(team, x),
+                Vertical = x.Vertical,
             }).ToList();
         }
 
@@ -83,7 +88,8 @@ namespace TwitchDownloaderWeb.Endpoints
         /// <param name="vodIds">Only projects of these VODs (comma separated, up to 200).</param>
         /// <param name="entryId">Only edits of this clip.</param>
         /// <param name="videoId">Only edits of this video.</param>
-        private static async Task<IResult> List(int? userId, long? vodId, string? vodIds, int? entryId, int? videoId, int? limit, TeamContext team,
+        /// <param name="vertical">Only vertical (true) or horizontal (false) edits.</param>
+        private static async Task<IResult> List(int? userId, long? vodId, string? vodIds, int? entryId, int? videoId, bool? vertical, int? limit, TeamContext team,
             LibraryDbContext db, CancellationToken cancellationToken)
         {
             var (ids, problem) = TimelineEndpoints.ParseVodIds(vodIds);
@@ -101,6 +107,8 @@ namespace TwitchDownloaderWeb.Endpoints
                 query = query.Where(x => x.EntryId == entry);
             if (videoId is { } video)
                 query = query.Where(x => x.VideoId == video);
+            if (vertical is { } isVertical)
+                query = query.Where(x => x.Vertical == isVertical);
             if (!VerticalAccess.CanSeeTeam(team))
             {
                 var own = team.UserId;
@@ -154,9 +162,11 @@ namespace TwitchDownloaderWeb.Endpoints
             return null;
         }
 
-        /// <summary>Stores the content and what's read from it.</summary>
+        /// <summary>Stores the content and what's read from it (a horizontal edit keeps no layouts).</summary>
         private static IResult? SetContent(EditProject project, ProjectContent content)
         {
+            if (!project.Vertical)
+                content = content.WithoutLayouts();
             var json = content.Write();
             if (json.Length > EditProject.MaxContentLength)
                 return Invalid("content", "The project is too big to save.");
@@ -214,12 +224,13 @@ namespace TwitchDownloaderWeb.Endpoints
             var project = new EditProject
             {
                 Title = title ?? "", Revision = 1, CreatedAtUtc = now, UpdatedAtUtc = now, VodId = vodId, EntryId = entryId, VideoId = videoId,
+                Vertical = request.Vertical == true,
             };
             if (SetContent(project, content) is { } tooBig)
                 return tooBig;
             db.Projects.Add(project);
             await db.SaveChangesAsync(cancellationToken);
-            db.Audit(AuditActions.ProjectAdded, null, $"project {project.Id}{TitleText(project)}, {project.PieceCount} piece{(project.PieceCount == 1 ? "" : "s")}");
+            db.Audit(AuditActions.ProjectAdded, null, $"{(project.Vertical ? "vertical" : "horizontal")} project {project.Id}{TitleText(project)}, {project.PieceCount} piece{(project.PieceCount == 1 ? "" : "s")}");
             await db.SaveChangesAsync(cancellationToken);
             return Results.Created($"/api/projects/{project.Id}", await ToDtoAsync(db, project, team, cancellationToken));
         }
@@ -342,6 +353,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 VodId = source.VodId,
                 EntryId = source.EntryId,
                 VideoId = source.VideoId,
+                Vertical = source.Vertical,
                 CreatedAtUtc = now,
                 UpdatedAtUtc = now,
             };

@@ -44,6 +44,14 @@ namespace TwitchDownloaderWeb.Data
         /// <summary>The video this is an edit of (FK, SetNull). At most one of <see cref="EntryId"/> / <see cref="VideoId"/> is set.</summary>
         public int? VideoId { get; set; }
 
+        /// <summary>
+        /// A <b>vertical</b> (9:16) edit (badrfly 2026-11-17, thread "Separate the vertical editor from Player 2"): it opens in the vertical
+        /// editor, its pieces carry the boxes and keyframes, and it exports as 9:16. A horizontal edit (false) is Player 2's landscape edit:
+        /// it never keeps layouts (dropped on save) and exports landscape. The page's phone button makes a new vertical edit copied from what
+        /// Player 2 has loaded; after that the two are separate.
+        /// </summary>
+        public bool Vertical { get; set; }
+
         /// <summary>A copy of another project (no FK).</summary>
         public int? CopiedFromProjectId { get; set; }
 
@@ -112,6 +120,14 @@ namespace TwitchDownloaderWeb.Data
         }
 
         public string Write() => JsonSerializer.Serialize(this, Json);
+
+        /// <summary>The same content with no vertical layouts (what a horizontal edit keeps).</summary>
+        public ProjectContent WithoutLayouts() =>
+            Pieces is { } pieces && pieces.Any(x => x?.Layout is not null) ? this with { Pieces = pieces.Select(x => x is null ? x! : x with { Layout = null }).ToList() } : this;
+
+        /// <summary>Whether any piece has a vertical layout.</summary>
+        [JsonIgnore]
+        public bool HasLayouts => Pieces?.Any(x => x?.Layout is not null) ?? false;
 
         /// <summary>Where the last piece ends on the project's clock.</summary>
         [JsonIgnore]
