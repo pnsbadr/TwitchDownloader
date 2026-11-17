@@ -35,9 +35,27 @@ namespace TwitchDownloaderWeb.Endpoints
                 CreatedBy = x.CreatedByUserId is { } u ? names?.GetValueOrDefault(u) : null,
             }).ToList()) { RenderingEditId = state.RenderingEditId };
 
-        public static async Task<ShortformDto> FromAsync(LibraryDbContext db, int entryId, ShortformState state, CancellationToken cancellationToken) =>
-            From(entryId, state, await TimelineEndpoints.UserNamesAsync(db, state.Renders.Where(x => x.CreatedByUserId is not null).Select(x => x.CreatedByUserId!.Value),
+        public static async Task<ShortformDto> FromAsync(LibraryDbContext db, int entryId, ShortformState state, TeamContext team, CancellationToken cancellationToken)
+        {
+            state = ForMember(state, team);
+            return From(entryId, state, await TimelineEndpoints.UserNamesAsync(db, state.Renders.Where(x => x.CreatedByUserId is not null).Select(x => x.CreatedByUserId!.Value),
                 cancellationToken));
+        }
+
+        /// <summary>
+        /// Leaves out teammates' renders the member may not see (<see cref="VerticalAccess"/>). The layout the editor reopens with is then
+        /// their newest own clip render's; a teammate's running render shows only as running.
+        /// </summary>
+        internal static ShortformState ForMember(ShortformState state, TeamContext team)
+        {
+            if (VerticalAccess.CanSeeTeam(team))
+                return state;
+            var renders = state.Renders.Where(x => VerticalAccess.IsOwn(team, x.CreatedByUserId)).ToList();
+            var layout = state.Status == ShortformStatus.None ? renders.FirstOrDefault(x => x.EditId is null)?.Layout
+                : VerticalAccess.IsOwn(team, state.RenderingUserId) ? state.Layout
+                : renders.FirstOrDefault(x => x.EditId is null)?.Layout;
+            return state with { Renders = renders, Layout = layout };
+        }
     }
 
     /// <summary>
@@ -57,12 +75,12 @@ namespace TwitchDownloaderWeb.Endpoints
             return app;
         }
 
-        private static async Task<IResult> GetShortform(int id, LibraryDbContext db, ShortformService shortform, CancellationToken cancellationToken)
+        private static async Task<IResult> GetShortform(int id, TeamContext team, LibraryDbContext db, ShortformService shortform, CancellationToken cancellationToken)
         {
             if (await db.Entries.FindAsync([id], cancellationToken) is null)
                 return EntryNotFound(id);
 
-            return Results.Ok(await ShortformDto.FromAsync(db, id, shortform.GetState(id), cancellationToken));
+            return Results.Ok(await ShortformDto.FromAsync(db, id, shortform.GetState(id), team, cancellationToken));
         }
 
         /// <summary>Starts a render from the entry's file (stored, or an unexpired on-demand file). 202 with the new state.</summary>
@@ -113,11 +131,13 @@ namespace TwitchDownloaderWeb.Endpoints
             // The render itself is audited by the background job, which doesn't know who asked; this records who did
             db.Audit(AuditActions.ShortformRequested, id, layout.Summary + (editId is { } e ? $", edit {e}" : ""));
             await db.SaveChangesAsync(cancellationToken);
-            return Results.Accepted($"/api/entries/{id}/shortform", await ShortformDto.FromAsync(db, id, shortform.GetState(id), cancellationToken));
+            return Results.Accepted($"/api/entries/{id}/shortform", await ShortformDto.FromAsync(db, id, shortform.GetState(id), team, cancellationToken));
         }
 
         /// <param name="inline">True plays the file in the page's preview player instead of downloading it (not audited).</param>
-        private static async Task<IResult> DownloadRender(int id, string renderId, bool? inline, LibraryDbContext db, ShortformService shortform,
+        /// A teammate's render plays in the preview with <see cref="TeamPermission.ViewTeamVerticals"/> and downloads with
+        /// <see cref="TeamPermission.DownloadTeamVerticals"/> (<see cref="VerticalAccess"/>).
+        private static async Task<IResult> DownloadRender(int id, string renderId, bool? inline, TeamContext team, LibraryDbContext db, ShortformService shortform,
             CancellationToken cancellationToken)
         {
             var entry = await db.Entries.FindAsync([id], cancellationToken);
@@ -125,8 +145,10 @@ namespace TwitchDownloaderWeb.Endpoints
                 return EntryNotFound(id);
 
             var render = shortform.ListRenders(id).FirstOrDefault(x => x.Id == renderId);
-            if (render is null || shortform.RenderPath(id, renderId, "mp4") is not { } path)
+            if (render is null || !VerticalAccess.CanSee(team, render.CreatedByUserId) || shortform.RenderPath(id, renderId, "mp4") is not { } path)
                 return RenderNotFound();
+            if (inline != true && !VerticalAccess.CanDownload(team, render.CreatedByUserId))
+                return Results.Problem(detail: "Your role doesn't let you download teammates' vertical edits.", statusCode: StatusCodes.Status403Forbidden);
 
             if (inline == true)
                 return Results.File(path, "video/mp4", enableRangeProcessing: true);
@@ -138,20 +160,27 @@ namespace TwitchDownloaderWeb.Endpoints
             return Results.File(path, "video/mp4", fileName, enableRangeProcessing: true);
         }
 
-        private static async Task<IResult> GetThumbnail(int id, string renderId, LibraryDbContext db, ShortformService shortform, CancellationToken cancellationToken)
+        private static async Task<IResult> GetThumbnail(int id, string renderId, TeamContext team, LibraryDbContext db, ShortformService shortform,
+            CancellationToken cancellationToken)
         {
             // The lookup is team-scoped, so another team's renders 404 like missing ones
             if (await db.Entries.FindAsync([id], cancellationToken) is null)
                 return EntryNotFound(id);
+            if (shortform.ListRenders(id).FirstOrDefault(x => x.Id == renderId) is not { } render || !VerticalAccess.CanSee(team, render.CreatedByUserId))
+                return RenderNotFound();
 
             var path = shortform.RenderPath(id, renderId, "jpg");
             return path is not null && File.Exists(path) ? Results.File(path, "image/jpeg") : RenderNotFound();
         }
 
-        private static async Task<IResult> DeleteRender(int id, string renderId, LibraryDbContext db, ShortformService shortform, CancellationToken cancellationToken)
+        private static async Task<IResult> DeleteRender(int id, string renderId, TeamContext team, LibraryDbContext db, ShortformService shortform,
+            CancellationToken cancellationToken)
         {
             if (await db.Entries.FindAsync([id], cancellationToken) is null)
                 return EntryNotFound(id);
+            // DeleteRenders is "delete anyone's"; a teammate's must also be one they may see
+            if (shortform.ListRenders(id).FirstOrDefault(x => x.Id == renderId) is not { } render || !VerticalAccess.CanSee(team, render.CreatedByUserId))
+                return RenderNotFound();
 
             if (!shortform.DeleteRender(id, renderId))
                 return RenderNotFound();

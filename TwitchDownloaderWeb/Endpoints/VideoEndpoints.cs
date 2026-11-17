@@ -147,7 +147,13 @@ namespace TwitchDownloaderWeb.Endpoints
             if (userId is { } user)
                 query = query.Where(x => x.UserId == user);
             if (editedBy is { } editor)
-                query = query.Where(x => db.Projects.Any(p => p.VideoId == x.Id && p.UserId == editor));
+            {
+                // Who made which vertical edit is only told to members who may see teammates' edits (VerticalAccess)
+                if (editor != team.UserId && !VerticalAccess.CanSeeTeam(team))
+                    query = query.Where(x => false);
+                else
+                    query = query.Where(x => db.Projects.Any(p => p.VideoId == x.Id && p.UserId == editor));
+            }
 
             var videos = await query.OrderByDescending(x => x.CreatedAtUtc).Take(Math.Clamp(limit ?? 200, 1, 1000)).ToListAsync(cancellationToken);
             return Results.Ok(await ToDtosAsync(db, videos, team, cancellationToken));

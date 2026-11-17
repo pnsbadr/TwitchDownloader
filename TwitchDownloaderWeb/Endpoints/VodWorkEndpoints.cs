@@ -24,7 +24,7 @@ namespace TwitchDownloaderWeb.Endpoints
         }
 
         /// <param name="vodIds">These VODs (comma separated, up to 200; VODs with no work are left out); none = the VODs with work, newest work first.</param>
-        private static async Task<IResult> List(string? vodIds, int? limit, LibraryDbContext db, CancellationToken cancellationToken)
+        private static async Task<IResult> List(string? vodIds, int? limit, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
         {
             var (ids, problem) = TimelineEndpoints.ParseVodIds(vodIds);
             if (problem is not null)
@@ -34,6 +34,12 @@ namespace TwitchDownloaderWeb.Endpoints
             var markers = db.Markers.AsNoTracking();
             var videos = db.Videos.AsNoTracking();
             var projects = db.Projects.AsNoTracking().Where(x => x.VodId > 0);
+            // Edits: only the caller's own unless they may see teammates' (VerticalAccess)
+            if (!VerticalAccess.CanSeeTeam(team))
+            {
+                var own = team.UserId;
+                projects = projects.Where(x => x.UserId == own);
+            }
             if (ids.Count > 0)
             {
                 entries = entries.Where(x => ids.Contains(x.VodId));

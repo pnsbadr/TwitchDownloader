@@ -48,6 +48,9 @@ namespace TwitchDownloaderWeb.Tests
             // Video filters
             Assert.Equal([videoId], Ids(await GetJsonAsync(owner, $"/api/videos?editedBy={ownerId}")));
             Assert.Empty(Ids(await GetJsonAsync(owner, $"/api/videos?editedBy={memberId}")));
+            // A member who can't see teammates' vertical edits isn't told who made them
+            Assert.Empty(Ids(await GetJsonAsync(member, $"/api/videos?editedBy={ownerId}")));
+            Assert.Equal([clipA], Ids(await GetJsonAsync(member, $"/api/entries?editedBy={memberId}")));
 
             // Work per VOD
             var work = await GetJsonAsync(owner, "/api/vods/work");

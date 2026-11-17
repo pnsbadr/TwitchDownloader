@@ -457,7 +457,7 @@ function renderProjectPicker() {
   $("p2-project-state").textContent = state;
   $("p2-project-state").classList.toggle("bad", state === "not saved");
   $("p2-project-pick").title = open
-    ? `${store.project.title}${store.project.createdBy && !store.canEdit ? ` by ${store.project.createdBy} (view only: make your own copy to change it)` : ""}`
+    ? `${store.project.title}${store.project.createdBy && !store.canEdit ? ` by ${store.project.createdBy} (${store.project.canCopy === false ? "view only" : "view only: make your own copy to change it"})` : ""}`
     : "Open or start a project";
   if ($("p2-project-menu").open) renderProjectMenu();
 }
@@ -480,9 +480,10 @@ function renderProjectMenu() {
   entries.push(item("all", "All projects…", { icon: "list" }));
   if (current) {
     entries.push(el("sl-divider"));
-    if (!DEMO) entries.push(item("export", "Add to the export list", { icon: "download-simple", disabled: !store.content.pieces.length }));
+    // A teammate's project (a vertical edit) is exported and copied only with the role permissions for that (canDownload / canCopy)
+    if (!DEMO) entries.push(item("export", "Add to the export list", { icon: "download-simple", disabled: !store.content.pieces.length || current.canDownload === false }));
     if (store.canEdit) entries.push(item("rename", "Rename this project", { icon: "pencil-simple" }));
-    entries.push(item("copy", store.canEdit ? "Duplicate" : "Make my own copy", { icon: "copy", disabled: !canMake }));
+    entries.push(item("copy", store.canEdit ? "Duplicate" : "Make my own copy", { icon: "copy", disabled: !canMake || current.canCopy === false }));
     if (current.canDelete) entries.push(item("delete", "Delete this project", { icon: "trash" }));
     entries.push(item("close", "Close (nothing is deleted)", { icon: "eject" }));
   }
@@ -535,6 +536,10 @@ async function deleteProject() {
 
 function exportProject() {
   if (!store.open) return;
+  if (store.project.canDownload === false) {
+    toast("Your role doesn't let you export teammates' vertical edits.", "error");
+    return;
+  }
   addToExport({ kind: "project", data: { ...store.project, content: store.content } }, { quiet: false });
 }
 

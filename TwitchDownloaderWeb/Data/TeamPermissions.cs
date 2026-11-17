@@ -38,10 +38,15 @@ namespace TwitchDownloaderWeb.Data
         ResetPasswords = 1L << 16,
         /// <summary>See each member's activity, what they worked on and their disk use, and the team's audit log.</summary>
         ViewActivity = 1L << 17,
-        /// <summary>Export a clip as vertical with any team member's render (otherwise only their own newest; badrfly, 2026-11-15).</summary>
+        /// <summary>
+        /// Download teammates' vertical edits (projects and 9:16 renders) and export a clip as vertical with any member's render (otherwise
+        /// only their own newest; badrfly, 2026-11-15). Also lets them see those edits, like <see cref="ViewTeamVerticals"/> (badrfly 2026-11-17).
+        /// </summary>
         DownloadTeamVerticals = 1L << 18,
+        /// <summary>See teammates' vertical edits (projects and 9:16 renders), view only (badrfly 2026-11-17). See <c>Services.Accounts.VerticalAccess</c>.</summary>
+        ViewTeamVerticals = 1L << 19,
 
-        All = (1L << 19) - 1,
+        All = (1L << 20) - 1,
 
         /// <summary>Any of these lets a member open the Team page.</summary>
         TeamPage = InviteMembers | AssignRoles | ManageRoles | RemoveMembers | ResetPasswords | ViewActivity | ManageAudioSettings,
@@ -63,8 +68,10 @@ namespace TwitchDownloaderWeb.Data
             (TeamPermission.GenerateFiles, new("GenerateFiles", "Library", "Make files", "Generate files for reference-only entries and retry failed downloads.")),
             (TeamPermission.MakeVertical, new("MakeVertical", "Vertical", "Make vertical videos", "Render 9:16 versions of entries.")),
             (TeamPermission.DeleteRenders, new("DeleteRenders", "Vertical", "Delete vertical renders", "Delete anyone's vertical renders.")),
-            (TeamPermission.DownloadTeamVerticals, new("DownloadTeamVerticals", "Vertical", "Download team vertical entries",
-                "When exporting a clip as vertical, pick any of the team's vertical layouts for it (otherwise their own newest one is used).")),
+            (TeamPermission.ViewTeamVerticals, new("ViewTeamVerticals", "Vertical", "See teammates' vertical edits",
+                "See and play other members' projects and vertical renders, view only. Without it members see only their own vertical edits.")),
+            (TeamPermission.DownloadTeamVerticals, new("DownloadTeamVerticals", "Vertical", "Download teammates' vertical edits",
+                "Download and export other members' projects and vertical renders (includes seeing them). Re-editing or copying them also needs Edit anyone's entries, deleting them Delete anyone's entries.")),
             (TeamPermission.SaveAudio, new("SaveAudio", "Channels and audio", "Save audio now", "Use the Save audio now button on VODs.")),
             (TeamPermission.ManageAudioSettings, new("ManageAudioSettings", "Channels and audio", "Automatic audio saving", "Turn the team's automatic audio saving on or off.")),
             (TeamPermission.InviteMembers, new("InviteMembers", "Team", "Invite people", "Make and revoke invite links.")),
