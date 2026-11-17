@@ -67,8 +67,7 @@
           <button type="button" role="tab" class="side-tab display" data-list="vods" aria-selected="true">VODs</button>
           <button type="button" role="tab" class="side-tab display" data-list="videos" aria-selected="false">Videos</button>
           <button type="button" role="tab" class="side-tab display" data-list="clips" aria-selected="false">Clips</button>
-          <button type="button" role="tab" class="side-tab display" data-list="projects" aria-selected="false">Projects</button>
-        </div>
+                  </div>
         <div class="side-tools" data-tip-placement="bottom">
           <sl-select id="side-channel" size="small" hoist aria-label="Channel" hidden></sl-select>
           <span class="side-count faint" id="side-count"></span>
@@ -83,6 +82,19 @@
                   <sl-radio-button value="archive">Broadcasts</sl-radio-button>
                   <sl-radio-button value="highlight">Highlights</sl-radio-button>
                   <sl-radio-button value="upload">Uploads</sl-radio-button>
+                </sl-radio-group>
+              </div>
+              <div class="filter-row" id="filter-work-row">
+                <sl-switch id="filter-work" size="small">Only VODs with work on them</sl-switch>
+              </div>
+              <div class="filter-row filter-who" id="filter-vod-row">
+                <sl-select id="filter-vod" size="small" label="VOD" hoist clearable placeholder="Any VOD"></sl-select>
+              </div>
+              <div class="filter-row filter-who" id="filter-member-row">
+                <sl-select id="filter-member" size="small" label="Member" hoist clearable placeholder="Anyone"></sl-select>
+                <sl-radio-group id="filter-member-mode" size="small" value="made" aria-label="Made or edited">
+                  <sl-radio-button value="made">Made by</sl-radio-button>
+                  <sl-radio-button value="edited">Edited by</sl-radio-button>
                 </sl-radio-group>
               </div>
               <div class="filter-row" id="filter-sort-row">
@@ -148,13 +160,17 @@
                 <span class="player-name display">Player 2</span>
                 <!-- The project open in Player 2 and what can be done with it (ui/editor.js renderProjectMenu) -->
                 <sl-dropdown id="p2-project-menu" placement="bottom-start" hoist distance="4">
-                  <button slot="trigger" type="button" class="edit-pick" id="p2-project-pick" aria-label="Project (open another)">
+                  <button slot="trigger" type="button" class="edit-pick" id="p2-project-pick" aria-label="What Player 2 has loaded (pick another)">
                     <sl-icon library="ph" name="stack"></sl-icon>
-                    <span class="edit-pick-name" id="p2-project-name">No project</span>
+                    <span class="edit-pick-name" id="p2-project-name">Nothing loaded</span>
                     <span class="edit-pick-state" id="p2-project-state"></span>
                     <sl-icon library="ph" name="caret-down" class="edit-pick-caret"></sl-icon>
                   </button>
-                  <sl-menu id="p2-project-items" class="edit-menu"></sl-menu>
+                  <div class="tree-panel">
+                    <div class="p2-tree" id="p2-tree" role="tree" aria-label="VODs, their videos and clips, and edits"></div>
+                    <p class="tree-hint faint">Double-click a clip or video to load it. Your first change saves a new edit of it.</p>
+                    <sl-menu id="p2-project-items" class="edit-menu" hidden></sl-menu>
+                  </div>
                 </sl-dropdown>
                 <span class="player-info p2-info" id="p2-info"></span>
               </header>
@@ -165,8 +181,8 @@
                 <p class="player-note" id="p2-note" hidden></p>
                 <div class="drop-hint" id="p2-hint">
                   <sl-icon library="ph" name="film-strip"></sl-icon>
-                  <p>Drag clips, segments or videos here to start a project</p>
-                  <p class="faint">or open one from the Projects list. Put as many as you like on its rows.</p>
+                  <p>Drag a clip, video or segment here</p>
+                  <p class="faint">or pick one from the menu above. Drop more from the same VOD on its timeline to combine them.</p>
                 </div>
               </div>
               <div class="player-controls" data-tip-placement="top">
@@ -176,9 +192,9 @@
                 <span class="controls-gap"></span>
                 <sl-icon-button library="ph" id="p2-show" name="crosshair" label="Show in Player 1" disabled></sl-icon-button>
                 <sl-icon-button library="ph" name="device-mobile" label="9:16 view (boxes for a vertical video)" data-keybind="verticalToggle" disabled id="p2-vertical"></sl-icon-button>
-                <sl-icon-button library="ph" id="p2-export" name="download-simple" label="Add the project to the export list" disabled></sl-icon-button>
-                <sl-icon-button library="ph" id="p2-rename" name="pencil-simple" label="Rename the project" disabled></sl-icon-button>
-                <sl-icon-button library="ph" id="p2-delete" name="eject" label="Close the project (nothing is deleted)" disabled></sl-icon-button>
+                <sl-icon-button library="ph" id="p2-export" name="download-simple" label="Add to the export list" disabled></sl-icon-button>
+                <sl-icon-button library="ph" id="p2-rename" name="pencil-simple" label="Rename the edit" disabled></sl-icon-button>
+                <sl-icon-button library="ph" id="p2-delete" name="eject" label="Unload (nothing is deleted)" disabled></sl-icon-button>
                 <sl-icon-button library="ph" id="p2-mute" name="speaker-high" label="Mute" disabled></sl-icon-button>
                 <sl-range id="p2-volume" class="volume" min="0" max="100" value="100" tooltip="none" aria-label="Volume" disabled></sl-range>
                 <sl-dropdown id="p2-quality-menu" placement="top-end" hoist distance="4">

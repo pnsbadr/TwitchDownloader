@@ -521,6 +521,19 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   uses `clipLibrary.snap`. New pieces take the layout of the piece before them on their row.
   **Nothing is deleted from Player 2** except pieces of the project (badrfly 2026-11-16): unloading only closes the project; real deletes of
   clips/segments are on Player 1's timeline and the cards.
+- **Player 2's picker = the VOD tree** (`ui/p2-tree.js`, badrfly 2026-11-17, "the VOD is the project"; supersedes the project picker and the
+  PROJECTS tab, which are gone; the page never says "project"): VODs with work (`GET /api/vods/work`, Player 1's first) › Videos › video › its
+  segments (+ the video's edits) / Clips › clip › its edits / Other edits (lone segments, VOD ranges, deleted parents). Opening a line closes its
+  siblings; opening the menu with something loaded opens only the path to it. Click opens a clip/video line, double-click or its play icon
+  loads it; segments and edits load with a click; pencil / right-click renames (creator or EditAnyEntries; edits follow `canEdit`, copy and
+  export follow `canCopy` / `canDownload`). **Loading a clip, video or segment** (cards, tree, drop on Player 2's screen) replaces what's
+  loaded and opens it as itself (`ProjectStore.openDraft`, state "original"): nothing is saved until the first change, which POSTs a new edit
+  of it (`entryId` / `videoId`, else `vodId`) named "title · Edit n" (rename it from the menu; "Save as a new edit…" names it first). Dropping
+  more on Player 2's timeline adds them only from the same VOD (`store.takesVod`). Player 1's new segments/clips go into an open saved edit
+  of their VOD only. Last loaded is remembered in `clipco.p2.project` (`{ edit }` or `{ kind, id, vodId }`).
+- **Library filters** (`ui/library.js`): CLIPS and VIDEOS filter by VOD and member (Made by / Edited by: made an edit of it), shared between the
+  two lists; card menus have "Show this VOD's clips/videos"; VOD cards show what's on them ("3 clips · 1 video") and the VOD filter has
+  "Only VODs with work on them".
 - **Saved edits** (`ItemEdits`, the old Player 2) are no longer made or shown by the page: at startup `SavedEditConversion` turns each one into
   a project once (`EditProject.ConvertedFromEditId`; one row, the edit's kept parts end to end, its splits split pieces, a clip edit's vertical
   layout part under each piece's middle becomes its layout with keys in VOD seconds; title "item · edit title" or "item (edit)"). The edits,

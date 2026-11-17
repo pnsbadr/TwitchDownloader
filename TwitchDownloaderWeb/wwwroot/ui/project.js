@@ -202,6 +202,14 @@ export function splitLayout(layout, t) {
 
 // ---------- the open project ----------
 
+function createBody(draft, content) {
+  const body = { title: draft.editTitle ?? draft.title, content };
+  if (draft.entryId) body.entryId = draft.entryId;
+  else if (draft.videoId) body.videoId = draft.videoId;
+  else body.vodId = draft.vodId;
+  return body;
+}
+
 export class ProjectStore {
   // hooks: onChange() (content, title, save state or history changed), onReplaced() (the server's newer version came in)
   constructor(hooks = {}) {
@@ -222,6 +230,35 @@ export class ProjectStore {
 
   get canEdit() {
     return Boolean(this.project?.canEdit);
+  }
+
+  // A clip, video or segment loaded on its own: nothing is saved until the first change, which makes it a new edit of that item
+  // (badrfly 2026-11-17: edits belong to their clip / video, on one VOD)
+  get isDraft() {
+    return Boolean(this.project?.draft);
+  }
+
+  // The VOD everything in this edit comes from (older edits may use more VODs: vodIds)
+  get vodId() {
+    return this.project?.vodId || this.content?.pieces[0]?.vodId || 0;
+  }
+
+  // Whether pieces of this VOD may go in (it's this edit's VOD, or one an older edit already uses)
+  takesVod(vodId) {
+    const own = this.vodId;
+    return !own || Number(vodId) === Number(own) || (this.project?.vodIds ?? []).includes(Number(vodId));
+  }
+
+  // draft = { title (shown), editTitle (the new edit's name), vodId, entryId?, videoId?, source: { kind, id }, canEdit, content }
+  async openDraft(draft) {
+    await this.saveNow();
+    const { content, ...rest } = draft;
+    this.set({ ...rest, id: null, draft: true, userId: null, canDelete: false, vodIds: [draft.vodId], content });
+    this.history = [];
+    this.future = [];
+    this.failed = false;
+    this.dirty = false;
+    this.hooks.onChange?.();
   }
 
   set(project) {
@@ -323,6 +360,7 @@ export class ProjectStore {
       this.scheduleSave();
       return;
     }
+    if (this.isDraft) return this.createFromDraft();
     this.saving = true;
     this.dirty = false;
     const id = this.project.id;
@@ -343,12 +381,12 @@ export class ProjectStore {
         this.history = [];
         this.future = [];
         this.failed = false;
-        toast("This project was changed somewhere else, so the newer version is shown. Your last change wasn't saved.", "error");
+        toast("This edit was changed somewhere else, so the newer version is shown. Your last change wasn't saved.", "error");
         this.hooks.onReplaced?.();
       } else {
         this.failed = true;
         this.dirty = true;
-        toast(`Couldn't save the project: ${error.message}`, "error");
+        toast(`Couldn't save the edit: ${error.message}`, "error");
       }
     } finally {
       this.saving = false;
@@ -356,10 +394,47 @@ export class ProjectStore {
     }
   }
 
+  // The first change of a loaded clip / video / segment: it becomes a new edit of it
+  async createFromDraft() {
+    const draft = this.project;
+    this.saving = true;
+    this.dirty = false;
+    const sent = JSON.stringify(this.content);
+    this.hooks.onChange?.();
+    try {
+      const made = await api("POST", "/api/projects", createBody(draft, JSON.parse(sent)));
+      if (this.project === draft) {
+        const { content, ...rest } = made;
+        this.project = rest;
+        if (JSON.stringify(this.content) !== sent) this.dirty = true;
+      }
+      this.failed = false;
+      this.hooks.onCreated?.(made);
+    } catch (error) {
+      if (this.project !== draft) return;
+      this.failed = true;
+      this.dirty = true;
+      toast(`Couldn't save the edit: ${error.message}`, "error");
+    } finally {
+      this.saving = false;
+      this.hooks.onChange?.();
+      if (this.dirty && !this.failed) this.scheduleSave();
+    }
+  }
+
   // The page is closing: send what isn't saved yet without waiting
   flushOnExit() {
     if (!this.project || !this.dirty) return;
     clearTimeout(this.timer);
+    if (this.isDraft) {
+      fetch("/api/projects", {
+        method: "POST",
+        keepalive: true,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(createBody(this.project, this.content)),
+      }).catch(() => {});
+      return;
+    }
     fetch(`/api/projects/${this.project.id}`, {
       method: "PUT",
       keepalive: true,
@@ -370,6 +445,13 @@ export class ProjectStore {
 
   async rename(title) {
     if (!this.project) return;
+    if (this.isDraft) {
+      // Naming a loaded clip's version makes it an edit
+      this.project = { ...this.project, editTitle: title };
+      this.dirty = true;
+      await this.saveNow();
+      return;
+    }
     await this.saveNow();
     const saved = await api("PUT", `/api/projects/${this.project.id}`, { title, revision: this.project.revision });
     const { content, ...rest } = saved;
@@ -380,6 +462,7 @@ export class ProjectStore {
   stateText() {
     if (this.saving || (this.dirty && !this.failed)) return "saving…";
     if (this.failed) return "not saved";
+    if (this.isDraft) return this.canEdit ? "original" : "view only";
     return this.canEdit ? "" : "view only";
   }
 }
