@@ -574,6 +574,13 @@ const LIST_SORTS = [
 ];
 const GROUP_SORTS = [["count:desc", "Most often"], ["people:desc", "Most people"], ["last:desc", "Latest"], ["first:asc", "Seen first"]];
 const REPORT_PAGE = 100;
+const PAGE_NAMES = { "/": "Editor", "/index.html": "Editor", "/team.html": "Team page", "/account.html": "Account page",
+  "/login.html": "Login page", "/join.html": "Link page", "/admin.html": "Admin page" };
+
+// "Editor (/)" for pages; requests ("GET /api/…") and jobs as they are
+function whereLabel(area) {
+  return PAGE_NAMES[area] ? `${PAGE_NAMES[area]} (${area})` : area;
+}
 const reportFilters = {};   // query key → value picked in a select (or by clicking a name)
 let reportOffset = 0;
 let reportsWired = false;
@@ -665,9 +672,10 @@ function renderFacets(facets) {
   const selects = REPORT_FACETS.map(([key, field, label, allLabel]) => {
     const current = reportFilters[key] ?? "";
     const options = facets[field] ?? [];
+    const name = (o) => key === "kind" ? REPORT_KINDS[o.label] ?? o.label : key === "area" ? whereLabel(o.label) : o.label;
     const select = el("select", { "aria-label": label, onchange: (event) => setReportFilter(key, event.target.value) },
       el("option", { value: "" }, allLabel),
-      ...options.map((o) => el("option", { value: o.value }, `${key === "kind" ? REPORT_KINDS[o.label] ?? o.label : o.label} (${o.count})`)));
+      ...options.map((o) => el("option", { value: o.value }, `${name(o)} (${o.count})`)));
     // A filter picked by clicking (a person, a fingerprint) that isn't in the time range any more still shows
     if (current && !options.some((o) => o.value === current)) select.append(el("option", { value: current }, `${current} (0)`));
     select.value = current;
@@ -705,7 +713,7 @@ function reportRow(report) {
         report.teamName ? el("span", { class: "muted small-text" }, ` · ${report.teamName}`) : null),
       el("span", {},
         el("span", { class: "report-msg" }, report.errorType ? `${report.errorType}: ` : "", report.message),
-        el("div", { class: "report-where" }, [report.area, report.statusCode, report.browser, report.os].filter(Boolean).join(" · ")))),
+        el("div", { class: "report-where" }, [whereLabel(report.area), report.statusCode, report.browser, report.os].filter(Boolean).join(" · ")))),
     detail);
   return row;
 }
@@ -738,7 +746,7 @@ function reportDetail(report, row) {
     ["Who", whoOf(report).label + (report.userId ? ` (user ${report.userId})` : "")],
     ["Team", report.teamName ? `${report.teamName} (team ${report.teamId})` : null],
     ["Staff", report.staffUsername && report.username ? `${report.staffUsername} (viewing as support or also logged in as staff)` : null],
-    ["Where", report.area],
+    ["Where", whereLabel(report.area)],
     ["Address", report.url],
     ["Status", report.statusCode],
     ["Error", report.errorType],
@@ -763,7 +771,7 @@ function reportDetail(report, row) {
         ? el("button", { type: "button", class: "secondary small", onclick: () => setReportFilter("fingerprint", report.fingerprint) }, "Every time this happened")
         : null,
       el("button", { type: "button", class: "secondary small", onclick: () => downloadOne(report) }, "Download this report"),
-      el("button", { type: "button", class: "danger small", onclick: () => deleteReport(report, row) }, "Delete")),
+      el("button", { type: "button", class: "secondary danger small", onclick: () => deleteReport(report, row) }, "Delete")),
   ].filter(Boolean);
 }
 
@@ -778,7 +786,7 @@ function groupRow(group) {
         group.usernames.length ? el("div", { class: "muted small-text" }, group.usernames.join(", ")) : null),
       el("span", {},
         el("span", { class: "report-msg" }, group.errorType ? `${group.errorType}: ` : "", group.message),
-        el("div", { class: "report-where" }, `${group.area} · first ${formatWhen(group.firstAtUtc)}`))));
+        el("div", { class: "report-where" }, `${whereLabel(group.area)} · first ${formatWhen(group.firstAtUtc)}`))));
 }
 
 function downloadReports(format) {

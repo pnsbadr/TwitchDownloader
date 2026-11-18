@@ -56,6 +56,7 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
 - `Downloads:MaxStoredClipSeconds` (default 180) — clips **at or under** this are downloaded and stored;
   longer ones are reference-only. Enforced on the server from the trim times; the page only previews it.
 - `Downloads:GeneratedFileHours` (default 72) — on-demand files for reference-only entries are deleted after this.
+- `ErrorReports:KeepDays` (default 90) / `ErrorReports:MaxReports` (default 20 000) — how long and how many error reports are kept (see `ErrorReports`).
 - `Downloads:ExactTrimPreset` (default `veryfast`) / `Downloads:ExactTrimCrf` (default 18) — libx264 settings for Exact trims (see Jobs and files).
 
 ### Data (EF Core 10 + SQLite, `Data/`)
@@ -209,6 +210,25 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   become library entries**. Each item copies the segment's label/range at request time (`MarkerId` has no FK). `EntryId` = the card it was picked on
   (title + quality for the files; no FK). Team query filter; `TeamId`/`CreatedByUserId` filled by `SaveChanges`. Audited `segments.requested`
   (counts as "generated" activity) / `segments.ready` / `segments.failed` / `segments.deleted` / `segments.expired`, `team.features_changed`.
+- `ErrorReports` (`ErrorReport`, badrfly 2026-11-18): **bugs, errors and crashes** for the Admin page's **Reports** tab (staff permission
+  `ViewErrorReports`, bit 8; the Owner always). Kinds: `ServerError` (any Error log line during a request, crashes included: ASP.NET's
+  exception handler logs them), `JobError` (an Error log line from a background job), `PageError` (a page's script error, unhandled promise
+  rejection, or app script that didn't load) and `BugReport` ("Report a problem" in the editor's account menu). Each keeps who (user, team,
+  staff; **names copied** so they outlive the account), when, where (`Area`: "GET /api/entries/{id}", the job's class, or the page path),
+  error type, message, details (stack/log line), the person's note, status, URL (never the fragment: link tokens), browser + system
+  (`UserAgentInfo`) and user agent, VOD/entry/export/segment download IDs, the page's context JSON, app version (git commit from the
+  assembly's informational version) and a `Fingerprint` (kind + type + where + message with numbers/IDs/quoted text taken out) that groups
+  repeats (bug reports never group). `ErrorReportLoggerProvider` (an `ILoggerProvider`) turns Error/Critical log lines into reports
+  (skipping EF Core's and the writer's own: no loops); for jobs it reads `EntryId` / `VodId` / `BatchId` / `ExportId` from the log line's
+  values and `ErrorReportWriter` (BackgroundService, batches) attributes the report to the entry's adder or the export's creator. So **log
+  job failures with those named values**. At most 120 a minute (`ErrorReportSink`; the rest counted in one report). Everything is passed
+  through `ReportScrubber.Clean` (token=/sig=/password=…, OAuth/Bearer headers, Twitch CDN/usher URLs cut to host + file name, JWT-like
+  strings): **never put tokens in a log line anyway**. Pages: `wwwroot/reports.js` (loaded first on every page) sends crashes (≤ 15 per page
+  load, the same one once a minute; `ResizeObserver` noise and cross-origin "Script error." skipped) and bug reports to
+  `POST /api/auth/reports` (open, rate limited 30 per 10 min per IP, so crashes before login count) with context: page, screen, time zone,
+  what the editor has open (`clipcoReports.setContext` in `ui/editor.js`: screen, active player, Player 1's VOD and position, Player 2's edit,
+  row focus, player kind) and the last 30 breadcrumbs (`api` calls with status and time from `core.js` / `account.js`, console errors,
+  screen changes). Audited `reports.downloaded` / `reports.deleted`.
 - A converter marks every `DateTime` as UTC when read back (SQLite has no date type) — keep all times UTC.
 - SQLite runs in **WAL mode** (set at startup, stored in the file): copy `clipco.db` together with `clipco.db-wal`/`-shm`, or stop the app first.
   `Projects.Revision` is a concurrency token (two saves of one revision: the second gets 409 `project-changed`).
@@ -445,6 +465,8 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/exports` / `GET .../{id}` / `.../{id}/items/{position}/file` / `DELETE .../{id}` | The caller's exports; a file (`<fileName>.mp4`, `(vertical).mp4`, a video's `.zip`; audited `file.served`). Delete own (`GenerateFiles`) or anyone's (`DeleteAnyEntries`) |
 | `PUT /api/admin/teams/{id}/features` `{ combineSegmentDownloads }` | App Owner only: per-team features being tried out |
 | `GET,POST /api/admin/teams/{id}/channels` `{ login }` / `DELETE .../channels/{channelId}?mode=revoke\|future` | A team's channels (`accessEndedAtUtc` set = existing work only) (`ManageTeamChannels`; GET also `ViewTeamsAndUsers`). POST checks Twitch (404) and duplicates (409). Team links take `channels: [logins]` too; `GET /api/admin/teams` lists each team's `channels` |
+| `POST /api/auth/reports` `{ kind: error\|bug, message?, errorType?, details?, note?, url?, context?, vodId?, entryId?, visitId? }` | A page's crash or a bug report (201 `{ id }`; see `ErrorReports`). No login needed; rate limited |
+| `GET /api/admin/reports?kind=&userId=&teamId=&staffId=&area=&errorType=&browser=&os=&appVersion=&vodId=&fingerprint=&search=&from=&to=&sort=time\|user\|team\|kind\|area\|type\|browser\|os\|version&order=&offset=&limit=` / `GET .../groups` (same filters; sort `count\|people\|last\|first`) / `GET .../{id}` / `GET .../download?format=csv\|json` (+ filters, ≤ 20 000) / `DELETE .../{id}` / `DELETE /api/admin/reports?` (+ filters) | Reports tab (`ViewErrorReports`). `userId=0` / `teamId=0` = none; `errorType=-` = none. List = `{ total, items, facets: { kinds, users, teams, areas, errorTypes, browsers, systems, appVersions } }` (facets: `{ value, label, count }` over the time range only); one report adds `details`, `context`, `userAgent` |
 | `GET /api/live/events` | Live stream updates (server-sent events; see Live stream updates) |
 | `GET /api/admin/twitch` / `PUT /api/admin/twitch/client-id` / `POST /api/admin/twitch/connect` / `DELETE /api/admin/twitch` | Twitch sign-in for live stream updates (Owner only) |
 | `POST /api/vods/download` | Phase 1 dev endpoint: synchronous, writes `<title>.mp4` straight into `downloads/`, not part of the library |
@@ -462,7 +484,7 @@ The old library page (`app.js`, `player-bar.js`, `app.css`) was removed in front
   plain HTML forms (no Shoelace) styled by `ui/theme.css` + `ui/pages.css` (same gray theme and fonts as the editor; back arrow to the editor).
   Not logged in → `login.html`; after login → `/`. `team.html` = members/roles/activity/log/invites/audio setting (`ACTION_LABELS` in team.js
   names audit actions; add new team-visible ones there), `join.html` = opening any link (staff links go to `admin.html` after),
-  `admin.html` = staff (tabs Teams/Users/Links/Moderators/App log, shown by permission; tab saved in `localStorage` key `clipAdmin.tab`).
+  `admin.html` = staff (tabs Teams/Users/Links/Moderators/Twitch/Reports/App log, shown by permission; tab saved in `localStorage` key `clipAdmin.tab`).
   Pages hide buttons the user's permissions (`me.permissions`) don't allow.
 - Time zone (Local / Pacific `America/Los_Angeles`) is set on the Account page, saved per user on the server and cached in `localStorage` key
   `clipLibrary.timeZone`. Formatting only — the API always returns UTC (`...Z`). Days for date filters are computed in the shown time zone

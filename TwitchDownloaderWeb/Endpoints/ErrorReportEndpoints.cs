@@ -126,8 +126,9 @@ namespace TwitchDownloaderWeb.Endpoints
                 RequestId = request.VisitId is { Length: > 0 } visit ? ReportScrubber.Cut(visit, 100) : context.TraceIdentifier,
                 AppVersion = ReportScrubber.AppVersion,
             };
-            report.Fingerprint = ReportScrubber.Fingerprint(report.Kind, report.ErrorType, report.Area,
-                isBug ? $"bug {report.Id} {Guid.NewGuid()}" : report.Message);
+            // Every bug report is its own problem (two people's words never group together)
+            report.Fingerprint = isBug ? Convert.ToHexStringLower(System.Security.Cryptography.RandomNumberGenerator.GetBytes(8))
+                : ReportScrubber.Fingerprint(report.Kind, report.ErrorType, report.Area, report.Message);
 
             // Who: the team login (and the team picked in the switcher), and/or a staff login
             if (AuthSetup.GetId(context.User) is { } userId && context.User.Identity?.AuthenticationType == AuthSchemes.User)

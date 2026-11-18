@@ -80,6 +80,15 @@
     crumb("error", message);
   }
 
+  // A script of the app that didn't load (the page then doesn't work at all): seen in the capture phase on the element
+  const failedScripts = new Set();
+  window.addEventListener("error", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLScriptElement) || !target.src || failedScripts.has(target.src)) return;
+    failedScripts.add(target.src);
+    reportError({ name: "ScriptLoadError", message: `A script didn't load: ${target.src}`, stack: "" }, null, { where: "script load" });
+  }, true);
+
   window.addEventListener("error", (event) => {
     if (!(event instanceof ErrorEvent)) return; // a failed image or script load, not a crash
     reportError(event.error, event.message, { where: event.filename ? `${event.filename}:${event.lineno}:${event.colno}` : "" });
