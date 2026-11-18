@@ -334,6 +334,32 @@ Plan and badrfly's decisions: Claude Doc "Logins, teams and permissions plan". B
   Export tab sends segments and videos through `/api/exports` instead. The endpoints stay (no page uses them now). The Admin page's Teams
   tab has "Allow joined segments" (Owner only), which also gates joined videos in exports.
 
+### Live stream updates (`Services/Live/`, badrfly 2026-11-18)
+Pages hear the moment a team's channel starts or stops streaming, without a refresh and **without checking on a timer**.
+- `EventSubWatcher` (BackgroundService): Twitch **EventSub over WebSocket** (`wss://eventsub.wss.twitch.tv/ws`, no public address needed, so
+  it works on a PC and in a desktop wrapper) with `stream.online` + `stream.offline` for every channel assigned to an enabled team (once each,
+  most-shared first). Twitch allows subscriptions costing **10 per Twitch sign-in** (each costs 1): 5 channels; the rest are "not watched"
+  and the page looks for itself as before. Handles keepalive (no message in keepalive + 10 s = lost), `session_reconnect` (new socket
+  first, subscriptions carry over), revocation, backoff (5 s doubling to 5 min). Events are lost while disconnected, so **after every
+  (re)connect one Helix "Get Streams" call** brings the state up to date. A channel change (`TeamChannelAccess.Forget` raises
+  `ChannelsChanged`; team disable calls it too) or a sign-in change restarts the session with the new set.
+- `TwitchUserAuth`: WebSocket subscriptions need a **user** access token from a registered Twitch app. The Owner enters the app's Client ID
+  (Public client, no secret; `TwitchConnections` row 1, else `Twitch:ClientId`, which holds badrfly's app "clipco local": Client IDs aren't secret) and signs in with the **device code flow** on the Admin
+  page's Twitch tab (code typed at twitch.tv/activate; `Twitch:Scopes`, default none). The refresh token (single-use, expires after 30 days
+  unused) is stored encrypted with data protection; access tokens stay in memory. A refused refresh sets `Problem` ("connect again").
+  Audited `twitch.connected` / `twitch.disconnected`. **Never log or audit the tokens.**
+- `LiveStreamHub`: in-memory state per login + fan-out; `Apply` only passes on real changes (repeats and the catch-up agreeing are dropped).
+  A webhook transport (shared public server) would call `Apply` too; `EventSubMessages.ReadStreamChange` reads both message shapes.
+  `Changed` → the audio rescue looks for the new VOD ~30 s after a watched channel goes live (`AudioRescueService.DiscoverSoon`).
+- `GET /api/live/events` (`ViewLibrary`): server-sent events. `hello` `{ watching, channels: [{ login, live, startedAtUtc, watched }] }` on
+  connect, then `stream` `{ login, live, startedAtUtc, atUtc }` for the team's own channels (re-read per event), `: ping` every 25 s.
+  Page: `core.js` `startLiveEvents` (closed while the tab is hidden: HTTP/1.1 allows ~6 connections per server; the hello on reopening
+  catches up) fires `clipco:live-hello` / `clipco:stream`; `library.js` re-reads the VOD list's first page (now, +20 s, +90 s: Twitch lists a
+  new VOD and settles the length a little later), `checkLive` skips the lookup when the server says the channel is offline; `editor.js`
+  re-reads a live VOD open in Player 1 (and Player 2's live VOD lengths) when it ends.
+- Admin → Twitch (Owner only): `GET /api/admin/twitch`, `PUT .../client-id` `{ clientId }`, `POST .../connect` (starts the device code),
+  `DELETE` (revokes and forgets the sign-in). The tab asks the server every 3 s only while a code is waiting.
+
 ### Muted audio rescue (`Services/AudioRescue/`)
 Twitch mutes segments (`123-muted.ts`) and keeps the clean copy (`123.ts`) for a limited time (Core assumes 24 h and
 only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We save clean audio and splice it back:
@@ -419,6 +445,8 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/exports` / `GET .../{id}` / `.../{id}/items/{position}/file` / `DELETE .../{id}` | The caller's exports; a file (`<fileName>.mp4`, `(vertical).mp4`, a video's `.zip`; audited `file.served`). Delete own (`GenerateFiles`) or anyone's (`DeleteAnyEntries`) |
 | `PUT /api/admin/teams/{id}/features` `{ combineSegmentDownloads }` | App Owner only: per-team features being tried out |
 | `GET,POST /api/admin/teams/{id}/channels` `{ login }` / `DELETE .../channels/{channelId}?mode=revoke\|future` | A team's channels (`accessEndedAtUtc` set = existing work only) (`ManageTeamChannels`; GET also `ViewTeamsAndUsers`). POST checks Twitch (404) and duplicates (409). Team links take `channels: [logins]` too; `GET /api/admin/teams` lists each team's `channels` |
+| `GET /api/live/events` | Live stream updates (server-sent events; see Live stream updates) |
+| `GET /api/admin/twitch` / `PUT /api/admin/twitch/client-id` / `POST /api/admin/twitch/connect` / `DELETE /api/admin/twitch` | Twitch sign-in for live stream updates (Owner only) |
 | `POST /api/vods/download` | Phase 1 dev endpoint: synchronous, writes `<title>.mp4` straight into `downloads/`, not part of the library |
 
 `canDownload` in entry responses checks the generated file's expiry itself, since cleanup runs periodically.

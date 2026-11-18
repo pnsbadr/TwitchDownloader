@@ -14,6 +14,7 @@ const TABS = [
   { id: "users", label: "Users", panel: "users-panel", allowed: () => canAny("ViewTeamsAndUsers", "ResetUserPasswords", "DisableUsers"), load: loadUsers },
   { id: "links", label: "Links", panel: "links-panel", allowed: () => canAny("ManageTeamLinks", "ResetUserPasswords"), load: loadLinks },
   { id: "staff", label: "Moderators", panel: "staff-panel", allowed: () => staffMe.isOwner, load: loadStaff },
+  { id: "twitch", label: "Twitch", panel: "twitch-panel", allowed: () => staffMe.isOwner, load: loadTwitch },
   { id: "log", label: "App log", panel: "log-panel", allowed: () => can("ViewAuditLog"), load: () => loadLog(true) },
 ];
 
@@ -607,3 +608,89 @@ $("staff-logout").addEventListener("click", async () => {
 });
 
 start();
+
+// ---------- Twitch (live stream updates; Owner only) ----------
+
+const TWITCH_STATUS = {
+  NotConnected: "Not connected",
+  Connecting: "Connecting to Twitch…",
+  Watching: "Watching for streams starting and ending",
+  NoChannels: "Connected; no team has a channel yet",
+  Retrying: "Lost the connection to Twitch",
+};
+let twitchTimer = null;
+let twitchFormWired = false;
+
+async function loadTwitch() {
+  if (!twitchFormWired) {
+    twitchFormWired = true;
+    $("twitch-client-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        renderTwitch(await api("PUT", "/api/admin/twitch/client-id", { clientId: $("twitch-client-id").value.trim() }));
+        setMessage($("admin-message"), "Client ID saved.", "ok");
+      } catch (error) {
+        showError(error);
+      }
+    });
+  }
+  renderTwitch(await api("GET", "/api/admin/twitch"));
+}
+
+function renderTwitch(state) {
+  clearTimeout(twitchTimer);
+  if (document.activeElement !== $("twitch-client-id")) $("twitch-client-id").value = state.clientIdFromConfig ? "" : (state.clientId ?? "");
+  $("twitch-client-id").placeholder = state.clientIdFromConfig ? `${state.clientId} (from appsettings)` : "from dev.twitch.tv/console/apps";
+
+  const status = $("twitch-status");
+  const parts = [];
+  if (state.login) {
+    parts.push(el("p", {}, "Signed in to Twitch as ", el("strong", {}, state.login), ` since ${formatWhen(state.connectedAtUtc)}. `,
+      el("span", { class: "muted" }, `${TWITCH_STATUS[state.status] ?? state.status}.${state.statusDetail ? ` ${state.statusDetail}` : ""}`)));
+  } else if (state.problem) {
+    parts.push(el("p", { class: "error-text" }, state.problem));
+  }
+
+  if (state.pending) {
+    parts.push(el("div", { class: "twitch-code" },
+      el("p", {}, "Open ", el("a", { href: state.pending.verificationUri, target: "_blank", rel: "noopener" }, state.pending.verificationUri),
+        ", log in with the Twitch account the app should use, and enter this code:"),
+      el("p", { class: "display twitch-user-code" }, state.pending.userCode),
+      el("p", { class: "muted small-text" }, `Waiting… the code works until ${formatWhen(state.pending.expiresAtUtc)}.`)));
+    // Only while a code is waiting: the sign-in finishes on Twitch's site, so ask this server every few seconds until it's done
+    twitchTimer = setTimeout(() => loadTwitch().catch(showError), 3000);
+  }
+
+  const buttons = [];
+  if (state.clientIdSet && !state.pending) {
+    buttons.push(el("button", { type: "button", onclick: () => connectTwitch() }, state.login ? "Connect a different account" : "Connect Twitch"));
+  }
+  if (state.login) {
+    buttons.push(el("button", { type: "button", class: "link danger small", onclick: () => disconnectTwitch() }, "Disconnect"));
+  }
+  if (!state.clientIdSet) parts.push(el("p", { class: "muted" }, "Enter your Twitch app's Client ID first."));
+  if (buttons.length) parts.push(el("div", { class: "row" }, ...buttons));
+  status.replaceChildren(...parts);
+
+  $("twitch-channels").replaceChildren(...state.channels.map((channel) => el("li", { class: "list-row" },
+    el("strong", { class: "grow" }, channel.login),
+    channel.live === true ? el("span", { class: "badge error" }, "LIVE") : channel.live === false ? el("span", { class: "badge ref" }, "Offline") : null,
+    el("span", { class: "muted small-text" }, channel.watched ? "Watched" : state.login ? "Not watched (over Twitch's limit)" : "Not watched"))));
+}
+
+async function connectTwitch() {
+  try {
+    renderTwitch(await api("POST", "/api/admin/twitch/connect"));
+  } catch (error) {
+    showError(error);
+  }
+}
+
+async function disconnectTwitch() {
+  if (!confirm("Disconnect Twitch? Pages stop updating by themselves when streams start or end.")) return;
+  try {
+    renderTwitch(await api("DELETE", "/api/admin/twitch"));
+  } catch (error) {
+    showError(error);
+  }
+}

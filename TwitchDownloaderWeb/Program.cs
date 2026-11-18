@@ -59,6 +59,13 @@ builder.Services.AddSingleton<ExportQueue>();
 builder.Services.AddHostedService<ExportWorker>();
 builder.Services.AddHostedService<LibraryCleanupService>();
 builder.Services.AddHostedService<ReferenceVodCheckService>();
+// Live stream updates: Twitch EventSub (WebSocket) → LiveStreamHub → open pages (GET /api/live/events)
+builder.Services.AddHttpClient(TwitchDownloaderWeb.Services.Live.TwitchUserAuth.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(20));
+builder.Services.AddHttpClient(TwitchDownloaderWeb.Services.Live.EventSubWatcher.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(20));
+builder.Services.AddSingleton<TwitchDownloaderWeb.Services.Live.TwitchUserAuth>();
+builder.Services.AddSingleton<TwitchDownloaderWeb.Services.Live.LiveStreamHub>();
+builder.Services.AddSingleton<TwitchDownloaderWeb.Services.Live.EventSubWatcher>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<TwitchDownloaderWeb.Services.Live.EventSubWatcher>());
 
 var app = builder.Build();
 
@@ -76,6 +83,16 @@ using (var scope = app.Services.CreateScope())
     // Projects made before "the VOD is the project" go under their VOD and clip/video, once each
     await TwitchDownloaderWeb.Services.Projects.ProjectParents.AssignAsync(startupDb,
         scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("ProjectParents"));
+}
+
+// A channel that just went live: the audio rescue looks for its new VOD right away instead of at its next poll
+{
+    var rescue = app.Services.GetRequiredService<AudioRescueService>();
+    app.Services.GetRequiredService<TwitchDownloaderWeb.Services.Live.LiveStreamHub>().Changed += change =>
+    {
+        if (change.Live)
+            rescue.DiscoverSoon(TimeSpan.FromSeconds(30));
+    };
 }
 
 app.UseExceptionHandler();
@@ -123,6 +140,7 @@ app.MapVideoEndpoints();
 app.MapItemEditEndpoints();
 app.MapProjectEndpoints();
 app.MapVodWorkEndpoints();
+app.MapLiveEndpoints();
 
 app.Run();
 

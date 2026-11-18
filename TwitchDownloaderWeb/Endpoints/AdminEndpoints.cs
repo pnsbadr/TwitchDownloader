@@ -320,6 +320,8 @@ namespace TwitchDownloaderWeb.Endpoints
                 team.DisabledAtUtc = request.Disabled ? DateTime.UtcNow : null;
                 db.Audit(request.Disabled ? AuditActions.TeamDisabled : AuditActions.TeamEnabled, null, $"\"{team.Name}\" by {me.Username}", teamId: team.Id);
                 await db.SaveChangesAsync(cancellationToken);
+                // A disabled team's channels aren't watched for live stream updates
+                TeamChannelAccess.Forget(team.Id);
             }
             return Results.NoContent();
         }

@@ -49,6 +49,18 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
         /// <summary>Process due rescues now instead of at the next minute tick (e.g. after a manual request).</summary>
         public void Wake() => _wake.Writer.TryWrite(true);
 
+        /// <summary>
+        /// A watched channel just went live (Twitch EventSub): look for new VODs about <paramref name="delay"/> from now instead of at the
+        /// next AudioRescue:PollMinutes, so saving starts early in the stream (Twitch needs a moment to list the new VOD).
+        /// </summary>
+        public void DiscoverSoon(TimeSpan delay)
+        {
+            var due = DateTime.UtcNow + delay;
+            if (due < _nextDiscoveryUtc)
+                _nextDiscoveryUtc = due;
+            Wake();
+        }
+
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             while (!stoppingToken.IsCancellationRequested)

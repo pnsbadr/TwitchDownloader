@@ -114,6 +114,24 @@
       <ul id="staff" class="plain-list"></ul>
     </section>
 
+    <section class="panel" id="twitch-panel" hidden>
+      <h2>Twitch</h2>
+      <p class="muted small-text">Lets the app hear from Twitch the moment a team's channel starts or stops streaming, so VOD cards and
+        players update on every open page without a refresh. Twitch only sends this to a registered Twitch app signed in with a Twitch
+        account (any account; it needs no permissions and never sees your password). One account can watch 5 channels; others keep
+        working as before.</p>
+      <form id="twitch-client-form" class="row" novalidate>
+        <label class="grow">Client ID of your Twitch app
+          <input id="twitch-client-id" maxlength="100" autocomplete="off" spellcheck="false" placeholder="from dev.twitch.tv/console/apps">
+        </label>
+        <button type="submit" class="secondary">Save</button>
+      </form>
+      <p class="muted small-text">Make one at <a href="https://dev.twitch.tv/console/apps/create" target="_blank" rel="noopener">dev.twitch.tv</a>:
+        any name, OAuth Redirect URL <code>http://localhost</code>, Client Type <strong>Public</strong>.</p>
+      <div id="twitch-status"></div>
+      <ul id="twitch-channels" class="plain-list"></ul>
+    </section>
+
     <section class="panel" id="log-panel" hidden>
       <h2>App log</h2>
       <div class="row">

@@ -205,3 +205,53 @@ function timeLeft(seconds) {
   if (seconds >= 90) return `about ${Math.round(seconds / 60)} min left`;
   return `about ${Math.max(1, Math.round(seconds))} s left`;
 }
+
+// ---------- live stream updates ----------
+// GET /api/live/events (server-sent events): the server hears from Twitch when one of the team's channels starts or stops streaming
+// (EventSub) and tells the page at once, so nothing here checks on a timer. Fires window events:
+//   clipco:live-hello  { watching, channels: [{ login, live, startedAtUtc, watched }] }  on every (re)connect: the state now
+//   clipco:stream      { login, live, startedAtUtc, atUtc }                              a channel started (live) or stopped
+// Hidden tabs close the stream (browsers allow only ~6 connections per server over HTTP/1.1) and reopen it when shown; the hello
+// then brings them up to date.
+let liveSource = null;
+export const liveChannels = new Map(); // login → { live, startedAtUtc, watched }
+export let liveWatching = false;
+
+export function startLiveEvents() {
+  if (typeof EventSource === "undefined") return;
+  const open = () => {
+    if (liveSource || document.hidden) return;
+    liveSource = new EventSource("/api/live/events");
+    liveSource.addEventListener("hello", (event) => {
+      const data = parseEvent(event);
+      if (!data) return;
+      liveWatching = Boolean(data.watching);
+      liveChannels.clear();
+      for (const channel of data.channels ?? []) liveChannels.set(channel.login, channel);
+      window.dispatchEvent(new CustomEvent("clipco:live-hello", { detail: data }));
+    });
+    liveSource.addEventListener("stream", (event) => {
+      const data = parseEvent(event);
+      if (!data) return;
+      const known = liveChannels.get(data.login);
+      liveChannels.set(data.login, { ...known, login: data.login, live: data.live, startedAtUtc: data.startedAtUtc });
+      window.dispatchEvent(new CustomEvent("clipco:stream", { detail: data }));
+    });
+    // EventSource reconnects by itself after a dropped connection (and gets a new hello)
+  };
+  const close = () => {
+    liveSource?.close();
+    liveSource = null;
+  };
+  document.addEventListener("visibilitychange", () => (document.hidden ? close() : open()));
+  window.addEventListener("pagehide", close);
+  open();
+}
+
+function parseEvent(event) {
+  try {
+    return JSON.parse(event.data);
+  } catch {
+    return null;
+  }
+}

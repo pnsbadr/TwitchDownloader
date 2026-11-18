@@ -36,6 +36,7 @@ namespace TwitchDownloaderWeb.Tests
                 builder.UseSetting("Downloads:OutputFolder", Path.Combine(_dir, "downloads"));
                 builder.UseSetting("Auth:LoginAttemptsPerMinute", "100000");
                 builder.UseSetting("AudioRescue:Enabled", "false");
+                builder.UseSetting("Twitch:ClientId", "");
                 builder.UseSetting("Ffmpeg:Path", FakeCutter.Ffmpeg);
                 builder.ConfigureTestServices(services =>
                 {

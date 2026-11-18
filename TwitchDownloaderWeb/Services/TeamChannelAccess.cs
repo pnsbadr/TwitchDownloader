@@ -59,7 +59,14 @@ namespace TwitchDownloaderWeb.Services
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, int> Generations = new();
 
         /// <summary>Forget the team's cached answers, after the Owner changed its channels.</summary>
-        public static void Forget(int teamId) => Generations.AddOrUpdate(teamId, 1, (_, n) => n + 1);
+        public static void Forget(int teamId)
+        {
+            Generations.AddOrUpdate(teamId, 1, (_, n) => n + 1);
+            ChannelsChanged?.Invoke();
+        }
+
+        /// <summary>A team's channels changed (<see cref="Forget"/>): live stream updates follow the new set (<see cref="Live.EventSubWatcher"/>).</summary>
+        public static event Action? ChannelsChanged;
 
         private async Task<VodAccess> DecideAsync(long vodId, CancellationToken cancellationToken)
         {

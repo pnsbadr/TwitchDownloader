@@ -48,6 +48,11 @@ export async function vodLength(vodId) {
   return vodLengths.get(key) ?? null;
 }
 
+// A stream ended (core.js clipco:stream): VODs that were live get their final length on the next look
+export function forgetLiveVodLengths() {
+  for (const [key, length] of vodLengths) if (length == null) vodLengths.delete(key);
+}
+
 // The play button on a row head: plays only that row, gaps skipped, with the rest of the editor dimmed (row focus).
 // Shared with Player 1's timeline.
 export function rowPlayButton(playing, onClick) {
