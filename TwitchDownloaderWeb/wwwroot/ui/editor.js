@@ -4,7 +4,7 @@
 
 import { registerIconLibrary } from "https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.20.1/cdn/utilities/icon-library.js";
 import { $, el, api, me, can, loadMe, sessionHandlers, TEAM_PAGE_PERMISSIONS, wireIconButtons, loadSetting, saveSetting, toast, formatDuration } from "./core.js";
-import { dropTarget } from "./drag.js";
+import { dropTarget, watchDrags } from "./drag.js";
 import { setUpLibrary, showList, refreshClips, refreshVideos, refreshLibraryFilters, knownVod, knownVodTitle } from "./library.js";
 import { setUpTree, openTree, forgetTree, render as renderTree } from "./p2-tree.js";
 import { MARKER_COLORS } from "./colors.js";
@@ -1347,6 +1347,7 @@ function setUpPlayers() {
       onDrop: (item) => load(item),
     });
   }
+  peekPlayer2WhileDragging();
   // Clicking a player that has something loaded opens its timeline tab, so the keys work on it
   $("player1").addEventListener("pointerdown", () => {
     if (activePlayer !== "p1" && p1Vod) timelineTabs.pick("p1");
@@ -1358,6 +1359,40 @@ function setUpPlayers() {
   window.addEventListener("pagehide", () => {
     timeline.flushTrimOnExit();
     store.flushOnExit();
+  });
+}
+
+// Dragging a clip, segment or video over Player 2's tab or screen shows Player 2's timeline, so it can be dropped there; moving out of
+// the timeline and Player 2's screen again (or dropping anywhere else) goes back to Player 1's. When Player 2's timeline was already
+// showing, nothing changes (badrfly 2026-11-18)
+function peekPlayer2WhileDragging() {
+  let peeking = false;
+  const inside = (element, { x, y }) => {
+    const r = element?.getBoundingClientRect();
+    return Boolean(r) && r.width > 0 && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  };
+  const tab = () => document.querySelector('.tl-tab[data-tl="p2"]');
+  watchDrags({
+    start: () => { peeking = false; },
+    move: (item, at) => {
+      if (!PLAYER_KINDS.p2.includes(item.kind) || item.kind === "project") return;
+      if (!peeking) {
+        if (activePlayer === "p2") return;
+        if (inside(tab(), at) || inside($("p2-screen"), at)) {
+          peeking = true;
+          timelineTabs.pick("p2");
+        }
+      } else if (!inside($("timeline"), at) && !inside($("p2-screen"), at)) {
+        peeking = false;
+        timelineTabs.pick("p1");
+      }
+    },
+    end: (_item, droppedOn) => {
+      if (!peeking) return;
+      peeking = false;
+      // Dropped on Player 2's timeline or screen: Player 2 stays; anywhere else, back to Player 1
+      if (droppedOn !== timeline2.track && droppedOn !== $("p2-screen")) timelineTabs.pick("p1");
+    },
   });
 }
 

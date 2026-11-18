@@ -1221,7 +1221,8 @@ export class ProjectTimeline {
       toast("It doesn't fit there: pieces on one row can't overlap, and locked rows can't change.");
       return;
     }
-    this.insertPieces(ghost.pieces, { trackIndex: ghost.newRow ? null : ghost.index, at: ghost.at, newRow: ghost.newRow });
+    // The playhead goes to what was dropped
+    if (this.insertPieces(ghost.pieces, { trackIndex: ghost.newRow ? null : ghost.index, at: ghost.at, newRow: ghost.newRow })) this.hooks.onSeek(ghost.at);
   }
 
   // Adds pieces back to back from `at` on a row (newRow: a new row at the bottom). Each takes the layout of the piece before it on the row.
