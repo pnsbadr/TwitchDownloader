@@ -107,15 +107,19 @@ namespace TwitchDownloaderWeb.Services.Live
             var scopes = _configuration["Twitch:Scopes"] ?? "";
 
             var client = _httpClientFactory.CreateClient(HttpClientName);
-            using var response = await client.PostAsync($"{IdBase}/device", new FormUrlEncodedContent(new Dictionary<string, string>
+            var response = await StartDeviceAsync(client, clientId, scopes, cancellationToken);
+            if (response.StatusCode == HttpStatusCode.BadRequest && scopes.Length == 0)
             {
-                ["client_id"] = clientId,
-                ["scopes"] = scopes,
-            }), cancellationToken);
+                // Stream events need no permission, but in case Twitch wants at least one scope: a harmless read-only one
+                response.Dispose();
+                scopes = "user:read:follows";
+                response = await StartDeviceAsync(client, clientId, scopes, cancellationToken);
+            }
+            using var started = response;
             if (!response.IsSuccessStatusCode)
                 throw new TwitchAuthException(await DescribeFailureAsync(response, "start the sign-in", cancellationToken));
 
-            var start = await response.Content.ReadFromJsonAsync<DeviceStartResponse>(cancellationToken)
+            var start = await started.Content.ReadFromJsonAsync<DeviceStartResponse>(cancellationToken)
                 ?? throw new TwitchAuthException("Twitch sent an empty answer.");
 
             CancelPending();
@@ -126,6 +130,13 @@ namespace TwitchDownloaderWeb.Services.Live
             _ = Task.Run(() => WaitForSignInAsync(clientId, scopes, start.DeviceCode, Math.Max(1, start.Interval), staffId, signIn, cancel.Token));
             return signIn;
         }
+
+        private static Task<HttpResponseMessage> StartDeviceAsync(HttpClient client, string clientId, string scopes, CancellationToken cancellationToken) =>
+            client.PostAsync($"{IdBase}/device", new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["client_id"] = clientId,
+                ["scopes"] = scopes,
+            }), cancellationToken);
 
         public void CancelPending()
         {

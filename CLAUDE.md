@@ -344,7 +344,7 @@ Pages hear the moment a team's channel starts or stops streaming, without a refr
   (re)connect one Helix "Get Streams" call** brings the state up to date. A channel change (`TeamChannelAccess.Forget` raises
   `ChannelsChanged`; team disable calls it too) or a sign-in change restarts the session with the new set.
 - `TwitchUserAuth`: WebSocket subscriptions need a **user** access token from a registered Twitch app. The Owner enters the app's Client ID
-  (Public client, no secret; `TwitchConnections` row 1, else `Twitch:ClientId`) and signs in with the **device code flow** on the Admin
+  (Public client, no secret; `TwitchConnections` row 1, else `Twitch:ClientId`, which holds badrfly's app "clipco local": Client IDs aren't secret) and signs in with the **device code flow** on the Admin
   page's Twitch tab (code typed at twitch.tv/activate; `Twitch:Scopes`, default none). The refresh token (single-use, expires after 30 days
   unused) is stored encrypted with data protection; access tokens stay in memory. A refused refresh sets `Problem` ("connect again").
   Audited `twitch.connected` / `twitch.disconnected`. **Never log or audit the tokens.**
