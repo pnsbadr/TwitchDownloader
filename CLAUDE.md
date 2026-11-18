@@ -477,6 +477,10 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
 - `ui/drag.js`: one drag and drop for everything (pointer events, so canvas items can use `startDrag` too): `draggable`, `dropTarget({ accepts,
   onDrop })`. While dragging, a shade darkens the page except the dragged item and the accepting target under the pointer (clip-path holes).
   `info.altKey` is passed to targets (Alt + drag = copy). Esc cancels.
+  `watchDrags({ start, move, end })` follows every drag (`end` gets the accepting target's element or null). Used for the **Player 2 peek**
+  (badrfly 2026-11-18, `peekPlayer2WhileDragging` in `ui/editor.js`): dragging a clip/segment/video over Player 2's tab or screen shows
+  Player 2's timeline; leaving the timeline section and Player 2's screen, or dropping anywhere else, goes back to Player 1's; if Player 2's
+  timeline was already showing nothing changes. A drop on Player 2's timeline moves its playhead to the dropped pieces.
 - `ui/timebox.js`: `timeBox({ seconds, fraction })` with a fixed `hh:mm:ss(.ff)` mask; `.seconds` reads/writes.
 - Tools bar title/color editor (`openItemEditor` in `ui/editor.js`): tools slide left, title + the 9 marker colors on the right; applies on a
   click anywhere else or Enter (linking a video needs the ✓ button), Esc cancels.

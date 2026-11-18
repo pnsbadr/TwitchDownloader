@@ -13,7 +13,14 @@
 
 const START_DISTANCE = 5;
 const targets = new WeakMap();
+const watchers = new Set();
 let active = null;
+
+// Follows every drag: { start(item), move(item, info) (before the target under the pointer is looked up, so a watcher can show
+// one), end(item, droppedOn: the accepting target's element or null, cancelled: Esc) }
+export function watchDrags(watcher) {
+  watchers.add(watcher);
+}
 
 export function dropTarget(element, options) {
   targets.set(element, options);
@@ -90,6 +97,7 @@ export function startDrag(event, item, { sourceRect = null, ghost = null } = {})
   window.addEventListener("keydown", onKey, true);
   window.addEventListener("keyup", onKey, true);
   window.addEventListener("blur", cancel);
+  for (const w of watchers) w.start?.(item);
   update();
 }
 
@@ -145,6 +153,7 @@ function findTarget() {
 }
 
 function update() {
+  for (const w of watchers) w.move?.(active.item, info());
   const { ghostBox } = active;
   ghostBox.style.transform = `translate(${active.x + 14}px, ${active.y + 12}px)`;
 
@@ -190,13 +199,16 @@ function onUp(event) {
   const { target, item } = active;
   const dropInfo = info();
   finish();
+  for (const w of watchers) w.end?.(item, target?.element ?? null, false);
   if (target) target.options.onDrop(item, dropInfo);
 }
 
 function cancel() {
   if (!active) return;
-  active.target?.options.onLeave?.(active.item);
+  const item = active.item;
+  active.target?.options.onLeave?.(item);
   finish();
+  for (const w of watchers) w.end?.(item, null, true);
 }
 
 function finish() {
