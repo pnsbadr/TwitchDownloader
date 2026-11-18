@@ -27,7 +27,15 @@ export async function api(method, url, body) {
     options.headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(body);
   }
-  const response = await fetch(url, options);
+  const started = performance.now();
+  let response;
+  try {
+    response = await fetch(url, options);
+  } catch (error) {
+    window.clipcoReports?.request(method, url, "network error", performance.now() - started);
+    throw error;
+  }
+  window.clipcoReports?.request(method, url, response.status, performance.now() - started);
   // Player 2 edits that followed a clip or segment this request changed (the server's ProjectSourceSync): editor.js keeps the open
   // edit and its undo history in step
   const synced = response.headers.get("X-Source-Sync");

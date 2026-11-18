@@ -91,6 +91,7 @@ $("account-items").addEventListener("sl-select", async (event) => {
     case "account": location.href = "/account.html"; break;
     case "team": location.href = "/team.html"; break;
     case "shortcuts": showShortcuts(); break;
+    case "report": window.clipcoReports?.openBugDialog(); break;
     case "logout":
       await fetch("/api/auth/logout", { method: "POST" });
       location.href = "/login.html";
@@ -131,7 +132,31 @@ let screenTabs = null;
 let listTabs = null;
 let timelineTabs = null;
 
+// What error and bug reports say the editor had open (reports.js)
+window.clipcoReports?.setContext(() => {
+  const project = store?.project;
+  const p2 = project ? {
+    editId: project.draft ? null : project.id ?? null,
+    of: project.entryId ? `clip ${project.entryId}` : project.videoId ? `video ${project.videoId}` : null,
+    vertical: Boolean(project.vertical),
+    vodId: store.vodId || null,
+    pieces: store.content?.pieces?.length ?? 0,
+  } : null;
+  return {
+    view: $("view-export")?.hidden === false ? "export" : "editor",
+    activePlayer,
+    timeline: activePlayer,
+    rowFocus: rowFocus ? `${rowFocus.which} row ${rowFocus.rowId}` : null,
+    vodId: p1Vod?.id ?? p2?.vodId ?? null,
+    entryId: project?.entryId ?? null,
+    player1: p1Vod ? { vodId: p1Vod.id, title: p1Vod.title, playing: Boolean(player1?.ready && player1.playing()), time: Math.round(player1?.position?.() ?? 0) } : null,
+    player2: p2,
+    player: player1 ? `${player1.kind ?? "?"}${player1.segmentMode ? ` (${player1.segmentMode})` : ""}` : null,
+  };
+});
+
 function showScreen(view) {
+  window.clipcoReports?.note(`screen ${view}`);
   $("view-editor").hidden = view !== "editor";
   $("view-export").hidden = view !== "export";
   // Only one player plays at a time: the screen left behind is paused

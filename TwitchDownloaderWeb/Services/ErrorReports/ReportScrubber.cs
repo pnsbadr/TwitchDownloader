@@ -35,8 +35,8 @@ namespace TwitchDownloaderWeb.Services.ErrorReports
         {
             if (string.IsNullOrEmpty(text))
                 return text;
-            var cleaned = KeyValue().Replace(text, m => m.Groups[1].Value + m.Groups[2].Value + Hidden);
-            cleaned = AuthHeader().Replace(cleaned, m => m.Groups[1].Value + " " + Hidden);
+            var cleaned = AuthHeader().Replace(text, m => m.Groups[1].Value + " " + Hidden);
+            cleaned = KeyValue().Replace(cleaned, m => m.Groups[1].Value + m.Groups[2].Value + Hidden);
             cleaned = TwitchUrl().Replace(cleaned, m => m.Groups[1].Value + "…/" + m.Groups[2].Value);
             cleaned = Jwt().Replace(cleaned, Hidden);
             return Cut(cleaned, maxLength);
@@ -48,11 +48,12 @@ namespace TwitchDownloaderWeb.Services.ErrorReports
             if (string.IsNullOrWhiteSpace(url))
                 return null;
             var text = url.Trim();
-            if (Uri.TryCreate(text, UriKind.Absolute, out var absolute))
-                text = absolute.PathAndQuery;
             var hash = text.IndexOf('#');
             if (hash >= 0)
                 text = text[..hash];
+            // Only web addresses: on Linux "/page" parses as an absolute file URI
+            if (Uri.TryCreate(text, UriKind.Absolute, out var absolute) && (absolute.Scheme == Uri.UriSchemeHttp || absolute.Scheme == Uri.UriSchemeHttps))
+                text = absolute.PathAndQuery;
             return Clean(text, 1000);
         }
 

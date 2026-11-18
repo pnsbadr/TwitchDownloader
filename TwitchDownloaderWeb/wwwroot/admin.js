@@ -15,6 +15,7 @@ const TABS = [
   { id: "links", label: "Links", panel: "links-panel", allowed: () => canAny("ManageTeamLinks", "ResetUserPasswords"), load: loadLinks },
   { id: "staff", label: "Moderators", panel: "staff-panel", allowed: () => staffMe.isOwner, load: loadStaff },
   { id: "twitch", label: "Twitch", panel: "twitch-panel", allowed: () => staffMe.isOwner, load: loadTwitch },
+  { id: "reports", label: "Reports", panel: "reports-panel", allowed: () => can("ViewErrorReports"), load: () => loadReports(true) },
   { id: "log", label: "App log", panel: "log-panel", allowed: () => can("ViewAuditLog"), load: () => loadLog(true) },
 ];
 
@@ -551,6 +552,274 @@ async function loadLog(reset) {
 
 $("log-team").addEventListener("change", () => loadLog(true).catch(showError));
 $("log-more").addEventListener("click", () => loadLog(false).catch(showError));
+
+// ---------- reports (bugs, errors, crashes) ----------
+
+const REPORT_KINDS = { ServerError: "Server error", JobError: "Job failed", PageError: "Page crash", BugReport: "Bug report" };
+const REPORT_FACETS = [
+  // [query key, facets field, label, all label]
+  ["kind", "kinds", "Kind", "All kinds"],
+  ["userId", "users", "Person", "Everyone"],
+  ["teamId", "teams", "Team", "All teams"],
+  ["area", "areas", "Where", "Anywhere"],
+  ["errorType", "errorTypes", "Error", "Any error"],
+  ["browser", "browsers", "Browser", "Any browser"],
+  ["os", "systems", "System", "Any system"],
+  ["appVersion", "appVersions", "Version", "Any version"],
+];
+const LIST_SORTS = [
+  ["time:desc", "Newest first"], ["time:asc", "Oldest first"], ["user:asc", "Person A–Z"], ["team:asc", "Team A–Z"],
+  ["kind:asc", "Kind"], ["area:asc", "Where"], ["type:asc", "Error type"], ["browser:asc", "Browser"], ["os:asc", "System"],
+  ["version:desc", "Version"],
+];
+const GROUP_SORTS = [["count:desc", "Most often"], ["people:desc", "Most people"], ["last:desc", "Latest"], ["first:asc", "Seen first"]];
+const REPORT_PAGE = 100;
+const reportFilters = {};   // query key → value picked in a select (or by clicking a name)
+let reportOffset = 0;
+let reportsWired = false;
+let reportSearchTimer = null;
+
+function reportQuery({ paging = false } = {}) {
+  const params = new URLSearchParams();
+  const days = $("rep-period").value;
+  if (days) params.set("from", new Date(Date.now() - Number(days) * 86400000).toISOString());
+  for (const [key, value] of Object.entries(reportFilters)) if (value !== "" && value != null) params.set(key, value);
+  const search = $("rep-search").value.trim();
+  if (search) params.set("search", search);
+  const [sort, order] = $("rep-sort").value.split(":");
+  params.set("sort", sort);
+  params.set("order", order);
+  if (paging) {
+    params.set("offset", String(reportOffset));
+    params.set("limit", String(REPORT_PAGE));
+  }
+  return params;
+}
+
+function fillSorts() {
+  const sorts = $("rep-view").value === "groups" ? GROUP_SORTS : LIST_SORTS;
+  $("rep-sort").replaceChildren(...sorts.map(([value, label]) => el("option", { value }, label)));
+}
+
+function wireReports() {
+  if (reportsWired) return;
+  reportsWired = true;
+  fillSorts();
+  const reload = () => loadReports(true).catch(showError);
+  $("rep-period").addEventListener("change", reload);
+  $("rep-view").addEventListener("change", () => { fillSorts(); reload(); });
+  $("rep-sort").addEventListener("change", reload);
+  $("rep-search").addEventListener("input", () => { clearTimeout(reportSearchTimer); reportSearchTimer = setTimeout(reload, 350); });
+  $("rep-more").addEventListener("click", () => loadReports(false).catch(showError));
+  $("rep-clear").addEventListener("click", () => {
+    for (const key of Object.keys(reportFilters)) delete reportFilters[key];
+    $("rep-search").value = "";
+    reload();
+  });
+  $("rep-csv").addEventListener("click", () => downloadReports("csv"));
+  $("rep-json").addEventListener("click", () => downloadReports("json"));
+  $("rep-delete").addEventListener("click", deleteShownReports);
+}
+
+function setReportFilter(key, value) {
+  reportFilters[key] = value == null ? "" : String(value);
+  if ($("rep-view").value === "groups" && key === "fingerprint") {
+    $("rep-view").value = "list";
+    fillSorts();
+  }
+  loadReports(true).catch(showError);
+}
+
+async function loadReports(reset) {
+  wireReports();
+  if (reset) {
+    reportOffset = 0;
+    $("reports").replaceChildren();
+  }
+  const grouped = $("rep-view").value === "groups";
+  // Facets (what there is to pick from) come with the list; grouped view asks for one item just to get them
+  const listParams = reportQuery({ paging: true });
+  if (grouped) { listParams.set("limit", "1"); listParams.set("offset", "0"); listParams.set("sort", "time"); }
+  const list = await api("GET", `/api/admin/reports?${listParams}`);
+  renderFacets(list.facets);
+  const filtered = Object.values(reportFilters).some((v) => v !== "" && v != null) || $("rep-search").value.trim();
+  $("rep-clear").hidden = !filtered;
+  $("rep-delete").disabled = list.total === 0;
+  $("rep-csv").disabled = $("rep-json").disabled = list.total === 0;
+
+  if (grouped) {
+    const groups = await api("GET", `/api/admin/reports/groups?${reportQuery()}`);
+    $("rep-summary").textContent = `${plural(list.total, "report")} · ${plural(groups.length, "different problem")}`;
+    $("reports").replaceChildren(...groups.map(groupRow));
+    $("rep-more").hidden = true;
+  } else {
+    reportOffset += list.items.length;
+    $("rep-summary").textContent = plural(list.total, "report") + (list.total > reportOffset ? ` · showing ${reportOffset}` : "");
+    $("reports").append(...list.items.map(reportRow));
+    $("rep-more").hidden = reportOffset >= list.total;
+  }
+  if (!$("reports").children.length) $("reports").append(el("li", { class: "muted" }, filtered ? "No reports match." : "No reports. Nothing went wrong in this time."));
+}
+
+function renderFacets(facets) {
+  const selects = REPORT_FACETS.map(([key, field, label, allLabel]) => {
+    const current = reportFilters[key] ?? "";
+    const options = facets[field] ?? [];
+    const select = el("select", { "aria-label": label, onchange: (event) => setReportFilter(key, event.target.value) },
+      el("option", { value: "" }, allLabel),
+      ...options.map((o) => el("option", { value: o.value }, `${key === "kind" ? REPORT_KINDS[o.label] ?? o.label : o.label} (${o.count})`)));
+    // A filter picked by clicking (a person, a fingerprint) that isn't in the time range any more still shows
+    if (current && !options.some((o) => o.value === current)) select.append(el("option", { value: current }, `${current} (0)`));
+    select.value = current;
+    return el("label", { class: "inline-label" }, label, select);
+  });
+  if (reportFilters.fingerprint) {
+    selects.push(el("span", { class: "badge" }, "One error only ",
+      el("button", { type: "button", class: "link small", "aria-label": "Show all errors", onclick: () => setReportFilter("fingerprint", "") }, "×")));
+  }
+  if (reportFilters.staffId) {
+    selects.push(el("span", { class: "badge" }, "One staff account ",
+      el("button", { type: "button", class: "link small", "aria-label": "Show everyone", onclick: () => setReportFilter("staffId", "") }, "×")));
+  }
+  $("rep-facets").replaceChildren(...selects);
+}
+
+function whoOf(report) {
+  if (report.username) return { label: report.username, key: "userId", value: report.userId };
+  if (report.staffUsername) return { label: `${report.staffUsername} (staff)`, key: "staffId", value: report.staffId };
+  if (report.kind === "JobError") return { label: "Background job", key: "userId", value: 0 };
+  return { label: "Not logged in", key: "userId", value: 0 };
+}
+
+function reportRow(report) {
+  const who = whoOf(report);
+  const detail = el("div", { class: "report-detail", hidden: true });
+  const row = el("li", { class: "report-row" },
+    el("div", { class: "report-head", role: "button", tabindex: "0", "aria-expanded": "false",
+      onclick: (event) => { if (!event.target.closest("button")) toggleReport(report, row, detail); },
+      onkeydown: (event) => { if (event.key === "Enter" && !event.target.closest("button")) toggleReport(report, row, detail); } },
+      el("span", { class: "muted small-text" }, formatWhen(report.createdAtUtc)),
+      el("span", {}, el("span", { class: `badge kind-${report.kind}` }, REPORT_KINDS[report.kind] ?? report.kind)),
+      el("span", { class: "report-who" },
+        el("button", { type: "button", class: "link small", title: "Only this person's reports", onclick: () => setReportFilter(who.key, who.value) }, who.label),
+        report.teamName ? el("span", { class: "muted small-text" }, ` · ${report.teamName}`) : null),
+      el("span", {},
+        el("span", { class: "report-msg" }, report.errorType ? `${report.errorType}: ` : "", report.message),
+        el("div", { class: "report-where" }, [report.area, report.statusCode, report.browser, report.os].filter(Boolean).join(" · ")))),
+    detail);
+  return row;
+}
+
+async function toggleReport(report, row, detail) {
+  const head = row.querySelector(".report-head");
+  if (!detail.hidden) {
+    detail.hidden = true;
+    head.setAttribute("aria-expanded", "false");
+    return;
+  }
+  detail.hidden = false;
+  head.setAttribute("aria-expanded", "true");
+  detail.replaceChildren(el("p", { class: "muted" }, "Loading…"));
+  try {
+    const full = await api("GET", `/api/admin/reports/${report.id}`);
+    detail.replaceChildren(...reportDetail(full, row));
+  } catch (error) {
+    detail.replaceChildren(el("p", { class: "message error" }, error.message));
+  }
+}
+
+function prettyJson(text) {
+  try { return JSON.stringify(JSON.parse(text), null, 2); } catch { return text; }
+}
+
+function reportDetail(report, row) {
+  const facts = [
+    ["When", `${formatWhen(report.createdAtUtc)} (${report.createdAtUtc.replace("T", " ").slice(0, 19)} UTC)`],
+    ["Who", whoOf(report).label + (report.userId ? ` (user ${report.userId})` : "")],
+    ["Team", report.teamName ? `${report.teamName} (team ${report.teamId})` : null],
+    ["Staff", report.staffUsername && report.username ? `${report.staffUsername} (viewing as support or also logged in as staff)` : null],
+    ["Where", report.area],
+    ["Address", report.url],
+    ["Status", report.statusCode],
+    ["Error", report.errorType],
+    ["VOD", report.vodId],
+    ["Clip", report.entryId],
+    ["Export", report.exportId],
+    ["Segment download", report.segmentDownloadId],
+    ["Browser", [report.browser, report.os].filter(Boolean).join(" on ")],
+    ["User agent", report.userAgent],
+    ["App version", report.appVersion],
+    ["Request / visit", report.requestId],
+  ].filter(([, value]) => value !== null && value !== undefined && value !== "");
+  return [
+    report.note ? el("div", {}, el("strong", {}, "What they wrote"), el("div", { class: "report-note" }, report.note)) : null,
+    report.kind !== "BugReport" ? el("div", {}, el("strong", {}, "Message"), el("div", { class: "report-note" }, report.message)) : null,
+    el("dl", { class: "report-facts" }, ...facts.flatMap(([label, value]) => [el("dt", {}, label), el("dd", {}, String(value))])),
+    report.details ? el("details", {}, el("summary", {}, "Stack trace and log"), el("pre", {}, report.details)) : null,
+    report.context ? el("details", { open: report.kind === "BugReport" ? "" : null }, el("summary", {}, "What was going on (page state, recent requests)"),
+      el("pre", {}, prettyJson(report.context))) : null,
+    el("div", { class: "row" },
+      report.kind !== "BugReport"
+        ? el("button", { type: "button", class: "secondary small", onclick: () => setReportFilter("fingerprint", report.fingerprint) }, "Every time this happened")
+        : null,
+      el("button", { type: "button", class: "secondary small", onclick: () => downloadOne(report) }, "Download this report"),
+      el("button", { type: "button", class: "danger small", onclick: () => deleteReport(report, row) }, "Delete")),
+  ].filter(Boolean);
+}
+
+function groupRow(group) {
+  return el("li", { class: "report-row" },
+    el("div", { class: "report-head", role: "button", tabindex: "0", title: "Show each time it happened",
+      onclick: () => setReportFilter("fingerprint", group.fingerprint),
+      onkeydown: (event) => { if (event.key === "Enter") setReportFilter("fingerprint", group.fingerprint); } },
+      el("span", {}, el("span", { class: "report-count" }, `${group.count}×`), el("div", { class: "muted small-text" }, `last ${formatWhen(group.lastAtUtc)}`)),
+      el("span", {}, el("span", { class: `badge kind-${group.kind}` }, REPORT_KINDS[group.kind] ?? group.kind)),
+      el("span", { class: "small-text" }, group.people ? plural(group.people, "person", "people") : "No one logged in",
+        group.usernames.length ? el("div", { class: "muted small-text" }, group.usernames.join(", ")) : null),
+      el("span", {},
+        el("span", { class: "report-msg" }, group.errorType ? `${group.errorType}: ` : "", group.message),
+        el("div", { class: "report-where" }, `${group.area} · first ${formatWhen(group.firstAtUtc)}`))));
+}
+
+function downloadReports(format) {
+  const params = reportQuery();
+  params.set("format", format);
+  location.href = `/api/admin/reports/download?${params}`;
+}
+
+function downloadOne(report) {
+  const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
+  const link = el("a", { href: URL.createObjectURL(blob), download: `clipco-report-${report.id}.json` });
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+}
+
+async function deleteReport(report, row) {
+  if (!confirm("Delete this report?")) return;
+  try {
+    await api("DELETE", `/api/admin/reports/${report.id}`);
+    row.remove();
+  } catch (error) {
+    showError(error);
+  }
+}
+
+async function deleteShownReports() {
+  const summary = $("rep-summary").textContent.split(" · ")[0];
+  if (!confirm(`Delete ${summary} that match these filters? This can't be undone. Download them first if you might need them.`)) return;
+  try {
+    const params = reportQuery();
+    params.delete("sort");
+    params.delete("order");
+    const result = await api("DELETE", `/api/admin/reports?${params}`);
+    setMessage($("admin-message"), `${plural(result.deleted, "report")} deleted.`, "ok");
+    await loadReports(true);
+  } catch (error) {
+    showError(error);
+  }
+}
 
 // ---------- own account, setup, login ----------
 

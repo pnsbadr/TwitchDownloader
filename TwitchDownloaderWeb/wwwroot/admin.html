@@ -132,6 +132,43 @@
       <ul id="twitch-channels" class="plain-list"></ul>
     </section>
 
+    <section class="panel" id="reports-panel" hidden>
+      <h2>Reports</h2>
+      <p class="muted small-text">Bugs, errors and crashes: the server's errors, background jobs that failed, pages that crashed, and problems
+        people reported from the account menu. Each one says who it happened to, when, where, and what was going on.</p>
+      <div class="row report-filters">
+        <label class="inline-label">When
+          <select id="rep-period">
+            <option value="1">Last 24 hours</option>
+            <option value="7" selected>Last 7 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="90">Last 90 days</option>
+            <option value="">Everything</option>
+          </select>
+        </label>
+        <label class="inline-label">Show
+          <select id="rep-view">
+            <option value="list">Each report</option>
+            <option value="groups">Same errors together</option>
+          </select>
+        </label>
+        <label class="inline-label">Sort
+          <select id="rep-sort"></select>
+        </label>
+        <input id="rep-search" class="grow" type="search" placeholder="Search messages, notes, people, teams" aria-label="Search reports" spellcheck="false">
+      </div>
+      <div class="row report-filters" id="rep-facets"></div>
+      <div class="row report-actions">
+        <span id="rep-summary" class="muted small-text grow"></span>
+        <button type="button" id="rep-clear" class="link small" hidden>Clear filters</button>
+        <button type="button" id="rep-csv" class="secondary small">Download CSV</button>
+        <button type="button" id="rep-json" class="secondary small">Download JSON</button>
+        <button type="button" id="rep-delete" class="danger small">Delete these</button>
+      </div>
+      <ul id="reports" class="plain-list report-list"></ul>
+      <div class="row"><button type="button" id="rep-more" class="secondary small" hidden>Load more</button></div>
+    </section>
+
     <section class="panel" id="log-panel" hidden>
       <h2>App log</h2>
       <div class="row">
@@ -143,6 +180,7 @@
       <div class="row"><button type="button" id="log-more" class="secondary small" hidden>Load more</button></div>
     </section>
   </main>
+  <script src="reports.js"></script>
   <script src="account.js"></script>
   <script src="admin.js"></script>
 </body>
