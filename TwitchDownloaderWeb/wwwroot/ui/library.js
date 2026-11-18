@@ -6,7 +6,7 @@
 // entries (GET /api/entries); videos are segments linked on one row (GET /api/videos). Both filter by VOD and by member: made by, or
 // edited by (made an edit of it in Player 2).
 
-import { $, el, api, me, can, formatDate, formatDuration, loadSetting, saveSetting, toast, iconButton, withTooltip, twitchThumb, thumbStyle } from "./core.js";
+import { $, el, api, me, can, liveChannels, formatDate, formatDuration, loadSetting, saveSetting, toast, iconButton, withTooltip, twitchThumb, thumbStyle } from "./core.js";
 import { draggable } from "./drag.js";
 import { dayRange, todayIn, viewerTimeZone } from "./dates.js";
 import { askText, confirmAction } from "./dialogs.js";
@@ -54,7 +54,11 @@ export function setUpLibrary(options) {
   $("side-channel").addEventListener("sl-change", (event) => pickChannel(event.target.value));
   setUpFilter();
   if (options.sample) showSample(options.sample);
-  else loadChannels();
+  else {
+    loadChannels();
+    window.addEventListener("clipco:stream", (event) => onStreamChange(event.detail));
+    window.addEventListener("clipco:live-hello", () => onLiveHello());
+  }
 }
 
 // Demo mode (?demo): sample data instead of the server (filters that call the server do nothing useful there)
@@ -159,6 +163,9 @@ async function loadMoreVods(first = false) {
 async function checkLive(login) {
   const newest = state.vods[0];
   if (!newest || Date.now() - new Date(newest.createdAtUtc).getTime() > 2 * 86400_000) return;
+  // The server hears from Twitch when this channel streams: no need to ask when it says it's offline
+  const known = liveChannels.get(login);
+  if (known?.watched && known.live === false) return;
   try {
     const info = await api("GET", `/api/vods/info?vod=${newest.vodId}`);
     if (login !== state.channel || !info.isLive) return;
@@ -167,6 +174,53 @@ async function checkLive(login) {
   } catch {
     // Not knowing is fine: the card just shows no LIVE badge
   }
+}
+
+// ---------- live stream updates (core.js startLiveEvents) ----------
+// A channel started or stopped streaming: the VOD list re-reads its first page (a new VOD appears, the LIVE badge comes and goes, the
+// final length shows). Twitch needs a moment to list a new VOD and to settle the length, so it looks again a couple of times after.
+const liveRetries = new Map(); // login → timers
+
+function onStreamChange({ login, live }) {
+  if (login !== state.channel) return;
+  for (const timer of liveRetries.get(login) ?? []) clearTimeout(timer);
+  if (!live) {
+    for (const vod of state.vods) vod.isLive = false;
+    if (state.list === "vods") render();
+  }
+  refreshNewestVods(login);
+  liveRetries.set(login, [20_000, 90_000].map((ms) => setTimeout(() => refreshNewestVods(login), ms)));
+}
+
+// After (re)connecting: the cards may have missed a change while the page was hidden or the server restarted
+function onLiveHello() {
+  const known = liveChannels.get(state.channel);
+  if (!known?.watched || known.live == null || !state.vods.length) return;
+  const showsLive = state.vods.some((vod) => vod.isLive);
+  if (showsLive !== known.live) onStreamChange({ login: state.channel, live: known.live });
+}
+
+async function refreshNewestVods(login) {
+  if (login !== state.channel || state.vodsLoading) return;
+  const type = state.vodType;
+  let page;
+  try {
+    page = await api("GET", `/api/channels/${encodeURIComponent(login)}/vods?type=${type}&limit=20`);
+  } catch {
+    return; // the next change or retry tries again
+  }
+  if (login !== state.channel || type !== state.vodType) return;
+  const byId = new Map(state.vods.map((vod) => [String(vod.vodId), vod]));
+  const added = [];
+  for (const item of page.items) {
+    const known = byId.get(String(item.vodId));
+    if (known) Object.assign(known, item, { isLive: known.isLive && liveChannels.get(login)?.live !== false });
+    else added.push(item);
+  }
+  if (added.length) state.vods.unshift(...added);
+  if (state.list === "vods") render();
+  if (added.length) loadWorkFor(added.map((v) => v.vodId));
+  if (liveChannels.get(login)?.live !== false) checkLive(login);
 }
 
 // What the team made on these VODs (badges on their cards)

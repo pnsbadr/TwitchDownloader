@@ -3,7 +3,7 @@
 // cards (nothing is sent to the server).
 
 import { registerIconLibrary } from "https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.20.1/cdn/utilities/icon-library.js";
-import { $, el, api, me, can, loadMe, sessionHandlers, TEAM_PAGE_PERMISSIONS, wireIconButtons, loadSetting, saveSetting, toast, formatDuration } from "./core.js";
+import { $, el, api, me, can, loadMe, startLiveEvents, sessionHandlers, TEAM_PAGE_PERMISSIONS, wireIconButtons, loadSetting, saveSetting, toast, formatDuration } from "./core.js";
 import { dropTarget, watchDrags, shadePath } from "./drag.js";
 import { setUpLibrary, showList, refreshClips, refreshVideos, refreshLibraryFilters, knownVod, knownVodTitle } from "./library.js";
 import { setUpTree, openTree, forgetTree, render as renderTree } from "./p2-tree.js";
@@ -14,7 +14,7 @@ import { trimValue } from "./timeline-edit.js";
 import { skipCut, keptSeconds } from "./cuts.js";
 import { askText, confirmAction } from "./dialogs.js";
 import { ProjectStore, piecesFromItem, flatten, stretchAt, emptyContent, withoutLayouts, trackName } from "./project.js";
-import { ProjectTimeline } from "./project-timeline.js";
+import { ProjectTimeline, forgetLiveVodLengths } from "./project-timeline.js";
 import { ProjectPlayback } from "./project-playback.js";
 import { setUpExport, addToExport, exportShown, pausePreview } from "./export.js";
 import { showShortcuts } from "./shortcuts.js";
@@ -1845,6 +1845,30 @@ async function start() {
   timelineTabs = tabs(document.querySelector(".tl-tabs"), "data-tl", setActivePlayer, null);
   setUpKeys();
   setUpItemEditor();
+  if (!DEMO) setUpLiveUpdates();
+}
+
+// A stream ended (core.js startLiveEvents: the server hears it from Twitch): a VOD open in Player 1 that was live gets its final length
+// (the player itself sees the playlist end); Player 2 reads live VODs' lengths again
+function setUpLiveUpdates() {
+  window.addEventListener("clipco:stream", (event) => {
+    if (event.detail.live) return;
+    forgetLiveVodLengths();
+    const vod = p1Vod;
+    if (!vod?.isLive) return;
+    // Twitch settles the VOD's length a little after the stream ends
+    setTimeout(async () => {
+      try {
+        const info = await api("GET", `/api/vods/info?vod=${encodeURIComponent(vod.vodId)}`);
+        vod.isLive = info.isLive;
+        vod.lengthSeconds = info.lengthSeconds;
+        if (p1Vod === vod && timeline.vodId === String(vod.vodId)) timeline.knownLength = Math.max(timeline.knownLength, info.lengthSeconds || 0);
+      } catch {
+        // The player's own playlist still has the length
+      }
+    }, 15_000);
+  });
+  startLiveEvents();
 }
 
 start();
