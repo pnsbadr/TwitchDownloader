@@ -1250,6 +1250,13 @@ function renderTools() {
   const undo = screenUndoState();
   document.querySelector('#tools [data-keybind="undo"]').disabled = !undo.canUndo;
   document.querySelector('#tools [data-keybind="redo"]').disabled = !undo.canRedo;
+  // While a row plays alone: only the pointer, zoom and hand tools and the moment marker
+  if (rowFocus) {
+    for (const button of document.querySelectorAll("#tools sl-icon-button")) {
+      const kept = ["pointer", "zoom", "hand"].includes(button.dataset.tool) || button.dataset.create === "marker";
+      if (!kept) button.disabled = true;
+    }
+  }
 }
 
 // Undo / redo: Player 1's steps, or Player 2's project (the 9:16 view's box changes are project changes too)
@@ -1515,7 +1522,8 @@ function setUpKeys() {
 // screen, or the row going away ends it; the playhead stays where it stopped.
 
 let rowFocus = null;        // { which: "p1" | "p2", rowId }
-const FOCUS_KEYS = new Set(["playPause", "back10", "fwd10", "back5", "fwd5", "frameBack", "frameFwd", "fullscreen", "zoomIn", "zoomOut", "fit", "escape"]);
+const FOCUS_KEYS = new Set(["playPause", "back10", "fwd10", "back5", "fwd5", "frameBack", "frameFwd", "fullscreen", "zoomIn", "zoomOut", "fit", "escape",
+  "toolPointer", "toolZoom", "toolHand", "marker"]);
 let focusShade = null;
 let focusFrame = 0;
 
@@ -1535,6 +1543,7 @@ function focusRow(which, rowId) {
   if (activePlayer !== which) timelineTabs.pick(which);
   rowFocus = { which, rowId };
   const t = focusTimeline();
+  if (!["pointer", "zoom", "hand"].includes(t.tool)) t.setTool("pointer");
   t.setFocus(rowId);
   document.body.classList.add("row-focus", `row-focus-${which}`);
   const p1Row = which === "p1" ? timeline.rows.find((r) => r.id === rowId) : null;
@@ -1607,13 +1616,26 @@ function playFocusedP1() {
 }
 
 // Player 1 while a row plays alone: past a part's end (or in a gap), on to the next part
+// (the part it jumped to counts as playing even when the player reports a little before its start, or a stale position for a
+// moment after the seek, so it never seeks back and forth)
 function focusTickP1(position) {
   if (!player1.playing()) return;
   const parts = timeline.focusParts();
-  if (parts.some((p) => position >= p.start - 0.05 && position < p.end - 0.04)) return;
+  const part = rowFocus.part && parts.find((p) => Math.abs(p.start - rowFocus.part.start) < 0.01);
+  if (part && position < part.end - 0.04 && (position >= part.start - 1.5 || performance.now() - rowFocus.seekAt < 1500)) return;
+  const inside = parts.find((p) => position >= p.start - 0.05 && position < p.end - 0.04);
+  if (inside) {
+    rowFocus.part = inside;
+    return;
+  }
   const next = parts.find((p) => p.start > position - 0.05);
-  if (next) player1.seek(next.start);
-  else player1.pause();
+  if (!next) {
+    player1.pause();
+    return;
+  }
+  rowFocus.part = next;
+  rowFocus.seekAt = performance.now();
+  player1.seek(next.start);
 }
 
 // Every frame while focused: the shade's holes follow the player and the row, the timeline is as tall as its rows, and the
@@ -1626,45 +1648,63 @@ function focusLoop() {
     endRowFocus();
     return;
   }
-  const lower = $("lower");
-  const body = document.querySelector(".tl-body");
-  const chrome = lower.offsetHeight - body.clientHeight;
-  const wanted = Math.round(Math.min(chrome + t.rowsHeight() + 2, $("view-editor").clientHeight * 0.6));
-  if (Math.abs(lower.offsetHeight - wanted) > 1) {
+  // The timeline as tall as its rows: measured only when the rows or the room change (measuring every frame made it jump)
+  const key = `${t.rowsHeight()}:${$("view-editor").clientHeight}`;
+  if (rowFocus.layoutKey !== key) {
+    rowFocus.layoutKey = key;
+    const lower = $("lower");
+    const body = document.querySelector(".tl-body");
+    const chrome = lower.offsetHeight - body.clientHeight;
+    const wanted = Math.round(Math.min(chrome + t.rowsHeight() + 2, $("view-editor").clientHeight * 0.6));
     document.body.style.setProperty("--focus-lower-h", `${wanted}px`);
     t.dirty = true;
   }
-  const h = head.getBoundingClientRect();
-  const b = body.getBoundingClientRect();
-  const row = { left: h.left, right: b.right, top: Math.max(h.top, b.top), bottom: Math.min(h.bottom, b.bottom) };
-  const player = $(rowFocus.which === "p1" ? "player1" : "player2").getBoundingClientRect();
-  focusShade.style.clipPath = shadePath([player, row]);
+  // Lit: the player, the tools bar and the whole timeline (its playhead can be moved as usual)
+  const holes = [$(rowFocus.which === "p1" ? "player1" : "player2"), $("toolsbar"), $("timeline")].map((e) => e.getBoundingClientRect());
+  const path = shadePath(holes);
+  if (path !== rowFocus.path) {
+    rowFocus.path = path;
+    focusShade.style.clipPath = path;
+  }
   focusFrame = requestAnimationFrame(focusLoop);
 }
 
 function setUpRowFocus() {
   // While focused the rows can't be edited: a click on the timeline only moves the playhead (to the next part when it's in a gap)
   const track = $("tl-track");
+  // The hand and zoom tools and the middle button work as usual; with the pointer a click on an item or piece goes to its start,
+  // anywhere else to that exact time (and the ruler, outside this, as usual)
+  const passes = (event) => event.button === 1 || ["hand", "zoom"].includes(focusTimeline().tool);
   track.addEventListener("pointerdown", (event) => {
-    if (!rowFocus) return;
+    if (!rowFocus || passes(event)) return;
     event.stopPropagation();
     event.preventDefault();
     if (event.button !== 0) return;
     const t = focusTimeline();
     const rect = t.track.getBoundingClientRect();
-    const seconds = t.xToTime(event.clientX - rect.left, rect.width);
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    const seconds = t.xToTime(x, rect.width);
+    const geom = t.rowGeom();
+    const index = geom.findIndex((g) => y >= g.y && y < g.y + g.h);
     if (rowFocus.which === "p2") {
-      p2Seek(seconds);
+      const track2 = store.content?.tracks[index];
+      const piece = track2 && store.content.pieces.find((p) => p.trackId === track2.id && seconds >= p.at && seconds < p.at + (p.end - p.start));
+      p2Seek(piece ? piece.at : seconds);
       return;
     }
-    const parts = timeline.focusParts();
-    const inside = parts.some((p) => seconds >= p.start && seconds < p.end);
-    const next = inside ? null : parts.find((p) => p.start > seconds);
-    player1.seek(inside ? seconds : (next ?? parts[0])?.start ?? seconds);
+    const row = timeline.rows[index];
+    const pad = (4 / rect.width) * timeline.span();
+    const item = row && timeline.itemsOf(row).find((i) => (i.end == null ? Math.abs(i.start - seconds) <= pad * 1.5 : seconds >= i.start - pad && seconds <= i.end + pad));
+    rowFocus.part = null;
+    player1.seek(item ? item.start : seconds);
   }, true);
   for (const type of ["dblclick", "contextmenu", "pointermove"]) {
     track.addEventListener(type, (event) => {
       if (!rowFocus) return;
+      const t = focusTimeline();
+      if (type === "pointermove" && t.press) return;
+      if (type === "contextmenu" && t.tool === "zoom") return;
       event.stopPropagation();
       if (type === "contextmenu") event.preventDefault();
     }, true);
