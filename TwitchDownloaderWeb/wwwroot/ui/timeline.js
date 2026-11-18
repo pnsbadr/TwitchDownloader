@@ -15,8 +15,12 @@ import { MARKER_COLORS } from "./colors.js";
 import { formatClock } from "./media.js";
 import { editing } from "./timeline-edit.js";
 import { isDragging } from "./drag.js";
+import { rowPlayButton } from "./project-timeline.js";
+import { keptParts } from "./cuts.js";
 
 const ROW_HEIGHT = 36;
+const FOCUS_ROW_HEIGHT = 64;    // the row that plays alone (row focus, editor.js focusRow)
+const FOLDED_ROW_HEIGHT = 16;   // the other rows meanwhile
 const MIN_SPAN = 10;
 const REFRESH_MS = 5000;
 const CLIP_COLOR = "#8b7cf6";
@@ -319,13 +323,20 @@ export class Timeline {
         state.toggled = event.target.checked;
         this.renderFooter();
       });
-      return el("div", { class: "row-head" + (own ? " own" : "") + (index % 2 ? " odd" : ""), style: `height:${ROW_HEIGHT}px` },
+      const focusClass = this.focus ? (this.focus === row.id ? " focused" : " folded") : "";
+      const head = el("div", { class: "row-head" + (own ? " own" : "") + (index % 2 ? " odd" : "") + focusClass, style: `height:${this.rowGeom()[index].h}px` },
         check,
+        item ? null : rowPlayButton(this.focus === row.id, () => this.hooks.onFocusRow?.(row.id)),
         name,
         el("div", { class: "row-btns" },
           item ? null : toggle("hidden", state.hidden ? "Show row" : "Hide row", "eye", "eye-slash"),
           item ? null : toggle("solo", "Solo (only this row)", "headphones", "headphones"),
           row.canEdit ? toggle("locked", state.locked ? "Unlock row" : "Lock row", "lock-simple-open", "lock-simple") : null));
+      // While a row plays alone, clicking another row's (folded) head plays that one instead
+      head.addEventListener("click", (event) => {
+        if (this.focus && this.focus !== row.id && !event.target.closest("sl-icon-button, sl-checkbox")) this.hooks.onFocusRow?.(row.id);
+      });
+      return head;
     }));
     this.dirty = true;
   }
@@ -656,7 +667,87 @@ export class Timeline {
     this.drawPlayhead(ctx, width, height, now, true);
   }
 
+  // ---------- row focus: one row plays alone (editor.js focusRow); it's taller, the others fold to thin lines ----------
+
+  setFocus(rowId) {
+    this.focus = rowId ?? null;
+    this.renderHeads();
+    this.dirty = true;
+  }
+
+  rowGeom() {
+    let y = 0;
+    return this.rows.map((row) => {
+      const h = !this.focus ? ROW_HEIGHT : row.id === this.focus ? FOCUS_ROW_HEIGHT : FOLDED_ROW_HEIGHT;
+      const g = { y, h };
+      y += h;
+      return g;
+    });
+  }
+
+  rowsHeight() {
+    return this.rowGeom().reduce((sum, g) => sum + g.h, 0);
+  }
+
+  // What the focused row plays, in VOD seconds: its segments' and clips' kept parts joined where they overlap (moments are skipped)
+  focusParts() {
+    const row = this.rows.find((r) => r.id === this.focus);
+    if (!row) return [];
+    const parts = this.itemsOf(row)
+      .filter((item) => item.end != null && item.end > item.start)
+      .flatMap((item) => keptParts(item.start, item.end, item.cuts ?? []))
+      .sort((a, b) => a.start - b.start);
+    const joined = [];
+    for (const part of parts) {
+      const last = joined[joined.length - 1];
+      if (last && part.start <= last.end + 0.05) last.end = Math.max(last.end, part.end);
+      else joined.push({ start: part.start, end: part.end });
+    }
+    return joined;
+  }
+
+  drawFocused(now) {
+    const geom = this.rowGeom();
+    const height = Math.max(this.rowsHeight(), $("tl-track").clientHeight || 0, 1);
+    const { ctx, width } = this.prepare(this.track, height);
+    const css = getComputedStyle(document.documentElement);
+    const line = css.getPropertyValue("--line");
+    const accent = css.getPropertyValue("--accent-strong").trim() || "#a597ff";
+    this.rows.forEach((row, index) => {
+      const { y, h } = geom[index];
+      ctx.fillStyle = line;
+      ctx.fillRect(0, y + h - 1, width, 1);
+      const items = this.itemsOf(row);
+      if (row.id !== this.focus) {
+        ctx.save();
+        ctx.globalAlpha = 0.8;
+        for (const item of items) {
+          const x1 = this.timeToX(item.start, width);
+          const x2 = item.end == null ? x1 + 2 : this.timeToX(item.end, width);
+          if (x2 < 0 || x1 > width) continue;
+          ctx.fillStyle = item.kind === "clip" ? CLIP_COLOR : MARKER_COLORS[item.color] ?? MARKER_COLORS.yellow;
+          roundRect(ctx, x1, y + 5, Math.max(2, x2 - x1), h - 10, 3);
+          ctx.fill();
+        }
+        ctx.restore();
+        return;
+      }
+      // the gaps it skips: dashed, "skip"
+      let from = null;
+      for (const part of this.focusParts()) {
+        if (from != null && part.start - from > 0.05) drawSkip(ctx, this.timeToX(from, width), this.timeToX(part.start, width), y, h, accent);
+        from = part.end;
+      }
+      for (const item of items) this.drawItem(ctx, item, y, width, h);
+    });
+    this.drawPlayhead(ctx, width, height, now, false);
+  }
+
   drawTrack(now) {
+    if (this.focus && this.vodId) {
+      this.drawFocused(now);
+      return;
+    }
     const rowCount = this.rows.length;
     const height = Math.max(rowCount * ROW_HEIGHT, $("tl-track").clientHeight);
     const { ctx, width } = this.prepare(this.track, rowCount * ROW_HEIGHT || 1);
@@ -787,13 +878,13 @@ export class Timeline {
     ctx.restore();
   }
 
-  drawItem(ctx, item, y, width) {
+  drawItem(ctx, item, y, width, rowH = ROW_HEIGHT) {
     const x1 = this.timeToX(item.start, width);
     if (item.kind === "moment") {
       if (x1 < -8 || x1 > width + 8) return;
       const color = MARKER_COLORS[item.color] ?? MARKER_COLORS.yellow;
       ctx.fillStyle = color;
-      ctx.fillRect(Math.round(x1) - 1, y + 4, 2, ROW_HEIGHT - 8);
+      ctx.fillRect(Math.round(x1) - 1, y + 4, 2, rowH - 8);
       ctx.beginPath();
       ctx.moveTo(x1 - 6, y + 4);
       ctx.lineTo(x1 + 6, y + 4);
@@ -807,7 +898,7 @@ export class Timeline {
     const left = Math.max(x1, -2);
     const right = Math.min(x2, width + 2);
     const top = y + 6;
-    const h = ROW_HEIGHT - 12;
+    const h = rowH - 12;
     if (item.kind === "clip") {
       ctx.fillStyle = item.reference ? "rgb(139 124 246 / 0.35)" : CLIP_COLOR;
       roundRect(ctx, left, top, Math.max(2, right - left), h, 4);
@@ -902,6 +993,25 @@ export class Timeline {
       ctx.fill();
     }
   }
+}
+
+// A gap the focused row skips
+function drawSkip(ctx, x1, x2, y, h, color) {
+  const w = x2 - x1;
+  if (w < 3) return;
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.setLineDash([4, 3]);
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x1 + 1.5, y + 6.5, w - 3, h - 13);
+  if (w > 40) {
+    ctx.fillStyle = color;
+    ctx.font = "11px Barlow, system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("skip", x1 + w / 2, y + h / 2);
+  }
+  ctx.restore();
 }
 
 function roundRect(ctx, x, y, w, h, r) {

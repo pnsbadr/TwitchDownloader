@@ -52,11 +52,12 @@ const KEYBINDS = [
   { id: "pastePieces", scope: "player", keys: ["Ctrl+V"], description: "Player 2: paste them at the playhead on the picked row" },
   { id: "verticalToggle", scope: "player", keys: ["E"], description: "Player 2: a new vertical (9:16) edit of what's loaded, with its own timeline; in the vertical editor: back to Player 2" },
   { id: "shortcutsHelp", scope: "player", keys: ["?"], description: "Show this list of shortcuts" },
-  { id: "escape", scope: "player", keys: ["Escape"], description: "Cancel marking, linking or a drag, back to the pointer tool, or unselect" },
+  { id: "escape", scope: "player", keys: ["Escape"], description: "Stop a row playing on its own (a row's play button), cancel marking, linking or a drag, back to the pointer tool, or unselect" },
 
   { id: "clickSeek", scope: "timeline-mouse", keys: ["Click"], description: "Seek; on an item, select it and go there (pointer tool). Split (cut tool), zoom in (zoom tool), pick segments for a video (link tool)" },
   { id: "shiftClick", scope: "timeline-mouse", keys: ["Shift+Click"], description: "Player 2: add a piece to the selection (or take it out)" },
   { id: "marquee", scope: "timeline-mouse", keys: ["Drag on empty space"], description: "Player 2: select the pieces in the box" },
+  { id: "rowPlay", scope: "timeline-mouse", keys: ["Click a row's ▶"], description: "Play only that row, skipping its gaps, with the rest of the editor dimmed (click ■ or press Esc to stop; another row's head plays that one)" },
   { id: "doubleClickItem", scope: "timeline-mouse", keys: ["Double-click"], description: "Change the item's (or piece's) title and color; a row's name: rename the row" },
   { id: "rightClickMenu", scope: "timeline-mouse", keys: ["Right click"], description: "The item's menu: title/color, copy, layouts, close a gap, rows, show in Player 1, add to the export list… (zoom tool: zoom out)" },
   { id: "dragEdge", scope: "timeline-mouse", keys: ["Drag an edge"], description: "Change the selected item's start or end (Player 2: trim a piece, also past the original clip)" },

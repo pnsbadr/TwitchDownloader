@@ -957,3 +957,49 @@ kbd {
   color: var(--text);
 }
 kbd.kb-mouse { font-weight: 500; background: transparent; border-style: dashed; border-bottom-width: 1px; }
+
+/* ---------- row focus (editor.js focusRow): one row plays alone, the rest goes dark like while dragging ---------- */
+
+body.row-focus #side,
+body.row-focus .workspace > .gutter,
+body.row-focus #players > .gutter,
+body.row-focus #view-editor > .gutter,
+body.row-focus-p2 #player1,
+body.row-focus-p1 #player2 { display: none; }
+body.row-focus .views { width: 100% !important; flex: 1 1 auto; }
+body.row-focus-p2 #player2,
+body.row-focus-p1 #player1 { width: 100% !important; flex: 1 1 auto; }
+body.row-focus #players { height: auto !important; flex: 1 1 auto; }
+body.row-focus #lower { height: var(--focus-lower-h, 40%) !important; flex: none; }
+
+/* the same shade as dragging (theme.css .drag-shade); its holes are cut every frame */
+.focus-shade {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 0.62);
+  z-index: 800;
+}
+
+.row-head.focused { background: var(--accent-soft); box-shadow: inset 0 0 0 2px var(--accent); }
+.row-head.folded { cursor: pointer; padding-top: 0; padding-bottom: 0; }
+.row-head.folded > :not(.row-name),
+.row-head.folded .row-kind,
+.row-head.focused .row-check,
+.row-head.focused .row-check-gap { display: none; }
+.row-head.folded .row-owner { font-size: 11px; }
+.row-head.folded .row-title { font-size: 11px; font-weight: 500; color: var(--text-dim); }
+.row-play[data-active]::part(base) { color: #fff; background: var(--accent); border-radius: var(--radius-small); }
+.view-editor.vertical-mode .row-play { display: none; }
+
+.focus-badge {
+  flex: none;
+  padding: 1px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.row-play { flex: none; font-size: 14px; }
+.row-play::part(base) { padding: 3px; }

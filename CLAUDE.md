@@ -560,7 +560,15 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   pieces all come from it); the tree and the vertical editor's way back load the original (`loadInPlayer2(item, { original: true })`). New edits are renamed from the menu ("Save as a new edit…" names one first). Dropping
   more on Player 2's timeline adds them only from the same VOD (`store.takesVod`). Player 1's new segments/clips go into an open saved edit
   of their VOD only. Last loaded is remembered in `clipco.p2.project` (`{ edit }` or `{ kind, id, vodId }`).
-- **Library filters** (`ui/library.js`): CLIPS and VIDEOS filter by VOD and member (Made by / Edited by: made an edit of it), shared between the
+- **Row focus** (badrfly 2026-11-18, `focusRow` / `endRowFocus` in `ui/editor.js`): every row head on both timelines has a play button
+  (`rowPlayButton` in `ui/project-timeline.js`) that plays only that row, gaps skipped: Player 2 through `ProjectPlayback.setSolo` (only that
+  row's pieces, even if hidden/muted/covered), Player 1 its segments' and clips' kept parts (`Timeline.focusParts`, moments skipped,
+  `focusTickP1` jumps gaps). Meanwhile the rest goes dark with the drag shade (`.focus-shade`, `shadePath` from `ui/drag.js`, holes for the
+  player and the row recut every frame), the left panel and the other player fold away, other rows fold to 16 px lines (the row is 64 px;
+  `rowGeom()` in both timelines) and the timeline shrinks to its rows (`--focus-lower-h`). Rows can't be edited then: a click on the
+  timeline only seeks, only playback/zoom keys work (`FOCUS_KEYS`), drops are refused. Stop button, Esc, a click in the dark, another
+  tab/screen, the vertical editor or the row going away ends it (the player pauses where it is). Clicking a folded row's head plays that one.
+: CLIPS and VIDEOS filter by VOD and member (Made by / Edited by: made an edit of it), shared between the
   two lists; card menus have "Show this VOD's clips/videos"; VOD cards show what's on them ("3 clips · 1 video") and the VOD filter has
   "Only VODs with work on them".
 - **Saved edits** (`ItemEdits`, the old Player 2) are no longer made or shown by the page: at startup `SavedEditConversion` turns each one into

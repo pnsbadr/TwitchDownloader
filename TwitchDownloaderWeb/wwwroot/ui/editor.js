@@ -4,7 +4,7 @@
 
 import { registerIconLibrary } from "https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.20.1/cdn/utilities/icon-library.js";
 import { $, el, api, me, can, loadMe, sessionHandlers, TEAM_PAGE_PERMISSIONS, wireIconButtons, loadSetting, saveSetting, toast, formatDuration } from "./core.js";
-import { dropTarget, watchDrags } from "./drag.js";
+import { dropTarget, watchDrags, shadePath } from "./drag.js";
 import { setUpLibrary, showList, refreshClips, refreshVideos, refreshLibraryFilters, knownVod, knownVodTitle } from "./library.js";
 import { setUpTree, openTree, forgetTree, render as renderTree } from "./p2-tree.js";
 import { MARKER_COLORS } from "./colors.js";
@@ -13,7 +13,7 @@ import { Timeline } from "./timeline.js";
 import { trimValue } from "./timeline-edit.js";
 import { skipCut, keptSeconds } from "./cuts.js";
 import { askText, confirmAction } from "./dialogs.js";
-import { ProjectStore, piecesFromItem, flatten, stretchAt, emptyContent, withoutLayouts } from "./project.js";
+import { ProjectStore, piecesFromItem, flatten, stretchAt, emptyContent, withoutLayouts, trackName } from "./project.js";
 import { ProjectTimeline } from "./project-timeline.js";
 import { ProjectPlayback } from "./project-playback.js";
 import { setUpExport, addToExport, exportShown, pausePreview } from "./export.js";
@@ -136,6 +136,7 @@ function showScreen(view) {
   $("view-export").hidden = view !== "export";
   // Only one player plays at a time: the screen left behind is paused
   if (view === "export") {
+    endRowFocus();
     for (const player of [player1, player2]) if (player?.ready && player.playing()) player.pause();
     playback?.pause();
     pauseProjectVertical();
@@ -767,7 +768,8 @@ function setUpPlayer1() {
   player1 = new MediaPlayer($("p1-media"), {
     onTick: (position) => {
       renderClock(position);
-      p1Tick(position);
+      if (rowFocus?.which === "p1") focusTickP1(position);
+      else p1Tick(position);
     },
     onState: () => {
       playAlone(player1, player2);
@@ -791,6 +793,7 @@ function setUpPlayer1() {
     // A new segment or clip goes into the edit open in Player 2 (at its playhead) when it's of the same VOD, without switching the tab
     onCreated: (item) => addToProject({ kind: item.kind, data: { ...item.data, vodId: timeline.vodId, vodLengthSeconds: timeline.length() } }),
     onEdited: () => {},
+    onFocusRow: (rowId) => focusRow("p1", rowId),
   });
   wirePlayerButtons(1, "p1");
   $("p1-live").addEventListener("click", () => {
@@ -887,6 +890,7 @@ function setUpPlayer2() {
     },
     onShowInPlayer1: showInPlayer1,
     onApplyToOriginal: applyToOriginal,
+    onFocusRow: (trackId) => focusRow("p2", trackId),
   });
   wirePlayerButtons(2, "p2");
   setUpProjectVertical($("player2"), {
@@ -1131,6 +1135,7 @@ function syncVerticalView() {
 
 // The phone button (E): from Player 2, a new vertical edit of what's loaded; from the vertical editor, back to Player 2
 async function toggleVertical(on = !projectVerticalOpen()) {
+  endRowFocus();
   if (!on) return leaveVertical();
   if (!store.open) {
     toast("Load a clip, video or segment in Player 2 first.");
@@ -1290,6 +1295,11 @@ function playPause(which = activePlayer) {
   }
   const { player, timeline: t } = pair(which);
   if (!player.ready) return;
+  if (rowFocus?.which === "p1") {
+    if (player1.playing()) player1.pause();
+    else playFocusedP1();
+    return;
+  }
   const range = t.selectedRange();
   if (range && !player.playing()) {
     const now = player.position();
@@ -1331,6 +1341,7 @@ function skip(which, delta) {
 }
 
 function setActivePlayer(which) {
+  if (rowFocus && rowFocus.which !== which) endRowFocus();
   activePlayer = which;
   timeline.setActive(which === "p1");
   timeline2.setActive(which === "p2");
@@ -1341,6 +1352,7 @@ function setUpPlayers() {
   setUpPlayer1();
   setUpPlayer2();
   setUpTools();
+  setUpRowFocus();
   for (const player of ["p1", "p2"]) {
     dropTarget($(`${player}-screen`), {
       accepts: (item) => PLAYER_KINDS[player].includes(item.kind),
@@ -1428,6 +1440,11 @@ function setUpKeys() {
     if (handleProjectVerticalKey(event)) return;
     const id = keybindFor("player", event);
     if (!id) return;
+    // While a row plays alone only playback, zoom and Esc work (the rows can't be changed then)
+    if (rowFocus && !FOCUS_KEYS.has(id)) {
+      event.preventDefault();
+      return;
+    }
     const p2 = activePlayer === "p2";
     const { player, timeline: t } = pair();
     const ready = p2 ? store.open : player.ready;
@@ -1469,6 +1486,10 @@ function setUpKeys() {
       pastePieces: () => p2 && on && t.paste(),
       addRow: () => p2 && on && t.addTrack(),
       escape: () => {
+        if (rowFocus) {
+          endRowFocus();
+          return;
+        }
         if (p2 && p2Marking) {
           p2Marking = null;
           renderTools();
@@ -1483,6 +1504,171 @@ function setUpKeys() {
     event.preventDefault();
     run();
   });
+}
+
+// ---------- row focus (badrfly 2026-11-18): a row's play button plays only that row ----------
+//
+// The row head's play button (both timelines) plays that row alone: Player 2 only its pieces, Player 1 only its segments' and
+// clips' kept parts (moments skipped), gaps jumped over. The rest of the editor goes dark with the same shade as dragging, with
+// the player and the row left lit; the left panel and the other player fold away, the other rows fold to thin lines and the
+// timeline shrinks to its rows, so the player gets the room. Stop (the same button), Esc, a click in the dark, another tab or
+// screen, or the row going away ends it; the playhead stays where it stopped.
+
+let rowFocus = null;        // { which: "p1" | "p2", rowId }
+const FOCUS_KEYS = new Set(["playPause", "back10", "fwd10", "back5", "fwd5", "frameBack", "frameFwd", "fullscreen", "zoomIn", "zoomOut", "fit", "escape"]);
+let focusShade = null;
+let focusFrame = 0;
+
+function focusTimeline() {
+  return rowFocus?.which === "p1" ? timeline : timeline2;
+}
+
+function focusRow(which, rowId) {
+  if (rowFocus?.which === which && rowFocus.rowId === rowId) {
+    endRowFocus();
+    return;
+  }
+  if (which === "p2" && (!store.open || projectVerticalOpen())) return;
+  if (which === "p1" && !player1.ready) return;
+  endRowFocus();
+  closeItemEditor(false);
+  if (activePlayer !== which) timelineTabs.pick(which);
+  rowFocus = { which, rowId };
+  const t = focusTimeline();
+  t.setFocus(rowId);
+  document.body.classList.add("row-focus", `row-focus-${which}`);
+  const p1Row = which === "p1" ? timeline.rows.find((r) => r.id === rowId) : null;
+  const name = p1Row
+    ? `${timeline.rowTitle(p1Row)} (${p1Row.userId === me?.id ? "you" : p1Row.username})`
+    : trackName(store.content, store.content.tracks.find((tr) => tr.id === rowId));
+  const badge = $(`${which}-focus`);
+  badge.textContent = `Playing ${name} only · Esc`;
+  badge.hidden = false;
+  focusShade = el("div", { class: "focus-shade", title: "Click to leave (Esc)" });
+  focusShade.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    endRowFocus();
+  });
+  document.body.append(focusShade);
+  focusFrame = requestAnimationFrame(focusLoop);
+  if (which === "p2") {
+    playback.setSolo(rowId);
+    if (!flattenSolo()) {
+      toast("Nothing to play on this row.");
+      endRowFocus();
+      return;
+    }
+    playback.play();
+  } else {
+    if (!timeline.focusParts().length) {
+      toast("Nothing to play on this row (moments aren't played).");
+      endRowFocus();
+      return;
+    }
+    playFocusedP1();
+  }
+  renderTools();
+}
+
+function flattenSolo() {
+  return playback.flat().some((s) => s.piece);
+}
+
+function endRowFocus() {
+  if (!rowFocus) return;
+  const { which } = rowFocus;
+  rowFocus = null;
+  cancelAnimationFrame(focusFrame);
+  focusShade?.remove();
+  focusShade = null;
+  document.body.classList.remove("row-focus", "row-focus-p1", "row-focus-p2");
+  document.body.style.removeProperty("--focus-lower-h");
+  $(`${which}-focus`).hidden = true;
+  if (which === "p2") {
+    if (store.open) playback.pause();
+    playback.setSolo(null);
+    timeline2.setFocus(null);
+  } else {
+    player1.stopAt = null;
+    if (player1.ready) player1.pause();
+    timeline.setFocus(null);
+  }
+  renderTools();
+}
+
+// Player 1: from the playhead when it's in one of the row's parts, else the next part (or the first one)
+function playFocusedP1() {
+  const parts = timeline.focusParts();
+  if (!parts.length || !player1.ready) return;
+  const now = player1.position() ?? 0;
+  const inside = parts.find((p) => now >= p.start && now < p.end - 0.05);
+  const from = inside ? now : (parts.find((p) => p.start >= now) ?? parts[0]).start;
+  player1.playRange(from, parts[parts.length - 1].end);
+}
+
+// Player 1 while a row plays alone: past a part's end (or in a gap), on to the next part
+function focusTickP1(position) {
+  if (!player1.playing()) return;
+  const parts = timeline.focusParts();
+  if (parts.some((p) => position >= p.start - 0.05 && position < p.end - 0.04)) return;
+  const next = parts.find((p) => p.start > position - 0.05);
+  if (next) player1.seek(next.start);
+  else player1.pause();
+}
+
+// Every frame while focused: the shade's holes follow the player and the row, the timeline is as tall as its rows, and the
+// focus ends if the row went away (deleted, another VOD or edit loaded)
+function focusLoop() {
+  if (!rowFocus) return;
+  const t = focusTimeline();
+  const head = t.heads.querySelector(".row-head.focused");
+  if (!head || t.heads.hidden) {
+    endRowFocus();
+    return;
+  }
+  const lower = $("lower");
+  const body = document.querySelector(".tl-body");
+  const chrome = lower.offsetHeight - body.clientHeight;
+  const wanted = Math.round(Math.min(chrome + t.rowsHeight() + 2, $("view-editor").clientHeight * 0.6));
+  if (Math.abs(lower.offsetHeight - wanted) > 1) {
+    document.body.style.setProperty("--focus-lower-h", `${wanted}px`);
+    t.dirty = true;
+  }
+  const h = head.getBoundingClientRect();
+  const b = body.getBoundingClientRect();
+  const row = { left: h.left, right: b.right, top: Math.max(h.top, b.top), bottom: Math.min(h.bottom, b.bottom) };
+  const player = $(rowFocus.which === "p1" ? "player1" : "player2").getBoundingClientRect();
+  focusShade.style.clipPath = shadePath([player, row]);
+  focusFrame = requestAnimationFrame(focusLoop);
+}
+
+function setUpRowFocus() {
+  // While focused the rows can't be edited: a click on the timeline only moves the playhead (to the next part when it's in a gap)
+  const track = $("tl-track");
+  track.addEventListener("pointerdown", (event) => {
+    if (!rowFocus) return;
+    event.stopPropagation();
+    event.preventDefault();
+    if (event.button !== 0) return;
+    const t = focusTimeline();
+    const rect = t.track.getBoundingClientRect();
+    const seconds = t.xToTime(event.clientX - rect.left, rect.width);
+    if (rowFocus.which === "p2") {
+      p2Seek(seconds);
+      return;
+    }
+    const parts = timeline.focusParts();
+    const inside = parts.some((p) => seconds >= p.start && seconds < p.end);
+    const next = inside ? null : parts.find((p) => p.start > seconds);
+    player1.seek(inside ? seconds : (next ?? parts[0])?.start ?? seconds);
+  }, true);
+  for (const type of ["dblclick", "contextmenu", "pointermove"]) {
+    track.addEventListener(type, (event) => {
+      if (!rowFocus) return;
+      event.stopPropagation();
+      if (type === "contextmenu") event.preventDefault();
+    }, true);
+  }
 }
 
 // ---------- title and color editor in the tools bar ----------

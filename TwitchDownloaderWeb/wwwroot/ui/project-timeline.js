@@ -20,6 +20,8 @@ import {
 } from "./project.js";
 
 const ROW_HEIGHT = 40;
+const FOCUS_ROW_HEIGHT = 64;    // the row that plays alone (row focus)
+const FOLDED_ROW_HEIGHT = 16;   // the other rows meanwhile
 const MIN_SPAN = 2;
 const TAIL = 60;                // seconds of empty room after the last piece
 const EDGE_PX = 7;
@@ -44,6 +46,20 @@ export async function vodLength(vodId) {
     vodLengths.delete(key);
   }
   return vodLengths.get(key) ?? null;
+}
+
+// The play button on a row head: plays only that row, gaps skipped, with the rest of the editor dimmed (row focus).
+// Shared with Player 1's timeline.
+export function rowPlayButton(playing, onClick) {
+  const label = playing ? "Stop playing this row" : "Play only this row (skips gaps)";
+  const button = el("sl-icon-button", { library: "ph", name: playing ? "stop" : "play", label, class: "row-btn row-play" });
+  if (playing) button.setAttribute("data-active", "");
+  button.addEventListener("pointerdown", (event) => event.stopPropagation());
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    onClick();
+  });
+  return withTooltip(button, label);
 }
 
 const colorOf = (piece) => MARKER_COLORS[piece.color] ?? MARKER_COLORS.violet ?? "#8b7cf6";
@@ -202,6 +218,7 @@ export class ProjectTimeline {
       return;
     }
     const canEdit = this.store.canEdit;
+    const geom = this.rowGeom();
     this.heads.replaceChildren(...content.tracks.map((track, index) => {
       const toggle = (key, labelOn, labelOff, iconOn, iconOff) => {
         const on = Boolean(track[key]);
@@ -217,11 +234,13 @@ export class ProjectTimeline {
         return withTooltip(button, on ? labelOn : labelOff);
       };
       const head = el("div", {
-        class: "row-head pt-head" + (index % 2 ? " odd" : "") + (this.trackSel === track.id ? " picked" : "") + (track.hidden ? " is-hidden" : ""),
-        style: `height:${ROW_HEIGHT}px`,
+        class: "row-head pt-head" + (index % 2 ? " odd" : "") + (this.trackSel === track.id ? " picked" : "") + (track.hidden ? " is-hidden" : "")
+          + (this.focus ? (this.focus === track.id ? " focused" : " folded") : ""),
+        style: `height:${geom[index].h}px`,
         "data-track": track.id,
       },
       el("sl-icon", { library: "ph", name: "dots-six-vertical", class: "pt-grip", title: "Drag to move the row" }),
+      rowPlayButton(this.focus === track.id, () => this.hooks.onFocusRow?.(track.id)),
       el("div", { class: "row-name" },
         el("span", { class: "row-title", title: canEdit ? "Double-click to rename" : "" }, trackName(content, track))),
       el("div", { class: "row-btns" },
@@ -307,6 +326,11 @@ export class ProjectTimeline {
   // Dragging a row's header up or down moves the row
   headPointerDown(event, trackId) {
     if (event.button !== 0 || event.target.closest("sl-icon-button")) return;
+    // While a row plays alone, clicking another row's (folded) head plays that one instead
+    if (this.focus) {
+      if (trackId !== this.focus) this.hooks.onFocusRow?.(trackId);
+      return;
+    }
     this.trackSel = trackId;
     for (const head of this.heads.children) head.classList.toggle("picked", head.dataset.track === trackId);
     this.renderFooter();
@@ -494,7 +518,73 @@ export class ProjectTimeline {
   }
 
   rowAt(y) {
+    if (this.focus) {
+      const geom = this.rowGeom();
+      const index = geom.findIndex((g) => y >= g.y && y < g.y + g.h);
+      return index < 0 ? geom.length : index;
+    }
     return Math.floor(y / ROW_HEIGHT);
+  }
+
+  // ---------- row focus: one row plays alone (editor.js focusRow); it's taller, the others fold to thin lines ----------
+
+  setFocus(trackId) {
+    this.focus = trackId ?? null;
+    this.renderHeads();
+    this.dirty = true;
+  }
+
+  // Each row's top and height
+  rowGeom() {
+    let y = 0;
+    return (this.content?.tracks ?? []).map((track) => {
+      const h = !this.focus ? ROW_HEIGHT : track.id === this.focus ? FOCUS_ROW_HEIGHT : FOLDED_ROW_HEIGHT;
+      const g = { y, h };
+      y += h;
+      return g;
+    });
+  }
+
+  rowsHeight() {
+    return this.rowGeom().reduce((sum, g) => sum + g.h, 0);
+  }
+
+  drawFocused(now) {
+    const content = this.content;
+    const geom = this.rowGeom();
+    const height = Math.max(this.rowsHeight(), $("tl-track").clientHeight || 0, 1);
+    const { ctx, width } = this.prepare(this.track, height);
+    const css = getComputedStyle(document.documentElement);
+    const line = css.getPropertyValue("--line");
+    const accent = css.getPropertyValue("--accent-strong").trim() || "#a597ff";
+    content.tracks.forEach((track, index) => {
+      const { y, h } = geom[index];
+      ctx.fillStyle = line;
+      ctx.fillRect(0, y + h - 1, width, 1);
+      const pieces = piecesOn(content, track.id).sort((a, b) => a.at - b.at);
+      if (track.id !== this.focus) {
+        ctx.save();
+        ctx.globalAlpha = 0.8;
+        for (const piece of pieces) {
+          const x1 = this.timeToX(piece.at, width);
+          const x2 = this.timeToX(pieceEnd(piece), width);
+          if (x2 < 0 || x1 > width) continue;
+          ctx.fillStyle = colorOf(piece);
+          roundRect(ctx, x1, y + 5, Math.max(2, x2 - x1 - 1), h - 10, 3);
+          ctx.fill();
+        }
+        ctx.restore();
+        return;
+      }
+      // the gaps it skips: dashed, "skip"
+      let from = 0;
+      for (const piece of pieces) {
+        if (piece.at - from > 0.05) drawSkip(ctx, this.timeToX(from, width), this.timeToX(piece.at, width), y, h, accent);
+        from = Math.max(from, pieceEnd(piece));
+      }
+      for (const piece of pieces) this.drawPiece(ctx, piece, y, width, { selected: this.selected.has(piece.id), h, solo: true });
+    });
+    this.drawPlayhead(ctx, width, height, now, false);
   }
 
   // The piece under a point, and whether it's on one of its edges
@@ -1148,7 +1238,7 @@ export class ProjectTimeline {
 
   bindDrop() {
     dropTarget(this.track, {
-      accepts: (item) => this.active && PROJECT_KINDS.includes(item.kind) && (!this.content || this.store.canEdit),
+      accepts: (item) => this.active && !this.focus && PROJECT_KINDS.includes(item.kind) && (!this.content || this.store.canEdit),
       onOver: (item, info) => this.dragOver(item, info),
       onLeave: () => {
         this.ghost = null;
@@ -1408,6 +1498,10 @@ export class ProjectTimeline {
   }
 
   drawTrack(now) {
+    if (this.focus && this.content) {
+      this.drawFocused(now);
+      return;
+    }
     const content = this.content;
     const rows = content?.tracks.length ?? 0;
     const extraRow = this.ghost?.newRow || this.newRowPreview ? 1 : 0;
@@ -1536,7 +1630,7 @@ export class ProjectTimeline {
     ctx.restore();
   }
 
-  drawPiece(ctx, piece, y, width, { faint = false, hidden = false, selected = false, invalid = false } = {}) {
+  drawPiece(ctx, piece, y, width, { faint = false, hidden = false, selected = false, invalid = false, h = ROW_HEIGHT, solo = false } = {}) {
     const x1 = this.timeToX(piece.at, width);
     const x2 = this.timeToX(pieceEnd(piece), width);
     if (x2 < -2 || x1 > width + 2) return;
@@ -1545,30 +1639,30 @@ export class ProjectTimeline {
     ctx.save();
     ctx.globalAlpha = faint ? 0.25 : hidden ? 0.35 : 1;
     ctx.fillStyle = invalid ? "#f05252" : color;
-    roundRect(ctx, x1, y + 4, w, ROW_HEIGHT - 8, 4);
+    roundRect(ctx, x1, y + 4, w, h - 8, 4);
     ctx.fill();
     // covered by a higher row: darker
-    if (!faint && !hidden) {
+    if (!faint && !hidden && !solo) {
       ctx.save();
-      roundRect(ctx, x1, y + 4, w, ROW_HEIGHT - 8, 4);
+      roundRect(ctx, x1, y + 4, w, h - 8, 4);
       ctx.clip();
       for (const range of this.coveredRanges(piece)) {
         const cx1 = this.timeToX(range.start, width);
         const cx2 = this.timeToX(range.end, width);
         ctx.fillStyle = "rgb(0 0 0 / 0.5)";
-        ctx.fillRect(cx1, y, cx2 - cx1, ROW_HEIGHT);
+        ctx.fillRect(cx1, y, cx2 - cx1, h);
       }
       // a muted row: speaker crossed out drawn as a dark band at the bottom
       if (this.trackOf(piece)?.muted) {
         ctx.fillStyle = "rgb(0 0 0 / 0.35)";
-        ctx.fillRect(x1, y + ROW_HEIGHT - 12, w, 8);
+        ctx.fillRect(x1, y + h - 12, w, 8);
       }
       ctx.restore();
     }
     // label
     if (w > 24) {
       ctx.save();
-      roundRect(ctx, x1, y + 4, w, ROW_HEIGHT - 8, 4);
+      roundRect(ctx, x1, y + 4, w, h - 8, 4);
       ctx.clip();
       ctx.fillStyle = "#0b0b10";
       ctx.font = "600 12px Barlow, system-ui, sans-serif";
@@ -1589,7 +1683,7 @@ export class ProjectTimeline {
         const t = piece.at + key.time - piece.start;
         if (t < piece.at - 0.001 || t > pieceEnd(piece) + 0.001) continue;
         const kx = this.timeToX(t, width);
-        const ky = y + ROW_HEIGHT - 9;
+        const ky = y + h - 9;
         ctx.beginPath();
         ctx.moveTo(kx, ky - 4);
         ctx.lineTo(kx + 4, ky);
@@ -1604,12 +1698,12 @@ export class ProjectTimeline {
       ctx.globalAlpha = 1;
       ctx.strokeStyle = "#fff";
       ctx.lineWidth = 2;
-      roundRect(ctx, x1 + 1, y + 5, Math.max(1, w - 2), ROW_HEIGHT - 10, 4);
+      roundRect(ctx, x1 + 1, y + 5, Math.max(1, w - 2), h - 10, 4);
       ctx.stroke();
       // grips
       ctx.fillStyle = "#fff";
-      ctx.fillRect(x1 + 1, y + 12, 3, ROW_HEIGHT - 24);
-      ctx.fillRect(x1 + w - 4, y + 12, 3, ROW_HEIGHT - 24);
+      ctx.fillRect(x1 + 1, y + 12, 3, h - 24);
+      ctx.fillRect(x1 + w - 4, y + 12, 3, h - 24);
     }
     ctx.restore();
   }
@@ -1634,6 +1728,27 @@ export class ProjectTimeline {
       ctx.fill();
     }
   }
+}
+
+// A gap the focused row skips
+function drawSkip(ctx, x1, x2, y, h, color) {
+  if (x2 < 0 || x1 > ctx.canvas.width) return;
+  const w = x2 - x1;
+  if (w < 3) return;
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.setLineDash([4, 3]);
+  ctx.lineWidth = 1;
+  roundRect(ctx, x1 + 1.5, y + 6.5, w - 3, h - 13, 4);
+  ctx.stroke();
+  if (w > 40) {
+    ctx.fillStyle = color;
+    ctx.font = "11px Barlow, system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("skip", x1 + w / 2, y + h / 2);
+  }
+  ctx.restore();
 }
 
 function roundRect(ctx, x, y, w, h, r) {
