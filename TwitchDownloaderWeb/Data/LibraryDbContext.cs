@@ -47,9 +47,19 @@ namespace TwitchDownloaderWeb.Data
         public DbSet<ItemApply> ItemApplies => Set<ItemApply>();
         public DbSet<EditProject> Projects => Set<EditProject>();
         public DbSet<ProjectVod> ProjectVods => Set<ProjectVod>();
+        public DbSet<TwitchConnection> TwitchConnections => Set<TwitchConnection>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
+            modelBuilder.Entity<TwitchConnection>(entity =>
+            {
+                entity.Property(x => x.Id).ValueGeneratedNever();
+                entity.Property(x => x.ClientId).HasMaxLength(100);
+                entity.Property(x => x.TwitchUserId).HasMaxLength(32);
+                entity.Property(x => x.TwitchLogin).HasMaxLength(32);
+                entity.Property(x => x.Problem).HasMaxLength(500);
+            });
+
             modelBuilder.Entity<LibraryEntry>(entity =>
             {
                 entity.ToTable("LibraryEntries");

@@ -1081,6 +1081,41 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.ToTable("TimelineRows");
                 });
 
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.TwitchConnection", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ClientId")
+                        .HasMaxLength(100)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("ConnectedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("ConnectedByStaffId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Problem")
+                        .HasMaxLength(500)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("RefreshTokenProtected")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("TwitchLogin")
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("TwitchUserId")
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("TwitchConnections");
+                });
+
             modelBuilder.Entity("TwitchDownloaderWeb.Data.UserAccount", b =>
                 {
                     b.Property<int>("Id")
