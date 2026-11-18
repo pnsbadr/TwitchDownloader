@@ -26,17 +26,49 @@ export class ProjectPlayback {
     this.clock = null;       // { at: performance.now(), t } while a gap plays
     this.forcedMute = false;
     this.userMuted = false;
+    this.solo = null;        // a row's id while that row plays alone (row focus): only its pieces, gaps skipped
     this.timer = setInterval(() => this.tick(), TICK_MS);
   }
 
+  // What plays: the project, or with a solo row only that row's pieces (shown and with sound even if the row is hidden or muted)
+  content() {
+    const content = this.getContent();
+    if (!this.solo || !content) return content;
+    return {
+      ...content,
+      tracks: content.tracks.filter((t) => t.id === this.solo).map((t) => ({ ...t, hidden: false, muted: false })),
+      pieces: content.pieces.filter((p) => p.trackId === this.solo),
+    };
+  }
+
+  flat() {
+    return flatten(this.content());
+  }
+
   get length() {
-    return projectLength(this.getContent());
+    return projectLength(this.content());
+  }
+
+  // Play only one row (null = the whole project again). Gaps on it are skipped.
+  setSolo(trackId) {
+    this.solo = trackId ?? null;
+    this.stretches = this.flat();
+    this.current = stretchAt(this.stretches, this.time());
+  }
+
+  // With a solo row: the first moment at or after t that has a piece (null = none left)
+  nextPieceTime(t) {
+    for (const s of this.stretches) {
+      if (!s.piece) continue;
+      if (t < s.at + s.duration - END_SLACK) return Math.max(t, s.at);
+    }
+    return null;
   }
 
   // The content changed: stay at the same time, and follow if what plays there changed
   refresh() {
     const before = this.current;
-    this.stretches = flatten(this.getContent());
+    this.stretches = this.flat();
     const now = this.time();
     const s = stretchAt(this.stretches, now);
     const same = before && s && before.piece?.id === s.piece?.id && Math.abs(before.vodStart - s.vodStart) < 1e-6 && Math.abs(before.at - s.at) < 1e-6;
@@ -64,8 +96,12 @@ export class ProjectPlayback {
   seek(t, { quiet = false } = {}) {
     const length = this.length;
     t = Math.max(0, Math.min(t, length));
+    this.stretches = this.flat();
+    if (this.solo) {
+      const next = this.nextPieceTime(t);
+      if (next != null) t = next;
+    }
     this.t = t;
-    this.stretches = flatten(this.getContent());
     const s = stretchAt(this.stretches, t);
     this.current = s;
     this.clock = this.playingFlag && !s?.piece ? { at: performance.now(), t } : null;
@@ -132,7 +168,7 @@ export class ProjectPlayback {
   play() {
     if (!this.length) return;
     let t = this.time();
-    if (t >= this.length - END_SLACK) t = 0;
+    if (t >= this.length - END_SLACK || (this.solo && this.nextPieceTime(t) == null)) t = 0;
     this.playingFlag = true;
     this.seek(t);
     if (this.current?.piece && this.player.ready && !this.opening) this.player.play();

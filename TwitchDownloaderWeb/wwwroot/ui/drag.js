@@ -176,8 +176,8 @@ function update() {
   active.shade.style.clipPath = shadePath(holes);
 }
 
-// The whole window minus each hole (even-odd fill)
-function shadePath(holes) {
+// The whole window minus each hole (even-odd fill). Row focus (editor.js) uses it for the same lights-off look.
+export function shadePath(holes) {
   const w = window.innerWidth;
   const h = window.innerHeight;
   let path = `M0 0H${w}V${h}H0Z`;
