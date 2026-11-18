@@ -1367,6 +1367,7 @@ function setUpPlayers() {
 // showing, nothing changes (badrfly 2026-11-18)
 function peekPlayer2WhileDragging() {
   let peeking = false;
+  let last = null;
   const inside = (element, { x, y }) => {
     const r = element?.getBoundingClientRect();
     return Boolean(r) && r.width > 0 && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
@@ -1375,6 +1376,7 @@ function peekPlayer2WhileDragging() {
   watchDrags({
     start: () => { peeking = false; },
     move: (item, at) => {
+      last = at;
       if (!PLAYER_KINDS.p2.includes(item.kind) || item.kind === "project") return;
       if (!peeking) {
         if (activePlayer === "p2") return;
@@ -1387,11 +1389,12 @@ function peekPlayer2WhileDragging() {
         timelineTabs.pick("p1");
       }
     },
-    end: (_item, droppedOn) => {
+    end: (_item, _droppedOn, cancelled) => {
       if (!peeking) return;
       peeking = false;
-      // Dropped on Player 2's timeline or screen: Player 2 stays; anywhere else, back to Player 1
-      if (droppedOn !== timeline2.track && droppedOn !== $("p2-screen")) timelineTabs.pick("p1");
+      // Let go over the timeline or Player 2's screen (dropped or not): Player 2 stays; anywhere else, or Esc, back to Player 1
+      const over = last && (inside($("timeline"), last) || inside($("p2-screen"), last));
+      if (cancelled || !over) timelineTabs.pick("p1");
     },
   });
 }

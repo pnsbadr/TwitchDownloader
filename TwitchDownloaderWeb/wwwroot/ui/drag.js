@@ -17,7 +17,7 @@ const watchers = new Set();
 let active = null;
 
 // Follows every drag: { start(item), move(item, info) (before the target under the pointer is looked up, so a watcher can show
-// one), end(item, droppedOn: the accepting target's element, or null when dropped elsewhere or cancelled) }
+// one), end(item, droppedOn: the accepting target's element or null, cancelled: Esc) }
 export function watchDrags(watcher) {
   watchers.add(watcher);
 }
@@ -199,7 +199,7 @@ function onUp(event) {
   const { target, item } = active;
   const dropInfo = info();
   finish();
-  for (const w of watchers) w.end?.(item, target?.element ?? null);
+  for (const w of watchers) w.end?.(item, target?.element ?? null, false);
   if (target) target.options.onDrop(item, dropInfo);
 }
 
@@ -208,7 +208,7 @@ function cancel() {
   const item = active.item;
   active.target?.options.onLeave?.(item);
   finish();
-  for (const w of watchers) w.end?.(item, null);
+  for (const w of watchers) w.end?.(item, null, true);
 }
 
 function finish() {
