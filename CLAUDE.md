@@ -563,12 +563,16 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
 - **Row focus** (badrfly 2026-11-18, `focusRow` / `endRowFocus` in `ui/editor.js`): every row head on both timelines has a play button
   (`rowPlayButton` in `ui/project-timeline.js`) that plays only that row, gaps skipped: Player 2 through `ProjectPlayback.setSolo` (only that
   row's pieces, even if hidden/muted/covered), Player 1 its segments' and clips' kept parts (`Timeline.focusParts`, moments skipped,
-  `focusTickP1` jumps gaps). Meanwhile the rest goes dark with the drag shade (`.focus-shade`, `shadePath` from `ui/drag.js`, holes for the
-  player and the row recut every frame), the left panel and the other player fold away, other rows fold to 16 px lines (the row is 64 px;
-  `rowGeom()` in both timelines) and the timeline shrinks to its rows (`--focus-lower-h`). Rows can't be edited then: a click on the
-  timeline only seeks, only playback/zoom keys work (`FOCUS_KEYS`), drops are refused. Stop button, Esc, a click in the dark, another
-  tab/screen, the vertical editor or the row going away ends it (the player pauses where it is). Clicking a folded row's head plays that one.
-: CLIPS and VIDEOS filter by VOD and member (Made by / Edited by: made an edit of it), shared between the
+  `focusTickP1` jumps gaps, remembering the part it jumped to so it never seeks twice). Meanwhile the rest goes dark with the drag shade
+  (`.focus-shade`, `shadePath` from `ui/drag.js`), with holes for the player, the tools bar and the **whole timeline** (lit, badrfly
+  2026-11-18: the playhead stays free to move), recut only when the path changes; the left panel and the other player fold away, other rows
+  fold to 16 px lines (the row is 64 px; `rowGeom()` in both timelines) and the timeline shrinks to its rows (`--focus-lower-h`, measured
+  only when the rows' height or the screen changes, so nothing jumps). Rows can't be edited then (`setUpRowFocus`): a click on an item or
+  piece moves the playhead to **its start**, a click elsewhere or a ruler/playhead drag to that exact time; the zoom slider, Fit, and the
+  Pointer / Zoom / Hand tools and moment marker (M) stay enabled, other tools are grayed out, only playback/zoom/those keys work
+  (`FOCUS_KEYS`), drops are refused. Stop button, Esc, a click in the dark, another tab/screen, the vertical editor or the row going away
+  ends it (the player pauses where it is). Clicking a folded row's head plays that one.
+- **Library filters** (`ui/library.js`): CLIPS and VIDEOS filter by VOD and member (Made by / Edited by: made an edit of it), shared between the
   two lists; card menus have "Show this VOD's clips/videos"; VOD cards show what's on them ("3 clips · 1 video") and the VOD filter has
   "Only VODs with work on them".
 - **Saved edits** (`ItemEdits`, the old Player 2) are no longer made or shown by the page: at startup `SavedEditConversion` turns each one into
