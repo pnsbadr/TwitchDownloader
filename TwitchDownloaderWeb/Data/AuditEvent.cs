@@ -98,6 +98,9 @@ namespace TwitchDownloaderWeb.Data
         public const string TeamFeaturesChanged = "team.features_changed";
         public const string TwitchConnected = "twitch.connected";
         public const string TwitchDisconnected = "twitch.disconnected";
+        /// <summary>Staff downloaded or deleted error reports (the Reports tab).</summary>
+        public const string ErrorReportsDownloaded = "reports.downloaded";
+        public const string ErrorReportsDeleted = "reports.deleted";
     }
 
     /// <summary>

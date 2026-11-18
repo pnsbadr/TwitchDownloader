@@ -23,6 +23,7 @@ namespace TwitchDownloaderWeb.Data
 
         public DbSet<LibraryEntry> Entries => Set<LibraryEntry>();
         public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
+        public DbSet<ErrorReport> ErrorReports => Set<ErrorReport>();
         public DbSet<SavedChannel> Channels => Set<SavedChannel>();
         public DbSet<VodAudioRescue> AudioRescues => Set<VodAudioRescue>();
         public DbSet<RescuedAudioSegment> RescuedAudioSegments => Set<RescuedAudioSegment>();
@@ -83,6 +84,31 @@ namespace TwitchDownloaderWeb.Data
                     && !HiddenVods.Any(h => h.TeamId == ScopeTeamId && h.VodId == x.VodId)
                     && !(x.VodId == 0 && x.ChannelName != null && RevokedChannels.Any(c => c.TeamId == ScopeTeamId
                         && (c.Login == x.ChannelName.ToLower() || c.DisplayName.ToLower() == x.ChannelName.ToLower())))));
+            });
+
+            modelBuilder.Entity<ErrorReport>(entity =>
+            {
+                entity.Property(x => x.Kind).HasConversion<string>().HasMaxLength(16);
+                entity.Property(x => x.Area).HasMaxLength(200);
+                entity.Property(x => x.ErrorType).HasMaxLength(200);
+                entity.Property(x => x.Message).HasMaxLength(ErrorReport.MaxMessageLength);
+                entity.Property(x => x.Details).HasMaxLength(ErrorReport.MaxDetailsLength);
+                entity.Property(x => x.Note).HasMaxLength(ErrorReport.MaxNoteLength);
+                entity.Property(x => x.Username).HasMaxLength(64);
+                entity.Property(x => x.TeamName).HasMaxLength(100);
+                entity.Property(x => x.StaffUsername).HasMaxLength(64);
+                entity.Property(x => x.Url).HasMaxLength(1000);
+                entity.Property(x => x.Browser).HasMaxLength(60);
+                entity.Property(x => x.Os).HasMaxLength(60);
+                entity.Property(x => x.UserAgent).HasMaxLength(500);
+                entity.Property(x => x.Context).HasMaxLength(ErrorReport.MaxContextLength);
+                entity.Property(x => x.AppVersion).HasMaxLength(60);
+                entity.Property(x => x.Fingerprint).HasMaxLength(16);
+                entity.Property(x => x.RequestId).HasMaxLength(100);
+                entity.HasIndex(x => x.CreatedAtUtc);
+                entity.HasIndex(x => x.UserId);
+                entity.HasIndex(x => x.TeamId);
+                entity.HasIndex(x => x.Fingerprint);
             });
 
             modelBuilder.Entity<AuditEvent>(entity =>

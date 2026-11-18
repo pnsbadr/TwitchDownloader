@@ -34,7 +34,10 @@ namespace TwitchDownloaderWeb.Data
         /// <summary>Assign and remove the Twitch channels each team works on (also on team links).</summary>
         ManageTeamChannels = 1L << 7,
 
-        All = (1L << 8) - 1,
+        /// <summary>The Reports tab: bugs, errors and crashes, who they happened to and when; download and delete them.</summary>
+        ViewErrorReports = 1L << 8,
+
+        All = (1L << 9) - 1,
     }
 
     public sealed record StaffPermissionInfo(string Key, string Label, string Description);
@@ -48,6 +51,8 @@ namespace TwitchDownloaderWeb.Data
             (StaffPermission.ViewAsSupport, new("ViewAsSupport", "View as support",
                 "Open any team's library and Team page read-only. Every visit is logged.")),
             (StaffPermission.ViewAuditLog, new("ViewAuditLog", "See the app log", "The audit log of every team and of staff.")),
+            (StaffPermission.ViewErrorReports, new("ViewErrorReports", "See error reports",
+                "Bugs, errors and crashes from every team: who they happened to, when, and what was going on. Download and delete them.")),
             (StaffPermission.ManageTeamLinks, new("ManageTeamLinks", "Make team links",
                 "Team registration and team owner links. An owner link hands a team to whoever opens it.")),
             (StaffPermission.ManageTeamChannels, new("ManageTeamChannels", "Assign team channels",

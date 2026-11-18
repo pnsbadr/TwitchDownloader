@@ -17,6 +17,7 @@ namespace TwitchDownloaderWeb.Services.Accounts
 
         public const string StampClaim = "stamp";
         public const string LoginRateLimit = "login";
+        public const string ReportRateLimit = "reports";
     }
 
     public static class AuthSetup
@@ -41,6 +42,10 @@ namespace TwitchDownloaderWeb.Services.Accounts
                 options.AddPolicy(AuthSchemes.LoginRateLimit, context => RateLimitPartition.GetFixedWindowLimiter(
                     context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
                     _ => new FixedWindowRateLimiterOptions { PermitLimit = loginAttemptsPerMinute, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+                // Error and bug reports from pages: per IP, so a page stuck in an error loop can't flood the Reports tab
+                options.AddPolicy(AuthSchemes.ReportRateLimit, context => RateLimitPartition.GetFixedWindowLimiter(
+                    context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                    _ => new FixedWindowRateLimiterOptions { PermitLimit = 30, Window = TimeSpan.FromMinutes(10), QueueLimit = 0 }));
             });
 
             return services;
