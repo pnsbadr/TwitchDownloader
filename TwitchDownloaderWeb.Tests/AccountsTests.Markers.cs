@@ -45,7 +45,7 @@ namespace TwitchDownloaderWeb.Tests
 
             // Another team sees none of it (the Main team has its own entry on VOD 1)
             var staff = await StaffClientAsync();
-            var registration = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channel = "arky", teamName = "Other team" });
+            var registration = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channel = "arky" });
             var other = NewClient();
             await AcceptAsync(other, registration, "m1other", newAccount: true, teamName: "Other team");
             var otherTimeline = await GetJsonAsync(other, "/api/vods/1/timeline");

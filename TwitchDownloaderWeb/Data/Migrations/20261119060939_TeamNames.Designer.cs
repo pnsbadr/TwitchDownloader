@@ -11,8 +11,8 @@ using TwitchDownloaderWeb.Data;
 namespace TwitchDownloaderWeb.Data.Migrations
 {
     [DbContext(typeof(LibraryDbContext))]
-    [Migration("20261119054516_LinkTeamName")]
-    partial class LinkTeamName
+    [Migration("20261119060939_TeamNames")]
+    partial class TeamNames
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -1099,6 +1099,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(100)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("NameChangedAtUtc")
                         .HasColumnType("TEXT");
 
                     b.Property<int?>("OwnerUserId")

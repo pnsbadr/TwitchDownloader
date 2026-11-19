@@ -147,7 +147,7 @@ function teamRow(team) {
 
   return el("li", { class: "list-row admin-row" },
     el("div", { class: "grow" },
-      el("strong", {}, team.name),
+      teamName(team),
       team.disabledAtUtc ? el("span", { class: "badge error" }, "Disabled") : null,
       team.storeClips ? el("span", { class: "badge ok", title: "Clips of 3 minutes or less are downloaded and kept as files" }, "Stores clips") : null,
       audioBadge(team),
@@ -162,6 +162,39 @@ function teamRow(team) {
         + `${team.lastActiveAtUtc ? `last active ${formatWhen(team.lastActiveAtUtc)}` : "nobody active yet"} · created ${formatWhen(team.createdAtUtc)}`)),
     el("div", { class: "row admin-actions" }, ...actions),
     details);
+}
+
+// Staff see a team as "Channel (team name)"; the app Owner renames any team any time (the team itself once every 14 days)
+function teamName(team) {
+  const name = el("strong", {}, team.label);
+  if (!staffMe.isOwner) return name;
+  const box = el("span", { class: "team-name" }, name,
+    el("button", { type: "button", class: "link pencil", title: "Rename the team", "aria-label": `Rename ${team.label}`, onclick: () => edit() }, "✏️"));
+  const edit = () => {
+    const input = el("input", { value: team.name, maxlength: "100", "aria-label": "Team name" });
+    const cancel = () => box.replaceWith(teamName(team));
+    const save = async () => {
+      const value = input.value.trim();
+      if (!value || value === team.name) { cancel(); return; }
+      try {
+        await api("PUT", `/api/admin/teams/${team.id}/name`, { name: value });
+        setMessage($("admin-message"), `Renamed to ${value}.`, "ok");
+        await loadTeams();
+      } catch (error) {
+        showError(error);
+      }
+    };
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") { event.preventDefault(); save(); }
+      if (event.key === "Escape") { event.preventDefault(); cancel(); }
+    });
+    box.replaceChildren(el("span", { class: "name-edit" }, input,
+      el("button", { type: "button", class: "secondary small", onclick: save }, "Save"),
+      el("button", { type: "button", class: "link small", onclick: cancel }, "Cancel")));
+    input.focus();
+    input.select();
+  };
+  return box;
 }
 
 async function toggleTeamDetails(team, details) {
@@ -235,7 +268,7 @@ function toggleTeamChannels(team, details) {
   };
   const remove = (channel, mode, label, title, danger) => el("button", { type: "button", class: danger ? "link danger small" : "link small", title,
     onclick: () => {
-      if (mode === "revoke" && !confirm(`Revoke ${channel.displayName} from ${team.name} now? The team loses every VOD of this channel, and its clips, `
+      if (mode === "revoke" && !confirm(`Revoke ${channel.displayName} from ${team.label} now? The team loses every VOD of this channel, and its clips, `
         + "videos, segments and files from them are hidden. Nothing is deleted: assigning the channel again brings it all back.")) return;
       run("DELETE", `/api/admin/teams/${team.id}/channels/${channel.id}?mode=${mode}`);
     } }, label);
@@ -309,9 +342,9 @@ async function viewAsSupport(team) {
 
 async function makeOwnerLink(team) {
   try {
-    const link = await api("POST", "/api/admin/links", { kind: "ownership", teamId: team.id, note: `Owner of ${team.name}` });
+    const link = await api("POST", "/api/admin/links", { kind: "ownership", teamId: team.id, note: `Owner of ${team.label}` });
     const box = linkBox(link.url);
-    box.querySelector("p").textContent = `Whoever opens this becomes the owner of ${team.name}. Shown only now; it works once and expires in 7 days.`;
+    box.querySelector("p").textContent = `Whoever opens this becomes the owner of ${team.label}. Shown only now; it works once and expires in 7 days.`;
     showLinkIn(box, $("teams").parentElement);
   } catch (error) {
     showError(error);
@@ -334,7 +367,7 @@ async function setTeamFeature(team, features) {
 }
 
 async function setTeamDisabled(team, disabled) {
-  if (disabled && !confirm(`Disable ${team.name}? Its members lose access to it (their accounts and other teams keep working). You can enable it again.`)) return;
+  if (disabled && !confirm(`Disable ${team.label}? Its members lose access to it (their accounts and other teams keep working). You can enable it again.`)) return;
   try {
     await api("PUT", `/api/admin/teams/${team.id}/disabled`, { disabled });
     loadTeams();
@@ -462,7 +495,8 @@ async function revoke(link) {
   }
 }
 
-// A new team is locked to one channel and named after it by default ("Arky's Team"; badrfly 2026-11-19)
+// A new team is locked to one channel. Its name isn't picked here: the person opening the link gets "Arky's Team" and may change it
+// (badrfly 2026-11-19)
 function channelFromInput(text) {
   const value = text.trim().replace(/^(https?:\/\/)?(www\.|m\.)?twitch\.tv\//i, "").split(/[/?#\s]/)[0];
   return /^[A-Za-z0-9_]{1,25}$/.test(value) ? value : "";
@@ -471,8 +505,6 @@ function channelFromInput(text) {
 function renderRegistrationForm() {
   const channel = channelFromInput($("registration-channel").value);
   $("registration-submit").disabled = !channel;
-  // Twitch's own capitalization is used when the link is made; this is only the preview
-  $("registration-team-name").placeholder = channel ? (/s$/i.test(channel) ? `${channel}' Team` : `${channel}'s Team`) : "Channel's Team";
 }
 
 $("registration-channel").addEventListener("input", renderRegistrationForm);
@@ -481,7 +513,7 @@ $("registration-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
     const link = await api("POST", "/api/admin/links", {
-      kind: "registration", channel: $("registration-channel").value.trim(), teamName: $("registration-team-name").value.trim(),
+      kind: "registration", channel: $("registration-channel").value.trim(),
       note: $("registration-note").value,
     });
     $("registration-form").reset();
@@ -580,7 +612,7 @@ async function loadLog(reset) {
     $("log").replaceChildren();
     if ($("log-team").options.length === 1 && canAny("ViewTeamsAndUsers", "ManageTeamLinks", "DisableTeams", "ViewAsSupport")) {
       if (!teams.length) teams = await api("GET", "/api/admin/teams");
-      $("log-team").append(...teams.map((t) => el("option", { value: t.id }, t.name)));
+      $("log-team").append(...teams.map((t) => el("option", { value: t.id }, t.label)));
     }
   }
   const params = new URLSearchParams({ limit: "50" });

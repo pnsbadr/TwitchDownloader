@@ -20,7 +20,11 @@ namespace TwitchDownloaderWeb.Endpoints
     /// <param name="RevokedChannels">Channels taken with "Revoke now": the team's work on their VODs is hidden until one is assigned again.</param>
     public sealed record AdminTeamDto(int Id, string Name, DateTime CreatedAtUtc, int? OwnerUserId, string? OwnerUsername, int MemberCount, int EntryCount,
         DateTime? DisabledAtUtc, bool StoreClips, long DiskBytes, DateTime? LastActiveAtUtc, bool CombineSegmentDownloads,
-        IReadOnlyList<AdminChannelDto> Channels, IReadOnlyList<AdminRevokedChannelDto> RevokedChannels);
+        IReadOnlyList<AdminChannelDto> Channels, IReadOnlyList<AdminRevokedChannelDto> RevokedChannels)
+    {
+        /// <summary>How staff see it: "Channel (team name)" (<see cref="TeamLabels"/>).</summary>
+        public string Label { get; init; } = Name;
+    }
 
     /// <param name="HiddenVods">How many VODs the team's work is hidden on.</param>
     public sealed record AdminRevokedChannelDto(string Login, string DisplayName, DateTime RevokedAtUtc, int HiddenVods);
@@ -77,9 +81,11 @@ namespace TwitchDownloaderWeb.Endpoints
     /// <param name="Channel">Registration links only, required: the one Twitch channel (login or link) the new team works on (badrfly
     /// 2026-11-19: a team starts locked to one creator; only the Owner gives it more, on the Teams tab). <see cref="Channels"/> with
     /// exactly one entry is accepted too.</param>
-    /// <param name="TeamName">Registration links only: the new team's name; blank = "{channel's display name}'s Team".</param>
-    public sealed record CreateStaffLinkRequest(string? Kind, int? TeamId, string? Note, List<string>? Channels = null, string? Channel = null,
-        string? TeamName = null);
+    /// The new team is always offered "{channel's display name}'s Team"; the person opening the link may change it (staff don't pick it).
+    public sealed record CreateStaffLinkRequest(string? Kind, int? TeamId, string? Note, List<string>? Channels = null, string? Channel = null);
+
+    /// <summary>The app Owner renames a team (any time, badrfly 2026-11-19).</summary>
+    public sealed record RenameTeamRequest(string? Name);
 
     /// <summary>
     /// The app staff API (/admin.html). Staff use their own cookie and tables; a staff login is never a team login. The app Owner sets up
@@ -113,6 +119,7 @@ namespace TwitchDownloaderWeb.Endpoints
             staff.MapPut("/teams/{id:int}/disabled", SetTeamDisabled).RequireStaff(StaffPermission.DisableTeams);
             // Features still being tried out: only the app Owner turns them on, per team (badrfly, 2026-11-14)
             staff.MapPut("/teams/{id:int}/features", SetTeamFeatures).RequireStaffOwner();
+            staff.MapPut("/teams/{id:int}/name", RenameTeam).RequireStaffOwner();
             // Which Twitch channels a team works on (badrfly, 2026-11-15: members can't add channels, VODs or clip links any more)
             staff.MapGet("/teams/{id:int}/channels", ListTeamChannels).RequireStaff(StaffPermission.ViewTeamsAndUsers | StaffPermission.ManageTeamChannels);
             // More channels for a team: only the app Owner (badrfly 2026-11-19); taking them away stays with ManageTeamChannels
@@ -280,9 +287,10 @@ namespace TwitchDownloaderWeb.Endpoints
                 .GroupBy(x => x.TeamId).ToDictionary(x => x.Key, x => x.Max(m => m.LastActiveAtUtc));
             var disk = await ActivityReport.TeamDiskAsync(db, shortform, cancellationToken);
             var teamIds = teams.Select(x => x.Id).ToList();
-            var channels = (await db.Channels.IgnoreQueryFilters().AsNoTracking().Where(x => teamIds.Contains(x.TeamId)).ToListAsync(cancellationToken))
-                .GroupBy(x => x.TeamId)
-                .ToDictionary(x => x.Key, x => (IReadOnlyList<AdminChannelDto>)x.OrderBy(c => c.DisplayName, StringComparer.OrdinalIgnoreCase).Select(AdminChannelDto.From).ToList());
+            var channelRows = (await db.Channels.IgnoreQueryFilters().AsNoTracking().Where(x => teamIds.Contains(x.TeamId)).ToListAsync(cancellationToken))
+                .ToLookup(x => x.TeamId);
+            var channels = channelRows.ToDictionary(x => x.Key,
+                x => (IReadOnlyList<AdminChannelDto>)x.OrderBy(c => c.DisplayName, StringComparer.OrdinalIgnoreCase).Select(AdminChannelDto.From).ToList());
             var revoked = (await db.RevokedChannels.AsNoTracking().Where(x => teamIds.Contains(x.TeamId))
                     .Select(x => new { x.TeamId, Dto = new AdminRevokedChannelDto(x.Login, x.DisplayName, x.RevokedAtUtc, x.HiddenVods.Count) })
                     .ToListAsync(cancellationToken))
@@ -290,7 +298,9 @@ namespace TwitchDownloaderWeb.Endpoints
                 .ToDictionary(x => x.Key, x => (IReadOnlyList<AdminRevokedChannelDto>)x.Select(r => r.Dto).OrderBy(r => r.DisplayName, StringComparer.OrdinalIgnoreCase).ToList());
             return teams.Select(x => new AdminTeamDto(x.Id, x.Name, x.CreatedAtUtc, x.OwnerUserId, x.OwnerUsername, x.MemberCount, x.EntryCount,
                 x.DisabledAtUtc, x.StoreClips, disk.GetValueOrDefault(x.Id), lastActive.GetValueOrDefault(x.Id),
-                x.CombineSegmentDownloads, channels.GetValueOrDefault(x.Id) ?? [], revoked.GetValueOrDefault(x.Id) ?? [])).ToList();
+                x.CombineSegmentDownloads, channels.GetValueOrDefault(x.Id) ?? [], revoked.GetValueOrDefault(x.Id) ?? [])
+                { Label = TeamLabels.Label(x.Name, channelRows[x.Id]) })
+                .OrderBy(x => x.Label, StringComparer.OrdinalIgnoreCase).ToList();
         }
 
         private static async Task<IResult> ListTeams(LibraryDbContext db, ShortformService shortform, CancellationToken cancellationToken) =>
@@ -319,6 +329,26 @@ namespace TwitchDownloaderWeb.Endpoints
                 return new AdminTeamMemberDto(m.UserId, m.Username, m.UserId == team.OwnerUserId, m.RoleName, m.JoinedAtUtc, m.LastActiveAtUtc, m.DisabledAtUtc,
                     m.OtherTeams, a.Counts, a.EntriesAdded, a.DiskBytes);
             }).ToList()));
+        }
+
+        /// <summary>The app Owner renames a team, any time; the team's own 14-day wait isn't touched (badrfly 2026-11-19).</summary>
+        private static async Task<IResult> RenameTeam(int id, RenameTeamRequest request, StaffContext me, LibraryDbContext db, ShortformService shortform,
+            CancellationToken cancellationToken)
+        {
+            var team = await db.Teams.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+            if (team is null)
+                return Results.Problem(detail: "Team not found.", statusCode: StatusCodes.Status404NotFound);
+            if (AccountRules.TeamNameError(request.Name) is { } nameError)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["name"] = [nameError] });
+
+            var name = request.Name!.Trim();
+            if (name != team.Name)
+            {
+                db.Audit(AuditActions.TeamRenamed, null, $"\"{team.Name}\" renamed \"{name}\" by staff {me.Username}", teamId: team.Id);
+                team.Name = name;
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            return Results.Ok((await TeamDtosAsync(db, shortform, id, cancellationToken)).First());
         }
 
         private static async Task<IResult> SetTeamDisabled(int id, SetDisabledRequest request, StaffContext me, LibraryDbContext db,
@@ -653,7 +683,9 @@ namespace TwitchDownloaderWeb.Endpoints
                             m.JoinedAtUtc, m.Team.DisabledAtUtc != null),
                     })
                     .ToListAsync(cancellationToken))
-                .ToLookup(x => x.UserId, x => x.Team);
+                .ToList();
+            var labels = await TeamLabels.GetAsync(db, memberships.Select(x => x.Team.TeamId), cancellationToken);
+            var teamsByUser = memberships.ToLookup(x => x.UserId, x => x.Team with { TeamName = labels.GetValueOrDefault(x.Team.TeamId) ?? x.Team.TeamName });
 
             var activity = await ActivityReport.ComputeAsync(db, shortform, DateTime.UtcNow.AddDays(-RecentActionDays), null, onlyUserId, cancellationToken);
             var byUser = activity.GroupBy(x => x.Key.UserId).ToDictionary(x => x.Key, x => (
@@ -663,7 +695,7 @@ namespace TwitchDownloaderWeb.Endpoints
             {
                 var a = byUser.GetValueOrDefault(x.Id.ToString());
                 return new AdminUserDto(x.Id, x.Username, x.CreatedAtUtc, x.LastLoginAtUtc, x.LastActiveAtUtc, x.DisabledAtUtc,
-                    x.LockedUntilUtc > DateTime.UtcNow ? x.LockedUntilUtc : null, memberships[x.Id].ToList(), a.Actions, a.Added, a.Disk);
+                    x.LockedUntilUtc > DateTime.UtcNow ? x.LockedUntilUtc : null, teamsByUser[x.Id].ToList(), a.Actions, a.Added, a.Disk);
             }).ToList();
         }
 
@@ -681,7 +713,7 @@ namespace TwitchDownloaderWeb.Endpoints
             var activity = await ActivityReport.ComputeAsync(db, shortform, DateTime.UtcNow.AddDays(-period), null, id, cancellationToken);
             // Their teams, plus teams they left but still have entries or actions in
             var teamIds = user.Teams.Select(x => x.TeamId).Concat(activity.Keys.Select(x => x.TeamId)).Distinct().ToList();
-            var names = await db.Teams.AsNoTracking().Where(x => teamIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
+            var names = await TeamLabels.GetAsync(db, teamIds, cancellationToken);
 
             var rows = teamIds.Select(t =>
             {
@@ -796,9 +828,10 @@ namespace TwitchDownloaderWeb.Endpoints
                     return channelProblem;
                 channels = resolved;
 
-                teamName = string.IsNullOrWhiteSpace(request.TeamName) ? DefaultTeamName(channels[0].DisplayName) : request.TeamName.Trim();
-                if (AccountRules.TeamNameError(teamName) is { } nameError)
-                    return Results.ValidationProblem(new Dictionary<string, string[]> { ["teamName"] = [nameError] });
+                // The suggested name; whoever opens the link may change it there (badrfly 2026-11-19)
+                teamName = DefaultTeamName(channels[0].DisplayName);
+                if (teamName.Length > AccountRules.MaxTeamNameLength)
+                    teamName = teamName[..AccountRules.MaxTeamNameLength];
             }
             else if (logins.Count > 0)
             {
@@ -859,7 +892,7 @@ namespace TwitchDownloaderWeb.Endpoints
             var staffIds = events.Where(x => x.StaffId is not null).Select(x => x.StaffId!.Value).Distinct().ToList();
             var staffNames = await db.StaffAccounts.AsNoTracking().Where(x => staffIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.Username, cancellationToken);
             var teamIds = events.Where(x => x.TeamId is not null).Select(x => x.TeamId!.Value).Distinct().ToList();
-            var teamNames = await db.Teams.AsNoTracking().Where(x => teamIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
+            var teamNames = await TeamLabels.GetAsync(db, teamIds, cancellationToken);
 
             return Results.Ok(events.Select(x => new AdminAuditEventDto(x.Id, x.TimestampUtc, x.Action, x.EntryId, x.TeamId,
                 x.TeamId is { } ti ? teamNames.GetValueOrDefault(ti) : null, x.UserId, x.UserId is { } ui ? users.GetValueOrDefault(ui) : null,

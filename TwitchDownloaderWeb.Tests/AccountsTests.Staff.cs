@@ -182,7 +182,7 @@ namespace TwitchDownloaderWeb.Tests
             var users = await GetJsonAsync(staff, "/api/admin/users?search=u1mem");
             var user = users.EnumerateArray().Single();
             Assert.Equal(memberId, user.GetProperty("id").GetInt32());
-            Assert.Equal(["u1 team", "u2 team"], user.GetProperty("teams").EnumerateArray().Select(x => x.GetProperty("teamName").GetString()));
+            Assert.Equal(["Arky (u1 team)", "Arky (u2 team)"], user.GetProperty("teams").EnumerateArray().Select(x => x.GetProperty("teamName").GetString()));
             Assert.Equal(1520, user.GetProperty("diskBytes").GetInt64());
             Assert.Equal(2, user.GetProperty("entriesAdded").GetInt32());
             Assert.Equal(1, user.GetProperty("recentActions").GetInt32());

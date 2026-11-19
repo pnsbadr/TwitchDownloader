@@ -42,7 +42,11 @@ namespace TwitchDownloaderWeb.Endpoints
     /// <param name="ForUsername">Password reset links: whose password it sets.</param>
     /// <param name="Channels">Team links: names of the Twitch channels the team gets.</param>
     public sealed record LinkInfoDto(string Kind, string? TeamName, DateTime ExpiresAtUtc, string? LoggedInAs, string? ForUsername,
-        IReadOnlyList<string> Channels);
+        IReadOnlyList<string> Channels)
+    {
+        /// <summary>A team may pick a new name once every this many days (picking one here counts).</summary>
+        public int TeamRenameDays => AccountRules.TeamRenameDays;
+    }
 
     /// <summary>Team user login and one-time links (team registration, team ownership, team invites).</summary>
     public static class AuthEndpoints
@@ -230,10 +234,19 @@ namespace TwitchDownloaderWeb.Endpoints
             }
 
             string? teamName = null;
+            var pickedName = false;
             if (link.Kind == AccountLinkKind.TeamRegistration && link.TeamName is not null)
             {
-                // Named when the link was made, after its channel (badrfly 2026-11-19)
+                // The link suggests "{channel}'s Team"; the person opening it may change it, which counts as the team's rename (once every
+                // 14 days after). badrfly 2026-11-19.
                 teamName = link.TeamName;
+                if (!string.IsNullOrWhiteSpace(request.TeamName) && request.TeamName.Trim() != link.TeamName)
+                {
+                    if (AccountRules.TeamNameError(request.TeamName) is { } nameError)
+                        return Results.ValidationProblem(new Dictionary<string, string[]> { ["teamName"] = [nameError] });
+                    teamName = request.TeamName.Trim();
+                    pickedName = true;
+                }
             }
             else if (link.Kind == AccountLinkKind.TeamRegistration)
             {
@@ -318,7 +331,7 @@ namespace TwitchDownloaderWeb.Endpoints
             switch (link.Kind)
             {
                 case AccountLinkKind.TeamRegistration:
-                    team = new Team { Name = teamName!, CreatedAtUtc = now, OwnerUserId = user.Id };
+                    team = new Team { Name = teamName!, CreatedAtUtc = now, OwnerUserId = user.Id, NameChangedAtUtc = pickedName ? now : null };
                     db.Teams.Add(team);
                     await db.SaveChangesAsync(cancellationToken);
                     db.Audit(AuditActions.TeamCreated, null, $"\"{team.Name}\" by {user.Username}", userId: user.Id.ToString(), teamId: team.Id);

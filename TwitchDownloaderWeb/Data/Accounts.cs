@@ -62,6 +62,13 @@ namespace TwitchDownloaderWeb.Data
         public DateTime? DisabledAtUtc { get; set; }
 
         /// <summary>
+        /// When the team itself last picked its name: on the join page (only if they changed the link's default) or on the Team page. The
+        /// team may change it again <see cref="AccountRules.TeamRenameDays"/> days later (badrfly 2026-11-19). The app Owner renames any team
+        /// any time without touching this. Null = never picked one.
+        /// </summary>
+        public DateTime? NameChangedAtUtc { get; set; }
+
+        /// <summary>
         /// No longer used (badrfly 2026-11-18): automatic audio saving is set per channel by the app Owner (<see cref="SavedChannel.WatchMutedAudio"/>).
         /// The migration ChannelAudioAndStoredClips copied it onto the team's channels.
         /// </summary>
@@ -172,8 +179,8 @@ namespace TwitchDownloaderWeb.Data
         public string? ChannelsJson { get; set; }
 
         /// <summary>
-        /// Team registration links: the new team's name, chosen when the link is made (default "{channel}'s Team", badrfly 2026-11-19).
-        /// Null on links made before that, where the person opening it typed the name.
+        /// Team registration links: the new team's suggested name, "{channel}'s Team" (badrfly 2026-11-19). The person opening the link
+        /// may change it there (counts as the team's rename). Null on older links: they type one.
         /// </summary>
         public string? TeamName { get; set; }
 

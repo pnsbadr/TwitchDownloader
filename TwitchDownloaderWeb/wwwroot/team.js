@@ -10,7 +10,7 @@ const ACTION_LABELS = {
   "file.served": "downloaded", "generation.requested": "asked for a file", "shortform.requested": "started a vertical render",
   "shortform.deleted": "deleted a vertical render",
   "audio.rescue_started": "started saving audio", "team.member_joined": "joined", "team.member_removed": "removed a member",
-  "team.member_role_changed": "changed a role", "role.created": "created a role", "role.changed": "changed a role", "role.deleted": "deleted a role",
+  "team.member_role_changed": "changed a role", "team.renamed": "renamed the team", "role.created": "created a role", "role.changed": "changed a role", "role.deleted": "deleted a role",
   "link.created": "made a link", "link.revoked": "revoked a link", "team.settings_changed": "changed a setting", "team.created": "created the team",
   "team.owner_changed": "became the owner", "user.password_reset_link": "made a password reset link", "user.password_reset": "reset their password",
   "channel.added": "got a channel", "channel.removed": "lost a channel",
@@ -41,8 +41,7 @@ async function load() {
     setMessage($("team-message"), error.message, "error");
     return;
   }
-  $("team-title").textContent = team.name;
-  document.title = `${team.name} · Clipco`;
+  showTeamName();
 
   $("members-panel").hidden = false;
   $("roles-panel").hidden = !(has("ManageRoles") || has("AssignRoles"));
@@ -55,6 +54,50 @@ async function load() {
   if (has("ViewActivity")) { loadActivity(); loadLog(true); }
   if (has("InviteMembers")) loadInvites();
   loadSettings();
+}
+
+// The team owner picks the team's name, once every team.renameDays days (badrfly 2026-11-19; the app Owner can rename it any time)
+function showTeamName() {
+  $("team-title").hidden = false;
+  $("team-title").textContent = team.name;
+  document.title = `${team.name} · Clipco`;
+  const box = $("team-rename");
+  box.replaceChildren();
+  if (!team.canRename) return;
+  const waiting = team.nextRenameAtUtc && new Date(team.nextRenameAtUtc) > new Date();
+  box.append(el("button", {
+    type: "button", class: "link pencil", "aria-label": "Change the team name",
+    title: waiting ? `You can change the team name again ${formatWhen(team.nextRenameAtUtc)}.` : "Change the team name",
+    disabled: waiting ? "" : null, onclick: editTeamName,
+  }, "✏️"));
+}
+
+function editTeamName() {
+  const input = el("input", { value: team.name, maxlength: "100", "aria-label": "Team name" });
+  const save = async () => {
+    const name = input.value.trim();
+    if (!name || name === team.name) { showTeamName(); return; }
+    try {
+      const result = await api("PUT", "/api/team/name", { name });
+      Object.assign(team, { name: result.name, nameChangedAtUtc: result.nameChangedAtUtc, nextRenameAtUtc: result.nextRenameAtUtc });
+      showTeamName();
+      setMessage($("team-message"), "Team name changed.", "ok");
+    } catch (error) {
+      setMessage($("team-message"), error.message, "error");
+    }
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); save(); }
+    if (event.key === "Escape") { event.preventDefault(); showTeamName(); }
+  });
+  $("team-title").hidden = true;
+  $("team-rename").replaceChildren(el("div", {},
+    el("div", { class: "name-edit" }, input,
+      el("button", { type: "button", class: "small", onclick: save }, "Save"),
+      el("button", { type: "button", class: "link small", onclick: showTeamName }, "Cancel")),
+    el("p", { class: "tiny-text" }, `You can change the team name once every ${team.renameDays} days.`)));
+  input.focus();
+  input.select();
 }
 
 async function reloadTeam() {

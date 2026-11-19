@@ -20,7 +20,14 @@
 
       <div id="join-body" hidden>
         <form id="join-form" class="stack" novalidate>
-          <label id="team-name-label" hidden>Team name <input id="team-name" maxlength="100" placeholder="e.g. Arky's editors"></label>
+          <div id="team-name-block" hidden>
+            <label for="team-name">Team name</label>
+            <div class="name-edit">
+              <input id="team-name" maxlength="100" placeholder="e.g. Arky's editors">
+              <button type="button" id="team-name-edit" class="link pencil" title="Change the team name" aria-label="Change the team name" hidden>✏️</button>
+            </div>
+            <p id="team-name-warning" class="tiny-text" hidden></p>
+          </div>
 
           <div id="continue-as" hidden>
             <p>Logged in as <strong id="continue-name"></strong>.</p>
@@ -73,8 +80,9 @@
         $("mode-hint").hidden = true;
         $("username").closest("label").hidden = true;
       }
-      // Links made since 2026-11-19 already name the team (after its channel); older ones let the opener type it
-      $("team-name-label").hidden = !registration || Boolean(link.teamName);
+      // Links made since 2026-11-19 suggest a name after the team's channel, grayed out until the pencil is pressed; older ones let the
+      // opener type it
+      $("team-name-block").hidden = !registration;
       $("continue-as").hidden = !useLoggedIn;
       $("account-fields").hidden = useLoggedIn;
       for (const button of document.querySelectorAll(".seg[data-mode]")) button.setAttribute("aria-pressed", String(button.dataset.mode === mode));
@@ -118,9 +126,40 @@
         $("continue-name").textContent = link.loggedInAs;
         $("continue-name-2").textContent = link.loggedInAs;
       }
+      if (link.kind === "TeamRegistration" && link.teamName) setNameEditing(false);
       $("join-body").hidden = false;
       render();
     }
+
+    // Picking another name here counts as the team's name change: the next one is only possible after teamRenameDays days
+    function setNameEditing(editing) {
+      const input = $("team-name");
+      input.readOnly = !editing;
+      $("team-name-edit").hidden = editing;
+      $("team-name-warning").hidden = !editing;
+      if (editing) {
+        $("team-name-warning").replaceChildren(
+          `You can change your team's name once every ${link.teamRenameDays} days. `,
+          Object.assign(document.createElement("button"), { type: "button", className: "link", textContent: "Cancel", onclick: () => setNameEditing(false) }));
+        input.focus();
+        input.select();
+      } else {
+        input.value = link.teamName;
+      }
+      showTeamHeading();
+    }
+
+    function showTeamHeading() {
+      if (link.kind !== "TeamRegistration") return;
+      const name = $("team-name").value.trim() || link.teamName;
+      $("join-heading").textContent = name ? `Create ${name}` : "Create your team";
+    }
+
+    $("team-name-edit").addEventListener("click", () => setNameEditing(true));
+    $("team-name").addEventListener("input", showTeamHeading);
+    $("team-name").addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && link?.teamName && !$("team-name").readOnly) { event.preventDefault(); setNameEditing(false); }
+    });
 
     for (const button of document.querySelectorAll(".seg[data-mode]")) {
       button.addEventListener("click", () => { mode = button.dataset.mode; render(); });

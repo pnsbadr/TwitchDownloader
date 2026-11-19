@@ -1098,6 +1098,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("TEXT");
 
+                    b.Property<DateTime?>("NameChangedAtUtc")
+                        .HasColumnType("TEXT");
+
                     b.Property<int?>("OwnerUserId")
                         .HasColumnType("INTEGER");
 

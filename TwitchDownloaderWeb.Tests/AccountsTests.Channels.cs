@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using TwitchDownloaderWeb.Data;
 using TwitchDownloaderWeb.Services;
@@ -36,13 +37,14 @@ namespace TwitchDownloaderWeb.Tests
             var links = await GetJsonAsync(staff, "/api/admin/links");
             Assert.Equal(["Arky"], links[0].GetProperty("channels").EnumerateArray().Select(x => x.GetString()));
 
-            // The person opening it sees the channel and the team's name, named after the channel by default
+            // The person opening it sees the channel and the suggested name, after the channel (staff don't pick it)
             var info = await (await NewClient().PostAsJsonAsync("/api/links/inspect", new { token }, ct)).Content.ReadFromJsonAsync<JsonElement>(ct);
             Assert.Equal(["Arky"], info.GetProperty("channels").EnumerateArray().Select(x => x.GetString()));
             Assert.Equal("Arky's Team", info.GetProperty("teamName").GetString());
+            Assert.Equal(14, info.GetProperty("teamRenameDays").GetInt32());
 
             var owner = NewClient();
-            Assert.Equal(HttpStatusCode.OK, (await AcceptAsync(owner, token, "ch1owner", newAccount: true, teamName: "Something else")).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await AcceptAsync(owner, token, "ch1owner", newAccount: true)).StatusCode);
             var me = await GetJsonAsync(owner, "/api/auth/me");
             Assert.Equal("Arky's Team", me.GetProperty("teams")[0].GetProperty("name").GetString());
             Assert.Equal(["arky"], (await GetJsonAsync(owner, "/api/channels")).EnumerateArray().Select(x => x.GetProperty("login").GetString()));
@@ -203,6 +205,59 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Single((await GetJsonAsync(owner, "/api/markers?vodIds=401")).EnumerateArray());
             team = (await GetJsonAsync(staff, "/api/admin/teams")).EnumerateArray().Single(x => x.GetProperty("id").GetInt32() == teamId);
             Assert.Empty(team.GetProperty("revokedChannels").EnumerateArray());
+        }
+
+        [Fact]
+        public async Task TeamsPickTheirOwnNameOnceEvery14Days()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            var (staff, moderator, moderatorId) = await OwnerWithModeratorAsync("nm1");
+
+            // Changing the suggested name when opening the link is the team's rename (badrfly 2026-11-19)
+            var token = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channel = "arky" });
+            var owner = NewClient();
+            Assert.Equal(HttpStatusCode.OK, (await AcceptAsync(owner, token, "nm1owner", newAccount: true, teamName: "  Arky Clips ")).StatusCode);
+            var team = await GetJsonAsync(owner, "/api/team");
+            Assert.Equal("Arky Clips", team.GetProperty("name").GetString());
+            Assert.True(team.GetProperty("canRename").GetBoolean());
+            Assert.NotEqual(JsonValueKind.Null, team.GetProperty("nextRenameAtUtc").ValueKind);
+            var teamId = team.GetProperty("id").GetInt32();
+
+            var tooSoon = await owner.PutAsJsonAsync("/api/team/name", new { name = "Arky Shorts" }, ct);
+            Assert.Equal(HttpStatusCode.Conflict, tooSoon.StatusCode);
+            Assert.Equal("rename-too-soon", await CodeOf(tooSoon));
+            Assert.Equal(HttpStatusCode.BadRequest, (await owner.PutAsJsonAsync("/api/team/name", new { name = " " }, ct)).StatusCode);
+
+            // The app Owner renames any time, without touching the team's wait; staff see "Channel (team name)"
+            var renamed = await staff.PutAsJsonAsync($"/api/admin/teams/{teamId}/name", new { name = "Arky Editors" }, ct);
+            Assert.Equal(HttpStatusCode.OK, renamed.StatusCode);
+            var dto = await renamed.Content.ReadFromJsonAsync<JsonElement>(ct);
+            Assert.Equal("Arky Editors", dto.GetProperty("name").GetString());
+            Assert.Equal("Arky (Arky Editors)", dto.GetProperty("label").GetString());
+            Assert.Equal("Arky (Arky Editors)", (await GetJsonAsync(staff, "/api/admin/teams")).EnumerateArray()
+                .Single(x => x.GetProperty("id").GetInt32() == teamId).GetProperty("label").GetString());
+            Assert.Equal(HttpStatusCode.Conflict, (await owner.PutAsJsonAsync("/api/team/name", new { name = "Arky Shorts" }, ct)).StatusCode);
+
+            // 14 days later the team may pick again
+            using (var scope = _factory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+                var row = await db.Teams.FirstAsync(x => x.Id == teamId, ct);
+                row.NameChangedAtUtc = DateTime.UtcNow.AddDays(-14).AddMinutes(-1);
+                await db.SaveChangesAsync(ct);
+            }
+            Assert.Equal(HttpStatusCode.OK, (await owner.PutAsJsonAsync("/api/team/name", new { name = "Arky Shorts" }, ct)).StatusCode);
+            Assert.Equal("Arky Shorts", (await GetJsonAsync(owner, "/api/team")).GetProperty("name").GetString());
+
+            // Keeping the suggested name doesn't start the wait; only the team owner renames, never a moderator
+            var token2 = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channel = "arky" });
+            var owner2 = NewClient();
+            Assert.Equal(HttpStatusCode.OK, (await AcceptAsync(owner2, token2, "nm2owner", newAccount: true, teamName: "Arky's Team")).StatusCode);
+            Assert.Equal(JsonValueKind.Null, (await GetJsonAsync(owner2, "/api/team")).GetProperty("nextRenameAtUtc").ValueKind);
+            Assert.Equal(HttpStatusCode.OK, (await owner2.PutAsJsonAsync("/api/team/name", new { name = "Second Arky team" }, ct)).StatusCode);
+
+            Assert.Equal(HttpStatusCode.NoContent, await SetStaffPermissionsAsync(staff, moderatorId, "ManageTeamChannels", "ViewTeamsAndUsers"));
+            Assert.Equal(HttpStatusCode.Forbidden, (await moderator.PutAsJsonAsync($"/api/admin/teams/{teamId}/name", new { name = "X" }, ct)).StatusCode);
         }
 
         [Fact]

@@ -35,6 +35,7 @@ namespace TwitchDownloaderWeb.Data
         public const string UserLoggedOut = "user.logged_out";
         public const string TeamCreated = "team.created";
         public const string TeamOwnerChanged = "team.owner_changed";
+        public const string TeamRenamed = "team.renamed";
         public const string TeamMemberJoined = "team.member_joined";
         public const string TeamMemberRemoved = "team.member_removed";
         public const string LinkCreated = "link.created";
