@@ -9,10 +9,13 @@ using TwitchDownloaderWeb.Services.Accounts;
 namespace TwitchDownloaderWeb.Endpoints
 {
 
-    public sealed record ChannelDto(int Id, string Login, string DisplayName, bool WatchMutedAudio, DateTime AddedAtUtc, string? AddedByUserId)
+    /// <param name="WatchMutedAudio">Audio is saved automatically (set by the app Owner).</param>
+    /// <param name="SaveAudio">Save audio now may be used on its VODs (set by the app Owner).</param>
+    public sealed record ChannelDto(int Id, string Login, string DisplayName, bool WatchMutedAudio, bool SaveAudio, DateTime AddedAtUtc, string? AddedByUserId)
     {
         public static ChannelDto From(SavedChannel channel) =>
-            new(channel.Id, channel.Login, channel.DisplayName, channel.WatchMutedAudio, channel.AddedAtUtc, channel.AddedByUserId);
+            new(channel.Id, channel.Login, channel.DisplayName, channel.WatchMutedAudio, channel.AllowSaveAudio || channel.WatchMutedAudio,
+                channel.AddedAtUtc, channel.AddedByUserId);
     }
 
     public sealed record ChannelVodDto(long VodId, string Title, int LengthSeconds, string Length, DateTime CreatedAtUtc, string? ThumbnailUrl,

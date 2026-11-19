@@ -138,12 +138,13 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
         }
 
         /// <summary>
-        /// Logins of saved channels whose team has automatic audio saving on. Across all teams (saved audio is shared per VOD), so it
+        /// Logins of team channels the app Owner turned automatic audio saving on for (<see cref="SavedChannel.WatchMutedAudio"/>, badrfly
+        /// 2026-11-18; it used to be a team setting), on enabled teams. Across all teams (saved audio is shared per VOD), so it
         /// ignores the request's team filter.
         /// </summary>
         public static IQueryable<string> AutoWatchedLogins(LibraryDbContext db) =>
             db.Channels.IgnoreQueryFilters()
-                .Where(x => x.WatchMutedAudio && x.AccessEndedAtUtc == null && db.Teams.Any(t => t.Id == x.TeamId && t.AutoSaveAudio && t.DisabledAtUtc == null))
+                .Where(x => x.WatchMutedAudio && x.AccessEndedAtUtc == null && db.Teams.Any(t => t.Id == x.TeamId && t.DisabledAtUtc == null))
                 .Select(x => x.Login);
 
         /// <summary>Whether a rescue not started by hand is waiting because nothing automatic watches its channel.</summary>

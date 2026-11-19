@@ -94,7 +94,13 @@ namespace TwitchDownloaderWeb.Tests
             // The card's frame is the middle of what's left (85 s in: 35 s after the cut)
             Assert.Equal($"/api/entries/{entryId}/thumbnail?t=2150", entryDto.GetProperty("frameUrl").GetString());
 
-            // 170 s in all (140 s left) is stored
+            // 170 s in all (140 s left) is stored, once the app Owner lets the team store clips (badrfly 2026-11-18: off by default)
+            var notStored = await (await owner.PutAsJsonAsync($"/api/entries/{entryId}/trim",
+                new { startTime = "100", endTime = "270", cuts = new[] { new { start = 150, end = 180 } } }, ct)).Content.ReadFromJsonAsync<JsonElement>(ct);
+            Assert.True(notStored.GetProperty("isReferenceOnly").GetBoolean());
+            Assert.Equal(HttpStatusCode.OK, (await owner.PutAsJsonAsync($"/api/entries/{entryId}/trim",
+                new { startTime = "100", endTime = "300", cuts = new[] { new { start = 150, end = 180 } } }, ct)).StatusCode);
+            TurnOnStoredClips(teamId);
             var stored = await (await owner.PutAsJsonAsync($"/api/entries/{entryId}/trim",
                 new { startTime = "100", endTime = "270", cuts = new[] { new { start = 150, end = 180 } } }, ct)).Content.ReadFromJsonAsync<JsonElement>(ct);
             Assert.False(stored.GetProperty("isReferenceOnly").GetBoolean());

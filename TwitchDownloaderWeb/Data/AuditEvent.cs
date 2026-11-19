@@ -17,6 +17,8 @@ namespace TwitchDownloaderWeb.Data
         public const string EntryVodBack = "entry.vod_back";
         public const string ChannelAdded = "channel.added";
         public const string ChannelRemoved = "channel.removed";
+        /// <summary>The app Owner changed a team channel's audio saving (Save audio now allowed, automatic saving).</summary>
+        public const string ChannelAudioChanged = "channel.audio_changed";
         public const string AudioRescueStarted = "audio.rescue_started";
         public const string AudioRescueSaved = "audio.rescue_saved";
         public const string AudioRescueFailed = "audio.rescue_failed";

@@ -197,6 +197,7 @@ namespace TwitchDownloaderWeb.Tests
         {
             var ct = TestContext.Current.CancellationToken;
             var (owner, _, teamId, _) = await TeamWithMemberAsync("ee3");
+            TurnOnStoredClips(teamId);
             var ownerId = (await GetJsonAsync(owner, "/api/auth/me")).GetProperty("id").GetInt32();
             var clipId = AddStoredClip(teamId, ownerId, 472, 0, 10, "file");
             var otherClip = AddStoredClip(teamId, ownerId, 472, 20, 30, "file");

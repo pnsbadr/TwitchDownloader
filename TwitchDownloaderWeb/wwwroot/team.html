@@ -91,10 +91,11 @@
     </section>
 
     <section class="panel" id="settings-panel" hidden>
-      <h2>Audio saving</h2>
-      <label class="check-label"><input type="checkbox" id="auto-save-audio"> Automatically save audio for our saved channels</label>
-      <p class="muted small-text" id="auto-save-hint">Saves each new stream's audio while it's live, so muted parts can be restored later. Uses a lot
-        of disk space (about 1 GB per channel per day until the muted parts are picked out). Save audio now on a VOD works either way.</p>
+      <h2>Set by the app</h2>
+      <p class="muted small-text">The app's Owner decides these for each team. Ask them if you need one changed.</p>
+      <p id="store-clips-info"></p>
+      <ul id="channel-audio" class="plain-list"></ul>
+      <p class="muted small-text" id="auto-save-hint">Saving audio keeps each stream's audio while it's live, so muted parts can be restored later.</p>
     </section>
   </main>
   <script src="reports.js"></script>

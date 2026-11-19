@@ -537,10 +537,16 @@ export class Timeline {
       ? { ...item, start: preview.start, end: preview.end, ...(preview.cuts !== undefined ? { cuts: preview.cuts ?? [] } : {}) }
       : item);
     if (/clip/i.test(row.kind)) {
-      return this.clips.filter((c) => c.rowId === row.id).map((c) => moved("clip", {
-        kind: "clip", id: c.id, start: c.startSeconds ?? c.start, end: c.endSeconds ?? c.end ?? this.length(), title: c.title,
-        by: c.createdBy, reference: c.referenceOnly, cuts: c.cuts ?? [], row, data: c,
-      }));
+      return this.clips.filter((c) => c.rowId === row.id).map((c) => {
+        const start = c.startSeconds ?? c.start;
+        const end = c.endSeconds ?? c.end ?? this.length();
+        // Only a clip over the stored-clip limit looks like a reference: shorter ones are references too when the team doesn't store
+        // clips (badrfly 2026-11-18), but they look like any clip
+        const long = Boolean(c.referenceOnly) && end - start > this.maxStoredClipSeconds + 0.01;
+        return moved("clip", {
+          kind: "clip", id: c.id, start, end, title: c.title, by: c.createdBy, reference: c.referenceOnly, long, cuts: c.cuts ?? [], row, data: c,
+        });
+      });
     }
     return this.markers.filter((m) => m.rowId === row.id).map((m) => moved("marker", {
       kind: m.endSeconds == null ? "moment" : "segment", id: m.id, start: m.seconds, end: m.endSeconds, title: m.label,
@@ -900,10 +906,10 @@ export class Timeline {
     const top = y + 6;
     const h = rowH - 12;
     if (item.kind === "clip") {
-      ctx.fillStyle = item.reference ? "rgb(139 124 246 / 0.35)" : CLIP_COLOR;
+      ctx.fillStyle = item.long ? "rgb(139 124 246 / 0.35)" : CLIP_COLOR;
       roundRect(ctx, left, top, Math.max(2, right - left), h, 4);
       ctx.fill();
-      if (item.reference) {
+      if (item.long) {
         ctx.strokeStyle = CLIP_COLOR;
         ctx.lineWidth = 1;
         ctx.stroke();

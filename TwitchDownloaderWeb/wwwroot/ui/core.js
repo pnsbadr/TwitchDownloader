@@ -11,7 +11,7 @@ export function can(permission) {
 }
 
 // Shown on the account menu's "Team page" entry when the member has any of these
-export const TEAM_PAGE_PERMISSIONS = ["InviteMembers", "AssignRoles", "ManageRoles", "RemoveMembers", "ResetPasswords", "ViewActivity", "ManageAudioSettings"];
+export const TEAM_PAGE_PERMISSIONS = ["InviteMembers", "AssignRoles", "ManageRoles", "RemoveMembers", "ResetPasswords", "ViewActivity"];
 
 // What the page does with a session problem; editor.js sets it so the API helper can show the gate
 export const sessionHandlers = { gate: (_text, _heading) => {} };

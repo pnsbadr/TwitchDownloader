@@ -18,7 +18,12 @@ namespace TwitchDownloaderWeb.Endpoints
     /// <param name="Support">Set during a support visit (app staff viewing a team read-only); Id is then 0 and Username the staff account's.</param>
     /// <param name="CombineSegmentDownloads">The current team may download picked segments joined into one file (the app Owner turns it on per team).</param>
     public sealed record MeDto(int Id, string Username, IReadOnlyList<MeTeamDto> Teams, int? CurrentTeamId, IReadOnlyList<string> Permissions, string TimeZone,
-        MeSupportDto? Support = null, bool CombineSegmentDownloads = false);
+        MeSupportDto? Support = null, bool CombineSegmentDownloads = false)
+    {
+        /// <summary>The stored-clip limit (Downloads:MaxStoredClipSeconds): clips over it are "Long" references on the page, whether or not the
+        /// team stores clips (<see cref="Data.Team.StoreClips"/>); shorter references look like any clip.</summary>
+        public int MaxStoredClipSeconds { get; init; }
+    }
 
     public sealed record MeSupportDto(string StaffUsername, int TeamId, string TeamName);
 
@@ -95,15 +100,17 @@ namespace TwitchDownloaderWeb.Endpoints
             return Results.NoContent();
         }
 
-        private static async Task<IResult> Me(HttpContext context, LibraryDbContext db, CancellationToken cancellationToken)
+        private static async Task<IResult> Me(HttpContext context, LibraryDbContext db, Microsoft.Extensions.Options.IOptions<DownloadSettings> downloads,
+            CancellationToken cancellationToken)
         {
+            var limit = downloads.Value.MaxStoredClipSeconds;
             if (SupportView.Requested(context))
             {
                 if (await SupportView.ResolveAsync(context, db) is not { } support)
                     return Results.Json(new { status = 403, code = "support-ended", detail = "This support view has ended. Open it again from the Admin page." },
                         statusCode: StatusCodes.Status403Forbidden, contentType: "application/problem+json");
                 return Results.Ok(new MeDto(0, support.Staff.Username, [new MeTeamDto(support.TeamId, support.TeamName, false)], support.TeamId,
-                    TeamPermissions.ToKeys(SupportView.Permissions), "local", new MeSupportDto(support.Staff.Username, support.TeamId, support.TeamName)));
+                    TeamPermissions.ToKeys(SupportView.Permissions), "local", new MeSupportDto(support.Staff.Username, support.TeamId, support.TeamName)) { MaxStoredClipSeconds = limit });
             }
 
             if (AuthSetup.GetId(context.User) is not { } id)
@@ -124,7 +131,7 @@ namespace TwitchDownloaderWeb.Endpoints
             var current = memberships.FirstOrDefault(x => x.TeamId == wanted) ?? memberships.FirstOrDefault();
             var permissions = current is null ? TeamPermission.None : current.IsOwner ? TeamPermission.All : current.Permissions;
             return Results.Ok(new MeDto(user.Id, user.Username, memberships.Select(x => new MeTeamDto(x.TeamId, x.Name, x.IsOwner)).ToList(), current?.TeamId,
-                TeamPermissions.ToKeys(permissions), user.TimeZone ?? "local", CombineSegmentDownloads: current?.CombineSegmentDownloads == true));
+                TeamPermissions.ToKeys(permissions), user.TimeZone ?? "local", CombineSegmentDownloads: current?.CombineSegmentDownloads == true) { MaxStoredClipSeconds = limit });
         }
 
         private static async Task<IResult> UpdateSettings(UserSettingsRequest request, HttpContext context, LibraryDbContext db, CancellationToken cancellationToken)

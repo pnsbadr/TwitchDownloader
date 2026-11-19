@@ -19,9 +19,13 @@ namespace TwitchDownloaderWeb.Endpoints
 
     public sealed record AssignRoleRequest(int? RoleId);
 
-    public sealed record TeamSettingsDto(bool AutoSaveAudio, bool AutoSaveAllowedByApp);
+    /// <summary>What the app Owner set for the team (badrfly 2026-11-18: the team can't change these). Read-only on the Team page.</summary>
+    public sealed record TeamSettingsDto(bool StoreClips, int MaxStoredClipSeconds, IReadOnlyList<TeamChannelAudioDto> Channels, bool AutoSaveAllowedByApp);
 
-    public sealed record UpdateTeamSettingsRequest(bool AutoSaveAudio);
+    /// <param name="SaveAudio">Save audio now is allowed on its VODs.</param>
+    /// <param name="AutoSaveAudio">Its streams' audio is saved automatically.</param>
+    public sealed record TeamChannelAudioDto(string Login, string DisplayName, bool SaveAudio, bool AutoSaveAudio);
+
 
     /// <param name="Counts">Actions in the period, by kind: added, edited, deleted, downloaded, generated, vertical.</param>
     /// <param name="DiskBytes">Files of entries they added that are on disk now: stored, on-demand and vertical renders.</param>
@@ -51,7 +55,6 @@ namespace TwitchDownloaderWeb.Endpoints
             var team = app.MapGroup("/api/team");
             team.MapGet("/", GetTeam).RequireTeam(TeamPermission.TeamPage);
             team.MapGet("/settings", GetSettings).RequireTeam(TeamPermission.All);
-            team.MapPut("/settings", UpdateSettings).RequireTeam(TeamPermission.ManageAudioSettings);
 
             team.MapDelete("/members/{userId:int}", RemoveMember).RequireTeam(TeamPermission.RemoveMembers);
             team.MapPut("/members/{userId:int}/role", AssignRole).RequireTeam(TeamPermission.AssignRoles);
@@ -345,24 +348,14 @@ namespace TwitchDownloaderWeb.Endpoints
 
         // ---------- settings ----------
 
-        private static async Task<IResult> GetSettings(TeamContext team, LibraryDbContext db, IOptions<AudioRescueSettings> rescue, CancellationToken cancellationToken)
+        private static async Task<IResult> GetSettings(TeamContext team, LibraryDbContext db, IOptions<AudioRescueSettings> rescue,
+            IOptions<DownloadSettings> downloads, CancellationToken cancellationToken)
         {
             var row = await db.Teams.AsNoTracking().FirstAsync(x => x.Id == team.TeamId, cancellationToken);
-            return Results.Ok(new TeamSettingsDto(row.AutoSaveAudio, rescue.Value.Enabled));
-        }
-
-        private static async Task<IResult> UpdateSettings(UpdateTeamSettingsRequest request, TeamContext team, LibraryDbContext db,
-            IOptions<AudioRescueSettings> rescue, Services.AudioRescue.AudioRescueService rescueService, CancellationToken cancellationToken)
-        {
-            var row = await db.Teams.FirstAsync(x => x.Id == team.TeamId, cancellationToken);
-            if (row.AutoSaveAudio != request.AutoSaveAudio)
-            {
-                row.AutoSaveAudio = request.AutoSaveAudio;
-                db.Audit(AuditActions.TeamSettingsChanged, null, $"Automatic audio saving {(request.AutoSaveAudio ? "on" : "off")} (by {team.Username})");
-                await db.SaveChangesAsync(cancellationToken);
-                rescueService.Wake();
-            }
-            return Results.Ok(new TeamSettingsDto(row.AutoSaveAudio, rescue.Value.Enabled));
+            var channels = (await db.Channels.AsNoTracking().Where(x => x.AccessEndedAtUtc == null).ToListAsync(cancellationToken))
+                .OrderBy(x => x.DisplayName, StringComparer.OrdinalIgnoreCase)
+                .Select(x => new TeamChannelAudioDto(x.Login, x.DisplayName, x.AllowSaveAudio || x.WatchMutedAudio, x.WatchMutedAudio)).ToList();
+            return Results.Ok(new TeamSettingsDto(row.StoreClips, downloads.Value.MaxStoredClipSeconds, channels, rescue.Value.Enabled));
         }
 
         // ---------- activity ----------

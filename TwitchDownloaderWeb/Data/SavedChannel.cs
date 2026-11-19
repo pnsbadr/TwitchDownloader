@@ -10,8 +10,17 @@ namespace TwitchDownloaderWeb.Data
         public required string DisplayName { get; set; }
         public string? TwitchUserId { get; set; }
 
-        /// <summary>Whether the muted audio rescue watches this channel's new VODs (used by the audio rescue feature).</summary>
-        public bool WatchMutedAudio { get; set; } = true;
+        /// <summary>
+        /// Automatic audio saving for this channel: the muted audio rescue watches its new VODs (while the stream is live). Set only by the app
+        /// Owner on the Admin page (badrfly 2026-11-18: not the team owner any more). Off by default: it fills disks fast.
+        /// </summary>
+        public bool WatchMutedAudio { get; set; }
+
+        /// <summary>
+        /// The team's members (with <see cref="TeamPermission.SaveAudio"/>) may use "Save audio now" on this channel's VODs. Set only by the app
+        /// Owner (badrfly 2026-11-18). Off by default; <see cref="WatchMutedAudio"/> allows it too.
+        /// </summary>
+        public bool AllowSaveAudio { get; set; }
 
         public DateTime AddedAtUtc { get; set; }
 

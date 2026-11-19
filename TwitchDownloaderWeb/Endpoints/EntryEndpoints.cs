@@ -295,7 +295,7 @@ namespace TwitchDownloaderWeb.Endpoints
             // stored file holds all of it (cut-out parts are left out only when files are made from it), see IsStoredLength
             var cuts = CutOuts.Normalize(request.Cuts, startTime.TotalSeconds, rangeEnd);
             var clipLength = TimeSpan.FromSeconds(CutOuts.KeptSeconds(startTime.TotalSeconds, rangeEnd, cuts));
-            var isStored = IsStoredLength(rangeEnd - startTime.TotalSeconds, settings.Value);
+            var isStored = IsStoredLength(rangeEnd - startTime.TotalSeconds, settings.Value, await TeamStoresClipsAsync(db, team.TeamId, cancellationToken));
             var now = DateTime.UtcNow;
 
             var entry = new LibraryEntry
@@ -532,10 +532,17 @@ namespace TwitchDownloaderWeb.Endpoints
         }
 
         /// <summary>
-        /// The stored-vs-reference rule: the whole range counts, not what's left after cut-out parts, because the stored file holds the whole
-        /// range (badrfly 2026-11-16; this replaced the 2026-11-15 rule that counted what was left).
+        /// The stored-vs-reference rule: only for teams the app Owner turned stored clips on for (<see cref="Team.StoreClips"/>, badrfly
+        /// 2026-11-18; otherwise every clip is a reference, which the page shows like any clip), and then the whole range counts, not what's left
+        /// after cut-out parts, because the stored file holds the whole range (badrfly 2026-11-16; this replaced the 2026-11-15 rule that counted
+        /// what was left).
         /// </summary>
-        internal static bool IsStoredLength(double rangeSeconds, DownloadSettings settings) => rangeSeconds <= settings.MaxStoredClipSeconds;
+        internal static bool IsStoredLength(double rangeSeconds, DownloadSettings settings, bool teamStoresClips) =>
+            teamStoresClips && rangeSeconds <= settings.MaxStoredClipSeconds;
+
+        /// <summary>Whether the app Owner turned stored clips on for the team (<see cref="Team.StoreClips"/>).</summary>
+        internal static Task<bool> TeamStoresClipsAsync(LibraryDbContext db, int teamId, CancellationToken cancellationToken) =>
+            db.Teams.IgnoreQueryFilters().AsNoTracking().Where(x => x.Id == teamId).Select(x => x.StoreClips).FirstOrDefaultAsync(cancellationToken);
 
         /// <summary>
         /// Sets an entry's range and cut-out parts (checked and normalized by the caller) and saves. Files hold the whole range, so a change of
@@ -569,7 +576,7 @@ namespace TwitchDownloaderWeb.Endpoints
             var oldCuts = CutOuts.Read(entry.Cuts).Count;
             var clipLength = TimeSpan.FromSeconds(CutOuts.KeptSeconds(startTime.TotalSeconds, rangeEnd, cuts));
             // A live markers entry is always a reference while it follows (it would be re-downloaded on every marker change)
-            var isStored = !follow && IsStoredLength(rangeEnd - startTime.TotalSeconds, settings);
+            var isStored = !follow && IsStoredLength(rangeEnd - startTime.TotalSeconds, settings, await TeamStoresClipsAsync(db, entry.TeamId, cancellationToken));
             var wasStored = entry.Status != EntryStatus.ReferenceOnly;
             var sameRange = startTime == entry.StartTime && endTime == entry.EndTime;
             var hasOldFile = entry.FileCuts is not null && (entry.FilePath is not null || entry.GeneratedFilePath is not null);

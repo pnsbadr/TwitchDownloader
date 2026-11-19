@@ -136,7 +136,10 @@ function teamRow(team) {
   // Features still being tried out: only the Owner turns them on, per team
   if (staffMe.isOwner) {
     actions.push(el("button", { type: "button", class: "link small", onclick: () => setTeamFeature(team, { combineSegmentDownloads: !team.combineSegmentDownloads }) },
-      team.combineSegmentDownloads ? "Turn off joined segments" : "Allow joined segments"));
+      team.combineSegmentDownloads ? "Turn off joined segments" : "Allow joined segments"));    actions.push(el("button", { type: "button", class: "link small",
+      title: "Clips of 3 minutes or less are downloaded and kept as files. Off: they are references, like segments (files are made when needed).",
+      onclick: () => setTeamFeature(team, { storeClips: !team.storeClips }) },
+      team.storeClips ? "Stop storing clips" : "Store clips"));
   }
   if (can("DisableTeams")) {
     actions.push(el("button", { type: "button", class: team.disabledAtUtc ? "link small" : "link danger small", onclick: () => setTeamDisabled(team, !team.disabledAtUtc) },
@@ -147,7 +150,8 @@ function teamRow(team) {
     el("div", { class: "grow" },
       el("strong", {}, team.name),
       team.disabledAtUtc ? el("span", { class: "badge error" }, "Disabled") : null,
-      team.autoSaveAudio ? el("span", { class: "badge ok" }, "Auto audio saving") : null,
+      team.storeClips ? el("span", { class: "badge ok", title: "Clips of 3 minutes or less are downloaded and kept as files" }, "Stores clips") : null,
+      audioBadge(team),
       team.combineSegmentDownloads
         ? el("span", { class: "badge ok", title: "Members can download picked segments joined into one file" }, "Joined segments")
         : null,
@@ -184,6 +188,15 @@ async function toggleTeamDetails(team, details) {
   const table = el("div");
   details.replaceChildren(el("div", { class: "row" }, el("label", { class: "inline-label" }, "Period", periodSelect(render))), table);
   render("7");
+}
+
+function audioBadge(team) {
+  const channels = team.channels.filter((c) => !c.accessEndedAtUtc);
+  const auto = channels.filter((c) => c.autoSaveAudio).length;
+  const manual = channels.filter((c) => c.saveAudio || c.autoSaveAudio).length;
+  if (!manual) return null;
+  return el("span", { class: "badge ok", title: `${auto} saved automatically, Save audio now on ${manual}` },
+    auto ? `Auto audio: ${plural(auto, "channel")}` : `Save audio: ${plural(manual, "channel")}`);
 }
 
 function channelSummary(team) {
@@ -232,6 +245,7 @@ function toggleTeamChannels(team, details) {
       el("span", { class: "muted small-text" }, ` ${channel.login} · added ${formatWhen(channel.addedAtUtc)}`
         + (channel.accessEndedAtUtc ? ` · new VODs closed ${formatWhen(channel.accessEndedAtUtc)}` : ""))),
     el("div", { class: "row admin-actions" },
+      ...audioSwitches(team, channel, run),
       channel.accessEndedAtUtc
         ? el("button", { type: "button", class: "link small", onclick: () => run("POST", `/api/admin/teams/${team.id}/channels`, { login: channel.login }) },
           "Assign again")
@@ -251,9 +265,27 @@ function toggleTeamChannels(team, details) {
   details.replaceChildren(
     el("p", { class: "muted small-text" }, "Members only see and work on these channels' VODs. \"Stop new VODs\" keeps the VODs the team "
       + "already worked on; \"Revoke now\" closes every VOD of the channel and hides the team's work on them (kept, and back when you assign "
-      + "the channel again)."),
+      + "the channel again)."
+      + (staffMe.isOwner ? " Audio saving is yours to decide per channel: \"Save audio now\" allows the button, \"Save automatically\" saves every stream." : "")),
     list, add);
   input.focus();
+}
+
+// Audio saving per channel: only the app Owner decides (badrfly 2026-11-18)
+function audioSwitches(team, channel, run) {
+  if (!staffMe.isOwner || channel.accessEndedAtUtc) return [];
+  const box = (label, title, checked, body) => {
+    const input = el("input", { type: "checkbox" });
+    input.checked = checked;
+    input.addEventListener("change", () => run("PUT", `/api/admin/teams/${team.id}/channels/${channel.id}/audio`, body(input.checked)));
+    return el("label", { class: "check-label small-text", title }, input, ` ${label}`);
+  };
+  return [
+    box("Save audio now", "Members with the Save audio now permission can save a live or recent VOD's audio by hand.",
+      channel.saveAudio, (on) => ({ saveAudio: on })),
+    box("Save automatically", "Every stream's audio is saved while it's live (about 1 GB per channel per day until the muted parts are picked out).",
+      channel.autoSaveAudio, (on) => ({ autoSaveAudio: on })),
+  ];
 }
 
 async function refreshTeam(teamId, details) {

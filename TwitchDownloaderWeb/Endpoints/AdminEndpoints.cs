@@ -19,24 +19,30 @@ namespace TwitchDownloaderWeb.Endpoints
     /// <param name="Channels">The Twitch channels the team works on (only their VODs are open to it).</param>
     /// <param name="RevokedChannels">Channels taken with "Revoke now": the team's work on their VODs is hidden until one is assigned again.</param>
     public sealed record AdminTeamDto(int Id, string Name, DateTime CreatedAtUtc, int? OwnerUserId, string? OwnerUsername, int MemberCount, int EntryCount,
-        DateTime? DisabledAtUtc, bool AutoSaveAudio, long DiskBytes, DateTime? LastActiveAtUtc, bool CombineSegmentDownloads,
+        DateTime? DisabledAtUtc, bool StoreClips, long DiskBytes, DateTime? LastActiveAtUtc, bool CombineSegmentDownloads,
         IReadOnlyList<AdminChannelDto> Channels, IReadOnlyList<AdminRevokedChannelDto> RevokedChannels);
 
     /// <param name="HiddenVods">How many VODs the team's work is hidden on.</param>
     public sealed record AdminRevokedChannelDto(string Login, string DisplayName, DateTime RevokedAtUtc, int HiddenVods);
 
     /// <param name="AccessEndedAtUtc">Removed with "keep existing work": only VODs the team already worked on stay open. Null = assigned.</param>
-    public sealed record AdminChannelDto(int Id, string Login, string DisplayName, DateTime AddedAtUtc, DateTime? AccessEndedAtUtc)
+    /// <param name="SaveAudio">The team may use Save audio now on its VODs (<see cref="SavedChannel.AllowSaveAudio"/>).</param>
+    /// <param name="AutoSaveAudio">Its streams' audio is saved automatically (<see cref="SavedChannel.WatchMutedAudio"/>).</param>
+    public sealed record AdminChannelDto(int Id, string Login, string DisplayName, DateTime AddedAtUtc, DateTime? AccessEndedAtUtc, bool SaveAudio, bool AutoSaveAudio)
     {
         public static AdminChannelDto From(SavedChannel channel) =>
-            new(channel.Id, channel.Login, channel.DisplayName, channel.AddedAtUtc, channel.AccessEndedAtUtc);
+            new(channel.Id, channel.Login, channel.DisplayName, channel.AddedAtUtc, channel.AccessEndedAtUtc, channel.AllowSaveAudio, channel.WatchMutedAudio);
     }
+
+    /// <summary>Audio saving on one team channel (app Owner only, badrfly 2026-11-18). Null leaves it as it is.</summary>
+    public sealed record ChannelAudioRequest(bool? SaveAudio, bool? AutoSaveAudio);
 
     /// <param name="Login">A Twitch login or twitch.tv/&lt;login&gt; link.</param>
     public sealed record AssignChannelRequest(string? Login);
 
     /// <param name="CombineSegmentDownloads">Members may download picked segments joined into one file. Null leaves it as it is.</param>
-    public sealed record TeamFeaturesRequest(bool? CombineSegmentDownloads);
+    /// <param name="StoreClips">Clips at or under the stored-clip limit are downloaded and kept as files (else references). Null leaves it.</param>
+    public sealed record TeamFeaturesRequest(bool? CombineSegmentDownloads, bool? StoreClips = null);
 
     /// <param name="OtherTeams">How many other teams this person is in.</param>
     public sealed record AdminTeamMemberDto(int UserId, string Username, bool IsOwner, string? RoleName, DateTime JoinedAtUtc, DateTime? LastActiveAtUtc,
@@ -107,6 +113,8 @@ namespace TwitchDownloaderWeb.Endpoints
             staff.MapGet("/teams/{id:int}/channels", ListTeamChannels).RequireStaff(StaffPermission.ViewTeamsAndUsers | StaffPermission.ManageTeamChannels);
             staff.MapPost("/teams/{id:int}/channels", AssignTeamChannel).RequireStaff(StaffPermission.ManageTeamChannels);
             staff.MapDelete("/teams/{id:int}/channels/{channelId:int}", RemoveTeamChannel).RequireStaff(StaffPermission.ManageTeamChannels);
+            // Saving audio uses a lot of disk: only the app Owner decides it, per channel (badrfly 2026-11-18)
+            staff.MapPut("/teams/{id:int}/channels/{channelId:int}/audio", SetChannelAudio).RequireStaffOwner();
 
             staff.MapGet("/users", ListUsers)
                 .RequireStaff(StaffPermission.ViewTeamsAndUsers | StaffPermission.ResetUserPasswords | StaffPermission.DisableUsers);
@@ -259,7 +267,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 .Select(x => new
                 {
                     x.Id, x.Name, x.CreatedAtUtc, x.OwnerUserId, OwnerUsername = x.OwnerUser!.Username, MemberCount = x.Members.Count,
-                    EntryCount = db.Entries.IgnoreQueryFilters().Count(e => e.TeamId == x.Id), x.DisabledAtUtc, x.AutoSaveAudio,
+                    EntryCount = db.Entries.IgnoreQueryFilters().Count(e => e.TeamId == x.Id), x.DisabledAtUtc, x.StoreClips,
                     x.CombineSegmentDownloads,
                 })
                 .ToListAsync(cancellationToken);
@@ -276,7 +284,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 .GroupBy(x => x.TeamId)
                 .ToDictionary(x => x.Key, x => (IReadOnlyList<AdminRevokedChannelDto>)x.Select(r => r.Dto).OrderBy(r => r.DisplayName, StringComparer.OrdinalIgnoreCase).ToList());
             return teams.Select(x => new AdminTeamDto(x.Id, x.Name, x.CreatedAtUtc, x.OwnerUserId, x.OwnerUsername, x.MemberCount, x.EntryCount,
-                x.DisabledAtUtc, x.AutoSaveAudio, disk.GetValueOrDefault(x.Id), lastActive.GetValueOrDefault(x.Id),
+                x.DisabledAtUtc, x.StoreClips, disk.GetValueOrDefault(x.Id), lastActive.GetValueOrDefault(x.Id),
                 x.CombineSegmentDownloads, channels.GetValueOrDefault(x.Id) ?? [], revoked.GetValueOrDefault(x.Id) ?? [])).ToList();
         }
 
@@ -338,9 +346,44 @@ namespace TwitchDownloaderWeb.Endpoints
                 team.CombineSegmentDownloads = combine;
                 db.Audit(AuditActions.TeamFeaturesChanged, null,
                     $"\"{team.Name}\": joined segment downloads {(combine ? "on" : "off")} by {me.Username}", teamId: team.Id);
-                await db.SaveChangesAsync(cancellationToken);
             }
+            if (request.StoreClips is { } store && store != team.StoreClips)
+            {
+                // Only clips added or re-cut from now on follow it: stored files stay, references stay references
+                team.StoreClips = store;
+                db.Audit(AuditActions.TeamFeaturesChanged, null,
+                    $"\"{team.Name}\": stored clips {(store ? "on" : "off")} by {me.Username}", teamId: team.Id);
+            }
+            await db.SaveChangesAsync(cancellationToken);
             return Results.NoContent();
+        }
+
+        private static async Task<IResult> SetChannelAudio(int id, int channelId, ChannelAudioRequest request, StaffContext me, LibraryDbContext db,
+            Services.AudioRescue.AudioRescueService rescue, CancellationToken cancellationToken)
+        {
+            var channel = await db.Channels.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Id == channelId && x.TeamId == id, cancellationToken);
+            var team = await db.Teams.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+            if (channel is null || team is null)
+                return Results.Problem(detail: "Channel not found.", statusCode: StatusCodes.Status404NotFound);
+
+            var changes = new List<string>();
+            if (request.SaveAudio is { } save && save != channel.AllowSaveAudio)
+            {
+                channel.AllowSaveAudio = save;
+                changes.Add($"Save audio now {(save ? "allowed" : "not allowed")}");
+            }
+            if (request.AutoSaveAudio is { } auto && auto != channel.WatchMutedAudio)
+            {
+                channel.WatchMutedAudio = auto;
+                changes.Add($"automatic audio saving {(auto ? "on" : "off")}");
+            }
+            if (changes.Count > 0)
+            {
+                db.Audit(AuditActions.ChannelAudioChanged, null, $"{channel.DisplayName} on \"{team.Name}\": {string.Join(", ", changes)} by {me.Username}", teamId: team.Id);
+                await db.SaveChangesAsync(cancellationToken);
+                rescue.Wake();
+            }
+            return Results.Ok(AdminChannelDto.From(channel));
         }
 
         // ---------- team channels ----------

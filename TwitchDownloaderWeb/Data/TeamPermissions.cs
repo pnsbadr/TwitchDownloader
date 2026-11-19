@@ -23,9 +23,9 @@ namespace TwitchDownloaderWeb.Data
         DeleteRenders = 1L << 8,
         /// <summary>No longer used: the app Owner assigns a team's channels (2026-11-15). Kept so the bit isn't reused.</summary>
         ManageChannels = 1L << 9,
-        /// <summary>The Save audio now button.</summary>
+        /// <summary>The Save audio now button, on channels where the app Owner allows it (<see cref="SavedChannel.AllowSaveAudio"/>).</summary>
         SaveAudio = 1L << 10,
-        /// <summary>Turn the team's automatic audio saving on or off.</summary>
+        /// <summary>No longer used: the app Owner sets audio saving per channel (badrfly 2026-11-18). Kept so the bit isn't reused.</summary>
         ManageAudioSettings = 1L << 11,
         /// <summary>Make and revoke invite links.</summary>
         InviteMembers = 1L << 12,
@@ -49,7 +49,7 @@ namespace TwitchDownloaderWeb.Data
         All = (1L << 20) - 1,
 
         /// <summary>Any of these lets a member open the Team page.</summary>
-        TeamPage = InviteMembers | AssignRoles | ManageRoles | RemoveMembers | ResetPasswords | ViewActivity | ManageAudioSettings,
+        TeamPage = InviteMembers | AssignRoles | ManageRoles | RemoveMembers | ResetPasswords | ViewActivity,
     }
 
     public sealed record TeamPermissionInfo(string Key, string Group, string Label, string Description);
@@ -72,8 +72,7 @@ namespace TwitchDownloaderWeb.Data
                 "See and play other members' projects and vertical renders, view only. Without it members see only their own vertical edits.")),
             (TeamPermission.DownloadTeamVerticals, new("DownloadTeamVerticals", "Vertical", "Download teammates' vertical edits",
                 "Download and export other members' projects and vertical renders (includes seeing them). Re-editing or copying them also needs Edit anyone's entries, deleting them Delete anyone's entries.")),
-            (TeamPermission.SaveAudio, new("SaveAudio", "Channels and audio", "Save audio now", "Use the Save audio now button on VODs.")),
-            (TeamPermission.ManageAudioSettings, new("ManageAudioSettings", "Channels and audio", "Automatic audio saving", "Turn the team's automatic audio saving on or off.")),
+            (TeamPermission.SaveAudio, new("SaveAudio", "Channels and audio", "Save audio now", "Use the Save audio now button on VODs of channels where the app allows it.")),
             (TeamPermission.InviteMembers, new("InviteMembers", "Team", "Invite people", "Make and revoke invite links.")),
             (TeamPermission.AssignRoles, new("AssignRoles", "Team", "Give roles", "Give members roles (only roles with permissions they have themselves).")),
             (TeamPermission.ManageRoles, new("ManageRoles", "Team", "Edit roles", "Create, change and delete roles (only with permissions they have themselves).")),

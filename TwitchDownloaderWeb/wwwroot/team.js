@@ -298,21 +298,15 @@ $("invite-form").addEventListener("submit", async (event) => {
 async function loadSettings() {
   const settings = await api("GET", "/api/team/settings");
   $("settings-panel").hidden = false;
-  $("auto-save-audio").checked = settings.autoSaveAudio;
-  $("auto-save-audio").disabled = !has("ManageAudioSettings");
-  if (!settings.autoSaveAllowedByApp) $("auto-save-hint").textContent = "Automatic audio saving is turned off for the whole app right now.";
+  $("store-clips-info").textContent = settings.storeClips
+    ? `Clips of ${Math.round(settings.maxStoredClipSeconds / 60)} minutes or less are downloaded and kept as files.`
+    : "Clips are kept as references to the VOD, like segments; files are made when someone downloads or exports them.";
+  $("channel-audio").replaceChildren(...settings.channels.map((channel) => {
+    const what = channel.autoSaveAudio ? "audio saved automatically" : channel.saveAudio ? "Save audio now allowed" : "no audio saving";
+    return el("li", {}, el("strong", {}, channel.displayName), ` · ${what}`);
+  }));
+  if (!settings.autoSaveAllowedByApp) $("auto-save-hint").textContent = "Audio saving is turned off for the whole app right now.";
 }
-
-$("auto-save-audio").addEventListener("change", async () => {
-  const box = $("auto-save-audio");
-  try {
-    await api("PUT", "/api/team/settings", { autoSaveAudio: box.checked });
-    setMessage($("team-message"), `Automatic audio saving is ${box.checked ? "on" : "off"}.`, "ok");
-  } catch (error) {
-    box.checked = !box.checked;
-    setMessage($("team-message"), error.message, "error");
-  }
-});
 
 $("support-exit").addEventListener("click", async () => {
   await fetch("/api/admin/support", { method: "DELETE" });

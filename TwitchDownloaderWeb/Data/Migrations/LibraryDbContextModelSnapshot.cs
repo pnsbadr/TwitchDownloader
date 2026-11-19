@@ -866,6 +866,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<string>("AddedByUserId")
                         .HasColumnType("TEXT");
 
+                    b.Property<bool>("AllowSaveAudio")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("DisplayName")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -1092,6 +1095,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<int?>("OwnerUserId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("StoreClips")
                         .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
