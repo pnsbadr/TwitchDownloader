@@ -9,11 +9,12 @@ namespace TwitchDownloaderWeb.Services.Accounts
     /// </summary>
     public static class TeamLabels
     {
-        public static string Label(string teamName, IEnumerable<SavedChannel> channels)
-        {
-            var first = channels.OrderBy(x => x.AccessEndedAtUtc is null ? 0 : 1).ThenBy(x => x.AddedAtUtc).ThenBy(x => x.Id).FirstOrDefault();
-            return first is null ? teamName : $"{first.DisplayName} ({teamName})";
-        }
+        public static string Label(string teamName, IEnumerable<SavedChannel> channels) =>
+            Primary(channels) is { } first ? $"{first.DisplayName} ({teamName})" : teamName;
+
+        /// <summary>The channel a team is known by: its first one still assigned, else its first one.</summary>
+        public static SavedChannel? Primary(IEnumerable<SavedChannel> channels) =>
+            channels.OrderBy(x => x.AccessEndedAtUtc is null ? 0 : 1).ThenBy(x => x.AddedAtUtc).ThenBy(x => x.Id).FirstOrDefault();
 
         /// <summary>Labels of these teams (staff code: every team's channels).</summary>
         public static async Task<Dictionary<int, string>> GetAsync(LibraryDbContext db, IEnumerable<int> teamIds, CancellationToken cancellationToken)

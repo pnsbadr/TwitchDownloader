@@ -14,8 +14,14 @@ namespace TwitchDownloaderWeb.Endpoints
     {
         public const int MaxNoteLength = 200;
 
-        /// <summary>The token goes in the fragment (#), which browsers never send to the server or in Referer headers.</summary>
-        public static string Build(HttpRequest request, string token) => $"{request.Scheme}://{request.Host}/join.html#{token}";
+        /// <summary>
+        /// The token goes in the fragment (#), which browsers never send to the server or in Referer headers. Team users' links open the app
+        /// itself, which shows the link's form on its start screen (badrfly 2026-11-19); staff links open join.html, then the Admin page.
+        /// </summary>
+        public static string Build(HttpRequest request, AccountLink link, string token) =>
+            link.Kind is AccountLinkKind.StaffInvite or AccountLinkKind.StaffPasswordReset
+                ? $"{request.Scheme}://{request.Host}/join.html#{token}"
+                : $"{request.Scheme}://{request.Host}/#join={token}";
 
         public static (AccountLink Link, string Token) New(AccountLinkKind kind, int? teamId, string? note, DateTime now)
         {

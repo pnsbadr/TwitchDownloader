@@ -338,7 +338,7 @@ namespace TwitchDownloaderWeb.Endpoints
             db.AccountLinks.Add(link);
             db.Audit(AuditActions.PasswordResetLinkCreated, null, $"For {member.User.Username} by {team.Username}");
             await db.SaveChangesAsync(cancellationToken);
-            return Results.Created($"/api/team/members/{userId}/password-reset", LinkUrls.ToDto(link, null, LinkUrls.Build(httpRequest, token)));
+            return Results.Created($"/api/team/members/{userId}/password-reset", LinkUrls.ToDto(link, null, LinkUrls.Build(httpRequest, link, token)));
         }
 
         // ---------- invites ----------
@@ -364,7 +364,7 @@ namespace TwitchDownloaderWeb.Endpoints
 
             db.Audit(AuditActions.LinkCreated, null, $"Invite link {link.Id} for \"{team.TeamName}\"{(link.Note is null ? "" : $" ({link.Note})")}");
             await db.SaveChangesAsync(cancellationToken);
-            return Results.Created($"/api/team/invites/{link.Id}", LinkUrls.ToDto(link, null, LinkUrls.Build(httpRequest, token)));
+            return Results.Created($"/api/team/invites/{link.Id}", LinkUrls.ToDto(link, null, LinkUrls.Build(httpRequest, link, token)));
         }
 
         private static async Task<IResult> RevokeInvite(int id, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)

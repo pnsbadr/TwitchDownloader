@@ -13,191 +13,22 @@
 <body>
   <header class="topbar"><h1>Clipco</h1></header>
   <main class="narrow">
-    <section class="panel">
-      <h2 id="join-heading">Checking your link…</h2>
-      <p id="join-intro" class="muted"></p>
-      <p id="join-message" class="message" role="status"></p>
-
-      <div id="join-body" hidden>
-        <form id="join-form" class="stack" novalidate>
-          <div id="team-name-block" hidden>
-            <label for="team-name">Team name</label>
-            <div class="name-edit">
-              <input id="team-name" maxlength="100" placeholder="e.g. Arky's editors">
-              <button type="button" id="team-name-edit" class="link pencil" title="Change the team name" aria-label="Change the team name" hidden>✏️</button>
-            </div>
-            <p id="team-name-warning" class="tiny-text" hidden></p>
-          </div>
-
-          <div id="continue-as" hidden>
-            <p>Logged in as <strong id="continue-name"></strong>.</p>
-            <div class="row">
-              <button type="submit" id="continue-button">Continue as <span id="continue-name-2"></span></button>
-              <button type="button" id="other-account" class="link">Use another account</button>
-            </div>
-          </div>
-
-          <div id="account-fields" class="stack">
-            <div class="tz" role="group" aria-label="Account">
-              <button type="button" class="seg" data-mode="new" aria-pressed="true">Create an account</button>
-              <button type="button" class="seg" data-mode="existing" aria-pressed="false">I already have one</button>
-            </div>
-            <p id="mode-hint" class="muted small-text">One account works for every team you're in, so keep using the same one.</p>
-            <label>Username <input id="username" autocomplete="username" spellcheck="false" autocapitalize="off" maxlength="32"></label>
-            <label>Password <input id="password" type="password" autocomplete="new-password" maxlength="200"></label>
-            <label id="confirm-label">Repeat password <input id="password2" type="password" autocomplete="new-password" maxlength="200"></label>
-            <div class="row"><button type="submit" id="join-button">Create account</button></div>
-          </div>
-        </form>
-      </div>
-    </section>
+    <section class="panel" id="join-panel"></section>
   </main>
   <script src="reports.js"></script>
-  <script src="account.js"></script>
-  <script>
+  <script type="module">
+    import { mountJoinForm } from "./ui/join-form.js";
+
     // The token is in the fragment (#…), which the browser never sends to the server; it goes in request bodies only
     const token = location.hash.slice(1);
-    let link = null;
-    let mode = "new";
-    let useLoggedIn = false;
-
-    const isReset = () => link.kind === "PasswordReset" || link.kind === "StaffPasswordReset";
-
-    function render() {
-      const registration = link.kind === "TeamRegistration";
-      if (link.kind === "StaffInvite") {
-        // Always a new staff account: staff logins are separate from team accounts
-        useLoggedIn = false;
-        mode = "new";
-        document.querySelector(".tz[aria-label=Account]").hidden = true;
-        $("mode-hint").hidden = true;
-      }
-      if (isReset()) {
-        // Only a new password: the link already says whose account it is
-        useLoggedIn = false;
-        mode = "new";
-        document.querySelector(".tz[aria-label=Account]").hidden = true;
-        $("mode-hint").hidden = true;
-        $("username").closest("label").hidden = true;
-      }
-      // Links made since 2026-11-19 suggest a name after the team's channel, grayed out until the pencil is pressed; older ones let the
-      // opener type it
-      $("team-name-block").hidden = !registration;
-      $("continue-as").hidden = !useLoggedIn;
-      $("account-fields").hidden = useLoggedIn;
-      for (const button of document.querySelectorAll(".seg[data-mode]")) button.setAttribute("aria-pressed", String(button.dataset.mode === mode));
-      $("confirm-label").hidden = mode !== "new";
-      $("password").autocomplete = mode === "new" ? "new-password" : "current-password";
-      $("join-button").textContent = isReset() ? "Set new password" : mode === "new" ? "Create account" : "Log in and continue";
-      $("mode-hint").textContent = mode === "new"
-        ? "Already in another team? Use \"I already have one\": one account works for every team you're in."
-        : "Log in with the account you use for your other teams.";
-    }
-
-    async function load() {
-      if (!token) {
-        $("join-heading").textContent = "This link is incomplete";
-        setMessage($("join-message"), "Open the whole link you were sent.", "error");
-        return;
-      }
-      try {
-        link = await api("POST", "/api/links/inspect", { token });
-      } catch (error) {
-        $("join-heading").textContent = "This link doesn't work";
-        setMessage($("join-message"), error.message, "error");
-        return;
-      }
-      const texts = {
-        TeamRegistration: [link.teamName ? `Create ${link.teamName}` : "Create your team",
-          "You'll be the owner of the new team: you invite your editors and clippers and decide what each of them can do."
-          + (link.channels?.length ? ` The team works on ${link.channels.join(", ")}'s VODs.` : "")],
-        TeamOwnership: [`Become the owner of ${link.teamName}`, `You'll own ${link.teamName}: its library, members and invite links.`],
-        TeamInvite: [`Join ${link.teamName}`, "You'll start with no access; the team owner gives you a role after you join."],
-        PasswordReset: [`New password for ${link.forUsername}`, "Choose a new password. You'll be signed out everywhere else."],
-        StaffInvite: ["Become an app moderator", "This makes a staff account for the Admin page, separate from any team account. "
-          + "You start with no permissions; the app Owner picks them."],
-        StaffPasswordReset: [`New staff password for ${link.forUsername}`, "Choose a new password. You'll be signed out everywhere else."],
-      };
-      const [heading, intro] = texts[link.kind];
-      $("join-heading").textContent = heading;
-      $("join-intro").textContent = `${intro} This link works once and expires ${formatWhen(link.expiresAtUtc)}.`;
-      if (link.loggedInAs && !isReset() && link.kind !== "StaffInvite") {
-        useLoggedIn = true;
-        $("continue-name").textContent = link.loggedInAs;
-        $("continue-name-2").textContent = link.loggedInAs;
-      }
-      if (link.kind === "TeamRegistration" && link.teamName) setNameEditing(false);
-      $("join-body").hidden = false;
-      render();
-    }
-
-    // Picking another name here counts as the team's name change: the next one is only possible after teamRenameDays days
-    function setNameEditing(editing) {
-      const input = $("team-name");
-      input.readOnly = !editing;
-      $("team-name-edit").hidden = editing;
-      $("team-name-warning").hidden = !editing;
-      if (editing) {
-        $("team-name-warning").replaceChildren(
-          `You can change your team's name once every ${link.teamRenameDays} days. `,
-          Object.assign(document.createElement("button"), { type: "button", className: "link", textContent: "Cancel", onclick: () => setNameEditing(false) }));
-        input.focus();
-        input.select();
-      } else {
-        input.value = link.teamName;
-      }
-      showTeamHeading();
-    }
-
-    function showTeamHeading() {
-      if (link.kind !== "TeamRegistration") return;
-      const name = $("team-name").value.trim() || link.teamName;
-      $("join-heading").textContent = name ? `Create ${name}` : "Create your team";
-    }
-
-    $("team-name-edit").addEventListener("click", () => setNameEditing(true));
-    $("team-name").addEventListener("input", showTeamHeading);
-    $("team-name").addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && link?.teamName && !$("team-name").readOnly) { event.preventDefault(); setNameEditing(false); }
-    });
-
-    for (const button of document.querySelectorAll(".seg[data-mode]")) {
-      button.addEventListener("click", () => { mode = button.dataset.mode; render(); });
-    }
-    $("other-account").addEventListener("click", () => { useLoggedIn = false; render(); });
-
-    $("join-form").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const body = { token, newAccount: !useLoggedIn && mode === "new", teamName: $("team-name").value };
-      if (isReset()) {
-        body.newAccount = false;
-        body.password = $("password").value;
-        if (body.password !== $("password2").value) {
-          setMessage($("join-message"), "The passwords don't match.", "error");
-          return;
-        }
-      } else if (!useLoggedIn) {
-        body.username = $("username").value.trim();
-        body.password = $("password").value;
-        if (mode === "new" && body.password !== $("password2").value) {
-          setMessage($("join-message"), "The passwords don't match.", "error");
-          return;
-        }
-      }
-      for (const button of document.querySelectorAll("#join-form button[type=submit]")) button.disabled = true;
-      setMessage($("join-message"), "Working…");
-      try {
-        const result = await api("POST", "/api/links/accept", body);
-        // Drop the token from the address bar and history before leaving
-        history.replaceState(null, "", "/join.html");
+    // Team users' links open the app's start screen since 2026-11-19 (/#join=…); older ones sent as /join.html#… go there too
+    const link = await mountJoinForm(document.getElementById("join-panel"), token, {
+      onDone: (result) => {
+        history.replaceState(null, "", "/join.html"); // drop the token from the address bar and history before leaving
         location.href = result?.staff ? "/admin.html" : "/";
-      } catch (error) {
-        setMessage($("join-message"), error.message, "error");
-        for (const button of document.querySelectorAll("#join-form button[type=submit]")) button.disabled = false;
-      }
+      },
     });
-
-    load();
+    if (link && link.kind !== "StaffInvite" && link.kind !== "StaffPasswordReset") location.replace(`/#join=${token}`);
   </script>
 </body>
 </html>

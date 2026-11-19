@@ -3,7 +3,8 @@
 // cards (nothing is sent to the server).
 
 import { registerIconLibrary } from "https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.20.1/cdn/utilities/icon-library.js";
-import { $, el, api, me, can, loadMe, startLiveEvents, sessionHandlers, TEAM_PAGE_PERMISSIONS, wireIconButtons, loadSetting, saveSetting, toast, formatDuration } from "./core.js";
+import { setUpStart, openStart, startIsOpen } from "./start.js";
+import { $, el, api, me, can, loadMe, startLiveEvents, sessionHandlers, wireIconButtons, loadSetting, saveSetting, toast, formatDuration } from "./core.js";
 import { dropTarget, watchDrags, shadePath } from "./drag.js";
 import { setUpLibrary, showList, refreshClips, refreshVideos, refreshLibraryFilters, knownVod, knownVodTitle } from "./library.js";
 import { setUpTree, openTree, forgetTree, render as renderTree } from "./p2-tree.js";
@@ -56,7 +57,6 @@ function renderTopbar() {
   const name = me.support ? me.support.staffUsername : me.username;
   $("avatar").textContent = (name || "?").slice(0, 1).toUpperCase();
   $("account-name").textContent = me.support ? `Staff: ${name}` : name;
-  $("menu-team").hidden = !TEAM_PAGE_PERMISSIONS.some(can);
 
   if (me.support) {
     $("support-team").textContent = me.support.teamName;
@@ -67,37 +67,24 @@ function renderTopbar() {
     return;
   }
 
+  // The pill brings back the start screen, where the member switches teams (badrfly 2026-11-19)
   const current = me.teams.find((team) => team.id === me.currentTeamId);
-  if (me.teams.length < 2) {
-    $("team-pill-slot").replaceChildren(el("span", { class: "team-pill" }, current?.name ?? "No team"));
-    return;
-  }
-  // Two or more teams: the pill is the team switcher
-  const menu = el("sl-menu", {}, ...me.teams.map((team) =>
-    el("sl-menu-item", { type: "checkbox", value: String(team.id), checked: team.id === me.currentTeamId }, team.name)));
-  menu.addEventListener("sl-select", async (event) => {
-    const teamId = Number(event.detail.item.value);
-    if (teamId === me.currentTeamId) return;
-    await api("POST", "/api/auth/team", { teamId });
-    location.reload();
-  });
-  const trigger = el("button", { slot: "trigger", type: "button", class: "team-pill", "aria-label": "Switch team" },
-    current?.name ?? "Pick a team", el("sl-icon", { library: "ph", name: "caret-down" }));
-  $("team-pill-slot").replaceChildren(el("sl-dropdown", { placement: "bottom-end", distance: "6", hoist: true }, trigger, menu));
+  $("team-pill-slot").replaceChildren(el("button", { type: "button", class: "team-pill", "aria-label": "Your teams", title: "Your teams",
+    onclick: () => openStart({ entered: true }) }, current?.name ?? "Pick a team", el("sl-icon", { library: "ph", name: "caret-down" })));
 }
 
-$("account-items").addEventListener("sl-select", async (event) => {
-  switch (event.detail.item.value) {
+// The profile menu: who's logged in, Account settings, Report a problem, Log out (badrfly 2026-11-19); the start screen has the same
+async function accountAction(value) {
+  switch (value) {
     case "account": location.href = "/account.html"; break;
-    case "team": location.href = "/team.html"; break;
-    case "shortcuts": showShortcuts(); break;
     case "report": window.clipcoReports?.openBugDialog(); break;
     case "logout":
       await fetch("/api/auth/logout", { method: "POST" });
-      location.href = "/login.html";
+      location.href = "/";
       break;
   }
-});
+}
+$("account-items").addEventListener("sl-select", (event) => accountAction(event.detail.item.value));
 $("support-exit").addEventListener("click", exitSupport);
 $("shortcuts-button").addEventListener("click", showShortcuts);
 
@@ -1837,12 +1824,35 @@ function wireDemoTools() {
 
 // ---------- start ----------
 
+// The app opens on the start screen over the empty editor (badrfly 2026-11-19: nothing loaded behind it): log in, a link's form, or
+// the member's teams. Picking a team runs enterTeam. Staff in a support view go straight in; so does a reload right after switching teams.
 async function start() {
+  $("workspace").hidden = false;
+  wireIconButtons();
+  setUpLayout();
+  setUpStart({ onEnter: enterTeam, onAccount: accountAction });
+  // The session ended while working (logged out elsewhere, password changed, account disabled): start over on the login form
+  sessionHandlers.loggedOut = () => { if (me && !startIsOpen()) location.href = "/"; };
   try {
     await loadMe();
   } catch {
-    return; // 401 already went to the login page
+    // Logged out: the start screen shows the login form
   }
+  let enterNow = null;
+  try {
+    enterNow = sessionStorage.getItem("clipco.start.enter");
+    sessionStorage.removeItem("clipco.start.enter");
+  } catch {
+    // Storage blocked: show the start screen
+  }
+  if (me && (me.support || DEMO || (enterNow && Number(enterNow) === me.currentTeamId && !location.hash.startsWith("#join=")))) {
+    await enterTeam();
+    return;
+  }
+  openStart();
+}
+
+async function enterTeam() {
   renderTopbar();
   if (!me.currentTeamId && !me.support) {
     showGate("You aren't in a team yet. Ask a team owner for an invite link.", "No team yet");
@@ -1854,13 +1864,11 @@ async function start() {
     return;
   }
   if (!can("ViewLibrary")) {
-    showGate(`Your role in ${teamName} doesn't include the library. Open the Team page from the account menu.`, "Team tools only");
+    showGate(`Your role in ${teamName} doesn't include the library. Open the Team page from your teams (the team's name at the top).`, "Team tools only");
     return;
   }
 
   $("workspace").hidden = false;
-  wireIconButtons();
-  setUpLayout();
   setUpExport({ demo: DEMO, otherPlayers: () => [player1, player2], onPausePlayers: () => playback?.pause() });
   screenTabs = tabs(document.querySelector(".main-tabs"), "data-view", showScreen, "clipco.editor.screen");
   setUpLibrary({ onLoad: load, onExport: openExport, onPickList: (list) => listTabs.pick(list), sample: DEMO ? demoSample() : null });

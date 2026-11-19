@@ -758,7 +758,7 @@ namespace TwitchDownloaderWeb.Endpoints
             db.AccountLinks.Add(link);
             db.Audit(AuditActions.PasswordResetLinkCreated, null, $"For {user.Username} by staff {me.Username}");
             await db.SaveChangesAsync(cancellationToken);
-            return Results.Created($"/api/admin/users/{id}/password-reset", LinkUrls.ToDto(link, null, LinkUrls.Build(httpRequest, token)));
+            return Results.Created($"/api/admin/users/{id}/password-reset", LinkUrls.ToDto(link, null, LinkUrls.Build(httpRequest, link, token)));
         }
 
         // ---------- links ----------
@@ -850,7 +850,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 $"{kind} link {link.Id}{(team is null ? "" : $" for \"{team.Name}\"")}{(teamName is null ? "" : $" for new team \"{teamName}\"")}{(link.Note is null ? "" : $" ({link.Note})")}"
                 + (channels.Count == 0 ? "" : $", channels: {string.Join(", ", channels.Select(x => x.Login))}"), teamId: team?.Id);
             await db.SaveChangesAsync(cancellationToken);
-            return Results.Created($"/api/admin/links/{link.Id}", LinkUrls.ToDto(link, null, LinkUrls.Build(context.Request, token)));
+            return Results.Created($"/api/admin/links/{link.Id}", LinkUrls.ToDto(link, null, LinkUrls.Build(context.Request, link, token)));
         }
 
         private static async Task<IResult> RevokeLink(int id, StaffContext me, LibraryDbContext db, CancellationToken cancellationToken)
@@ -945,7 +945,7 @@ namespace TwitchDownloaderWeb.Endpoints
 
             db.Audit(AuditActions.LinkCreated, null, $"Moderator invite link {link.Id}{(link.Note is null ? "" : $" ({link.Note})")}");
             await db.SaveChangesAsync(cancellationToken);
-            return Results.Created($"/api/admin/links/{link.Id}", LinkUrls.ToDto(link, null, LinkUrls.Build(httpRequest, token)));
+            return Results.Created($"/api/admin/links/{link.Id}", LinkUrls.ToDto(link, null, LinkUrls.Build(httpRequest, link, token)));
         }
 
         private static async Task<(StaffAccount? Staff, IResult? Error)> LoadModeratorAsync(int id, LibraryDbContext db, CancellationToken cancellationToken)
@@ -1011,7 +1011,7 @@ namespace TwitchDownloaderWeb.Endpoints
             db.AccountLinks.Add(link);
             db.Audit(AuditActions.StaffPasswordResetLinkCreated, null, $"For {staff.Username} by {me.Username}");
             await db.SaveChangesAsync(cancellationToken);
-            return Results.Created($"/api/admin/staff/{id}/password-reset", LinkUrls.ToDto(link, null, LinkUrls.Build(httpRequest, token)));
+            return Results.Created($"/api/admin/staff/{id}/password-reset", LinkUrls.ToDto(link, null, LinkUrls.Build(httpRequest, link, token)));
         }
 
         public static Task SignInAsync(HttpContext context, StaffAccount staff) =>

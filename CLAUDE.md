@@ -329,8 +329,9 @@ Plan and badrfly's decisions: Claude Doc "Logins, teams and permissions plan". B
   A team can only reset members who are in no other team (the account is shared; staff handle the rest, step 3).
 - **One-time links** (`AccountLinks`): `TeamRegistration` (staff; new team, opener = owner), `TeamOwnership` (staff; opener becomes owner of
   an existing team: claiming "Main team", hand-over, recovery), `TeamInvite` (team owner). 7 days, revocable, claimed with a conditional
-  update so they can't be used twice. Only the token's SHA-256 is stored; the token is in the URL **fragment** (`/join.html#token`) and
-  sent in request bodies only, so it never reaches server logs. Opening a link while logged in offers "Continue as …".
+  update so they can't be used twice. Only the token's SHA-256 is stored; the token is in the URL **fragment** and sent in request bodies
+  only, so it never reaches server logs. Team users' links are `/#join=token` (the start screen shows the form; `LinkUrls.Build`), staff
+  links `/join.html#token`; older team links sent as `/join.html#…` forward to `/#join=…`. Opening a link while logged in offers "Continue as …".
 - **Owner setup**: `admin.html` while no staff account exists, only from loopback without `X-Forwarded-For` (open the page as
   `http://localhost:5254/admin.html` on the machine running the app). Set it up before exposing the app.
 - The accounts migration put all existing entries/channels/entry audit events in team 1 **"Main team"** with no owner; the Owner makes an
@@ -459,6 +460,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/entries/{id}/shortform/{renderId}/file[?inline=true]` / `.../thumbnail` / `DELETE .../{renderId}` | A render's mp4 (`<title> (vertical).mp4`, audited `file.served`; `inline` = the page's preview player, not audited), its jpg thumbnail, delete it. 404 if gone/expired |
 | `GET /api/vods/{id}/play.m3u8[?segments=proxy]` / `.../play/{n}.m3u8` / `.../play/{n}/{segment}` | HLS for the page's player (see Watching VODs), plus `.../play/{n}/clean/{key}.ts` (muted segment with saved audio swapped in). 403 sub-only, 404 gone, 502 Twitch unreachable. Playlists `no-store` |
 | `POST /api/auth/login` / `logout` / `GET /api/auth/me` / `POST /api/auth/team` `{ teamId }` | Team user session; `me` = `{ id, username, teams: [{ id, name, isOwner }], currentTeamId, permissions, timeZone, support, combineSegmentDownloads, maxStoredClipSeconds }` |
+| `GET /api/auth/teams` / `GET /api/auth/teams/{id}/channel` / `GET /api/auth/app` | Start screen: the member's team cards `[{ id, name, isOwner, isCurrent, hasAccess, canOpenTeamPage, channel: { login, displayName }, teamLastActiveUtc, myLastActiveUtc }]`; one card's channel from Twitch `{ profileImageUrl, live, liveSinceUtc, lastLiveUtc }` (members only, else 404); app name and corner links (no login) |
 | `POST /api/links/inspect` `{ token }` / `POST /api/links/accept` `{ token, newAccount, username?, password?, teamName? }` | One-time links (see Accounts). Blank username with a session = join as the logged-in user |
 | `GET /api/team` / `DELETE /api/team/members/{userId}` / `PUT /api/team/members/{userId}/role` `{ roleId }` / `POST /api/team/members/{userId}/password-reset` | Team page: members, roles, permission catalog, `myPermissions`, `canRename` / `nextRenameAtUtc` / `renameDays`. `PUT /api/team/name` `{ name }` (team owner, once every 14 days) |
 | `POST /api/team/roles` `{ name, permissions: [keys] }` / `PUT,DELETE /api/team/roles/{id}` | Roles (guard rails above) |
@@ -501,9 +503,22 @@ The old library page (`app.js`, `player-bar.js`, `app.css`) was removed in front
   and where they work; badrfly 2026-11-10). Check it before adding a shortcut and add the new one there first: the page logs a console error
   when two bindings in one scope share a key, and the **shortcuts help** (`ui/shortcuts.js`: `?`, the keyboard icon in the top bar, or the
   account menu) is built from it, so mouse bindings and keys handled elsewhere are listed too.
-- Account pages (`login.html`, `join.html`, `account.html`, `team.html` + `team.js`, `admin.html` + `admin.js`, helpers in `account.js`) are
+- **Start screen** (`ui/start.js` + `ui/start.css`, badrfly 2026-11-19): the app opens on it, over the editor with the lights off and
+  **nothing loaded** (the editor's lists, players and timeline are only set up once a team is picked: `enterTeam` in `ui/editor.js`). Top:
+  app name (`GET /api/auth/app`: `App:Name`), clock (user's time zone), profile button; bottom: username left, X / Discord icons right
+  (`App:Links:X` / `App:Links:Discord`, hidden when blank). The card holds the **login form** (logged out; `login.html` only redirects to
+  `/`), a **link's form** (`/#join=token`, `ui/join-form.js`, shared with `join.html`) or the member's **team cards** (`GET /api/auth/teams`:
+  the team's channel (`TeamLabels.Primary`), team name, "Team …" = the last change any member made to its work, "You …" = the member's own
+  (audited work changes in `AuthEndpoints.WorkChanges` + Player 2 saves), "Waiting for access", a Team page button when allowed), in a
+  carousel (< >, arrow keys). Each card's channel picture and **live / last live** come separately (`GET /api/auth/teams/{id}/channel`,
+  `IChannelCardSource` = `ChannelCardService`: Twitch picture, the live watcher's state, else the newest broadcast VOD (recording = live; its
+  end = last live), cached 5 min); a live channel's picture has a blinking red ring. Picking a team opens the editor on it; the editor's team
+  pill brings the screen back (Esc closes it; picking another team reloads straight into it via `sessionStorage` `clipco.start.enter`).
+  Staff support views skip it. The **profile menu** (both) only has the username, Account settings, Report a problem and Log out
+  (keyboard shortcuts stay on the top bar's icon and `?`; the Team page is on the team cards). A 401 while working goes back to `/`.
+- Account pages (`login.html` (redirect), `join.html`, `account.html`, `team.html` + `team.js`, `admin.html` + `admin.js`, helpers in `account.js`) are
   plain HTML forms (no Shoelace) styled by `ui/theme.css` + `ui/pages.css` (same gray theme and fonts as the editor; back arrow to the editor).
-  Not logged in → `login.html`; after login → `/`. `team.html` = members/roles/activity/log/invites/audio setting (`ACTION_LABELS` in team.js
+  Not logged in → `/` (the start screen's login form). `team.html` = members/roles/activity/log/invites/audio setting (`ACTION_LABELS` in team.js
   names audit actions; add new team-visible ones there), `join.html` = opening any link (staff links go to `admin.html` after),
   `admin.html` = staff (tabs Teams/Users/Links/Moderators/Twitch/Reports/App log, shown by permission; tab saved in `localStorage` key `clipAdmin.tab`).
   Pages hide buttons the user's permissions (`me.permissions`) don't allow.

@@ -51,7 +51,7 @@
       try {
         me = await api("GET", "/api/auth/me");
       } catch (error) {
-        if (error.status === 401) location.href = "/login.html";
+        if (error.status === 401) location.href = "/";
         else setMessage($("account-message"), error.message, "error");
         return;
       }

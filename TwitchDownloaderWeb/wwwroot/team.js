@@ -37,7 +37,7 @@ async function load() {
   try {
     team = await api("GET", "/api/team");
   } catch (error) {
-    if (error.status === 401) { location.href = "/login.html"; return; }
+    if (error.status === 401) { location.href = "/"; return; }
     setMessage($("team-message"), error.message, "error");
     return;
   }
