@@ -71,7 +71,6 @@ async function start() {
   if (!tabs.length) return;
 
   $("registration-block").hidden = !can("ManageTeamLinks");
-  $("registration-channels-label").hidden = !can("ManageTeamChannels");
   $("tabs").replaceChildren(...tabs.map((tab) => el("button", { type: "button", class: "seg", "data-tab": tab.id, onclick: () => openTab(tab) }, tab.label)));
   $("tabs").hidden = false;
 
@@ -212,9 +211,10 @@ function toggleTeamChannels(team, details) {
   if (!details.hidden && details.dataset.view === "channels") { details.hidden = true; return; }
   details.hidden = false;
   details.dataset.view = "channels";
+  // Giving a team more channels is the Owner's alone (badrfly 2026-11-19)
   const input = el("input", { maxlength: "100", placeholder: "Twitch name or link" });
-  const add = el("form", { class: "row", novalidate: "" },
-    el("label", { class: "grow" }, "Add a channel", input),
+  const add = el("form", { class: "row", novalidate: "", hidden: staffMe.isOwner ? null : "" },
+    el("label", { class: "grow" }, "Give the team another channel", input),
     el("button", { type: "submit" }, "Add"));
   add.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -247,8 +247,8 @@ function toggleTeamChannels(team, details) {
     el("div", { class: "row admin-actions" },
       ...audioSwitches(team, channel, run),
       channel.accessEndedAtUtc
-        ? el("button", { type: "button", class: "link small", onclick: () => run("POST", `/api/admin/teams/${team.id}/channels`, { login: channel.login }) },
-          "Assign again")
+        ? (staffMe.isOwner ? el("button", { type: "button", class: "link small", onclick: () => run("POST", `/api/admin/teams/${team.id}/channels`, { login: channel.login }) },
+          "Assign again") : null)
         : remove(channel, "future", "Stop new VODs", "The team keeps the VODs it already has clips or markers on, and loses the rest.", false),
       remove(channel, "revoke", "Revoke now", "The team loses every VOD of this channel at once, and its work on them is hidden until you assign it again.", true)))));
   if (!team.channels.length) list.append(el("li", { class: "muted" }, "No channels yet."));
@@ -259,8 +259,8 @@ function toggleTeamChannels(team, details) {
         el("span", { class: "muted small-text" }, ` ${channel.login} · revoked ${formatWhen(channel.revokedAtUtc)}`
           + ` · work on ${channel.hiddenVods} VOD${channel.hiddenVods === 1 ? "" : "s"} hidden`)),
       el("div", { class: "row admin-actions" },
-        el("button", { type: "button", class: "link small", title: "Opens its VODs and brings the hidden work back",
-          onclick: () => run("POST", `/api/admin/teams/${team.id}/channels`, { login: channel.login }) }, "Assign again"))));
+        staffMe.isOwner ? el("button", { type: "button", class: "link small", title: "Opens its VODs and brings the hidden work back",
+          onclick: () => run("POST", `/api/admin/teams/${team.id}/channels`, { login: channel.login }) }, "Assign again") : null)));
   }
   details.replaceChildren(
     el("p", { class: "muted small-text" }, "Members only see and work on these channels' VODs. \"Stop new VODs\" keeps the VODs the team "
@@ -268,7 +268,7 @@ function toggleTeamChannels(team, details) {
       + "the channel again)."
       + (staffMe.isOwner ? " Audio saving is yours to decide per channel: \"Save audio now\" allows the button, \"Save automatically\" saves every stream." : "")),
     list, add);
-  input.focus();
+  if (staffMe.isOwner) input.focus();
 }
 
 // Audio saving per channel: only the app Owner decides (badrfly 2026-11-18)
@@ -462,13 +462,30 @@ async function revoke(link) {
   }
 }
 
+// A new team is locked to one channel and named after it by default ("Arky's Team"; badrfly 2026-11-19)
+function channelFromInput(text) {
+  const value = text.trim().replace(/^(https?:\/\/)?(www\.|m\.)?twitch\.tv\//i, "").split(/[/?#\s]/)[0];
+  return /^[A-Za-z0-9_]{1,25}$/.test(value) ? value : "";
+}
+
+function renderRegistrationForm() {
+  const channel = channelFromInput($("registration-channel").value);
+  $("registration-submit").disabled = !channel;
+  // Twitch's own capitalization is used when the link is made; this is only the preview
+  $("registration-team-name").placeholder = channel ? (/s$/i.test(channel) ? `${channel}' Team` : `${channel}'s Team`) : "Channel's Team";
+}
+
+$("registration-channel").addEventListener("input", renderRegistrationForm);
+
 $("registration-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
-    const channels = $("registration-channels").value.split(/[,\s]+/).filter(Boolean);
-    const link = await api("POST", "/api/admin/links", { kind: "registration", note: $("registration-note").value, channels });
-    $("registration-note").value = "";
-    $("registration-channels").value = "";
+    const link = await api("POST", "/api/admin/links", {
+      kind: "registration", channel: $("registration-channel").value.trim(), teamName: $("registration-team-name").value.trim(),
+      note: $("registration-note").value,
+    });
+    $("registration-form").reset();
+    renderRegistrationForm();
     $("link-new").replaceChildren(linkBox(link.url));
     loadLinks();
   } catch (error) {

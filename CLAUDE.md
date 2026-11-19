@@ -250,9 +250,13 @@ Plan and badrfly's decisions: Claude Doc "Logins, teams and permissions plan". B
 - **One account, many teams**: `TeamMembers` (unique TeamId+UserId). The page's team switcher sets the `clipco.team` cookie
   (`POST /api/auth/team`); without it the first team joined is used.
 - **Team channels** (badrfly, 2026-11-15, for the frontend rework): members can no longer add channels, VOD links or Twitch clip links.
-  The app Owner (or a moderator with `StaffPermission.ManageTeamChannels`) assigns each team its Twitch channels on team registration/owner
-  links (`AccountLinks.ChannelsJson`, checked on Twitch when the link is made, added when it's used) and on the Admin page's Teams tab
-  (`/api/admin/teams/{id}/channels`, audited `channel.added`/`channel.removed`). `TeamChannelAccess` decides which VODs a team may open,
+  **A new team is locked to one channel** (badrfly 2026-11-19): a team registration link needs exactly one Twitch channel (`channel`,
+  checked on Twitch when the link is made, 400 when blank or more than one; stored in `AccountLinks.ChannelsJson`, added when it's used)
+  and names the team after it: `teamName` blank = "{display name}'s Team" (`AdminEndpoints.DefaultTeamName`), stored in
+  `AccountLinks.TeamName`, and the person opening it can't change it (older links without one still take the typed name). Owner links
+  carry no channels (400). **Only the app Owner gives a team more channels**, on the Admin page's Teams tab (`POST /api/admin/teams/{id}/channels`,
+  `RequireStaffOwner`, also "Assign again"); `StaffPermission.ManageTeamChannels` ("Remove team channels") only takes them away.
+  Audited `channel.added`/`channel.removed`. `TeamChannelAccess` decides which VODs a team may open,
   **strictly**: the VOD's channel (GQL owner, cached 12 h; matched by Twitch user ID, then login) must be assigned; work already on a VOD
   doesn't open it. Exception (badrfly 2026-11-16): a VOD **Twitch no longer has** stays open when the team's entries/videos on it name one of
   its assigned channels (`ChannelName`, login or display name), so stored clips stay exportable after the VOD is deleted (an export
@@ -476,7 +480,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/exports` / `GET .../{id}` / `.../{id}/items/{position}/file` / `DELETE .../{id}` | The caller's exports; a file (`<fileName>.mp4`, `(vertical).mp4`, a video's `.zip`; audited `file.served`). Delete own (`GenerateFiles`) or anyone's (`DeleteAnyEntries`) |
 | `PUT /api/admin/teams/{id}/features` `{ combineSegmentDownloads?, storeClips? }` | App Owner only: per-team features (joined segments, stored clips) |
 | `PUT /api/admin/teams/{id}/channels/{channelId}/audio` `{ saveAudio?, autoSaveAudio? }` | App Owner only: audio saving per team channel |
-| `GET,POST /api/admin/teams/{id}/channels` `{ login }` / `DELETE .../channels/{channelId}?mode=revoke\|future` | A team's channels (`accessEndedAtUtc` set = existing work only) (`ManageTeamChannels`; GET also `ViewTeamsAndUsers`). POST checks Twitch (404) and duplicates (409). Team links take `channels: [logins]` too; `GET /api/admin/teams` lists each team's `channels` |
+| `GET,POST /api/admin/teams/{id}/channels` `{ login }` / `DELETE .../channels/{channelId}?mode=revoke\|future` | A team's channels (`accessEndedAtUtc` set = existing work only). POST = Owner only; DELETE `ManageTeamChannels`; GET also `ViewTeamsAndUsers`. POST checks Twitch (404) and duplicates (409). Registration links take `channel` (required, one) and `teamName`; `GET /api/admin/teams` lists each team's `channels` |
 | `POST /api/auth/reports` `{ kind: error\|bug, message?, errorType?, details?, note?, url?, context?, vodId?, entryId?, visitId? }` | A page's crash or a bug report (201 `{ id }`; see `ErrorReports`). No login needed; rate limited |
 | `GET /api/admin/reports?kind=&userId=&teamId=&staffId=&area=&errorType=&browser=&os=&appVersion=&vodId=&fingerprint=&search=&from=&to=&sort=time\|user\|team\|kind\|area\|type\|browser\|os\|version&order=&offset=&limit=` / `GET .../groups` (same filters; sort `count\|people\|last\|first`) / `GET .../{id}` / `GET .../download?format=csv\|json` (+ filters, ≤ 20 000) / `DELETE .../{id}` / `DELETE /api/admin/reports?` (+ filters) | Reports tab (`ViewErrorReports`). `userId=0` / `teamId=0` = none; `errorType=-` = none. List = `{ total, items, facets: { kinds, users, teams, areas, errorTypes, browsers, systems, appVersions } }` (facets: `{ value, label, count }` over the time range only); one report adds `details`, `context`, `userAgent` |
 | `GET /api/live/events` | Live stream updates (server-sent events; see Live stream updates) |

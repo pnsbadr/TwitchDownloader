@@ -73,7 +73,8 @@
         $("mode-hint").hidden = true;
         $("username").closest("label").hidden = true;
       }
-      $("team-name-label").hidden = !registration;
+      // Links made since 2026-11-19 already name the team (after its channel); older ones let the opener type it
+      $("team-name-label").hidden = !registration || Boolean(link.teamName);
       $("continue-as").hidden = !useLoggedIn;
       $("account-fields").hidden = useLoggedIn;
       for (const button of document.querySelectorAll(".seg[data-mode]")) button.setAttribute("aria-pressed", String(button.dataset.mode === mode));
@@ -99,7 +100,9 @@
         return;
       }
       const texts = {
-        TeamRegistration: ["Create your team", "You'll be the owner of the new team: you invite your editors and clippers and decide what each of them can do."],
+        TeamRegistration: [link.teamName ? `Create ${link.teamName}` : "Create your team",
+          "You'll be the owner of the new team: you invite your editors and clippers and decide what each of them can do."
+          + (link.channels?.length ? ` The team works on ${link.channels.join(", ")}'s VODs.` : "")],
         TeamOwnership: [`Become the owner of ${link.teamName}`, `You'll own ${link.teamName}: its library, members and invite links.`],
         TeamInvite: [`Join ${link.teamName}`, "You'll start with no access; the team owner gives you a role after you join."],
         PasswordReset: [`New password for ${link.forUsername}`, "Choose a new password. You'll be signed out everywhere else."],
