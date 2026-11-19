@@ -631,7 +631,7 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   fold to 16 px lines (the row is 64 px; `rowGeom()` in both timelines) and the timeline shrinks to its rows (`--focus-lower-h`, measured
   only when the rows' height or the screen changes, so nothing jumps). Rows can't be edited then (`setUpRowFocus`): a click on an item or
   piece moves the playhead to **its start**, a click elsewhere or a ruler/playhead drag to that exact time; the zoom slider, Fit, and the
-  Pointer / Zoom / Hand tools and moment marker (M) stay enabled, other tools are grayed out, only playback/zoom/those keys work
+  Pointer / Zoom / Hand tools and moment marker (M) stay enabled, other tools and the footer's row buttons are grayed out, only playback/zoom/those keys work
   (`FOCUS_KEYS`), drops are refused. Stop button, Esc, a click in the dark, another tab/screen, the vertical editor or the row going away
   ends it (the player pauses where it is). Clicking a folded row's head plays that one.
 - **Library filters** (`ui/library.js`): CLIPS and VIDEOS filter by VOD and member (Made by / Edited by: made an edit of it), shared between the
