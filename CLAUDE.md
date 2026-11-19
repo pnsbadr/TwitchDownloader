@@ -516,8 +516,8 @@ The old library page (`app.js`, `player-bar.js`, `app.css`) was removed in front
   `IChannelCardSource` = `ChannelCardService`: Twitch picture, the live watcher's state, else the newest broadcast VOD (recording = live; its
   end = last live), cached 5 min); a live channel's picture has a blinking red ring. Picking a team opens the editor on it; the editor's team
   pill brings the screen back (Esc closes it; picking another team reloads straight into it via `sessionStorage` `clipco.start.enter`).
-  Staff support views skip it. The **profile menu** (both) only has the username, Account settings, Report a problem and Log out
-  (keyboard shortcuts stay on the top bar's icon and `?`; the Team page is on the team cards). A 401 while working goes back to `/`.
+  Staff support views skip it. The start screen's **profile menu** only has the username, Account settings, Report a problem and Log out
+  (the Team page is on the team cards); the editor's account menu keeps Team page and Keyboard shortcuts too. A 401 while working goes back to `/`.
 - Account pages (`login.html` (redirect), `join.html`, `account.html`, `team.html` + `team.js`, `admin.html` + `admin.js`, helpers in `account.js`) are
   plain HTML forms (no Shoelace) styled by `ui/theme.css` + `ui/pages.css` (same gray theme and fonts as the editor; back arrow to the editor).
   Not logged in → `/` (the start screen's login form). `team.html` = members/roles/activity/log/invites/audio setting (`ACTION_LABELS` in team.js
