@@ -4,7 +4,7 @@
 
 import { registerIconLibrary } from "https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.20.1/cdn/utilities/icon-library.js";
 import { setUpStart, openStart, startIsOpen } from "./start.js";
-import { $, el, api, me, can, loadMe, startLiveEvents, sessionHandlers, wireIconButtons, loadSetting, saveSetting, toast, formatDuration } from "./core.js";
+import { $, el, api, me, can, loadMe, startLiveEvents, sessionHandlers, TEAM_PAGE_PERMISSIONS, wireIconButtons, loadSetting, saveSetting, toast, formatDuration } from "./core.js";
 import { dropTarget, watchDrags, shadePath } from "./drag.js";
 import { setUpLibrary, showList, refreshClips, refreshVideos, refreshLibraryFilters, knownVod, knownVodTitle } from "./library.js";
 import { setUpTree, openTree, forgetTree, render as renderTree } from "./p2-tree.js";
@@ -57,6 +57,8 @@ function renderTopbar() {
   const name = me.support ? me.support.staffUsername : me.username;
   $("avatar").textContent = (name || "?").slice(0, 1).toUpperCase();
   $("account-name").textContent = me.support ? `Staff: ${name}` : name;
+  // The editor's menu keeps the Team page and shortcuts; the start screen's own menu is the short one (badrfly 2026-11-19)
+  $("menu-team").hidden = !TEAM_PAGE_PERMISSIONS.some(can);
 
   if (me.support) {
     $("support-team").textContent = me.support.teamName;
@@ -77,6 +79,8 @@ function renderTopbar() {
 async function accountAction(value) {
   switch (value) {
     case "account": location.href = "/account.html"; break;
+    case "team": location.href = "/team.html"; break;
+    case "shortcuts": showShortcuts(); break;
     case "report": window.clipcoReports?.openBugDialog(); break;
     case "logout":
       await fetch("/api/auth/logout", { method: "POST" });
@@ -1864,7 +1868,7 @@ async function enterTeam() {
     return;
   }
   if (!can("ViewLibrary")) {
-    showGate(`Your role in ${teamName} doesn't include the library. Open the Team page from your teams (the team's name at the top).`, "Team tools only");
+    showGate(`Your role in ${teamName} doesn't include the library. Open the Team page from the account menu.`, "Team tools only");
     return;
   }
 
