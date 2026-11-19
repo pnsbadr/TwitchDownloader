@@ -5,6 +5,11 @@
 // with work on it (badrfly 2026-11-17: "the VOD is the project") shows what's on it (GET /api/vods/work). Clips are the team's library
 // entries (GET /api/entries); videos are segments linked on one row (GET /api/videos). Both filter by VOD and by member: made by, or
 // edited by (made an edit of it in Player 2).
+//
+// The channel bar (badrfly 2026-11-19, option C of the "Channel bar mockups"): each of the team's channels is its Twitch picture
+// (GET /api/channels/cards), with a blinking red ring while it's live. Clicking pictures turns channels on and off; the ones off go dark
+// (a live one keeps a faint ring), and none on = every channel. It starts on the channel the team is known by (isPrimary). It filters all
+// three lists: VODs of several channels are merged newest first, clips and videos are asked for with ?channels=.
 
 import { $, el, api, me, can, liveChannels, formatDate, formatDuration, loadSetting, saveSetting, toast, iconButton, withTooltip, twitchThumb, thumbStyle } from "./core.js";
 import { draggable } from "./drag.js";
@@ -18,11 +23,12 @@ const NEAR_BOTTOM_PX = 300;
 const state = {
   list: "vods",
   channels: [],
-  channel: loadSetting("clipco.library.channel", null),
+  cards: new Map(),     // login → { profileImageUrl, live } (GET /api/channels/cards)
+  picked: new Set(),    // logins turned on in the channel bar; none = every channel
+  demo: false,
   vodType: loadSetting("clipco.library.vodType", "archive"),
-  vods: [],
-  vodCursor: null,
-  vodsLoading: false,
+  // VODs per channel for the current type: login → { login, items, cursor, first, loading, error }
+  sources: new Map(),
   vodsError: "",
   vodSearch: "",
   clips: [],
@@ -51,32 +57,35 @@ export function setUpLibrary(options) {
     const list = $("side-list");
     if (state.list === "vods" && list.scrollTop + list.clientHeight > list.scrollHeight - NEAR_BOTTOM_PX) loadMoreVods();
   });
-  $("side-channel").addEventListener("sl-change", (event) => pickChannel(event.target.value));
   setUpFilter();
   if (options.sample) showSample(options.sample);
   else {
     loadChannels();
     window.addEventListener("clipco:stream", (event) => onStreamChange(event.detail));
     window.addEventListener("clipco:live-hello", () => onLiveHello());
+    window.addEventListener("clipco:stream", () => renderChannelBar());
   }
 }
 
 // Demo mode (?demo): sample data instead of the server (filters that call the server do nothing useful there)
 function showSample(sample) {
+  state.demo = true;
   state.channels = sample.channels;
-  state.channel = sample.channels[0].login;
-  state.vods = sample.vods;
+  state.picked = new Set([sample.channels[0].login]);
+  for (const channel of sample.channels) {
+    const items = channel === sample.channels[0] ? sample.vods.map((vod) => ({ ...vod, channel: channel.login })) : [];
+    state.sources.set(channel.login, { login: channel.login, items, cursor: null, first: false, loading: false, error: "" });
+  }
   state.clips = sample.clips;
   state.clipsLoaded = true;
   state.videos = sample.videos;
   state.videosLoaded = true;
-  renderChannelPicker();
+  renderChannelBar();
   render();
 }
 
 export function showList(list) {
   state.list = list;
-  renderChannelPicker();
   renderFilter();
   render();
   if (list === "clips" && !state.clipsLoaded) loadClips();
@@ -85,7 +94,7 @@ export function showList(list) {
 
 // A VOD from the loaded lists (Player 2's tree uses its title)
 export function knownVod(vodId) {
-  return state.vods.find((v) => Number(v.vodId) === Number(vodId)) ?? null;
+  return loadedVods().find((v) => Number(v.vodId) === Number(vodId)) ?? null;
 }
 
 export function knownVodTitle(vodId) {
@@ -102,7 +111,7 @@ export function showVodWork(vodId, list = "clips") {
 
 // Something was made, renamed or deleted elsewhere: counts and lists follow
 export function refreshLibraryFilters() {
-  loadWorkFor(state.vods.map((v) => v.vodId));
+  loadWorkFor(loadedVods().map((v) => v.vodId));
   if (state.clipsLoaded) loadClips();
   if (state.videosLoaded) loadVideos();
 }
@@ -117,43 +126,176 @@ async function loadChannels() {
     render();
     return;
   }
-  if (!state.channels.some((c) => c.login === state.channel)) state.channel = state.channels[0]?.login ?? null;
-  renderChannelPicker();
-  await reloadVods();
+  // Starts on the team's own channel (badrfly 2026-11-19)
+  const primary = state.channels.find((c) => c.isPrimary) ?? state.channels[0];
+  state.picked = new Set(primary ? [primary.login] : []);
+  renderChannelBar();
+  loadChannelCards();
+  await showChannelVods();
 }
 
-function pickChannel(login) {
-  if (!login || login === state.channel) return;
-  state.channel = login;
-  saveSetting("clipco.library.channel", login);
-  reloadVods();
+async function loadChannelCards() {
+  try {
+    for (const card of await api("GET", "/api/channels/cards")) state.cards.set(card.login, card);
+  } catch {
+    // The bar shows the channels' initials and no live ring
+  }
+  renderChannelBar();
+}
+
+// ---------- the channel bar ----------
+
+function several() {
+  return state.channels.length > 1;
+}
+
+// The channels whose VODs, videos and clips show: the ones turned on, or all of them
+function shownChannels() {
+  return several() && state.picked.size ? state.channels.filter((c) => state.picked.has(c.login)) : state.channels;
+}
+
+function channelByLogin(login) {
+  return state.channels.find((c) => c.login === login) ?? null;
+}
+
+// Clips and videos keep the name Twitch gave the VOD's owner: the display name, sometimes the login
+function channelByName(name) {
+  const lower = String(name ?? "").toLowerCase();
+  return lower ? state.channels.find((c) => c.login === lower || c.displayName?.toLowerCase() === lower) ?? null : null;
+}
+
+// The live watcher knows the moment a channel starts or stops; else the cards' answer (cached a few minutes) or a live VOD card
+function channelIsLive(login) {
+  const known = liveChannels.get(login);
+  if (known?.watched && known.live != null) return known.live;
+  return Boolean(state.cards.get(login)?.live) || Boolean(state.sources.get(login)?.items.some((vod) => vod.isLive));
+}
+
+function channelPicture(channel, className) {
+  const picture = state.cards.get(channel.login)?.profileImageUrl;
+  return picture
+    ? el("img", { class: className, src: picture, alt: "", loading: "lazy", referrerpolicy: "no-referrer" })
+    : el("span", { class: `${className} initial`, "aria-hidden": "true" }, (channel.displayName || channel.login).slice(0, 1).toUpperCase());
+}
+
+function renderChannelBar() {
+  const bar = $("side-channels");
+  bar.hidden = state.channels.length === 0;
+  bar.classList.toggle("single", !several());
+  bar.replaceChildren(...state.channels.map((channel) => {
+    const on = state.picked.has(channel.login);
+    const lit = !several() || !state.picked.size || on;
+    const live = channelIsLive(channel.login);
+    const name = channel.displayName || channel.login;
+    const tip = `${name}${live ? " · live" : ""}${several() ? (on ? " · click to hide" : " · click to show") : ""}`;
+    const button = el("button", {
+      type: "button",
+      class: `chan${live ? " live" : ""}${lit ? "" : " dim"}${several() && on ? " on" : ""}`,
+      "aria-label": `${name}${live ? " (live)" : ""}`,
+      "aria-pressed": several() ? String(on) : null,
+      onclick: () => toggleChannel(channel.login),
+    }, channelPicture(channel, "chan-picture"));
+    return withTooltip(button, tip, null, "bottom");
+  }));
+}
+
+function toggleChannel(login) {
+  if (!several()) return;
+  if (state.picked.has(login)) state.picked.delete(login);
+  else state.picked.add(login);
+  renderChannelBar();
+  showChannelVods();
+  if (state.demo) return render();
+  if (state.clipsLoaded || state.list === "clips") loadClips();
+  if (state.videosLoaded || state.list === "videos") loadVideos();
+}
+
+// clips and videos of the channels turned on (none on: everything, VODs of channels no longer assigned too)
+function channelQuery(query) {
+  if (several() && state.picked.size) query.set("channels", [...state.picked].join(","));
+}
+
+// A small picture of the item's channel on its card, when cards of several channels are in one list
+function cardChannel(channel) {
+  if (!channel || shownChannels().length < 2) return null;
+  const picture = channelPicture(channel, "card-chan");
+  picture.title = channel.displayName || channel.login;
+  return picture;
+}
+
+// ---------- VODs of several channels ----------
+
+const vodTime = (vod) => new Date(vod.createdAtUtc).getTime();
+
+function loadedVods() {
+  return [...state.sources.values()].flatMap((source) => source.items);
+}
+
+function shownSources() {
+  return shownChannels().map((c) => state.sources.get(c.login)).filter(Boolean);
+}
+
+// The shown channels' VODs, newest first. A channel with more pages holds the list at its oldest loaded VOD, so an older VOD of
+// another channel never shows before this one's next page is in.
+function mergedVods() {
+  const sources = shownSources();
+  let cutoff = -Infinity;
+  for (const source of sources) if (source.cursor && source.items.length) cutoff = Math.max(cutoff, vodTime(source.items.at(-1)));
+  return sources.flatMap((source) => source.items).filter((vod) => vod.isLive || vodTime(vod) >= cutoff).sort((a, b) => vodTime(b) - vodTime(a));
+}
+
+function moreVods() {
+  return shownSources().some((source) => source.cursor);
+}
+
+function vodsLoading() {
+  return shownSources().some((source) => source.loading);
+}
+
+// Starts the first page of each shown channel not loaded yet
+function showChannelVods() {
+  render();
+  if (state.demo) return Promise.resolve();
+  return Promise.all(shownChannels().filter((c) => !state.sources.has(c.login)).map((c) => loadChannelPage(c.login)));
 }
 
 async function reloadVods() {
-  state.vods = [];
-  state.vodCursor = null;
+  state.sources = new Map();
   state.vodsError = "";
-  render();
-  if (state.channel) await loadMoreVods(true);
+  await showChannelVods();
 }
 
-async function loadMoreVods(first = false) {
-  if (state.vodsLoading || (!first && !state.vodCursor) || !state.channel) return;
-  state.vodsLoading = true;
-  const login = state.channel;
+// Scrolled near the end: the channel holding the list back (its oldest loaded VOD is the newest) loads its next page
+function loadMoreVods() {
+  const waiting = shownSources().filter((source) => source.cursor && !source.loading);
+  if (!waiting.length) return;
+  const next = waiting.reduce((a, b) => (vodTime(a.items.at(-1)) >= vodTime(b.items.at(-1)) ? a : b));
+  loadChannelPage(next.login);
+}
+
+async function loadChannelPage(login) {
+  let source = state.sources.get(login);
+  if (!source) state.sources.set(login, source = { login, items: [], cursor: null, first: true, loading: false, error: "" });
+  if (source.loading || (!source.first && !source.cursor)) return;
+  source.loading = true;
   const type = state.vodType;
-  const cursor = first ? "" : `&cursor=${encodeURIComponent(state.vodCursor)}`;
+  const cursor = source.first ? "" : `&cursor=${encodeURIComponent(source.cursor)}`;
+  if (state.list === "vods") render();
   try {
     const page = await api("GET", `/api/channels/${encodeURIComponent(login)}/vods?type=${type}&limit=20${cursor}`);
-    if (login !== state.channel || type !== state.vodType) return; // the user switched while this loaded
-    state.vods.push(...page.items);
-    state.vodCursor = page.nextCursor;
+    if (state.sources.get(login) !== source) return; // the type changed while this loaded
+    const first = source.first;
+    for (const vod of page.items) vod.channel = login;
+    source.items.push(...page.items);
+    source.cursor = page.nextCursor;
+    source.first = false;
     if (first) checkLive(login);
     loadWorkFor(page.items.map((v) => v.vodId));
   } catch (error) {
-    state.vodsError = error.message;
+    source.error = error.message;
+    source.first = false;
   } finally {
-    state.vodsLoading = false;
+    source.loading = false;
   }
   if (state.list === "vods") render();
 }
@@ -161,15 +303,16 @@ async function loadMoreVods(first = false) {
 // Twitch's VOD lists don't say whether a stream is still going, so the newest VOD (if it started in the last 2 days) is
 // looked up on its own (GET /api/vods/info → isLive)
 async function checkLive(login) {
-  const newest = state.vods[0];
-  if (!newest || Date.now() - new Date(newest.createdAtUtc).getTime() > 2 * 86400_000) return;
+  const newest = state.sources.get(login)?.items[0];
+  if (!newest || Date.now() - vodTime(newest) > 2 * 86400_000) return;
   // The server hears from Twitch when this channel streams: no need to ask when it says it's offline
   const known = liveChannels.get(login);
   if (known?.watched && known.live === false) return;
   try {
     const info = await api("GET", `/api/vods/info?vod=${newest.vodId}`);
-    if (login !== state.channel || !info.isLive) return;
+    if (!info.isLive) return;
     newest.isLive = true;
+    renderChannelBar();
     if (state.list === "vods") render();
   } catch {
     // Not knowing is fine: the card just shows no LIVE badge
@@ -177,15 +320,16 @@ async function checkLive(login) {
 }
 
 // ---------- live stream updates (core.js startLiveEvents) ----------
-// A channel started or stopped streaming: the VOD list re-reads its first page (a new VOD appears, the LIVE badge comes and goes, the
+// A channel started or stopped streaming: its VODs re-read their first page (a new VOD appears, the LIVE badge comes and goes, the
 // final length shows). Twitch needs a moment to list a new VOD and to settle the length, so it looks again a couple of times after.
 const liveRetries = new Map(); // login → timers
 
 function onStreamChange({ login, live }) {
-  if (login !== state.channel) return;
+  const source = state.sources.get(login);
+  if (!source) return;
   for (const timer of liveRetries.get(login) ?? []) clearTimeout(timer);
   if (!live) {
-    for (const vod of state.vods) vod.isLive = false;
+    for (const vod of source.items) vod.isLive = false;
     if (state.list === "vods") render();
   }
   refreshNewestVods(login);
@@ -194,14 +338,18 @@ function onStreamChange({ login, live }) {
 
 // After (re)connecting: the cards may have missed a change while the page was hidden or the server restarted
 function onLiveHello() {
-  const known = liveChannels.get(state.channel);
-  if (!known?.watched || known.live == null || !state.vods.length) return;
-  const showsLive = state.vods.some((vod) => vod.isLive);
-  if (showsLive !== known.live) onStreamChange({ login: state.channel, live: known.live });
+  renderChannelBar();
+  for (const source of state.sources.values()) {
+    const known = liveChannels.get(source.login);
+    if (!known?.watched || known.live == null || !source.items.length) continue;
+    const showsLive = source.items.some((vod) => vod.isLive);
+    if (showsLive !== known.live) onStreamChange({ login: source.login, live: known.live });
+  }
 }
 
 async function refreshNewestVods(login) {
-  if (login !== state.channel || state.vodsLoading) return;
+  const source = state.sources.get(login);
+  if (!source || source.loading) return;
   const type = state.vodType;
   let page;
   try {
@@ -209,15 +357,17 @@ async function refreshNewestVods(login) {
   } catch {
     return; // the next change or retry tries again
   }
-  if (login !== state.channel || type !== state.vodType) return;
-  const byId = new Map(state.vods.map((vod) => [String(vod.vodId), vod]));
+  if (state.sources.get(login) !== source) return;
+  const byId = new Map(source.items.map((vod) => [String(vod.vodId), vod]));
   const added = [];
   for (const item of page.items) {
+    item.channel = login;
     const known = byId.get(String(item.vodId));
     if (known) Object.assign(known, item, { isLive: known.isLive && liveChannels.get(login)?.live !== false });
     else added.push(item);
   }
-  if (added.length) state.vods.unshift(...added);
+  if (added.length) source.items.unshift(...added);
+  renderChannelBar();
   if (state.list === "vods") render();
   if (added.length) loadWorkFor(added.map((v) => v.vodId));
   if (liveChannels.get(login)?.live !== false) checkLive(login);
@@ -264,6 +414,7 @@ async function loadClips() {
   const query = new URLSearchParams({ sort: f.sort, order: f.order, limit: "500" });
   if (f.search) query.set("search", f.search);
   whoQuery(query, "clips");
+  channelQuery(query);
   const dateField = f.sort;
   if (f.last24h) {
     query.set("from", new Date(Date.now() - 86400_000).toISOString());
@@ -298,6 +449,7 @@ async function loadVideos() {
   try {
     const query = new URLSearchParams({ limit: "500" });
     whoQuery(query, "videos");
+    channelQuery(query);
     state.videos = await api("GET", `/api/videos?${query}`);
     rememberMembers(state.videos.map((v) => [v.userId, v.createdBy]));
     state.videosError = "";
@@ -319,8 +471,8 @@ export function refreshClips() {
 // ---------- rendering ----------
 
 const EMPTY = {
-  vods: () => state.vodsError || (state.channels.length
-    ? (state.vodsLoading ? "Loading VODs…" : "No VODs here yet.")
+  vods: () => state.vodsError || shownSources().find((source) => source.error)?.error || (state.channels.length
+    ? (vodsLoading() || shownSources().length < shownChannels().length ? "Loading VODs…" : "No VODs here yet.")
     : "Your team has no channels yet. The app owner assigns them."),
   videos: () => state.videosError || (state.videosLoaded
     ? (filtersOn() ? "No videos match the filter." : "No videos yet. Link segments on a VOD's timeline to make one.")
@@ -331,7 +483,7 @@ const EMPTY = {
 function visibleItems() {
   if (state.list === "vods") {
     const search = state.vodSearch.toLowerCase();
-    return state.vods.filter((v) => (!search || v.title.toLowerCase().includes(search)) && (!state.onlyWorked || state.work.has(String(v.vodId))));
+    return mergedVods().filter((v) => (!search || v.title.toLowerCase().includes(search)) && (!state.onlyWorked || state.work.has(String(v.vodId))));
   }
   if (state.list === "videos" && state.clipFilter.search) {
     const search = state.clipFilter.search.toLowerCase();
@@ -343,7 +495,7 @@ function visibleItems() {
 function render() {
   const items = visibleItems();
   const noun = { vods: "VOD", videos: "video", clips: "clip" }[state.list];
-  const more = state.list === "vods" && state.vodCursor ? "+" : "";
+  const more = state.list === "vods" && moreVods() ? "+" : "";
   $("side-count").textContent = items.length ? `${items.length}${more} ${noun}${items.length === 1 && !more ? "" : "s"}` : "";
   $("side-filter").toggleAttribute("data-active", filtersOn());
   if (!items.length) {
@@ -351,24 +503,15 @@ function render() {
     return;
   }
   const cards = items.map((item) => (state.list === "vods" ? vodCard(item) : state.list === "clips" ? clipCard(item) : videoCard(item)));
-  if (state.list === "vods" && state.vodsLoading) cards.push(el("p", { class: "side-empty" }, "Loading more…"));
+  if (state.list === "vods" && vodsLoading()) cards.push(el("p", { class: "side-empty" }, "Loading more…"));
   $("side-list").replaceChildren(...cards);
-}
-
-function renderChannelPicker() {
-  const picker = $("side-channel");
-  const show = state.list === "vods" && state.channels.length > 1;
-  picker.hidden = !show;
-  if (!show) return;
-  picker.replaceChildren(...state.channels.map((c) => el("sl-option", { value: c.login }, c.displayName || c.login)));
-  picker.value = state.channel ?? "";
 }
 
 // A card: thumbnail with badges, title, meta lines, and icon actions. item.kind decides where it can be dropped.
 // thumb may be a list (first on top: see thumbStyle).
-function card({ kind, title, thumb, badges = [], meta = [], actions = [], dragData, menu }) {
+function card({ kind, title, thumb, badges = [], meta = [], actions = [], dragData, menu, channel = null }) {
   const node = el("div", { class: "card", role: "listitem", tabindex: "0", "aria-label": title },
-    el("div", { class: "card-thumb", style: thumbStyle(thumb) }, ...badges),
+    el("div", { class: "card-thumb", style: thumbStyle(thumb) }, ...badges, cardChannel(channel)),
     el("div", { class: "card-body" },
       el("div", { class: "card-title", title }, title),
       ...meta.filter(Boolean).map((line) => (line instanceof Node ? line : el("div", { class: "card-meta" }, line))),
@@ -415,7 +558,7 @@ function vodCard(vod) {
   // Saving audio: live or ended < 24 h ago and not saving yet, or a failed try (same rule as the old page)
   const canStart = !vod.rescueStatus || (vod.rescuePaused && vod.rescueStatus === "Grabbing");
   // The app Owner allows Save audio now per channel (badrfly 2026-11-18)
-  const audioAllowed = state.channels.find((c) => c.login === state.channel)?.saveAudio !== false;
+  const audioAllowed = channelByLogin(vod.channel)?.saveAudio !== false;
   if (can("SaveAudio") && audioAllowed && ((vod.unmuteWindowOpen || vod.isLive) && canStart || vod.rescueStatus === "Failed")) {
     actions.push(iconButton({
       icon: "microphone",
@@ -427,7 +570,7 @@ function vodCard(vod) {
     actions.push(withTooltip(icon, vod.rescuePaused ? "Audio saving paused" : RESCUE_TEXT[vod.rescueStatus]));
   }
   actions.push(exportButton({ kind: "vod", data: vod }));
-  const item = { ...vod, kind: "vod", channel: state.channel };
+  const item = { ...vod, kind: "vod" };
   const work = state.work.get(String(vod.vodId));
   return card({
     kind: "vod",
@@ -437,6 +580,7 @@ function vodCard(vod) {
     meta: [[formatDate(vod.createdAtUtc, false), vod.game].filter(Boolean).join(" · "), work ? workLine(work) : null],
     actions,
     dragData: item,
+    channel: channelByLogin(vod.channel),
     menu: () => [
       { label: "Load in Player 1", icon: "broadcast", run: () => handlers.onLoad({ kind: "vod", data: item }) },
       { label: "Export", icon: "download-simple", run: () => handlers.onExport({ kind: "vod", data: item }) },
@@ -506,6 +650,7 @@ function clipCard(entry) {
     ],
     actions: [exportButton({ kind: "clip", data: item })],
     dragData: item,
+    channel: channelByName(entry.channelName),
     menu: () => clipMenu(item),
   });
 }
@@ -563,6 +708,7 @@ function videoCard(video) {
     meta: [video.streamDateUtc ? `VOD ${formatDate(video.streamDateUtc, false)}` : null, video.createdBy ? `by ${video.createdBy}` : null],
     actions: [exportButton({ kind: "video", data: item })],
     dragData: item,
+    channel: channelByName(video.channelName),
     menu: () => [
       { label: "Load in Player 2", icon: "film-strip", run: () => handlers.onLoad({ kind: "video", data: item }) },
       { label: "Export", icon: "download-simple", run: () => handlers.onExport({ kind: "video", data: item }) },
