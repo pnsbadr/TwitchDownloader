@@ -663,11 +663,88 @@ button.team-pill:hover { background: var(--bg-4); }
   .narrow-note h1 { font-size: 36px; margin: 0 0 12px; }
 }
 
-/* ---------- left panel: channel picker, filter popover, right-click menu (step 2) ---------- */
+/* ---------- left panel: channel bar, filter popover, right-click menu (step 2) ---------- */
 
 .side-tools { gap: 8px; }
-.side-tools .side-count { flex: 1; }
-#side-channel { width: 150px; }
+.side-tools .side-count { flex: 1; white-space: nowrap; }
+
+/* The channel bar (badrfly 2026-11-19): the team's channels' Twitch pictures; off = lights out, live = blinking red ring
+   (fainter while off) */
+.chan-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 3px;
+  min-width: 0;
+  max-width: 70%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.chan-bar::-webkit-scrollbar { display: none; }
+.chan {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid var(--line-strong);
+  background: none;
+  cursor: pointer;
+  transition: opacity 0.15s, filter 0.15s;
+}
+.chan-bar.single .chan { cursor: default; }
+.chan-picture {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+}
+.chan-picture.initial, .card-chan.initial {
+  background: linear-gradient(140deg, #4a4f58, #2a2d33);
+  color: var(--text);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 14px;
+}
+.chan:hover { border-color: var(--text-faint); }
+.chan:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--bg-1), 0 0 0 4px var(--accent); }
+.chan.on { box-shadow: 0 0 0 2px var(--bg-1), 0 0 0 3px var(--accent); }
+.chan.dim { opacity: 0.32; filter: grayscale(1); }
+.chan.dim:hover { opacity: 0.6; }
+.chan.live { border-color: var(--live); animation: chan-live 1.2s ease-in-out infinite; }
+.chan.live.on { animation-name: chan-live-on; }
+.chan.live.dim { opacity: 0.45; animation-name: chan-live-dim; }
+@keyframes chan-live {
+  0%, 100% { border-color: var(--live); box-shadow: 0 0 0 2px rgb(235 4 0 / 0.55); }
+  50% { border-color: rgb(235 4 0 / 0.3); box-shadow: 0 0 0 0 rgb(235 4 0 / 0); }
+}
+@keyframes chan-live-on {
+  0%, 100% { border-color: var(--live); box-shadow: 0 0 0 2px var(--bg-1), 0 0 0 3px var(--accent), 0 0 0 5px rgb(235 4 0 / 0.5); }
+  50% { border-color: rgb(235 4 0 / 0.3); box-shadow: 0 0 0 2px var(--bg-1), 0 0 0 3px var(--accent); }
+}
+@keyframes chan-live-dim {
+  0%, 100% { border-color: rgb(235 4 0 / 0.35); box-shadow: 0 0 0 2px rgb(235 4 0 / 0.12); }
+  50% { border-color: rgb(235 4 0 / 0.12); box-shadow: 0 0 0 0 rgb(235 4 0 / 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chan.live, .chan.live.on, .chan.live.dim { animation: none; }
+}
+/* The item's channel on a card, when one list holds several channels */
+.card-chan {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1.5px solid rgb(0 0 0 / 0.6);
+  object-fit: cover;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+}
 #side-filter[data-active]::part(base) { color: var(--accent-strong); background: var(--accent-soft); }
 
 .filter-panel {
