@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.20.1/cdn/themes/dark.css">
   <link rel="stylesheet" href="ui/theme.css">
   <link rel="stylesheet" href="ui/editor.css">
+  <link rel="stylesheet" href="ui/start.css">
   <script src="https://cdn.jsdelivr.net/npm/split.js@1.6.5/dist/split.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/imask@7.6.1/dist/imask.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
@@ -23,6 +24,22 @@
   <div class="narrow-note">
     <h1 class="display">Clipco</h1>
     <p>The editor needs a wider screen (at least 1100 px). Open it on a computer.</p>
+  </div>
+
+  <!-- The start screen (ui/start.js): shown first, over the editor with the lights off and nothing loaded -->
+  <div class="start" id="start" hidden>
+    <header class="start-top">
+      <span class="start-brand display" id="start-brand">Clipco</span>
+      <span class="start-clock display num" id="start-clock"></span>
+      <div class="start-profile" id="start-profile"></div>
+    </header>
+    <main class="start-main">
+      <section class="start-card" id="start-card" aria-live="polite"></section>
+    </main>
+    <footer class="start-foot">
+      <span class="start-user" id="start-user"></span>
+      <span class="start-links" id="start-links"></span>
+    </footer>
   </div>
 
   <div class="app" id="app">
@@ -39,8 +56,6 @@
           <sl-menu id="account-items">
             <sl-menu-label id="account-name"></sl-menu-label>
             <sl-menu-item value="account"><sl-icon slot="prefix" library="ph" name="user-circle"></sl-icon>Account settings</sl-menu-item>
-            <sl-menu-item value="team" id="menu-team"><sl-icon slot="prefix" library="ph" name="users-three"></sl-icon>Team page</sl-menu-item>
-            <sl-menu-item value="shortcuts"><sl-icon slot="prefix" library="ph" name="keyboard"></sl-icon>Keyboard shortcuts</sl-menu-item>
             <sl-menu-item value="report"><sl-icon slot="prefix" library="ph" name="bug"></sl-icon>Report a problem</sl-menu-item>
             <sl-divider></sl-divider>
             <sl-menu-item value="logout" id="menu-logout"><sl-icon slot="prefix" library="ph" name="sign-out"></sl-icon>Log out</sl-menu-item>

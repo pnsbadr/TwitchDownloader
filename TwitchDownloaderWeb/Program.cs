@@ -70,6 +70,7 @@ builder.Services.AddHttpClient(TwitchDownloaderWeb.Services.Live.TwitchUserAuth.
 builder.Services.AddHttpClient(TwitchDownloaderWeb.Services.Live.EventSubWatcher.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(20));
 builder.Services.AddSingleton<TwitchDownloaderWeb.Services.Live.TwitchUserAuth>();
 builder.Services.AddSingleton<TwitchDownloaderWeb.Services.Live.LiveStreamHub>();
+builder.Services.AddSingleton<IChannelCardSource, ChannelCardService>();
 builder.Services.AddSingleton<TwitchDownloaderWeb.Services.Live.EventSubWatcher>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<TwitchDownloaderWeb.Services.Live.EventSubWatcher>());
 
@@ -131,6 +132,7 @@ app.Use(async (context, next) =>
 
 app.MapAuthEndpoints();
 app.MapAdminEndpoints();
+app.MapAppSettingsEndpoints();
 app.MapErrorReportEndpoints();
 app.MapTeamEndpoints();
 app.MapVodDownloadEndpoints();

@@ -12,8 +12,17 @@ namespace TwitchDownloaderWeb.Endpoints
     public sealed record TeamRoleDto(int Id, string Name, IReadOnlyList<string> Permissions, int MemberCount, bool CanEdit);
 
     /// <param name="MyPermissions">What the caller may do here, so the page only shows what works.</param>
+    /// <param name="NextRenameAtUtc">When the team may pick a new name again (null = now). Only the team owner renames it.</param>
     public sealed record TeamDto(int Id, string Name, int? OwnerUserId, IReadOnlyList<string> MyPermissions, IReadOnlyList<TeamMemberDto> Members,
-        IReadOnlyList<TeamRoleDto> Roles, IReadOnlyList<TeamPermissionInfo> PermissionCatalog);
+        IReadOnlyList<TeamRoleDto> Roles, IReadOnlyList<TeamPermissionInfo> PermissionCatalog)
+    {
+        public DateTime? NameChangedAtUtc { get; init; }
+        public DateTime? NextRenameAtUtc { get; init; }
+        public bool CanRename { get; init; }
+        public int RenameDays => AccountRules.TeamRenameDays;
+    }
+
+    public sealed record RenameRequest(string? Name);
 
     public sealed record SaveRoleRequest(string? Name, List<string>? Permissions);
 
@@ -55,6 +64,7 @@ namespace TwitchDownloaderWeb.Endpoints
             var team = app.MapGroup("/api/team");
             team.MapGet("/", GetTeam).RequireTeam(TeamPermission.TeamPage);
             team.MapGet("/settings", GetSettings).RequireTeam(TeamPermission.All);
+            team.MapPut("/name", Rename).RequireTeamOwner();
 
             team.MapDelete("/members/{userId:int}", RemoveMember).RequireTeam(TeamPermission.RemoveMembers);
             team.MapPut("/members/{userId:int}/role", AssignRole).RequireTeam(TeamPermission.AssignRoles);
@@ -98,7 +108,39 @@ namespace TwitchDownloaderWeb.Endpoints
                 CanEditRole(team, x, myRoleId))).ToList();
 
             return Results.Ok(new TeamDto(row.Id, row.Name, row.OwnerUserId, TeamPermissions.ToKeys(team.Permissions), memberDtos, roleDtos,
-                TeamPermissions.Catalog.Select(x => x.Info).ToList()));
+                TeamPermissions.Catalog.Select(x => x.Info).ToList())
+            {
+                NameChangedAtUtc = row.NameChangedAtUtc,
+                NextRenameAtUtc = NextRename(row, DateTime.UtcNow),
+                CanRename = team.IsOwner && !team.IsSupport,
+            });
+        }
+
+        /// <summary>When the team may pick a new name again, or null if it may now.</summary>
+        private static DateTime? NextRename(Team row, DateTime now) =>
+            row.NameChangedAtUtc is { } changed && changed.AddDays(AccountRules.TeamRenameDays) > now ? changed.AddDays(AccountRules.TeamRenameDays) : null;
+
+        /// <summary>The team owner renames the team, once every 14 days (badrfly 2026-11-19; the app Owner any time, on the Admin page).</summary>
+        private static async Task<IResult> Rename(RenameRequest request, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
+        {
+            if (AccountRules.TeamNameError(request.Name) is { } nameError)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["name"] = [nameError] });
+
+            var row = await db.Teams.FirstAsync(x => x.Id == team.TeamId, cancellationToken);
+            var name = request.Name!.Trim();
+            if (name == row.Name)
+                return Results.Ok(new { name = row.Name, nameChangedAtUtc = row.NameChangedAtUtc, nextRenameAtUtc = NextRename(row, DateTime.UtcNow) });
+
+            var now = DateTime.UtcNow;
+            if (NextRename(row, now) is { } next)
+                return Results.Problem(detail: $"The team's name can be changed once every {AccountRules.TeamRenameDays} days.",
+                    statusCode: StatusCodes.Status409Conflict, extensions: new Dictionary<string, object?> { ["code"] = "rename-too-soon", ["nextRenameAtUtc"] = next });
+
+            db.Audit(AuditActions.TeamRenamed, null, $"\"{row.Name}\" renamed \"{name}\" by {team.Username}");
+            row.Name = name;
+            row.NameChangedAtUtc = now;
+            await db.SaveChangesAsync(cancellationToken);
+            return Results.Ok(new { name = row.Name, nameChangedAtUtc = row.NameChangedAtUtc, nextRenameAtUtc = NextRename(row, now) });
         }
 
         /// <summary>Not the owner, not yourself, and their role gives nothing you don't have (the owner can manage everyone else).</summary>
@@ -296,7 +338,7 @@ namespace TwitchDownloaderWeb.Endpoints
             db.AccountLinks.Add(link);
             db.Audit(AuditActions.PasswordResetLinkCreated, null, $"For {member.User.Username} by {team.Username}");
             await db.SaveChangesAsync(cancellationToken);
-            return Results.Created($"/api/team/members/{userId}/password-reset", LinkUrls.ToDto(link, null, LinkUrls.Build(httpRequest, token)));
+            return Results.Created($"/api/team/members/{userId}/password-reset", LinkUrls.ToDto(link, null, LinkUrls.Build(httpRequest, link, token)));
         }
 
         // ---------- invites ----------
@@ -322,7 +364,7 @@ namespace TwitchDownloaderWeb.Endpoints
 
             db.Audit(AuditActions.LinkCreated, null, $"Invite link {link.Id} for \"{team.TeamName}\"{(link.Note is null ? "" : $" ({link.Note})")}");
             await db.SaveChangesAsync(cancellationToken);
-            return Results.Created($"/api/team/invites/{link.Id}", LinkUrls.ToDto(link, null, LinkUrls.Build(httpRequest, token)));
+            return Results.Created($"/api/team/invites/{link.Id}", LinkUrls.ToDto(link, null, LinkUrls.Build(httpRequest, link, token)));
         }
 
         private static async Task<IResult> RevokeInvite(int id, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)

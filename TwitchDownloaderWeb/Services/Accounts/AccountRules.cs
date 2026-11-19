@@ -32,6 +32,9 @@ namespace TwitchDownloaderWeb.Services.Accounts
             : password.Length > MaxPasswordLength ? $"Passwords can be at most {MaxPasswordLength} characters."
             : null;
 
+        /// <summary>A team may change its own name once every this many days (badrfly 2026-11-19; the app Owner any time).</summary>
+        public const int TeamRenameDays = 14;
+
         public static string? TeamNameError(string? name) =>
             string.IsNullOrWhiteSpace(name) ? "Enter a team name."
             : name.Trim().Length > MaxTeamNameLength ? $"Team names can be at most {MaxTeamNameLength} characters."

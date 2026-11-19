@@ -1,0 +1,181 @@
+/* The start screen (ui/start.js, badrfly 2026-11-19): over the editor with the lights off. Same gray theme, Barlow, one accent. */
+
+.start {
+  position: fixed;
+  inset: 0;
+  z-index: 800; /* under Shoelace's hoisted menus and dialogs, over everything else */
+  display: grid;
+  grid-template-rows: 64px 1fr auto;
+  background: rgb(6 7 9 / 0.86);
+  color: var(--text);
+}
+.start[hidden] { display: none; }
+/* Lights off: the empty editor behind can't be reached */
+body.start-open .app { pointer-events: none; user-select: none; filter: saturate(0.6); }
+
+.start-top {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  padding: 0 22px;
+  border-bottom: 2px solid var(--line-strong);
+  background: var(--bg-2);
+}
+.start-brand { font-size: 30px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; }
+.start-clock { font-size: 30px; font-weight: 600; letter-spacing: 0.03em; }
+.start-profile { justify-self: end; }
+.start-profile .avatar { width: 40px; height: 40px; }
+
+.start-main { display: grid; place-items: center; padding: 24px 16px; overflow: auto; }
+.start-card {
+  width: min(880px, 100%);
+  min-height: 360px;
+  padding: 26px 28px 30px;
+  border: 2px solid var(--line-strong);
+  border-radius: 48px;
+  background: var(--bg-1);
+  box-shadow: 0 30px 80px rgb(0 0 0 / 0.55);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.start-title { margin: 0 0 18px; font-size: 26px; font-weight: 600; letter-spacing: 0.04em; text-align: center; }
+.start-wait, .start-empty { text-align: center; max-width: 420px; color: var(--text-dim); }
+
+.start-foot { display: flex; align-items: flex-end; justify-content: space-between; padding: 0 22px 18px; }
+.start-user { font-family: ui-monospace, monospace; font-size: 13px; color: var(--text-dim); }
+.start-links { display: flex; gap: 10px; }
+.start-link {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 2px solid var(--line-strong);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 20px;
+}
+.start-link:hover { border-color: var(--text-faint); background: var(--bg-3); }
+
+/* ---------- team cards ---------- */
+
+.start-carousel { display: flex; align-items: center; gap: 10px; width: 100%; justify-content: center; }
+.start-carousel.single .start-arrow { visibility: hidden; }
+.start-arrow { font-size: 34px; color: var(--text); }
+.start-arrow::part(base) { padding: 6px; }
+.start-teams { display: flex; gap: 18px; justify-content: center; flex: 1 1 auto; min-width: 0; }
+.start-page { margin: 12px 0 0; font-size: 12px; }
+
+.team-card-wrap { position: relative; }
+.team-card {
+  width: 178px;
+  min-height: 236px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 18px 12px 14px;
+  border: 2px solid var(--line-strong);
+  border-radius: 26px;
+  background: var(--bg-2);
+  color: var(--text);
+  font-family: var(--font-ui);
+  cursor: pointer;
+  text-align: center;
+}
+.team-card:hover { border-color: var(--text-faint); background: var(--bg-3); }
+.team-card:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.team-card.current { border-color: var(--accent); }
+
+/* The channel's Twitch picture in a circle; a blinking red ring while it's live (badrfly 2026-11-19) */
+.team-avatar {
+  width: 84px;
+  height: 84px;
+  margin-bottom: 8px;
+  border-radius: 50%;
+  border: 3px solid var(--line-strong);
+  background: linear-gradient(140deg, #4a4f58, #2a2d33);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 34px;
+  flex: none;
+}
+.team-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.team-avatar.live { border-color: var(--live); animation: live-ring 1.2s ease-in-out infinite; }
+@keyframes live-ring {
+  0%, 100% { border-color: var(--live); box-shadow: 0 0 0 3px rgb(235 4 0 / 0.55); }
+  50% { border-color: rgb(235 4 0 / 0.25); box-shadow: 0 0 0 0 rgb(235 4 0 / 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .team-avatar.live { animation: none; box-shadow: 0 0 0 3px rgb(235 4 0 / 0.55); }
+}
+
+.team-channel { font-size: 22px; font-weight: 600; line-height: 1.1; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.team-name { font-size: 12px; margin-bottom: 6px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.team-line { font-size: 12.5px; color: var(--text); }
+.team-live.is-live { color: #ff6b66; font-weight: 600; }
+.live-dot { display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; background: var(--live); vertical-align: 1px; }
+.team-tag { margin-top: 6px; padding: 2px 8px; border-radius: 10px; background: var(--bg-4); font-size: 11px; color: var(--text-dim); }
+.team-page-button { position: absolute; top: 8px; right: 8px; font-size: 17px; color: var(--text-dim); }
+
+/* ---------- forms in the card (login, links): the account pages' look ---------- */
+
+.start-card form, .start-join { width: min(400px, 100%); }
+.start-card .stack { display: grid; gap: 12px; }
+.start-card .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.start-card label { display: grid; gap: 5px; font-size: 13px; color: var(--text-dim); }
+.start-card input {
+  font: inherit;
+  font-size: 15px;
+  color: var(--text);
+  background: var(--bg-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-small);
+  padding: 8px 10px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.start-card input:focus { border-color: var(--accent); outline: none; }
+.start-card button:not(.team-card):not(.seg):not(.link) {
+  font: inherit;
+  font-weight: 600;
+  padding: 8px 18px;
+  border-radius: var(--radius-small);
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+.start-card button:disabled { opacity: 0.6; cursor: default; }
+.start-card button.link { border: 0; background: none; color: var(--text-dim); cursor: pointer; font: inherit; font-size: 13px; padding: 4px 6px; }
+.start-card button.link:hover { color: var(--text); }
+.start-card .tz { display: flex; }
+.start-card .seg {
+  font: inherit;
+  font-size: 14px;
+  padding: 6px 12px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-3);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.start-card .seg + .seg { margin-left: -1px; }
+.start-card .seg:first-child { border-radius: var(--radius-small) 0 0 var(--radius-small); }
+.start-card .seg:last-child { border-radius: 0 var(--radius-small) var(--radius-small) 0; }
+.start-card .seg[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+.start-card .muted { color: var(--text-dim); font-size: 13px; }
+.start-card .small-text { font-size: 13px; }
+.start-card .message { font-size: 14px; margin: 0; }
+.start-card .message:empty { display: none; }
+.start-card .message.error { color: var(--danger); }
+.start-card .name-edit { display: flex; gap: 6px; align-items: center; }
+.start-card .name-edit input[readonly] { color: var(--text-faint); background: var(--bg-2); }
+.start-card .pencil { font-size: 16px; }
+.start-card .tiny-text { font-size: 11px; color: var(--text-faint); margin: 4px 0 0; }
+.start-card .tiny-text button.link { font-size: 11px; padding: 0 2px; }
+.start-join .join-heading { text-align: center; }
+.start-join-cancel { justify-content: center; margin-top: 10px; }
+.start-card [hidden], .start [hidden] { display: none !important; }

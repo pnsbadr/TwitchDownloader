@@ -85,15 +85,17 @@
       <h2>Links</h2>
       <div id="registration-block">
         <p class="muted small-text">A team registration link lets one person make an account (or use theirs) and a new team they own.
-          An owner link (from Teams) makes whoever opens it the owner of an existing team. Each works once and expires after 7 days.</p>
+          The team works on one Twitch channel; only the Owner gives a team more channels, on the Teams tab. The team is called
+          "Channel's Team" unless the person opening the link picks another name (teams can rename once every 14 days; the Owner any time). An owner link (from Teams)
+          makes whoever opens it the owner of an existing team. Each works once and expires after 7 days.</p>
         <form id="registration-form" class="row" novalidate>
+          <label class="grow">Twitch channel (required)
+            <input id="registration-channel" maxlength="100" placeholder="e.g. arky or twitch.tv/arky" spellcheck="false" autocapitalize="off" required>
+          </label>
           <label class="grow">Who is it for? (optional, only staff see this)
-            <input id="registration-note" maxlength="200" placeholder="e.g. Arky's team">
+            <input id="registration-note" maxlength="200" placeholder="e.g. Arky">
           </label>
-          <label class="grow" id="registration-channels-label">Team channels (Twitch names, comma separated)
-            <input id="registration-channels" maxlength="600" placeholder="e.g. arky, ellsya">
-          </label>
-          <button type="submit">Make team registration link</button>
+          <button type="submit" id="registration-submit" disabled>Make team registration link</button>
         </form>
       </div>
       <div id="link-new"></div>
@@ -130,6 +132,23 @@
         any name, OAuth Redirect URL <code>http://localhost</code>, Client Type <strong>Public</strong>.</p>
       <div id="twitch-status"></div>
       <ul id="twitch-channels" class="plain-list"></ul>
+    </section>
+
+    <section class="panel" id="app-panel" hidden>
+      <h2>App</h2>
+      <p class="muted small-text">The name and links everyone sees on the start screen, logged in or not. Leave a link blank to hide its icon.</p>
+      <form id="app-form" class="stack" novalidate>
+        <label>App name
+          <input id="app-name" maxlength="60" autocomplete="off" placeholder="Clipco">
+        </label>
+        <label>X link
+          <input id="app-x" maxlength="300" autocomplete="off" spellcheck="false" inputmode="url" placeholder="https://x.com/…">
+        </label>
+        <label>Discord link
+          <input id="app-discord" maxlength="300" autocomplete="off" spellcheck="false" inputmode="url" placeholder="https://discord.gg/…">
+        </label>
+        <div class="row"><button type="submit">Save</button></div>
+      </form>
     </section>
 
     <section class="panel" id="reports-panel" hidden>

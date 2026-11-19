@@ -60,6 +60,10 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<int?>("TeamId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("TeamName")
+                        .HasMaxLength(100)
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("TokenHash")
                         .IsRequired()
                         .HasMaxLength(64)
@@ -82,6 +86,34 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("AccountLinks");
+                });
+
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.AppSettings", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("DiscordUrl")
+                        .HasMaxLength(300)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Name")
+                        .HasMaxLength(60)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("UpdatedByStaffId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("XUrl")
+                        .HasMaxLength(300)
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("AppSettings");
                 });
 
             modelBuilder.Entity("TwitchDownloaderWeb.Data.AuditEvent", b =>
@@ -1092,6 +1124,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(100)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("NameChangedAtUtc")
                         .HasColumnType("TEXT");
 
                     b.Property<int?>("OwnerUserId")

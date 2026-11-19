@@ -42,7 +42,22 @@ namespace TwitchDownloaderWeb.Endpoints
     /// <param name="ForUsername">Password reset links: whose password it sets.</param>
     /// <param name="Channels">Team links: names of the Twitch channels the team gets.</param>
     public sealed record LinkInfoDto(string Kind, string? TeamName, DateTime ExpiresAtUtc, string? LoggedInAs, string? ForUsername,
-        IReadOnlyList<string> Channels);
+        IReadOnlyList<string> Channels)
+    {
+        /// <summary>A team may pick a new name once every this many days (picking one here counts).</summary>
+        public int TeamRenameDays => AccountRules.TeamRenameDays;
+    }
+
+    /// <summary>A team card on the start screen (badrfly 2026-11-19).</summary>
+    /// <param name="Channel">The channel the team is known by (<see cref="TeamLabels.Primary"/>), or null.</param>
+    /// <param name="HasAccess">The member has a role with at least one permission (else the editor shows "Waiting for access").</param>
+    /// <param name="CanOpenTeamPage">The member may open the Team page (owner, or a role with any team-page permission).</param>
+    /// <param name="TeamLastActiveUtc">The last change any member made to the team's work (staff visits don't count).</param>
+    /// <param name="MyLastActiveUtc">The last change the member made to it.</param>
+    public sealed record StartTeamDto(int Id, string Name, bool IsOwner, bool IsCurrent, bool HasAccess, bool CanOpenTeamPage, StartChannelDto? Channel,
+        DateTime? TeamLastActiveUtc, DateTime? MyLastActiveUtc);
+
+    public sealed record StartChannelDto(string Login, string DisplayName);
 
     /// <summary>Team user login and one-time links (team registration, team ownership, team invites).</summary>
     public static class AuthEndpoints
@@ -53,6 +68,9 @@ namespace TwitchDownloaderWeb.Endpoints
             auth.MapPost("/login", Login).RequireRateLimiting(AuthSchemes.LoginRateLimit);
             auth.MapPost("/logout", Logout);
             auth.MapGet("/me", Me);
+            auth.MapGet("/teams", ListTeams);
+            auth.MapGet("/teams/{id:int}/channel", TeamChannelCard);
+            auth.MapGet("/app", AppInfo);
             auth.MapPost("/team", SwitchTeam);
             auth.MapPut("/settings", UpdateSettings);
             auth.MapPost("/password", ChangePassword).RequireRateLimiting(AuthSchemes.LoginRateLimit);
@@ -134,6 +152,83 @@ namespace TwitchDownloaderWeb.Endpoints
                 TeamPermissions.ToKeys(permissions), user.TimeZone ?? "local", CombineSegmentDownloads: current?.CombineSegmentDownloads == true) { MaxStoredClipSeconds = limit });
         }
 
+        /// <summary>Audited actions that change a team's work: what "last active" on the start screen counts.</summary>
+        private static readonly string[] WorkChanges =
+        [
+            AuditActions.EntryAdded, AuditActions.EntryRenamed, AuditActions.EntryRetrimmed, AuditActions.EntryDeleted, AuditActions.EntryMovedRow,
+            AuditActions.MarkerAdded, AuditActions.MarkerChanged, AuditActions.MarkerDeleted, AuditActions.RowDeleted,
+            AuditActions.VideoAdded, AuditActions.VideoChanged, AuditActions.VideoDeleted,
+            AuditActions.EditAdded, AuditActions.EditDeleted, AuditActions.EditApplied, AuditActions.EditReverted,
+            AuditActions.ProjectAdded, AuditActions.ProjectDeleted, AuditActions.ShortformRequested, AuditActions.ShortformDeleted,
+        ];
+
+        /// <summary>
+        /// The start screen's team cards: the caller's teams (not disabled) with their channel and when the team and the caller last changed
+        /// its work. Reads every one of the caller's teams, so it filters by team itself instead of the per-request team filter.
+        /// </summary>
+        private static async Task<IResult> ListTeams(HttpContext context, LibraryDbContext db, CancellationToken cancellationToken)
+        {
+            if (AuthSetup.GetId(context.User) is not { } id)
+                return Results.Problem(detail: "Log in first.", statusCode: StatusCodes.Status401Unauthorized);
+
+            var memberships = await db.TeamMembers.AsNoTracking()
+                .Where(x => x.UserId == id && x.Team!.DisabledAtUtc == null)
+                .OrderBy(x => x.JoinedAtUtc)
+                .Select(x => new { x.TeamId, x.Team!.Name, IsOwner = x.Team.OwnerUserId == id, Permissions = x.Role == null ? TeamPermission.None : x.Role.Permissions })
+                .ToListAsync(cancellationToken);
+            var teamIds = memberships.Select(x => x.TeamId).ToList();
+            var me = id.ToString();
+
+            var channels = (await db.Channels.IgnoreQueryFilters().AsNoTracking().Where(x => teamIds.Contains(x.TeamId)).ToListAsync(cancellationToken))
+                .ToLookup(x => x.TeamId);
+            var changes = db.AuditEvents.AsNoTracking()
+                .Where(x => x.TeamId != null && teamIds.Contains(x.TeamId.Value) && x.StaffId == null && x.UserId != null && WorkChanges.Contains(x.Action));
+            var teamLast = await changes.GroupBy(x => x.TeamId!.Value).Select(g => new { g.Key, Last = g.Max(x => x.TimestampUtc) })
+                .ToDictionaryAsync(x => x.Key, x => (DateTime?)x.Last, cancellationToken);
+            var myLast = await changes.Where(x => x.UserId == me).GroupBy(x => x.TeamId!.Value).Select(g => new { g.Key, Last = g.Max(x => x.TimestampUtc) })
+                .ToDictionaryAsync(x => x.Key, x => (DateTime?)x.Last, cancellationToken);
+            // Player 2's saves aren't audited (the page saves as you work): an edit's last save counts for its owner
+            var projects = db.Projects.IgnoreQueryFilters().AsNoTracking().Where(x => teamIds.Contains(x.TeamId));
+            var teamProjects = await projects.GroupBy(x => x.TeamId).Select(g => new { g.Key, Last = g.Max(x => x.UpdatedAtUtc) })
+                .ToDictionaryAsync(x => x.Key, x => (DateTime?)x.Last, cancellationToken);
+            var myProjects = await projects.Where(x => x.UserId == id).GroupBy(x => x.TeamId).Select(g => new { g.Key, Last = g.Max(x => x.UpdatedAtUtc) })
+                .ToDictionaryAsync(x => x.Key, x => (DateTime?)x.Last, cancellationToken);
+
+            var wanted = int.TryParse(context.Request.Cookies[TeamScope.TeamCookie], out var cookieTeam) ? cookieTeam : (int?)null;
+            var current = memberships.FirstOrDefault(x => x.TeamId == wanted)?.TeamId ?? memberships.FirstOrDefault()?.TeamId;
+            static DateTime? Latest(DateTime? a, DateTime? b) => a is null ? b : b is null ? a : a > b ? a : b;
+
+            return Results.Ok(memberships.Select(x =>
+            {
+                var permissions = x.IsOwner ? TeamPermission.All : x.Permissions;
+                var channel = TeamLabels.Primary(channels[x.TeamId]);
+                return new StartTeamDto(x.TeamId, x.Name, x.IsOwner, x.TeamId == current, permissions != TeamPermission.None,
+                    (permissions & TeamPermission.TeamPage) != 0,
+                    channel is null ? null : new StartChannelDto(channel.Login, channel.DisplayName),
+                    Latest(teamLast.GetValueOrDefault(x.TeamId), teamProjects.GetValueOrDefault(x.TeamId)),
+                    Latest(myLast.GetValueOrDefault(x.TeamId), myProjects.GetValueOrDefault(x.TeamId)));
+            }).ToList());
+        }
+
+        /// <summary>A team card's channel facts from Twitch (picture, live or last live), read separately so the cards show at once.</summary>
+        private static async Task<IResult> TeamChannelCard(int id, HttpContext context, LibraryDbContext db, IChannelCardSource cards,
+            CancellationToken cancellationToken)
+        {
+            if (AuthSetup.GetId(context.User) is not { } userId)
+                return Results.Problem(detail: "Log in first.", statusCode: StatusCodes.Status401Unauthorized);
+            if (!await db.TeamMembers.AnyAsync(x => x.TeamId == id && x.UserId == userId && x.Team!.DisabledAtUtc == null, cancellationToken))
+                return Results.Problem(detail: "Team not found.", statusCode: StatusCodes.Status404NotFound);
+
+            var channels = await db.Channels.IgnoreQueryFilters().AsNoTracking().Where(x => x.TeamId == id).ToListAsync(cancellationToken);
+            if (TeamLabels.Primary(channels) is not { } channel)
+                return Results.Problem(detail: "The team has no channel.", statusCode: StatusCodes.Status404NotFound);
+            return Results.Ok(await cards.GetAsync(channel.Login, channel.TwitchUserId, cancellationToken));
+        }
+
+        /// <summary>For every page, logged in or not: the app's name and the start screen's corner links (Admin → App, else <c>App:*</c>; blank = hidden).</summary>
+        private static async Task<IResult> AppInfo(LibraryDbContext db, IConfiguration configuration, CancellationToken cancellationToken) =>
+            Results.Ok(await AppSettingsEndpoints.ReadAsync(db, configuration, cancellationToken));
+
         private static async Task<IResult> UpdateSettings(UserSettingsRequest request, HttpContext context, LibraryDbContext db, CancellationToken cancellationToken)
         {
             if (AuthSetup.GetId(context.User) is not { } id)
@@ -204,7 +299,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 : link.TargetStaffId is { } staffTarget
                     ? await db.StaffAccounts.Where(x => x.Id == staffTarget).Select(x => x.Username).FirstOrDefaultAsync(cancellationToken)
                     : null;
-            return Results.Ok(new LinkInfoDto(link.Kind.ToString(), link.Team?.Name, link.ExpiresAtUtc,
+            return Results.Ok(new LinkInfoDto(link.Kind.ToString(), link.Team?.Name ?? link.TeamName, link.ExpiresAtUtc,
                 AuthSetup.GetId(context.User) is not null ? context.User.Identity?.Name : null, forUsername,
                 LinkChannel.Read(link.ChannelsJson).Select(x => x.DisplayName).ToList()));
         }
@@ -230,7 +325,21 @@ namespace TwitchDownloaderWeb.Endpoints
             }
 
             string? teamName = null;
-            if (link.Kind == AccountLinkKind.TeamRegistration)
+            var pickedName = false;
+            if (link.Kind == AccountLinkKind.TeamRegistration && link.TeamName is not null)
+            {
+                // The link suggests "{channel}'s Team"; the person opening it may change it, which counts as the team's rename (once every
+                // 14 days after). badrfly 2026-11-19.
+                teamName = link.TeamName;
+                if (!string.IsNullOrWhiteSpace(request.TeamName) && request.TeamName.Trim() != link.TeamName)
+                {
+                    if (AccountRules.TeamNameError(request.TeamName) is { } nameError)
+                        return Results.ValidationProblem(new Dictionary<string, string[]> { ["teamName"] = [nameError] });
+                    teamName = request.TeamName.Trim();
+                    pickedName = true;
+                }
+            }
+            else if (link.Kind == AccountLinkKind.TeamRegistration)
             {
                 if (AccountRules.TeamNameError(request.TeamName) is { } nameError)
                     return Results.ValidationProblem(new Dictionary<string, string[]> { ["teamName"] = [nameError] });
@@ -313,7 +422,7 @@ namespace TwitchDownloaderWeb.Endpoints
             switch (link.Kind)
             {
                 case AccountLinkKind.TeamRegistration:
-                    team = new Team { Name = teamName!, CreatedAtUtc = now, OwnerUserId = user.Id };
+                    team = new Team { Name = teamName!, CreatedAtUtc = now, OwnerUserId = user.Id, NameChangedAtUtc = pickedName ? now : null };
                     db.Teams.Add(team);
                     await db.SaveChangesAsync(cancellationToken);
                     db.Audit(AuditActions.TeamCreated, null, $"\"{team.Name}\" by {user.Username}", userId: user.Id.ToString(), teamId: team.Id);

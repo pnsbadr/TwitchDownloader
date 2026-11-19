@@ -250,9 +250,18 @@ Plan and badrfly's decisions: Claude Doc "Logins, teams and permissions plan". B
 - **One account, many teams**: `TeamMembers` (unique TeamId+UserId). The page's team switcher sets the `clipco.team` cookie
   (`POST /api/auth/team`); without it the first team joined is used.
 - **Team channels** (badrfly, 2026-11-15, for the frontend rework): members can no longer add channels, VOD links or Twitch clip links.
-  The app Owner (or a moderator with `StaffPermission.ManageTeamChannels`) assigns each team its Twitch channels on team registration/owner
-  links (`AccountLinks.ChannelsJson`, checked on Twitch when the link is made, added when it's used) and on the Admin page's Teams tab
-  (`/api/admin/teams/{id}/channels`, audited `channel.added`/`channel.removed`). `TeamChannelAccess` decides which VODs a team may open,
+  **A new team is locked to one channel** (badrfly 2026-11-19): a team registration link needs exactly one Twitch channel (`channel`,
+  checked on Twitch when the link is made, 400 when blank or more than one; stored in `AccountLinks.ChannelsJson`, added when it's used)
+  and suggests a name after it: "{display name}'s Team" (`AdminEndpoints.DefaultTeamName`, stored in `AccountLinks.TeamName`; staff
+  don't pick it). The join page shows it grayed out with a ✏️ button; changing it there (`teamName` on accept, different from the
+  suggestion) counts as the team's rename. **Teams rename themselves once every 14 days** (`AccountRules.TeamRenameDays`,
+  `Teams.NameChangedAtUtc`; keeping the suggestion doesn't start the wait): the team owner on the Team page (`PUT /api/team/name`, 409
+  `code: "rename-too-soon"` with `nextRenameAtUtc`); the app Owner any time (`PUT /api/admin/teams/{id}/name`, `RequireStaffOwner`, leaves
+  the team's wait alone). Audited `team.renamed`. **Staff see teams as "Channel (team name)"** (`TeamLabels`: the first channel still
+  assigned, else the first; `label` on admin team DTOs, and the team names in admin users/activity/app log). Older links without a
+  suggestion still take the typed name. Owner links carry no channels (400). **Only the app Owner gives a team more channels**, on the Admin page's Teams tab (`POST /api/admin/teams/{id}/channels`,
+  `RequireStaffOwner`, also "Assign again"); `StaffPermission.ManageTeamChannels` ("Remove team channels") only takes them away.
+  Audited `channel.added`/`channel.removed`. `TeamChannelAccess` decides which VODs a team may open,
   **strictly**: the VOD's channel (GQL owner, cached 12 h; matched by Twitch user ID, then login) must be assigned; work already on a VOD
   doesn't open it. Exception (badrfly 2026-11-16): a VOD **Twitch no longer has** stays open when the team's entries/videos on it name one of
   its assigned channels (`ChannelName`, login or display name), so stored clips stay exportable after the VOD is deleted (an export
@@ -320,8 +329,9 @@ Plan and badrfly's decisions: Claude Doc "Logins, teams and permissions plan". B
   A team can only reset members who are in no other team (the account is shared; staff handle the rest, step 3).
 - **One-time links** (`AccountLinks`): `TeamRegistration` (staff; new team, opener = owner), `TeamOwnership` (staff; opener becomes owner of
   an existing team: claiming "Main team", hand-over, recovery), `TeamInvite` (team owner). 7 days, revocable, claimed with a conditional
-  update so they can't be used twice. Only the token's SHA-256 is stored; the token is in the URL **fragment** (`/join.html#token`) and
-  sent in request bodies only, so it never reaches server logs. Opening a link while logged in offers "Continue as …".
+  update so they can't be used twice. Only the token's SHA-256 is stored; the token is in the URL **fragment** and sent in request bodies
+  only, so it never reaches server logs. Team users' links are `/#join=token` (the start screen shows the form; `LinkUrls.Build`), staff
+  links `/join.html#token`; older team links sent as `/join.html#…` forward to `/#join=…`. Opening a link while logged in offers "Continue as …".
 - **Owner setup**: `admin.html` while no staff account exists, only from loopback without `X-Forwarded-For` (open the page as
   `http://localhost:5254/admin.html` on the machine running the app). Set it up before exposing the app.
 - The accounts migration put all existing entries/channels/entry audit events in team 1 **"Main team"** with no owner; the Owner makes an
@@ -450,8 +460,9 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/entries/{id}/shortform/{renderId}/file[?inline=true]` / `.../thumbnail` / `DELETE .../{renderId}` | A render's mp4 (`<title> (vertical).mp4`, audited `file.served`; `inline` = the page's preview player, not audited), its jpg thumbnail, delete it. 404 if gone/expired |
 | `GET /api/vods/{id}/play.m3u8[?segments=proxy]` / `.../play/{n}.m3u8` / `.../play/{n}/{segment}` | HLS for the page's player (see Watching VODs), plus `.../play/{n}/clean/{key}.ts` (muted segment with saved audio swapped in). 403 sub-only, 404 gone, 502 Twitch unreachable. Playlists `no-store` |
 | `POST /api/auth/login` / `logout` / `GET /api/auth/me` / `POST /api/auth/team` `{ teamId }` | Team user session; `me` = `{ id, username, teams: [{ id, name, isOwner }], currentTeamId, permissions, timeZone, support, combineSegmentDownloads, maxStoredClipSeconds }` |
+| `GET /api/auth/teams` / `GET /api/auth/teams/{id}/channel` / `GET /api/auth/app` | Start screen: the member's team cards `[{ id, name, isOwner, isCurrent, hasAccess, canOpenTeamPage, channel: { login, displayName }, teamLastActiveUtc, myLastActiveUtc }]`; one card's channel from Twitch `{ profileImageUrl, live, liveSinceUtc, lastLiveUtc }` (members only, else 404); app name and corner links `{ name, links: { x, discord } }` (no login; set on Admin → App, `GET,PUT /api/admin/app`) |
 | `POST /api/links/inspect` `{ token }` / `POST /api/links/accept` `{ token, newAccount, username?, password?, teamName? }` | One-time links (see Accounts). Blank username with a session = join as the logged-in user |
-| `GET /api/team` / `DELETE /api/team/members/{userId}` / `PUT /api/team/members/{userId}/role` `{ roleId }` / `POST /api/team/members/{userId}/password-reset` | Team page: members, roles, permission catalog, `myPermissions` |
+| `GET /api/team` / `DELETE /api/team/members/{userId}` / `PUT /api/team/members/{userId}/role` `{ roleId }` / `POST /api/team/members/{userId}/password-reset` | Team page: members, roles, permission catalog, `myPermissions`, `canRename` / `nextRenameAtUtc` / `renameDays`. `PUT /api/team/name` `{ name }` (team owner, once every 14 days) |
 | `POST /api/team/roles` `{ name, permissions: [keys] }` / `PUT,DELETE /api/team/roles/{id}` | Roles (guard rails above) |
 | `GET,POST /api/team/invites` / `DELETE /api/team/invites/{id}` | Invite links. A link URL is only in the POST response |
 | `GET /api/team/activity?days=` / `GET /api/team/audit?userId=&before=&limit=` / `GET /api/team/settings` | Activity, team log, what the app Owner set: `{ storeClips, maxStoredClipSeconds, channels: [{ login, displayName, saveAudio, autoSaveAudio }], autoSaveAllowedByApp }` (read-only) |
@@ -474,9 +485,9 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/segment-downloads?vodIds=` / `GET .../{id}` / `.../{id}/files/{position}` / `.../{id}/combined` / `.../{id}/zip` / `DELETE .../{id}` | `{ id, vodId, entryId, title, quality, combined, status: Queued\|Running\|Ready\|Failed, error, expiresAtUtc, combinedFileUrl, zipUrl, canDelete, items: [{ position, label, startSeconds, endSeconds, status, error, fileSizeBytes, audioRestoredSeconds, audioMutedSeconds, fileUrl }] }`; files audited `file.served`. Delete own (`GenerateFiles`) or anyone's (`DeleteAnyEntries`) |
 | `POST /api/exports` `{ items: [{ kind: vod\|clip\|video\|segment\|edit\|project, editId?, projectId?, fileName?, quality?, vodId, start, end \| entryId, horizontal, vertical, renderId? \| videoId, joined \| markerId }] }` | Export (202): `{ id, status, error, itemsDone, itemsTotal, canDelete, items: [{ position, kind: VodRange\|Clip\|ClipVertical\|Video\|Segment, fileName, quality, vodId, startSeconds, endSeconds, cuts, entryId, markerId, videoId, renderId, joined, lengthSeconds, status, error, partsDone, partsTotal, fileSizeBytes, fileUrl }] }`. Vertical without a render → 409 `no-vertical` |
 | `GET /api/exports` / `GET .../{id}` / `.../{id}/items/{position}/file` / `DELETE .../{id}` | The caller's exports; a file (`<fileName>.mp4`, `(vertical).mp4`, a video's `.zip`; audited `file.served`). Delete own (`GenerateFiles`) or anyone's (`DeleteAnyEntries`) |
-| `PUT /api/admin/teams/{id}/features` `{ combineSegmentDownloads?, storeClips? }` | App Owner only: per-team features (joined segments, stored clips) |
+| `PUT /api/admin/teams/{id}/features` `{ combineSegmentDownloads?, storeClips? }` | App Owner only: per-team features (joined segments, stored clips). `PUT /api/admin/teams/{id}/name` `{ name }`: App Owner renames a team any time |
 | `PUT /api/admin/teams/{id}/channels/{channelId}/audio` `{ saveAudio?, autoSaveAudio? }` | App Owner only: audio saving per team channel |
-| `GET,POST /api/admin/teams/{id}/channels` `{ login }` / `DELETE .../channels/{channelId}?mode=revoke\|future` | A team's channels (`accessEndedAtUtc` set = existing work only) (`ManageTeamChannels`; GET also `ViewTeamsAndUsers`). POST checks Twitch (404) and duplicates (409). Team links take `channels: [logins]` too; `GET /api/admin/teams` lists each team's `channels` |
+| `GET,POST /api/admin/teams/{id}/channels` `{ login }` / `DELETE .../channels/{channelId}?mode=revoke\|future` | A team's channels (`accessEndedAtUtc` set = existing work only). POST = Owner only; DELETE `ManageTeamChannels`; GET also `ViewTeamsAndUsers`. POST checks Twitch (404) and duplicates (409). Registration links take `channel` (required, one); `GET /api/admin/teams` lists each team's `channels` and `label` |
 | `POST /api/auth/reports` `{ kind: error\|bug, message?, errorType?, details?, note?, url?, context?, vodId?, entryId?, visitId? }` | A page's crash or a bug report (201 `{ id }`; see `ErrorReports`). No login needed; rate limited |
 | `GET /api/admin/reports?kind=&userId=&teamId=&staffId=&area=&errorType=&browser=&os=&appVersion=&vodId=&fingerprint=&search=&from=&to=&sort=time\|user\|team\|kind\|area\|type\|browser\|os\|version&order=&offset=&limit=` / `GET .../groups` (same filters; sort `count\|people\|last\|first`) / `GET .../{id}` / `GET .../download?format=csv\|json` (+ filters, ≤ 20 000) / `DELETE .../{id}` / `DELETE /api/admin/reports?` (+ filters) | Reports tab (`ViewErrorReports`). `userId=0` / `teamId=0` = none; `errorType=-` = none. List = `{ total, items, facets: { kinds, users, teams, areas, errorTypes, browsers, systems, appVersions } }` (facets: `{ value, label, count }` over the time range only); one report adds `details`, `context`, `userAgent` |
 | `GET /api/live/events` | Live stream updates (server-sent events; see Live stream updates) |
@@ -492,11 +503,26 @@ The old library page (`app.js`, `player-bar.js`, `app.css`) was removed in front
   and where they work; badrfly 2026-11-10). Check it before adding a shortcut and add the new one there first: the page logs a console error
   when two bindings in one scope share a key, and the **shortcuts help** (`ui/shortcuts.js`: `?`, the keyboard icon in the top bar, or the
   account menu) is built from it, so mouse bindings and keys handled elsewhere are listed too.
-- Account pages (`login.html`, `join.html`, `account.html`, `team.html` + `team.js`, `admin.html` + `admin.js`, helpers in `account.js`) are
+- **Start screen** (`ui/start.js` + `ui/start.css`, badrfly 2026-11-19): the app opens on it, over the editor with the lights off and
+  **nothing loaded** (the editor's lists, players and timeline are only set up once a team is picked: `enterTeam` in `ui/editor.js`). Top:
+  app name (`GET /api/auth/app`), clock (user's time zone), profile button; bottom: username left, X / Discord icons right (hidden when
+  blank). The app Owner sets the name and both links on the Admin page's **App** tab (`GET,PUT /api/admin/app` `{ name, x, discord }`,
+  `RequireStaffOwner`, `AppSettings` row 1, audited `app.settings_changed`; "https://" added when missing, only http(s) links); until it's
+  saved they come from `App:Name` / `App:Links:X` / `App:Links:Discord`. The card holds the **login form** (logged out; `login.html` only redirects to
+  `/`), a **link's form** (`/#join=token`, `ui/join-form.js`, shared with `join.html`) or the member's **team cards** (`GET /api/auth/teams`:
+  the team's channel (`TeamLabels.Primary`), team name, "Team …" = the last change any member made to its work, "You …" = the member's own
+  (audited work changes in `AuthEndpoints.WorkChanges` + Player 2 saves), "Waiting for access", a Team page button when allowed), in a
+  carousel (< >, arrow keys). Each card's channel picture and **live / last live** come separately (`GET /api/auth/teams/{id}/channel`,
+  `IChannelCardSource` = `ChannelCardService`: Twitch picture, the live watcher's state, else the newest broadcast VOD (recording = live; its
+  end = last live), cached 5 min); a live channel's picture has a blinking red ring. Picking a team opens the editor on it; the editor's team
+  pill brings the screen back (Esc closes it; picking another team reloads straight into it via `sessionStorage` `clipco.start.enter`).
+  Staff support views skip it. The **profile menu** (both) only has the username, Account settings, Report a problem and Log out
+  (keyboard shortcuts stay on the top bar's icon and `?`; the Team page is on the team cards). A 401 while working goes back to `/`.
+- Account pages (`login.html` (redirect), `join.html`, `account.html`, `team.html` + `team.js`, `admin.html` + `admin.js`, helpers in `account.js`) are
   plain HTML forms (no Shoelace) styled by `ui/theme.css` + `ui/pages.css` (same gray theme and fonts as the editor; back arrow to the editor).
-  Not logged in → `login.html`; after login → `/`. `team.html` = members/roles/activity/log/invites/audio setting (`ACTION_LABELS` in team.js
+  Not logged in → `/` (the start screen's login form). `team.html` = members/roles/activity/log/invites/audio setting (`ACTION_LABELS` in team.js
   names audit actions; add new team-visible ones there), `join.html` = opening any link (staff links go to `admin.html` after),
-  `admin.html` = staff (tabs Teams/Users/Links/Moderators/Twitch/Reports/App log, shown by permission; tab saved in `localStorage` key `clipAdmin.tab`).
+  `admin.html` = staff (tabs Teams/Users/Links/Moderators/Twitch/App/Reports/App log, shown by permission; tab saved in `localStorage` key `clipAdmin.tab`).
   Pages hide buttons the user's permissions (`me.permissions`) don't allow.
 - Time zone (Local / Pacific `America/Los_Angeles`) is set on the Account page, saved per user on the server and cached in `localStorage` key
   `clipLibrary.timeZone`. Formatting only — the API always returns UTC (`...Z`). Days for date filters are computed in the shown time zone

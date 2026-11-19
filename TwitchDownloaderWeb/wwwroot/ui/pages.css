@@ -268,3 +268,18 @@ table.activity tbody tr:hover { background: var(--bg-2); }
 @media (max-width: 720px) {
   .report-head { grid-template-columns: 1fr 1fr; }
 }
+
+/* A name you can change, but only now and then (team names, badrfly 2026-11-19): grayed out until the pencil is pressed */
+.name-edit { display: flex; gap: 6px; align-items: center; }
+.name-edit input { flex: 1 1 auto; min-width: 0; }
+.name-edit input[readonly] { color: var(--text-faint); background: var(--bg-2); cursor: default; }
+.name-edit input[readonly]:hover { border-color: var(--line-strong); }
+.name-edit .pencil { flex: none; padding: 4px 8px; font-size: 16px; line-height: 1; }
+.tiny-text { font-size: 11px; color: var(--text-faint); margin: 4px 0 0; }
+.tiny-text button.link { font-size: 11px; padding: 0 2px; }
+.team-name { display: inline-flex; gap: 4px; align-items: center; }
+.team-name .pencil { padding: 0 4px; font-size: 13px; }
+.team-name .name-edit input { width: 260px; padding: 4px 8px; }
+.team-rename .pencil { padding: 2px 6px; font-size: 15px; }
+.team-rename .name-edit input { width: 280px; padding: 4px 8px; }
+.team-rename { padding: 6px 0; }

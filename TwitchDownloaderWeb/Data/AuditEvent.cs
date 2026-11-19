@@ -35,6 +35,7 @@ namespace TwitchDownloaderWeb.Data
         public const string UserLoggedOut = "user.logged_out";
         public const string TeamCreated = "team.created";
         public const string TeamOwnerChanged = "team.owner_changed";
+        public const string TeamRenamed = "team.renamed";
         public const string TeamMemberJoined = "team.member_joined";
         public const string TeamMemberRemoved = "team.member_removed";
         public const string LinkCreated = "link.created";
@@ -98,6 +99,8 @@ namespace TwitchDownloaderWeb.Data
         public const string ProjectDeleted = "project.deleted";
         /// <summary>The app Owner turned a team feature (e.g. joined segment downloads) on or off.</summary>
         public const string TeamFeaturesChanged = "team.features_changed";
+        /// <summary>The app Owner changed the app's name or the start screen's links (Admin → App).</summary>
+        public const string AppSettingsChanged = "app.settings_changed";
         public const string TwitchConnected = "twitch.connected";
         public const string TwitchDisconnected = "twitch.disconnected";
         /// <summary>Staff downloaded or deleted error reports (the Reports tab).</summary>

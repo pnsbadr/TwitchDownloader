@@ -51,7 +51,7 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal(HttpStatusCode.NoContent, await SetStaffPermissionsAsync(owner, moderatorId, "ViewTeamsAndUsers"));
             Assert.Equal(HttpStatusCode.OK, (await moderator.GetAsync("/api/admin/teams", ct)).StatusCode);
             Assert.Equal(HttpStatusCode.OK, (await moderator.GetAsync("/api/admin/users", ct)).StatusCode);
-            Assert.Equal(HttpStatusCode.Forbidden, (await moderator.PostAsJsonAsync("/api/admin/links", new { kind = "registration", channels = new[] { "arky" } }, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await moderator.PostAsJsonAsync("/api/admin/links", new { kind = "registration", channel = "arky" }, ct)).StatusCode);
             Assert.Equal(HttpStatusCode.Forbidden, (await moderator.PostAsJsonAsync("/api/admin/support", new { teamId = 1 }, ct)).StatusCode);
             Assert.Equal(HttpStatusCode.Forbidden, (await moderator.GetAsync("/api/admin/audit", ct)).StatusCode);
 
@@ -182,7 +182,7 @@ namespace TwitchDownloaderWeb.Tests
             var users = await GetJsonAsync(staff, "/api/admin/users?search=u1mem");
             var user = users.EnumerateArray().Single();
             Assert.Equal(memberId, user.GetProperty("id").GetInt32());
-            Assert.Equal(["u1 team", "u2 team"], user.GetProperty("teams").EnumerateArray().Select(x => x.GetProperty("teamName").GetString()));
+            Assert.Equal(["Arky (u1 team)", "Arky (u2 team)"], user.GetProperty("teams").EnumerateArray().Select(x => x.GetProperty("teamName").GetString()));
             Assert.Equal(1520, user.GetProperty("diskBytes").GetInt64());
             Assert.Equal(2, user.GetProperty("entriesAdded").GetInt32());
             Assert.Equal(1, user.GetProperty("recentActions").GetInt32());

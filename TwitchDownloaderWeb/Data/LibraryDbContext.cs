@@ -49,9 +49,18 @@ namespace TwitchDownloaderWeb.Data
         public DbSet<EditProject> Projects => Set<EditProject>();
         public DbSet<ProjectVod> ProjectVods => Set<ProjectVod>();
         public DbSet<TwitchConnection> TwitchConnections => Set<TwitchConnection>();
+        public DbSet<AppSettings> AppSettings => Set<AppSettings>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
+            modelBuilder.Entity<AppSettings>(entity =>
+            {
+                entity.Property(x => x.Id).ValueGeneratedNever();
+                entity.Property(x => x.Name).HasMaxLength(Endpoints.AppSettingsRules.MaxNameLength);
+                entity.Property(x => x.XUrl).HasMaxLength(Endpoints.AppSettingsRules.MaxUrlLength);
+                entity.Property(x => x.DiscordUrl).HasMaxLength(Endpoints.AppSettingsRules.MaxUrlLength);
+            });
+
             modelBuilder.Entity<TwitchConnection>(entity =>
             {
                 entity.Property(x => x.Id).ValueGeneratedNever();
@@ -340,6 +349,7 @@ namespace TwitchDownloaderWeb.Data
                 entity.Property(x => x.TokenHash).HasMaxLength(64);
                 entity.Property(x => x.Note).HasMaxLength(200);
                 entity.Property(x => x.ChannelsJson).HasMaxLength(8000);
+                entity.Property(x => x.TeamName).HasMaxLength(100);
                 entity.HasIndex(x => x.TokenHash).IsUnique();
                 entity.HasIndex(x => x.TeamId);
                 entity.HasOne(x => x.Team).WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);

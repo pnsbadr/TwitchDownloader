@@ -14,7 +14,7 @@ export function can(permission) {
 export const TEAM_PAGE_PERMISSIONS = ["InviteMembers", "AssignRoles", "ManageRoles", "RemoveMembers", "ResetPasswords", "ViewActivity"];
 
 // What the page does with a session problem; editor.js sets it so the API helper can show the gate
-export const sessionHandlers = { gate: (_text, _heading) => {} };
+export const sessionHandlers = { gate: (_text, _heading) => {}, loggedOut: () => { location.href = "/"; } };
 
 export async function loadMe() {
   me = await api("GET", "/api/auth/me");
@@ -50,8 +50,8 @@ export async function api(method, url, body) {
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = null; }
   if (response.status === 401) {
-    // Session ended (logged out elsewhere, password changed, account disabled)
-    location.href = "/login.html";
+    // Session ended (logged out elsewhere, password changed, account disabled): the app's start screen asks to log in
+    sessionHandlers.loggedOut();
   } else if (response.status === 403 && (data?.code === "no-access" || data?.code === "no-team")) {
     sessionHandlers.gate(data.detail);
   } else if (response.status === 403 && data?.code === "support-ended") {
