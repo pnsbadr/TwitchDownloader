@@ -14,6 +14,12 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<DownloadSettings>(builder.Configuration.GetSection(DownloadSettings.SectionName));
 builder.Services.Configure<AudioRescueSettings>(builder.Configuration.GetSection(AudioRescueSettings.SectionName));
 builder.Services.AddProblemDetails();
+// Bugs, errors and crashes for the Owner's Reports tab: every Error log line becomes a report (Services/ErrorReports)
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddSingleton<TwitchDownloaderWeb.Services.ErrorReports.ErrorReportSink>();
+builder.Services.AddSingleton<ILoggerProvider, TwitchDownloaderWeb.Services.ErrorReports.ErrorReportLoggerProvider>();
+builder.Services.AddSingleton<TwitchDownloaderWeb.Services.ErrorReports.ErrorReportWriter>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<TwitchDownloaderWeb.Services.ErrorReports.ErrorReportWriter>());
 builder.Services.AddExceptionHandler<TwitchUnreachableExceptionHandler>();
 builder.Services.AddClipcoAuth(builder.Configuration.GetValue("Auth:LoginAttemptsPerMinute", 10));
 
@@ -125,6 +131,7 @@ app.Use(async (context, next) =>
 
 app.MapAuthEndpoints();
 app.MapAdminEndpoints();
+app.MapErrorReportEndpoints();
 app.MapTeamEndpoints();
 app.MapVodDownloadEndpoints();
 app.MapEntryEndpoints();

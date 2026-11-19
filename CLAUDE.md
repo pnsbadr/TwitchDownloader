@@ -53,9 +53,14 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
 - `Ffmpeg:Path` — see FFmpeg above.
 - `Downloads:OutputFolder` (default `downloads`, git-ignored), `Downloads:TempFolder` (blank = Core's default
   cache dir), `Downloads:Threads` (per job), `Downloads:MaxConcurrentJobs` (default 1).
-- `Downloads:MaxStoredClipSeconds` (default 180) — clips **at or under** this are downloaded and stored;
-  longer ones are reference-only. Enforced on the server from the trim times; the page only previews it.
+- `Downloads:MaxStoredClipSeconds` (default 180) — clips **at or under** this are downloaded and stored, **only for teams the app Owner
+  turned stored clips on for** (`Teams.StoreClips`, off by default, badrfly 2026-11-18; Admin → Teams "Store clips",
+  `PUT /api/admin/teams/{id}/features { storeClips }`); otherwise every clip is reference-only, like segments. Longer ones are always
+  reference-only. Enforced on the server from the trim times (`EntryEndpoints.IsStoredLength`, on add and re-cut; existing files stay).
+  The page shows short references like any clip: only a reference **over** the limit gets the "Long" tag / translucent bar
+  (`me.maxStoredClipSeconds`), and clips stay capped at the limit on the timeline.
 - `Downloads:GeneratedFileHours` (default 72) — on-demand files for reference-only entries are deleted after this.
+- `ErrorReports:KeepDays` (default 90) / `ErrorReports:MaxReports` (default 20 000) — how long and how many error reports are kept (see `ErrorReports`).
 - `Downloads:ExactTrimPreset` (default `veryfast`) / `Downloads:ExactTrimCrf` (default 18) — libx264 settings for Exact trims (see Jobs and files).
 
 ### Data (EF Core 10 + SQLite, `Data/`)
@@ -67,7 +72,9 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
 - `LibraryEntries.Kind` (`Vod`/`Clip`, migration default `Vod`) + `ClipSlug`: see Twitch clips. For clips `VodId` is the source
   VOD (0 if Twitch didn't say) and `StartTime`/`EndTime` the clip's place in it (whole seconds).
 - `Channels` (`SavedChannel`): the team's **assigned channels** (see Team channels): login (unique per team, lower-case), display name,
-  Twitch user ID, `WatchMutedAudio` (for the muted-audio rescue), `AddedAtUtc`, `AddedByUserId`.
+  Twitch user ID, `WatchMutedAudio` (= automatic audio saving for this channel) and `AllowSaveAudio` (= Save audio now allowed), both set
+  **only by the app Owner** (badrfly 2026-11-18; off for new channels; migration `ChannelAudioAndStoredClips` copied the old team setting),
+  `AddedAtUtc`, `AddedByUserId`.
 - `AudioRescues` (`VodAudioRescue`, key = VOD ID) + `RescuedAudioSegments` (unique VodId+Key): see Muted audio rescue.
   `LibraryEntries.AudioRestoredSeconds` = muted seconds replaced in the entry's last file; `AudioMutedSeconds` = muted seconds
   in it with no clean copy saved (only known when the VOD has a rescue; audited `audio.not_restored`).
@@ -209,6 +216,25 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   become library entries**. Each item copies the segment's label/range at request time (`MarkerId` has no FK). `EntryId` = the card it was picked on
   (title + quality for the files; no FK). Team query filter; `TeamId`/`CreatedByUserId` filled by `SaveChanges`. Audited `segments.requested`
   (counts as "generated" activity) / `segments.ready` / `segments.failed` / `segments.deleted` / `segments.expired`, `team.features_changed`.
+- `ErrorReports` (`ErrorReport`, badrfly 2026-11-18): **bugs, errors and crashes** for the Admin page's **Reports** tab (staff permission
+  `ViewErrorReports`, bit 8; the Owner always). Kinds: `ServerError` (any Error log line during a request, crashes included: ASP.NET's
+  exception handler logs them), `JobError` (an Error log line from a background job), `PageError` (a page's script error, unhandled promise
+  rejection, or app script that didn't load) and `BugReport` ("Report a problem" in the editor's account menu). Each keeps who (user, team,
+  staff; **names copied** so they outlive the account), when, where (`Area`: "GET /api/entries/{id}", the job's class, or the page path),
+  error type, message, details (stack/log line), the person's note, status, URL (never the fragment: link tokens), browser + system
+  (`UserAgentInfo`) and user agent, VOD/entry/export/segment download IDs, the page's context JSON, app version (git commit from the
+  assembly's informational version) and a `Fingerprint` (kind + type + where + message with numbers/IDs/quoted text taken out) that groups
+  repeats (bug reports never group). `ErrorReportLoggerProvider` (an `ILoggerProvider`) turns Error/Critical log lines into reports
+  (skipping EF Core's and the writer's own: no loops); for jobs it reads `EntryId` / `VodId` / `BatchId` / `ExportId` from the log line's
+  values and `ErrorReportWriter` (BackgroundService, batches) attributes the report to the entry's adder or the export's creator. So **log
+  job failures with those named values**. At most 120 a minute (`ErrorReportSink`; the rest counted in one report). Everything is passed
+  through `ReportScrubber.Clean` (token=/sig=/password=…, OAuth/Bearer headers, Twitch CDN/usher URLs cut to host + file name, JWT-like
+  strings): **never put tokens in a log line anyway**. Pages: `wwwroot/reports.js` (loaded first on every page) sends crashes (≤ 15 per page
+  load, the same one once a minute; `ResizeObserver` noise and cross-origin "Script error." skipped) and bug reports to
+  `POST /api/auth/reports` (open, rate limited 30 per 10 min per IP, so crashes before login count) with context: page, screen, time zone,
+  what the editor has open (`clipcoReports.setContext` in `ui/editor.js`: screen, active player, Player 1's VOD and position, Player 2's edit,
+  row focus, player kind) and the last 30 breadcrumbs (`api` calls with status and time from `core.js` / `account.js`, console errors,
+  screen changes). Audited `reports.downloaded` / `reports.deleted`.
 - A converter marks every `DateTime` as UTC when read back (SQLite has no date type) — keep all times UTC.
 - SQLite runs in **WAL mode** (set at startup, stored in the file): copy `clipco.db` together with `clipco.db-wal`/`-shm`, or stop the app first.
   `Projects.Revision` is a concurrency token (two saves of one revision: the second gets 409 `project-changed`).
@@ -266,9 +292,14 @@ Plan and badrfly's decisions: Claude Doc "Logins, teams and permissions plan". B
   deleted, downloaded, generated, vertical) plus entries added and disk used now by their entries' files and renders;
   `GET /api/team/audit?userId=&before=` is the team log. `shortform.requested`/`shortform.deleted` are audited by the endpoint (the
   render job doesn't know the user).
-- **Automatic audio saving is a team setting** (`Teams.AutoSaveAudio`, off by default, `ManageAudioSettings`). A saved channel is watched
-  when its team has it on; rescues not started by hand run only while such a team watches their channel (`AudioRescueService.AutoWatchedLogins`,
-  across all teams). `AudioRescue:Enabled` is now the app-wide kill switch (default true).
+- **Audio saving is the app Owner's call, per team channel** (badrfly 2026-11-18; it used to be the team setting `Teams.AutoSaveAudio`,
+  now unused, and `ManageAudioSettings`, kept but out of the catalog). Admin → Teams → Channels has "Save audio now" (`AllowSaveAudio`)
+  and "Save automatically" (`WatchMutedAudio`) per channel (`PUT /api/admin/teams/{id}/channels/{channelId}/audio { saveAudio?, autoSaveAudio? }`,
+  `RequireStaffOwner`, audited `channel.audio_changed`). A channel is watched when its row has automatic saving on (enabled team); rescues not
+  started by hand run only while such a row exists (`AudioRescueService.AutoWatchedLogins`, across all teams). `POST /api/vods/{id}/rescue`
+  needs the `SaveAudio` permission **and** the VOD's channel row allowing it (either flag; `TeamChannelAccess.FindVodChannelAsync`), else 403
+  `code: "audio-not-allowed"`; the page hides the button (`/api/channels` `saveAudio`). The Team page only shows what the Owner set
+  (`GET /api/team/settings`). `AudioRescue:Enabled` is the app-wide kill switch (default true).
 - **Staff** (`Data/StaffPermissions.cs`, `StaffScope`): the Owner (`IsOwner`) has everything and alone manages moderators
   (`/api/admin/staff*`: invite links `StaffInvite`, permissions, disable, `StaffPasswordReset` links; never the Owner account). Moderators
   join with **no permissions** (same rule as team invites) and get `StaffPermission` flags (bit mask on `StaffAccounts.Permissions`: never
@@ -363,9 +394,9 @@ Pages hear the moment a team's channel starts or stops streaming, without a refr
 ### Muted audio rescue (`Services/AudioRescue/`)
 Twitch mutes segments (`123-muted.ts`) and keeps the clean copy (`123.ts`) for a limited time (Core assumes 24 h and
 only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We save clean audio and splice it back:
-- **Automatic saving is off by default, per team** (it filled the dev disk, ~4.8 GB in 5 days for 2 channels). It's the team setting
-  `Teams.AutoSaveAudio` (Team page, permission `ManageAudioSettings`); `AudioRescue:Enabled` (default true) is only the app-wide kill switch.
-  Without a team that has it on, a channel isn't watched and rescues not started by hand pause (no grab, no prune; VOD cards say
+- **Automatic saving is off by default, per channel, set by the app Owner** (it filled the dev disk, ~4.8 GB in 5 days for 2 channels;
+  see Accounts: `SavedChannel.WatchMutedAudio` / `AllowSaveAudio`); `AudioRescue:Enabled` (default true) is only the app-wide kill switch.
+  Without a channel row that has it on, a channel isn't watched and rescues not started by hand pause (no grab, no prune; VOD cards say
   "Audio saving paused"). The **Save audio now** button still works (user's call, 2026-11-02; permission `SaveAudio`): `POST` sets
   `ManuallyRequested`, which runs that rescue through grab and prune, and resumes it if it was paused. Saved audio is kept and still used for restores.
 - `AudioRescueService` (BackgroundService, `AudioRescue:*` settings): every `PollMinutes` it checks saved channels with
@@ -418,12 +449,12 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/entries/{id}/shortform` / `POST /api/entries/{id}/shortform` | Vertical (9:16) renders: `{ status: None\|Rendering\|Failed, progress, error, layout, renders: [{ id, createdAtUtc, expiresAtUtc, sizeBytes, layout, fileUrl, thumbnailUrl }] }` (newest first) / start a render (202) with `{ mode: single\|split, top: {x,y,width,height}, bottom?, splitRatio?, trimStart?, trimEnd?, parts?, keys? }` (fractions of the source video; `parts: [{ start, end, mode, top, bottom?, splitRatio?, keys? }]` in file seconds, in order, no overlap, each ≥ 0.5 s, at most 40: rendered one by one and joined, the plain fields are then set from them). 409 if the entry has no file |
 | `GET /api/entries/{id}/shortform/{renderId}/file[?inline=true]` / `.../thumbnail` / `DELETE .../{renderId}` | A render's mp4 (`<title> (vertical).mp4`, audited `file.served`; `inline` = the page's preview player, not audited), its jpg thumbnail, delete it. 404 if gone/expired |
 | `GET /api/vods/{id}/play.m3u8[?segments=proxy]` / `.../play/{n}.m3u8` / `.../play/{n}/{segment}` | HLS for the page's player (see Watching VODs), plus `.../play/{n}/clean/{key}.ts` (muted segment with saved audio swapped in). 403 sub-only, 404 gone, 502 Twitch unreachable. Playlists `no-store` |
-| `POST /api/auth/login` / `logout` / `GET /api/auth/me` / `POST /api/auth/team` `{ teamId }` | Team user session; `me` = `{ id, username, teams: [{ id, name, isOwner }], currentTeamId, permissions, timeZone, support, combineSegmentDownloads }` |
+| `POST /api/auth/login` / `logout` / `GET /api/auth/me` / `POST /api/auth/team` `{ teamId }` | Team user session; `me` = `{ id, username, teams: [{ id, name, isOwner }], currentTeamId, permissions, timeZone, support, combineSegmentDownloads, maxStoredClipSeconds }` |
 | `POST /api/links/inspect` `{ token }` / `POST /api/links/accept` `{ token, newAccount, username?, password?, teamName? }` | One-time links (see Accounts). Blank username with a session = join as the logged-in user |
 | `GET /api/team` / `DELETE /api/team/members/{userId}` / `PUT /api/team/members/{userId}/role` `{ roleId }` / `POST /api/team/members/{userId}/password-reset` | Team page: members, roles, permission catalog, `myPermissions` |
 | `POST /api/team/roles` `{ name, permissions: [keys] }` / `PUT,DELETE /api/team/roles/{id}` | Roles (guard rails above) |
 | `GET,POST /api/team/invites` / `DELETE /api/team/invites/{id}` | Invite links. A link URL is only in the POST response |
-| `GET /api/team/activity?days=` / `GET /api/team/audit?userId=&before=&limit=` / `GET,PUT /api/team/settings` `{ autoSaveAudio }` | Activity, team log, team settings |
+| `GET /api/team/activity?days=` / `GET /api/team/audit?userId=&before=&limit=` / `GET /api/team/settings` | Activity, team log, what the app Owner set: `{ storeClips, maxStoredClipSeconds, channels: [{ login, displayName, saveAudio, autoSaveAudio }], autoSaveAllowedByApp }` (read-only) |
 | `PUT /api/auth/settings` `{ timeZone: local\|pacific }` / `POST /api/auth/password` `{ currentPassword, newPassword }` | Own account |
 | `GET,POST /api/admin/setup` / `POST /api/admin/login`, `logout`, `password` / `GET /api/admin/me` / `GET,POST /api/admin/links` `{ kind: registration\|ownership, teamId?, note? }` / `DELETE /api/admin/links/{id}` | Staff API (each endpoint's staff permission: see Staff) |
 | `GET /api/admin/teams` / `GET /api/admin/teams/{id}?days=` / `PUT /api/admin/teams/{id}/disabled` `{ disabled }` | Teams with disk use and last active; members' activity |
@@ -443,8 +474,11 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/segment-downloads?vodIds=` / `GET .../{id}` / `.../{id}/files/{position}` / `.../{id}/combined` / `.../{id}/zip` / `DELETE .../{id}` | `{ id, vodId, entryId, title, quality, combined, status: Queued\|Running\|Ready\|Failed, error, expiresAtUtc, combinedFileUrl, zipUrl, canDelete, items: [{ position, label, startSeconds, endSeconds, status, error, fileSizeBytes, audioRestoredSeconds, audioMutedSeconds, fileUrl }] }`; files audited `file.served`. Delete own (`GenerateFiles`) or anyone's (`DeleteAnyEntries`) |
 | `POST /api/exports` `{ items: [{ kind: vod\|clip\|video\|segment\|edit\|project, editId?, projectId?, fileName?, quality?, vodId, start, end \| entryId, horizontal, vertical, renderId? \| videoId, joined \| markerId }] }` | Export (202): `{ id, status, error, itemsDone, itemsTotal, canDelete, items: [{ position, kind: VodRange\|Clip\|ClipVertical\|Video\|Segment, fileName, quality, vodId, startSeconds, endSeconds, cuts, entryId, markerId, videoId, renderId, joined, lengthSeconds, status, error, partsDone, partsTotal, fileSizeBytes, fileUrl }] }`. Vertical without a render → 409 `no-vertical` |
 | `GET /api/exports` / `GET .../{id}` / `.../{id}/items/{position}/file` / `DELETE .../{id}` | The caller's exports; a file (`<fileName>.mp4`, `(vertical).mp4`, a video's `.zip`; audited `file.served`). Delete own (`GenerateFiles`) or anyone's (`DeleteAnyEntries`) |
-| `PUT /api/admin/teams/{id}/features` `{ combineSegmentDownloads }` | App Owner only: per-team features being tried out |
+| `PUT /api/admin/teams/{id}/features` `{ combineSegmentDownloads?, storeClips? }` | App Owner only: per-team features (joined segments, stored clips) |
+| `PUT /api/admin/teams/{id}/channels/{channelId}/audio` `{ saveAudio?, autoSaveAudio? }` | App Owner only: audio saving per team channel |
 | `GET,POST /api/admin/teams/{id}/channels` `{ login }` / `DELETE .../channels/{channelId}?mode=revoke\|future` | A team's channels (`accessEndedAtUtc` set = existing work only) (`ManageTeamChannels`; GET also `ViewTeamsAndUsers`). POST checks Twitch (404) and duplicates (409). Team links take `channels: [logins]` too; `GET /api/admin/teams` lists each team's `channels` |
+| `POST /api/auth/reports` `{ kind: error\|bug, message?, errorType?, details?, note?, url?, context?, vodId?, entryId?, visitId? }` | A page's crash or a bug report (201 `{ id }`; see `ErrorReports`). No login needed; rate limited |
+| `GET /api/admin/reports?kind=&userId=&teamId=&staffId=&area=&errorType=&browser=&os=&appVersion=&vodId=&fingerprint=&search=&from=&to=&sort=time\|user\|team\|kind\|area\|type\|browser\|os\|version&order=&offset=&limit=` / `GET .../groups` (same filters; sort `count\|people\|last\|first`) / `GET .../{id}` / `GET .../download?format=csv\|json` (+ filters, ≤ 20 000) / `DELETE .../{id}` / `DELETE /api/admin/reports?` (+ filters) | Reports tab (`ViewErrorReports`). `userId=0` / `teamId=0` = none; `errorType=-` = none. List = `{ total, items, facets: { kinds, users, teams, areas, errorTypes, browsers, systems, appVersions } }` (facets: `{ value, label, count }` over the time range only); one report adds `details`, `context`, `userAgent` |
 | `GET /api/live/events` | Live stream updates (server-sent events; see Live stream updates) |
 | `GET /api/admin/twitch` / `PUT /api/admin/twitch/client-id` / `POST /api/admin/twitch/connect` / `DELETE /api/admin/twitch` | Twitch sign-in for live stream updates (Owner only) |
 | `POST /api/vods/download` | Phase 1 dev endpoint: synchronous, writes `<title>.mp4` straight into `downloads/`, not part of the library |
@@ -462,7 +496,7 @@ The old library page (`app.js`, `player-bar.js`, `app.css`) was removed in front
   plain HTML forms (no Shoelace) styled by `ui/theme.css` + `ui/pages.css` (same gray theme and fonts as the editor; back arrow to the editor).
   Not logged in → `login.html`; after login → `/`. `team.html` = members/roles/activity/log/invites/audio setting (`ACTION_LABELS` in team.js
   names audit actions; add new team-visible ones there), `join.html` = opening any link (staff links go to `admin.html` after),
-  `admin.html` = staff (tabs Teams/Users/Links/Moderators/App log, shown by permission; tab saved in `localStorage` key `clipAdmin.tab`).
+  `admin.html` = staff (tabs Teams/Users/Links/Moderators/Twitch/Reports/App log, shown by permission; tab saved in `localStorage` key `clipAdmin.tab`).
   Pages hide buttons the user's permissions (`me.permissions`) don't allow.
 - Time zone (Local / Pacific `America/Los_Angeles`) is set on the Account page, saved per user on the server and cached in `localStorage` key
   `clipLibrary.timeZone`. Formatting only — the API always returns UTC (`...Z`). Days for date filters are computed in the shown time zone

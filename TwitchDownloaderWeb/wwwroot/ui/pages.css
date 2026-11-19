@@ -242,3 +242,29 @@ table.activity tbody tr:hover { background: var(--bg-2); }
 /* Admin → Twitch: the device code to type at twitch.tv/activate */
 .twitch-user-code { font-size: 2.2rem; letter-spacing: 0.15em; margin: 8px 0; }
 .error-text { color: var(--danger); }
+
+/* ---------- Admin: Reports ---------- */
+.report-filters { gap: 8px 14px; flex-wrap: wrap; margin-bottom: 8px; }
+.report-filters select { max-width: 220px; }
+.report-actions { gap: 8px; align-items: center; margin: 4px 0 8px; }
+.report-list .report-row { border-top: 1px solid var(--line); padding: 8px 0; }
+.report-list .report-row:first-child { border-top: none; }
+.report-head { display: grid; grid-template-columns: 150px 96px minmax(120px, 180px) 1fr; gap: 4px 12px; align-items: baseline; cursor: pointer; }
+.report-head:hover .report-msg { color: var(--text); text-decoration: underline; }
+.report-msg { color: var(--text-dim); overflow-wrap: anywhere; }
+.report-where { font-family: ui-monospace, monospace; font-size: 12px; color: var(--text-faint); }
+.report-who button, .report-detail button.link { padding: 0; }
+.badge.kind-ServerError, .badge.kind-JobError { color: var(--danger); }
+.badge.kind-PageError { color: #f0a052; }
+.badge.kind-BugReport { color: var(--accent); }
+.report-detail { margin: 8px 0 4px; padding: 10px 12px; background: var(--bg-2); border-radius: var(--radius); display: grid; gap: 8px; }
+.report-facts { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; font-size: 13px; }
+.report-facts dt { color: var(--text-faint); }
+.report-facts dd { margin: 0; overflow-wrap: anywhere; }
+.report-detail pre { margin: 0; max-height: 320px; overflow: auto; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere;
+  background: var(--bg-1); padding: 8px; border-radius: var(--radius-small); }
+.report-note { white-space: pre-wrap; background: var(--bg-1); padding: 8px; border-radius: var(--radius-small); }
+.report-count { font-variant-numeric: tabular-nums; font-weight: 600; }
+@media (max-width: 720px) {
+  .report-head { grid-template-columns: 1fr 1fr; }
+}

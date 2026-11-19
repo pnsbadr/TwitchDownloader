@@ -414,7 +414,9 @@ function vodCard(vod) {
   const actions = [];
   // Saving audio: live or ended < 24 h ago and not saving yet, or a failed try (same rule as the old page)
   const canStart = !vod.rescueStatus || (vod.rescuePaused && vod.rescueStatus === "Grabbing");
-  if (can("SaveAudio") && ((vod.unmuteWindowOpen || vod.isLive) && canStart || vod.rescueStatus === "Failed")) {
+  // The app Owner allows Save audio now per channel (badrfly 2026-11-18)
+  const audioAllowed = state.channels.find((c) => c.login === state.channel)?.saveAudio !== false;
+  if (can("SaveAudio") && audioAllowed && ((vod.unmuteWindowOpen || vod.isLive) && canStart || vod.rescueStatus === "Failed")) {
     actions.push(iconButton({
       icon: "microphone",
       label: vod.rescueStatus === "Failed" ? "Retry saving audio" : "Save audio now",
@@ -476,11 +478,19 @@ function clipStatus(entry) {
   return null;
 }
 
+// A reference clip over the stored-clip limit. Shorter references (teams that don't store clips, badrfly 2026-11-18) look like any clip
+function isLongClip(entry) {
+  if (!entry.isReferenceOnly) return false;
+  const start = entry.startSeconds ?? 0;
+  const end = entry.endSeconds ?? entry.vodLengthSeconds ?? 0;
+  return end - start > (me?.maxStoredClipSeconds || 180) + 0.01;
+}
+
 function clipCard(entry) {
   const badges = [
     el("span", { class: "card-badge num" }, formatDuration(entry.clipLengthSeconds)),
     entry.kind === "Clip" ? el("span", { class: "card-badge tag" }, "Twitch") : null,
-    entry.kind !== "Clip" && entry.isReferenceOnly ? el("span", { class: "card-badge tag", title: "Longer than the stored-clip limit: not stored, made on demand" }, "Long") : null,
+    entry.kind !== "Clip" && isLongClip(entry) ? el("span", { class: "card-badge tag", title: "Longer than the stored-clip limit: not stored, made on demand" }, "Long") : null,
   ];
   const item = entry; // keeps entry.kind (Vod / Clip): the card's own kind is "clip"
   return card({

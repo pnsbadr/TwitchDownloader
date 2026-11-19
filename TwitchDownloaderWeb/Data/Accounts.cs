@@ -62,10 +62,16 @@ namespace TwitchDownloaderWeb.Data
         public DateTime? DisabledAtUtc { get; set; }
 
         /// <summary>
-        /// Automatic audio saving for this team's saved channels (replaces the old app-wide AudioRescue:Enabled switch, which is now the
-        /// app's kill switch). Off by default: it fills disks fast.
+        /// No longer used (badrfly 2026-11-18): automatic audio saving is set per channel by the app Owner (<see cref="SavedChannel.WatchMutedAudio"/>).
+        /// The migration ChannelAudioAndStoredClips copied it onto the team's channels.
         /// </summary>
         public bool AutoSaveAudio { get; set; }
+
+        /// <summary>
+        /// Clips at or under Downloads:MaxStoredClipSeconds are downloaded and stored as files. Only the app Owner turns it on, per team
+        /// (badrfly 2026-11-18). Off by default: clips are references (like segments, files made when needed) and look like any clip on the page.
+        /// </summary>
+        public bool StoreClips { get; set; }
 
         /// <summary>
         /// Members may download picked segments joined into one file (besides one file per segment, which every team has). Only the app

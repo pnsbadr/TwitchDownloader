@@ -40,9 +40,8 @@ namespace TwitchDownloaderWeb.Tests
             {
                 var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
                 db.Database.Migrate();
-                // Rescues not started by hand only run for channels a team with automatic saving on has saved
-                db.Teams.First(x => x.Id == MainTeam).AutoSaveAudio = true;
-                db.Channels.Add(new SavedChannel { TeamId = MainTeam, Login = "arky", DisplayName = "Arky", AddedAtUtc = DateTime.UtcNow });
+                // Rescues not started by hand only run for channels the app Owner turned automatic saving on for
+                db.Channels.Add(new SavedChannel { TeamId = MainTeam, Login = "arky", DisplayName = "Arky", AddedAtUtc = DateTime.UtcNow, WatchMutedAudio = true });
                 db.SaveChanges();
             }
 
@@ -95,7 +94,7 @@ namespace TwitchDownloaderWeb.Tests
             using (var scope = _services.CreateScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
-                db.Teams.First(x => x.Id == MainTeam).AutoSaveAudio = false;
+                db.Channels.First(x => x.Login == "arky").WatchMutedAudio = false;
                 AudioRescueService.AddRescue(db, VodId, "arky", "Team has it off", DateTime.UtcNow.AddHours(-1), "test");
                 AudioRescueService.AddRescue(db, VodId + 1, "someone_else", "Not saved by any team", DateTime.UtcNow.AddHours(-1), "test");
                 await db.SaveChangesAsync(ct);
@@ -110,8 +109,8 @@ namespace TwitchDownloaderWeb.Tests
                 var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
                 Assert.All(await db.AudioRescues.ToListAsync(ct), x => Assert.Equal(0, x.SavedCount));
 
-                // Turning it on for the team that saved arky resumes that one only
-                db.Teams.First(x => x.Id == MainTeam).AutoSaveAudio = true;
+                // Turning it on for arky resumes that one only
+                db.Channels.First(x => x.Login == "arky").WatchMutedAudio = true;
                 await db.SaveChangesAsync(ct);
             }
 

@@ -10,7 +10,9 @@ async function api(method, url, body) {
     options.headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(body);
   }
+  const started = performance.now();
   const response = await fetch(url, options);
+  window.clipcoReports?.request(method, url, response.status, performance.now() - started);
   const text = await response.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = null; }

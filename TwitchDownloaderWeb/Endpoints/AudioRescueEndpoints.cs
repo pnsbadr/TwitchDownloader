@@ -34,12 +34,26 @@ namespace TwitchDownloaderWeb.Endpoints
         }
 
         /// <summary>
-        /// Starts saving a VOD's audio now (any VOD, saved channel or not), whether or not automatic saving is on.
+        /// Starts saving a VOD's audio now, whether or not automatic saving is on, on channels where the app Owner allows it
+        /// (<see cref="SavedChannel.AllowSaveAudio"/> or automatic saving; badrfly 2026-11-18), else 403 <c>audio-not-allowed</c>.
         /// A failed rescue is retried, one paused because automatic saving is off is resumed; others are returned as they are.
         /// </summary>
         private static async Task<IResult> StartRescue(long vodId, LibraryDbContext db, VodInfoService vodInfo, AudioRescueService rescueService,
-            IOptions<AudioRescueSettings> settings, CancellationToken cancellationToken)
+            IOptions<AudioRescueSettings> settings, TeamChannelAccess access, CancellationToken cancellationToken)
         {
+            SavedChannel? channel;
+            try
+            {
+                channel = await access.FindVodChannelAsync(vodId, cancellationToken);
+            }
+            catch (HttpRequestException)
+            {
+                return Results.Problem(detail: "Couldn't reach Twitch. Try again in a moment.", statusCode: StatusCodes.Status502BadGateway);
+            }
+            if (channel is not { AllowSaveAudio: true } and not { WatchMutedAudio: true })
+                return Results.Problem(detail: "Saving audio isn't turned on for this channel. The app's Owner decides that.",
+                    statusCode: StatusCodes.Status403Forbidden, extensions: new Dictionary<string, object?> { ["code"] = "audio-not-allowed" });
+
             var rescue = await db.AudioRescues.FirstOrDefaultAsync(x => x.VodId == vodId, cancellationToken);
             var paused = rescue is { Status: AudioRescueStatus.Grabbing } && await AudioRescueService.IsPausedAsync(db, rescue, settings.Value.Enabled, cancellationToken);
             if (rescue is not null && rescue.Status != AudioRescueStatus.Failed && !paused)

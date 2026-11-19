@@ -126,6 +126,19 @@ namespace TwitchDownloaderWeb.Services
             return names.Any(name => logins.Concat(displayNames).Any(x => string.Equals(x, name, StringComparison.OrdinalIgnoreCase)));
         }
 
+        /// <summary>
+        /// The team's channel row the VOD belongs to (still assigned), or null when it's none of them or Twitch has no such VOD. Throws
+        /// <see cref="HttpRequestException"/> when Twitch is unreachable.
+        /// </summary>
+        public async Task<SavedChannel?> FindVodChannelAsync(long vodId, CancellationToken cancellationToken)
+        {
+            if (await GetOwnerAsync(vodId) is not { } owner)
+                return null;
+            var channels = await db.Channels.AsNoTracking().Where(x => x.AccessEndedAtUtc == null).ToListAsync(cancellationToken);
+            return channels.FirstOrDefault(x => !string.IsNullOrEmpty(owner.UserId) && x.TwitchUserId == owner.UserId)
+                   ?? channels.FirstOrDefault(x => !string.IsNullOrEmpty(owner.Login) && string.Equals(x.Login, owner.Login, StringComparison.OrdinalIgnoreCase));
+        }
+
         /// <summary>The VOD's channel (login, Twitch user ID), or null when Twitch has no such VOD. Throws <see cref="HttpRequestException"/> when Twitch is unreachable.</summary>
         public async Task<(string? Login, string? UserId)?> GetVodChannelAsync(long vodId) =>
             await GetOwnerAsync(vodId) is { } owner ? (owner.Login, owner.UserId) : null;

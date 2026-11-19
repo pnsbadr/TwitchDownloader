@@ -6,10 +6,10 @@ namespace TwitchDownloaderWeb
         public const string SectionName = "AudioRescue";
 
         /// <summary>
-        /// App-wide switch for automatic saving of VOD audio (the app Owner's kill switch). Automatic saving itself is a team setting
-        /// (<see cref="Data.Team.AutoSaveAudio"/>, off by default): a saved channel is watched when its team has it on. Rescues not started
-        /// by hand pause (no grabbing, no pruning) while no team with it on watches their channel, or while this is off. The page's Save
-        /// audio button works either way. Already saved audio is kept and still used to restore downloads.
+        /// App-wide switch for automatic saving of VOD audio (the app Owner's kill switch). Automatic saving itself is set per team channel by
+        /// the app Owner (<see cref="Data.SavedChannel.WatchMutedAudio"/>, off by default). Rescues not started by hand pause (no grabbing, no
+        /// pruning) while no channel row with it on watches their channel, or while this is off. The page's Save audio button works either
+        /// way where the Owner allows it (<see cref="Data.SavedChannel.AllowSaveAudio"/>). Already saved audio is kept and still used to restore downloads.
         /// </summary>
         public bool Enabled { get; set; } = true;
 

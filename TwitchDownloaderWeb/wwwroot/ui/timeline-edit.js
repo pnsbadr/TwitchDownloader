@@ -192,10 +192,11 @@ export const editing = {
     return item.kind === "clip" && item.data.kind === "Vod";
   },
 
-  // A stored clip's longest range: the stored file keeps the whole clip (cut-out parts are left out only when files are
-  // made from it), so the stored-clip limit counts the whole range
+  // A clip's longest range: the stored-clip limit, counting the whole range (a stored file keeps the whole clip; cut-out parts
+  // are left out only when files are made from it). Clips the team doesn't store are references but keep the same limit; only
+  // one that is already longer (a "Long" reference) has none
   clipLimit(item) {
-    if (item.kind !== "clip" || item.reference) return Infinity;
+    if (item.kind !== "clip" || item.long) return Infinity;
     return this.maxStoredClipSeconds;
   },
 
@@ -922,7 +923,7 @@ export const editing = {
       return;
     }
     if (end - start > this.clipLimit(item)) {
-      toast(`Stored clips are at most ${formatClock(this.maxStoredClipSeconds).replace(/^0:0?|\.00$/g, "")}.`);
+      toast(`Clips are at most ${formatClock(this.maxStoredClipSeconds).replace(/^0:0?|\.00$/g, "")}.`);
       return;
     }
     this.commitRange(item, start, end);
