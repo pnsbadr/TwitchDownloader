@@ -1003,3 +1003,5 @@ body.row-focus #lower { height: var(--focus-lower-h, 40%) !important; flex: none
 }
 .row-play { flex: none; font-size: 14px; }
 .row-play::part(base) { padding: 3px; }
+/* Row focus: the row buttons in the timeline's footer go dark like the rest (the zoom controls stay lit) */
+body.row-focus .tl-foot-left sl-icon-button { opacity: .25; pointer-events: none; }
