@@ -132,6 +132,7 @@ app.Use(async (context, next) =>
 
 app.MapAuthEndpoints();
 app.MapAdminEndpoints();
+app.MapAppSettingsEndpoints();
 app.MapErrorReportEndpoints();
 app.MapTeamEndpoints();
 app.MapVodDownloadEndpoints();

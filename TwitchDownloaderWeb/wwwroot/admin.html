@@ -134,6 +134,23 @@
       <ul id="twitch-channels" class="plain-list"></ul>
     </section>
 
+    <section class="panel" id="app-panel" hidden>
+      <h2>App</h2>
+      <p class="muted small-text">The name and links everyone sees on the start screen, logged in or not. Leave a link blank to hide its icon.</p>
+      <form id="app-form" class="stack" novalidate>
+        <label>App name
+          <input id="app-name" maxlength="60" autocomplete="off" placeholder="Clipco">
+        </label>
+        <label>X link
+          <input id="app-x" maxlength="300" autocomplete="off" spellcheck="false" inputmode="url" placeholder="https://x.com/…">
+        </label>
+        <label>Discord link
+          <input id="app-discord" maxlength="300" autocomplete="off" spellcheck="false" inputmode="url" placeholder="https://discord.gg/…">
+        </label>
+        <div class="row"><button type="submit">Save</button></div>
+      </form>
+    </section>
+
     <section class="panel" id="reports-panel" hidden>
       <h2>Reports</h2>
       <p class="muted small-text">Bugs, errors and crashes: the server's errors, background jobs that failed, pages that crashed, and problems

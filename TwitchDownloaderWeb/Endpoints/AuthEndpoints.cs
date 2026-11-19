@@ -225,16 +225,9 @@ namespace TwitchDownloaderWeb.Endpoints
             return Results.Ok(await cards.GetAsync(channel.Login, channel.TwitchUserId, cancellationToken));
         }
 
-        /// <summary>For every page, logged in or not: the app's name and the links in the start screen's corner (<c>App:Links:*</c>, blank = hidden).</summary>
-        private static IResult AppInfo(IConfiguration configuration)
-        {
-            static string? Link(string? value) => Uri.TryCreate(value?.Trim(), UriKind.Absolute, out var uri) && uri.Scheme is "https" or "http" ? uri.ToString() : null;
-            return Results.Ok(new
-            {
-                name = configuration["App:Name"] is { Length: > 0 } name ? name : "Clipco",
-                links = new { x = Link(configuration["App:Links:X"]), discord = Link(configuration["App:Links:Discord"]) },
-            });
-        }
+        /// <summary>For every page, logged in or not: the app's name and the start screen's corner links (Admin → App, else <c>App:*</c>; blank = hidden).</summary>
+        private static async Task<IResult> AppInfo(LibraryDbContext db, IConfiguration configuration, CancellationToken cancellationToken) =>
+            Results.Ok(await AppSettingsEndpoints.ReadAsync(db, configuration, cancellationToken));
 
         private static async Task<IResult> UpdateSettings(UserSettingsRequest request, HttpContext context, LibraryDbContext db, CancellationToken cancellationToken)
         {

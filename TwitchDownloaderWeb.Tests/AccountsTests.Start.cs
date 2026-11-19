@@ -53,5 +53,34 @@ namespace TwitchDownloaderWeb.Tests
             var staffInvite = await staffOwner.PostAsJsonAsync("/api/admin/staff/invites", new { }, ct);
             Assert.Contains("/join.html#", (await staffInvite.Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("url").GetString());
         }
+
+        [Fact]
+        public async Task OwnerSetsAppNameAndStartScreenLinks()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            var (staffOwner, moderator, _) = await OwnerWithModeratorAsync("as1");
+            Assert.Equal(HttpStatusCode.Forbidden, (await moderator.PutAsJsonAsync("/api/admin/app", new { name = "Nope" }, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await moderator.GetAsync("/api/admin/app", ct)).StatusCode);
+
+            var bad = await staffOwner.PutAsJsonAsync("/api/admin/app", new { name = "Clips", x = "javascript:alert(1)", discord = "" }, ct);
+            Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
+
+            // No scheme gets https://; blank hides the icon
+            var saved = await staffOwner.PutAsJsonAsync("/api/admin/app", new { name = " Arky Clips ", x = "x.com/arky", discord = "" }, ct);
+            Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
+            var app = await GetJsonAsync(NewClient(), "/api/auth/app");
+            Assert.Equal("Arky Clips", app.GetProperty("name").GetString());
+            Assert.Equal("https://x.com/arky", app.GetProperty("links").GetProperty("x").GetString());
+            Assert.Equal(JsonValueKind.Null, app.GetProperty("links").GetProperty("discord").ValueKind);
+
+            // Changed again; a blank name goes back to the default
+            Assert.Equal(HttpStatusCode.OK, (await staffOwner.PutAsJsonAsync("/api/admin/app",
+                new { name = "", x = "", discord = "https://discord.gg/abc" }, ct)).StatusCode);
+            app = await GetJsonAsync(staffOwner, "/api/admin/app");
+            Assert.Equal("Clipco", app.GetProperty("name").GetString());
+            Assert.Equal(JsonValueKind.Null, app.GetProperty("links").GetProperty("x").ValueKind);
+            Assert.Equal("https://discord.gg/abc", app.GetProperty("links").GetProperty("discord").GetString());
+
+        }
     }
 }

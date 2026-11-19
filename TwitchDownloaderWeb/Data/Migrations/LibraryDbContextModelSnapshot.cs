@@ -88,6 +88,34 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.ToTable("AccountLinks");
                 });
 
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.AppSettings", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("DiscordUrl")
+                        .HasMaxLength(300)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Name")
+                        .HasMaxLength(60)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("UpdatedByStaffId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("XUrl")
+                        .HasMaxLength(300)
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("AppSettings");
+                });
+
             modelBuilder.Entity("TwitchDownloaderWeb.Data.AuditEvent", b =>
                 {
                     b.Property<long>("Id")

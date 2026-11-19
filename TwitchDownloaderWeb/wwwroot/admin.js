@@ -15,6 +15,7 @@ const TABS = [
   { id: "links", label: "Links", panel: "links-panel", allowed: () => canAny("ManageTeamLinks", "ResetUserPasswords"), load: loadLinks },
   { id: "staff", label: "Moderators", panel: "staff-panel", allowed: () => staffMe.isOwner, load: loadStaff },
   { id: "twitch", label: "Twitch", panel: "twitch-panel", allowed: () => staffMe.isOwner, load: loadTwitch },
+  { id: "app", label: "App", panel: "app-panel", allowed: () => staffMe.isOwner, load: loadAppSettings },
   { id: "reports", label: "Reports", panel: "reports-panel", allowed: () => can("ViewErrorReports"), load: () => loadReports(true) },
   { id: "log", label: "App log", panel: "log-panel", allowed: () => can("ViewAuditLog"), load: () => loadLog(true) },
 ];
@@ -966,6 +967,40 @@ $("staff-logout").addEventListener("click", async () => {
 });
 
 start();
+
+// ---------- App (name and start screen links; Owner only) ----------
+
+let appFormWired = false;
+
+async function loadAppSettings() {
+  if (!appFormWired) {
+    appFormWired = true;
+    $("app-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = event.submitter;
+      if (button) button.disabled = true;
+      try {
+        renderAppSettings(await api("PUT", "/api/admin/app", {
+          name: $("app-name").value.trim(),
+          x: $("app-x").value.trim(),
+          discord: $("app-discord").value.trim(),
+        }));
+        setMessage($("admin-message"), "Saved. The start screen shows it on its next load.", "ok");
+      } catch (error) {
+        showError(error);
+      } finally {
+        if (button) button.disabled = false;
+      }
+    });
+  }
+  renderAppSettings(await api("GET", "/api/admin/app"));
+}
+
+function renderAppSettings(settings) {
+  $("app-name").value = settings.name ?? "";
+  $("app-x").value = settings.links?.x ?? "";
+  $("app-discord").value = settings.links?.discord ?? "";
+}
 
 // ---------- Twitch (live stream updates; Owner only) ----------
 

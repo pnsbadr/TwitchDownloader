@@ -49,9 +49,18 @@ namespace TwitchDownloaderWeb.Data
         public DbSet<EditProject> Projects => Set<EditProject>();
         public DbSet<ProjectVod> ProjectVods => Set<ProjectVod>();
         public DbSet<TwitchConnection> TwitchConnections => Set<TwitchConnection>();
+        public DbSet<AppSettings> AppSettings => Set<AppSettings>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
+            modelBuilder.Entity<AppSettings>(entity =>
+            {
+                entity.Property(x => x.Id).ValueGeneratedNever();
+                entity.Property(x => x.Name).HasMaxLength(Endpoints.AppSettingsRules.MaxNameLength);
+                entity.Property(x => x.XUrl).HasMaxLength(Endpoints.AppSettingsRules.MaxUrlLength);
+                entity.Property(x => x.DiscordUrl).HasMaxLength(Endpoints.AppSettingsRules.MaxUrlLength);
+            });
+
             modelBuilder.Entity<TwitchConnection>(entity =>
             {
                 entity.Property(x => x.Id).ValueGeneratedNever();

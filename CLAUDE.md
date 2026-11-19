@@ -460,7 +460,7 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/entries/{id}/shortform/{renderId}/file[?inline=true]` / `.../thumbnail` / `DELETE .../{renderId}` | A render's mp4 (`<title> (vertical).mp4`, audited `file.served`; `inline` = the page's preview player, not audited), its jpg thumbnail, delete it. 404 if gone/expired |
 | `GET /api/vods/{id}/play.m3u8[?segments=proxy]` / `.../play/{n}.m3u8` / `.../play/{n}/{segment}` | HLS for the page's player (see Watching VODs), plus `.../play/{n}/clean/{key}.ts` (muted segment with saved audio swapped in). 403 sub-only, 404 gone, 502 Twitch unreachable. Playlists `no-store` |
 | `POST /api/auth/login` / `logout` / `GET /api/auth/me` / `POST /api/auth/team` `{ teamId }` | Team user session; `me` = `{ id, username, teams: [{ id, name, isOwner }], currentTeamId, permissions, timeZone, support, combineSegmentDownloads, maxStoredClipSeconds }` |
-| `GET /api/auth/teams` / `GET /api/auth/teams/{id}/channel` / `GET /api/auth/app` | Start screen: the member's team cards `[{ id, name, isOwner, isCurrent, hasAccess, canOpenTeamPage, channel: { login, displayName }, teamLastActiveUtc, myLastActiveUtc }]`; one card's channel from Twitch `{ profileImageUrl, live, liveSinceUtc, lastLiveUtc }` (members only, else 404); app name and corner links (no login) |
+| `GET /api/auth/teams` / `GET /api/auth/teams/{id}/channel` / `GET /api/auth/app` | Start screen: the member's team cards `[{ id, name, isOwner, isCurrent, hasAccess, canOpenTeamPage, channel: { login, displayName }, teamLastActiveUtc, myLastActiveUtc }]`; one card's channel from Twitch `{ profileImageUrl, live, liveSinceUtc, lastLiveUtc }` (members only, else 404); app name and corner links `{ name, links: { x, discord } }` (no login; set on Admin → App, `GET,PUT /api/admin/app`) |
 | `POST /api/links/inspect` `{ token }` / `POST /api/links/accept` `{ token, newAccount, username?, password?, teamName? }` | One-time links (see Accounts). Blank username with a session = join as the logged-in user |
 | `GET /api/team` / `DELETE /api/team/members/{userId}` / `PUT /api/team/members/{userId}/role` `{ roleId }` / `POST /api/team/members/{userId}/password-reset` | Team page: members, roles, permission catalog, `myPermissions`, `canRename` / `nextRenameAtUtc` / `renameDays`. `PUT /api/team/name` `{ name }` (team owner, once every 14 days) |
 | `POST /api/team/roles` `{ name, permissions: [keys] }` / `PUT,DELETE /api/team/roles/{id}` | Roles (guard rails above) |
@@ -505,8 +505,10 @@ The old library page (`app.js`, `player-bar.js`, `app.css`) was removed in front
   account menu) is built from it, so mouse bindings and keys handled elsewhere are listed too.
 - **Start screen** (`ui/start.js` + `ui/start.css`, badrfly 2026-11-19): the app opens on it, over the editor with the lights off and
   **nothing loaded** (the editor's lists, players and timeline are only set up once a team is picked: `enterTeam` in `ui/editor.js`). Top:
-  app name (`GET /api/auth/app`: `App:Name`), clock (user's time zone), profile button; bottom: username left, X / Discord icons right
-  (`App:Links:X` / `App:Links:Discord`, hidden when blank). The card holds the **login form** (logged out; `login.html` only redirects to
+  app name (`GET /api/auth/app`), clock (user's time zone), profile button; bottom: username left, X / Discord icons right (hidden when
+  blank). The app Owner sets the name and both links on the Admin page's **App** tab (`GET,PUT /api/admin/app` `{ name, x, discord }`,
+  `RequireStaffOwner`, `AppSettings` row 1, audited `app.settings_changed`; "https://" added when missing, only http(s) links); until it's
+  saved they come from `App:Name` / `App:Links:X` / `App:Links:Discord`. The card holds the **login form** (logged out; `login.html` only redirects to
   `/`), a **link's form** (`/#join=token`, `ui/join-form.js`, shared with `join.html`) or the member's **team cards** (`GET /api/auth/teams`:
   the team's channel (`TeamLabels.Primary`), team name, "Team …" = the last change any member made to its work, "You …" = the member's own
   (audited work changes in `AuthEndpoints.WorkChanges` + Player 2 saves), "Waiting for access", a Team page button when allowed), in a
@@ -520,7 +522,7 @@ The old library page (`app.js`, `player-bar.js`, `app.css`) was removed in front
   plain HTML forms (no Shoelace) styled by `ui/theme.css` + `ui/pages.css` (same gray theme and fonts as the editor; back arrow to the editor).
   Not logged in → `/` (the start screen's login form). `team.html` = members/roles/activity/log/invites/audio setting (`ACTION_LABELS` in team.js
   names audit actions; add new team-visible ones there), `join.html` = opening any link (staff links go to `admin.html` after),
-  `admin.html` = staff (tabs Teams/Users/Links/Moderators/Twitch/Reports/App log, shown by permission; tab saved in `localStorage` key `clipAdmin.tab`).
+  `admin.html` = staff (tabs Teams/Users/Links/Moderators/Twitch/App/Reports/App log, shown by permission; tab saved in `localStorage` key `clipAdmin.tab`).
   Pages hide buttons the user's permissions (`me.permissions`) don't allow.
 - Time zone (Local / Pacific `America/Los_Angeles`) is set on the Account page, saved per user on the server and cached in `localStorage` key
   `clipLibrary.timeZone`. Formatting only — the API always returns UTC (`...Z`). Days for date filters are computed in the shown time zone
