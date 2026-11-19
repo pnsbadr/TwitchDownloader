@@ -1,6 +1,9 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
+using TwitchDownloaderWeb.Data;
+using TwitchDownloaderWeb.Services;
 
 namespace TwitchDownloaderWeb.Tests
 {
@@ -81,6 +84,48 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal(JsonValueKind.Null, app.GetProperty("links").GetProperty("x").ValueKind);
             Assert.Equal("https://discord.gg/abc", app.GetProperty("links").GetProperty("discord").GetString());
 
+        }
+
+        [Fact]
+        public async Task LibraryFiltersClipsAndVideosByTeamChannel()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            var (owner, _, teamId, _) = await TeamWithMemberAsync("cf1");
+            var staff = await StaffClientAsync();
+            _vods.Vods[631] = new VodDetails(631, "Ellsya stream", "Ellsya", 3600, DateTime.UtcNow.AddDays(-1), null, ChannelLogin: "ellsya");
+            Assert.Equal(HttpStatusCode.Created, (await staff.PostAsJsonAsync($"/api/admin/teams/{teamId}/channels", new { login = "ellsya" }, ct)).StatusCode);
+
+            // The library starts on the channel the team is known by; each channel has its picture and live state
+            var channels = (await GetJsonAsync(owner, "/api/channels")).EnumerateArray().ToList();
+            Assert.Equal(["arky"], channels.Where(x => x.GetProperty("isPrimary").GetBoolean()).Select(x => x.GetProperty("login").GetString()));
+            var cards = (await GetJsonAsync(owner, "/api/channels/cards")).EnumerateArray().ToList();
+            Assert.Equal(["arky", "ellsya"], cards.Select(x => x.GetProperty("login").GetString()).Order());
+            Assert.Equal("https://example.invalid/ellsya.png", cards.Single(x => x.GetProperty("login").GetString() == "ellsya").GetProperty("profileImageUrl").GetString());
+
+            // Clips and videos keep the name Twitch gave the VOD's owner: display name or login, any case
+            using (var scope = _factory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+                foreach (var (title, channel) in new[] { ("Arky clip", "Arky"), ("Arky login clip", "arky"), ("Ellsya clip", "ELLSYA"), ("Other clip", "Someone") })
+                    db.Entries.Add(new LibraryEntry { TeamId = teamId, Title = title, VodId = 1, ChannelName = channel, Status = EntryStatus.ReferenceOnly, AddedAtUtc = DateTime.UtcNow });
+                db.SaveChanges();
+            }
+            async Task<string[]> Titles(string url) =>
+                (await GetJsonAsync(owner, url)).EnumerateArray().Select(x => x.GetProperty("title").GetString() ?? "").Order().ToArray();
+            Assert.Equal(["Arky clip", "Arky login clip"], await Titles("/api/entries?channels=arky"));
+            Assert.Equal(["Arky clip", "Arky login clip", "Ellsya clip"], await Titles("/api/entries?channels=arky,ellsya"));
+            Assert.Equal(["Arky clip", "Arky login clip", "Ellsya clip", "Other clip"], await Titles("/api/entries"));
+            Assert.Empty(await Titles("/api/entries?channels=nobody"));
+
+            foreach (var (vod, title) in new[] { (630, "Arky video"), (631, "Ellsya video") })
+            {
+                var segment = await (await owner.PostAsJsonAsync($"/api/vods/{vod}/markers", new { seconds = 5, endSeconds = 20 }, ct)).Content.ReadFromJsonAsync<JsonElement>(ct);
+                Assert.Equal(HttpStatusCode.Created, (await owner.PostAsJsonAsync($"/api/vods/{vod}/videos",
+                    new { title, markerIds = new[] { segment.GetProperty("id").GetInt32() } }, ct)).StatusCode);
+            }
+            Assert.Equal(["Ellsya video"], await Titles("/api/videos?channels=ellsya"));
+            Assert.Equal(["Arky video", "Ellsya video"], await Titles("/api/videos?channels=ellsya,arky"));
+            Assert.Equal(["Arky video", "Ellsya video"], await Titles("/api/videos"));
         }
     }
 }

@@ -348,8 +348,9 @@ namespace TwitchDownloaderWeb.Endpoints
         /// <param name="vodId">Only clips of this VOD.</param>
         /// <param name="madeBy">Only clips this member added.</param>
         /// <param name="editedBy">Only clips this member made an edit of (Player 2).</param>
+        /// <param name="channels">Only clips of these team channels (logins, comma separated; the library's channel bar).</param>
         private static async Task<IResult> ListEntries(LibraryDbContext db, string? search, string? sort, string? order, int? limit,
-            string? from, string? to, string? dateField, long? vodId, int? madeBy, int? editedBy, TeamContext team, CancellationToken cancellationToken)
+            string? from, string? to, string? dateField, long? vodId, int? madeBy, int? editedBy, string? channels, TeamContext team, CancellationToken cancellationToken)
         {
             if (!TryParseInstant(from, out var fromUtc))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["from"] = ["Use an ISO 8601 date-time with an offset, e.g. 2026-10-09T07:00:00Z."] });
@@ -374,6 +375,8 @@ namespace TwitchDownloaderWeb.Endpoints
 
             var query = db.Entries.AsNoTracking();
 
+            if (await ChannelEndpoints.ChannelNamesAsync(db, channels, cancellationToken) is { } channelNames)
+                query = query.Where(x => x.ChannelName != null && channelNames.Contains(x.ChannelName.ToLower()));
             if (vodId is { } vod)
                 query = query.Where(x => x.VodId == vod);
             if (madeBy is { } maker)

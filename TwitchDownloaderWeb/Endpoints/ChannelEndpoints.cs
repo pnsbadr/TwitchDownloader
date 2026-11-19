@@ -11,12 +11,17 @@ namespace TwitchDownloaderWeb.Endpoints
 
     /// <param name="WatchMutedAudio">Audio is saved automatically (set by the app Owner).</param>
     /// <param name="SaveAudio">Save audio now may be used on its VODs (set by the app Owner).</param>
-    public sealed record ChannelDto(int Id, string Login, string DisplayName, bool WatchMutedAudio, bool SaveAudio, DateTime AddedAtUtc, string? AddedByUserId)
+    /// <param name="IsPrimary">The channel the team is known by (<see cref="TeamLabels.Primary"/>): the library starts on it.</param>
+    public sealed record ChannelDto(int Id, string Login, string DisplayName, bool WatchMutedAudio, bool SaveAudio, DateTime AddedAtUtc, string? AddedByUserId,
+        bool IsPrimary = false)
     {
         public static ChannelDto From(SavedChannel channel) =>
             new(channel.Id, channel.Login, channel.DisplayName, channel.WatchMutedAudio, channel.AllowSaveAudio || channel.WatchMutedAudio,
                 channel.AddedAtUtc, channel.AddedByUserId);
     }
+
+    /// <summary>A team channel for the library's channel bar: its Twitch picture and whether it's live (badrfly 2026-11-19).</summary>
+    public sealed record ChannelCardDto(string Login, string? ProfileImageUrl, bool? Live, DateTime? LiveSinceUtc);
 
     public sealed record ChannelVodDto(long VodId, string Title, int LengthSeconds, string Length, DateTime CreatedAtUtc, string? ThumbnailUrl,
         int ViewCount, string? Game, bool UnmuteWindowOpen, string? RescueStatus, bool RescuePaused, int? RescueMutedCount, int? RescueUnrecoverableCount);
@@ -34,6 +39,7 @@ namespace TwitchDownloaderWeb.Endpoints
             // (badrfly, 2026-11-15). See AdminEndpoints' /api/admin/teams/{id}/channels.
             channels.MapGet("/", ListChannels).RequireTeam(TeamPermission.ViewLibrary);
             channels.MapGet("/{login}/vods", ListChannelVods).RequireTeam(TeamPermission.ViewLibrary);
+            channels.MapGet("/cards", ListChannelCards).RequireTeam(TeamPermission.ViewLibrary);
 
             return app;
         }
@@ -41,7 +47,35 @@ namespace TwitchDownloaderWeb.Endpoints
         private static async Task<IResult> ListChannels(LibraryDbContext db, CancellationToken cancellationToken)
         {
             var channels = await db.Channels.AsNoTracking().Where(x => x.AccessEndedAtUtc == null).OrderBy(x => x.DisplayName).ToListAsync(cancellationToken);
-            return Results.Ok(channels.Select(ChannelDto.From));
+            var primary = TeamLabels.Primary(channels);
+            return Results.Ok(channels.Select(x => ChannelDto.From(x) with { IsPrimary = x.Id == primary?.Id }));
+        }
+
+        /// <summary>
+        /// The team's channels' Twitch pictures and live state for the library's channel bar (the start screen's cards use the same source,
+        /// cached 5 min; the live watcher's state wins when it watches the channel). A channel Twitch couldn't be asked about has nulls.
+        /// </summary>
+        private static async Task<IResult> ListChannelCards(LibraryDbContext db, IChannelCardSource cards, CancellationToken cancellationToken)
+        {
+            var channels = await db.Channels.AsNoTracking().Where(x => x.AccessEndedAtUtc == null).ToListAsync(cancellationToken);
+            var infos = await Task.WhenAll(channels.Select(x => cards.GetAsync(x.Login, x.TwitchUserId, cancellationToken)));
+            return Results.Ok(channels.Select((x, i) => new ChannelCardDto(x.Login, infos[i].ProfileImageUrl, infos[i].Live, infos[i].LiveSinceUtc)));
+        }
+
+        /// <summary>
+        /// The names clips and videos may carry for these team channels (<c>channels=login,login</c>), lower-case: each channel's login and
+        /// display name, since entries and videos keep the name Twitch gave the VOD's owner. Null when no filter was asked for; empty when
+        /// none of them is the team's (so nothing matches).
+        /// </summary>
+        public static async Task<List<string>?> ChannelNamesAsync(LibraryDbContext db, string? channels, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(channels))
+                return null;
+            var logins = channels.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(x => x.ToLowerInvariant()).Distinct().Take(50).ToList();
+            var rows = await db.Channels.AsNoTracking().Where(x => logins.Contains(x.Login)).ToListAsync(cancellationToken);
+            return rows.SelectMany(x => new[] { x.Login, x.DisplayName }).Where(x => !string.IsNullOrEmpty(x))
+                .Select(x => x.ToLowerInvariant()).Distinct().ToList();
         }
 
         /// <param name="login">One of the team's channels.</param>

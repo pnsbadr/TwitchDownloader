@@ -134,7 +134,8 @@ namespace TwitchDownloaderWeb.Endpoints
         /// <param name="userId">Only this member's.</param>
         /// <param name="userId">Only videos this member made.</param>
         /// <param name="editedBy">Only videos this member made an edit of (Player 2).</param>
-        private static async Task<IResult> List(string? vodIds, int? userId, int? editedBy, int? limit, TeamContext team, LibraryDbContext db,
+        /// <param name="channels">Only videos of these team channels (logins, comma separated; the library's channel bar).</param>
+        private static async Task<IResult> List(string? vodIds, int? userId, int? editedBy, string? channels, int? limit, TeamContext team, LibraryDbContext db,
             CancellationToken cancellationToken)
         {
             var (ids, problem) = TimelineEndpoints.ParseVodIds(vodIds);
@@ -146,6 +147,8 @@ namespace TwitchDownloaderWeb.Endpoints
                 query = query.Where(x => ids.Contains(x.VodId));
             if (userId is { } user)
                 query = query.Where(x => x.UserId == user);
+            if (await ChannelEndpoints.ChannelNamesAsync(db, channels, cancellationToken) is { } channelNames)
+                query = query.Where(x => x.ChannelName != null && channelNames.Contains(x.ChannelName.ToLower()));
             if (editedBy is { } editor)
             {
                 // Who made which vertical edit is only told to members who may see teammates' (VerticalAccess); horizontal edits are everyone's
