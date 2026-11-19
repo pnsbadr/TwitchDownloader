@@ -204,7 +204,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 : link.TargetStaffId is { } staffTarget
                     ? await db.StaffAccounts.Where(x => x.Id == staffTarget).Select(x => x.Username).FirstOrDefaultAsync(cancellationToken)
                     : null;
-            return Results.Ok(new LinkInfoDto(link.Kind.ToString(), link.Team?.Name, link.ExpiresAtUtc,
+            return Results.Ok(new LinkInfoDto(link.Kind.ToString(), link.Team?.Name ?? link.TeamName, link.ExpiresAtUtc,
                 AuthSetup.GetId(context.User) is not null ? context.User.Identity?.Name : null, forUsername,
                 LinkChannel.Read(link.ChannelsJson).Select(x => x.DisplayName).ToList()));
         }
@@ -230,7 +230,12 @@ namespace TwitchDownloaderWeb.Endpoints
             }
 
             string? teamName = null;
-            if (link.Kind == AccountLinkKind.TeamRegistration)
+            if (link.Kind == AccountLinkKind.TeamRegistration && link.TeamName is not null)
+            {
+                // Named when the link was made, after its channel (badrfly 2026-11-19)
+                teamName = link.TeamName;
+            }
+            else if (link.Kind == AccountLinkKind.TeamRegistration)
             {
                 if (AccountRules.TeamNameError(request.TeamName) is { } nameError)
                     return Results.ValidationProblem(new Dictionary<string, string[]> { ["teamName"] = [nameError] });

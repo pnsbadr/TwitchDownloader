@@ -74,8 +74,12 @@ namespace TwitchDownloaderWeb.Endpoints
     public sealed record StartSupportRequest(int TeamId);
 
     /// <param name="Kind">"registration" (new team) or "ownership" (owner of TeamId).</param>
-    /// <param name="Channels">Twitch logins or links the team gets when the link is used (needs ManageTeamChannels).</param>
-    public sealed record CreateStaffLinkRequest(string? Kind, int? TeamId, string? Note, List<string>? Channels = null);
+    /// <param name="Channel">Registration links only, required: the one Twitch channel (login or link) the new team works on (badrfly
+    /// 2026-11-19: a team starts locked to one creator; only the Owner gives it more, on the Teams tab). <see cref="Channels"/> with
+    /// exactly one entry is accepted too.</param>
+    /// <param name="TeamName">Registration links only: the new team's name; blank = "{channel's display name}'s Team".</param>
+    public sealed record CreateStaffLinkRequest(string? Kind, int? TeamId, string? Note, List<string>? Channels = null, string? Channel = null,
+        string? TeamName = null);
 
     /// <summary>
     /// The app staff API (/admin.html). Staff use their own cookie and tables; a staff login is never a team login. The app Owner sets up
@@ -111,7 +115,8 @@ namespace TwitchDownloaderWeb.Endpoints
             staff.MapPut("/teams/{id:int}/features", SetTeamFeatures).RequireStaffOwner();
             // Which Twitch channels a team works on (badrfly, 2026-11-15: members can't add channels, VODs or clip links any more)
             staff.MapGet("/teams/{id:int}/channels", ListTeamChannels).RequireStaff(StaffPermission.ViewTeamsAndUsers | StaffPermission.ManageTeamChannels);
-            staff.MapPost("/teams/{id:int}/channels", AssignTeamChannel).RequireStaff(StaffPermission.ManageTeamChannels);
+            // More channels for a team: only the app Owner (badrfly 2026-11-19); taking them away stays with ManageTeamChannels
+            staff.MapPost("/teams/{id:int}/channels", AssignTeamChannel).RequireStaffOwner();
             staff.MapDelete("/teams/{id:int}/channels/{channelId:int}", RemoveTeamChannel).RequireStaff(StaffPermission.ManageTeamChannels);
             // Saving audio uses a lot of disk: only the app Owner decides it, per channel (badrfly 2026-11-18)
             staff.MapPut("/teams/{id:int}/channels/{channelId:int}/audio", SetChannelAudio).RequireStaffOwner();
@@ -388,9 +393,6 @@ namespace TwitchDownloaderWeb.Endpoints
 
         // ---------- team channels ----------
 
-        /// <summary>At most this many channels on one team link.</summary>
-        internal const int MaxLinkChannels = 20;
-
         private static async Task<IResult> ListTeamChannels(int id, LibraryDbContext db, CancellationToken cancellationToken)
         {
             if (!await db.Teams.AnyAsync(x => x.Id == id, cancellationToken))
@@ -589,6 +591,10 @@ namespace TwitchDownloaderWeb.Endpoints
             return channel;
         }
 
+        /// <summary>"Arky's Team" (badrfly 2026-11-19); "Chris' Team" for names ending in s.</summary>
+        internal static string DefaultTeamName(string displayName) =>
+            displayName.EndsWith('s') || displayName.EndsWith('S') ? $"{displayName}' Team" : $"{displayName}'s Team";
+
         /// <summary>Looks each login up on Twitch for a team link. Returns the channels or the API error to answer with.</summary>
         private static async Task<(List<LinkChannel> Channels, IResult? Problem)> ResolveLinkChannelsAsync(IReadOnlyList<string>? logins, IChannelLookup lookup)
         {
@@ -599,13 +605,10 @@ namespace TwitchDownloaderWeb.Endpoints
                 if (string.IsNullOrWhiteSpace(text))
                     continue;
                 if (ChannelService.NormalizeLogin(text) is not { } login)
-                    return (result, ChannelEndpoints.InvalidLogin("channels"));
+                    return (result, ChannelEndpoints.InvalidLogin("channel"));
                 if (!normalized.Contains(login))
                     normalized.Add(login);
             }
-
-            if (normalized.Count > MaxLinkChannels)
-                return (result, Results.ValidationProblem(new Dictionary<string, string[]> { ["channels"] = [$"At most {MaxLinkChannels} channels per link."] }));
 
             foreach (var login in normalized)
             {
@@ -773,21 +776,45 @@ namespace TwitchDownloaderWeb.Endpoints
                     return Results.ValidationProblem(new Dictionary<string, string[]> { ["kind"] = ["Kind must be registration or ownership."] });
             }
 
-            if (request.Channels is { Count: > 0 } && !me.Can(StaffPermission.ManageTeamChannels))
-                return Results.Problem(detail: "Assigning channels needs the \"Assign team channels\" permission.", statusCode: StatusCodes.Status403Forbidden);
+            // A new team is locked to exactly one channel; an owner link never changes an existing team's channels (only the Owner adds
+            // channels, on the Teams tab). badrfly 2026-11-19.
+            var logins = new List<string>();
+            if (!string.IsNullOrWhiteSpace(request.Channel))
+                logins.Add(request.Channel);
+            logins.AddRange((request.Channels ?? []).Where(x => !string.IsNullOrWhiteSpace(x)));
+            List<LinkChannel> channels = [];
+            string? teamName = null;
+            if (kind == AccountLinkKind.TeamRegistration)
+            {
+                if (logins.Count == 0)
+                    return Results.ValidationProblem(new Dictionary<string, string[]> { ["channel"] = ["Enter the Twitch channel the team works on."] });
+                if (logins.Select(x => ChannelService.NormalizeLogin(x) ?? x).Distinct().Count() > 1)
+                    return Results.ValidationProblem(new Dictionary<string, string[]> { ["channel"] = ["A new team gets one channel. Add more on the Teams tab after."] });
 
-            var (channels, channelProblem) = await ResolveLinkChannelsAsync(request.Channels, lookup);
-            if (channelProblem is not null)
-                return channelProblem;
+                var (resolved, channelProblem) = await ResolveLinkChannelsAsync([logins[0]], lookup);
+                if (channelProblem is not null)
+                    return channelProblem;
+                channels = resolved;
+
+                teamName = string.IsNullOrWhiteSpace(request.TeamName) ? DefaultTeamName(channels[0].DisplayName) : request.TeamName.Trim();
+                if (AccountRules.TeamNameError(teamName) is { } nameError)
+                    return Results.ValidationProblem(new Dictionary<string, string[]> { ["teamName"] = [nameError] });
+            }
+            else if (logins.Count > 0)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]>
+                    { ["channel"] = ["Owner links don't change a team's channels. Add channels on the Teams tab."] });
+            }
 
             var (link, token) = LinkUrls.New(kind, team?.Id, request.Note, DateTime.UtcNow);
             link.CreatedByStaffId = me.Id;
             link.ChannelsJson = LinkChannel.Write(channels);
+            link.TeamName = teamName;
             db.AccountLinks.Add(link);
             await db.SaveChangesAsync(cancellationToken);
 
             db.Audit(AuditActions.LinkCreated, null,
-                $"{kind} link {link.Id}{(team is null ? "" : $" for \"{team.Name}\"")}{(link.Note is null ? "" : $" ({link.Note})")}"
+                $"{kind} link {link.Id}{(team is null ? "" : $" for \"{team.Name}\"")}{(teamName is null ? "" : $" for new team \"{teamName}\"")}{(link.Note is null ? "" : $" ({link.Note})")}"
                 + (channels.Count == 0 ? "" : $", channels: {string.Join(", ", channels.Select(x => x.Login))}"), teamId: team?.Id);
             await db.SaveChangesAsync(cancellationToken);
             return Results.Created($"/api/admin/links/{link.Id}", LinkUrls.ToDto(link, null, LinkUrls.Build(context.Request, token)));

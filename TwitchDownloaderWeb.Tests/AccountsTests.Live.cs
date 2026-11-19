@@ -14,9 +14,11 @@ namespace TwitchDownloaderWeb.Tests
         {
             var ct = TestContext.Current.CancellationToken;
             var staff = await StaffClientAsync();
-            var token = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channels = new[] { "arky", "qsmp" } });
+            var token = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channel = "arky" });
             var owner = NewClient();
-            Assert.Equal(HttpStatusCode.OK, (await AcceptAsync(owner, token, "liveowner", newAccount: true, teamName: "Live team")).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await AcceptAsync(owner, token, "liveowner", newAccount: true)).StatusCode);
+            var liveTeam = (await GetJsonAsync(owner, "/api/auth/me")).GetProperty("currentTeamId").GetInt32();
+            Assert.Equal(HttpStatusCode.Created, (await staff.PostAsJsonAsync($"/api/admin/teams/{liveTeam}/channels", new { login = "qsmp" }, ct)).StatusCode);
 
             var hub = _factory.Services.GetRequiredService<LiveStreamHub>();
             hub.Apply(new StreamChange("arky", "id-arky", true, new DateTime(2026, 11, 18, 18, 0, 0, DateTimeKind.Utc), DateTime.UtcNow));
@@ -65,7 +67,7 @@ namespace TwitchDownloaderWeb.Tests
             Assert.False(saved.GetProperty("clientIdFromConfig").GetBoolean());
 
             // Not for team users, nor for moderators
-            var token = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration" });
+            var token = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channel = "arky" });
             var owner = NewClient();
             Assert.Equal(HttpStatusCode.OK, (await AcceptAsync(owner, token, "twitchowner", newAccount: true, teamName: "T")).StatusCode);
             Assert.NotEqual(HttpStatusCode.OK, (await owner.GetAsync("/api/admin/twitch", ct)).StatusCode);

@@ -60,6 +60,10 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<int?>("TeamId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("TeamName")
+                        .HasMaxLength(100)
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("TokenHash")
                         .IsRequired()
                         .HasMaxLength(64)

@@ -22,20 +22,34 @@ namespace TwitchDownloaderWeb.Tests
             var staff = await StaffClientAsync();
             _vods.Vods[201] = new VodDetails(201, "Ellsya stream", "Ellsya", 3600, DateTime.UtcNow.AddDays(-1), null, ChannelLogin: "ellsya");
 
-            // Unknown channels are refused when the link is made
-            var bad = await staff.PostAsJsonAsync("/api/admin/links", new { kind = "registration", channels = new[] { "arky", "nobody" } }, ct);
-            Assert.Equal(HttpStatusCode.NotFound, bad.StatusCode);
+            // A new team gets exactly one real channel (badrfly 2026-11-19): unknown, none or two are refused when the link is made
+            Assert.Equal(HttpStatusCode.NotFound, (await staff.PostAsJsonAsync("/api/admin/links", new { kind = "registration", channel = "nobody" }, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, (await staff.PostAsJsonAsync("/api/admin/links", new { kind = "registration" }, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, (await staff.PostAsJsonAsync("/api/admin/links", new { kind = "registration", channel = " " }, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest,
+                (await staff.PostAsJsonAsync("/api/admin/links", new { kind = "registration", channels = new[] { "arky", "qsmp" } }, ct)).StatusCode);
+            // Owner links never change a team's channels
+            Assert.Equal(HttpStatusCode.BadRequest,
+                (await staff.PostAsJsonAsync("/api/admin/links", new { kind = "ownership", teamId = 1, channel = "qsmp" }, ct)).StatusCode);
 
-            var token = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channels = new[] { "https://www.twitch.tv/Arky", "qsmp" } });
+            var token = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channel = "https://www.twitch.tv/Arky" });
             var links = await GetJsonAsync(staff, "/api/admin/links");
-            Assert.Equal(["Arky", "Qsmp"], links[0].GetProperty("channels").EnumerateArray().Select(x => x.GetString()));
+            Assert.Equal(["Arky"], links[0].GetProperty("channels").EnumerateArray().Select(x => x.GetString()));
 
-            // The person opening it sees which channels come with it
+            // The person opening it sees the channel and the team's name, named after the channel by default
             var info = await (await NewClient().PostAsJsonAsync("/api/links/inspect", new { token }, ct)).Content.ReadFromJsonAsync<JsonElement>(ct);
-            Assert.Equal(2, info.GetProperty("channels").GetArrayLength());
+            Assert.Equal(["Arky"], info.GetProperty("channels").EnumerateArray().Select(x => x.GetString()));
+            Assert.Equal("Arky's Team", info.GetProperty("teamName").GetString());
 
             var owner = NewClient();
-            Assert.Equal(HttpStatusCode.OK, (await AcceptAsync(owner, token, "ch1owner", newAccount: true, teamName: "Arky team")).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await AcceptAsync(owner, token, "ch1owner", newAccount: true, teamName: "Something else")).StatusCode);
+            var me = await GetJsonAsync(owner, "/api/auth/me");
+            Assert.Equal("Arky's Team", me.GetProperty("teams")[0].GetProperty("name").GetString());
+            Assert.Equal(["arky"], (await GetJsonAsync(owner, "/api/channels")).EnumerateArray().Select(x => x.GetProperty("login").GetString()));
+
+            // More channels only from the app Owner, on the Teams tab
+            var teamId = me.GetProperty("currentTeamId").GetInt32();
+            Assert.Equal(HttpStatusCode.Created, (await staff.PostAsJsonAsync($"/api/admin/teams/{teamId}/channels", new { login = "qsmp" }, ct)).StatusCode);
             var channels = await GetJsonAsync(owner, "/api/channels");
             Assert.Equal(["arky", "qsmp"], channels.EnumerateArray().Select(x => x.GetProperty("login").GetString()));
 
@@ -61,7 +75,6 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal(HttpStatusCode.NotFound, (await owner.GetAsync($"/api/vods/{FakeVodDetails.MissingFrom}/timeline", ct)).StatusCode);
 
             // Strict: work already on a VOD of a channel the team doesn't have doesn't open it
-            var teamId = (await GetJsonAsync(owner, "/api/auth/me")).GetProperty("currentTeamId").GetInt32();
             using (var scope = _factory.Services.CreateScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
@@ -200,14 +213,19 @@ namespace TwitchDownloaderWeb.Tests
             var (_, _, teamId, _) = await TeamWithMemberAsync("ch3");
             Assert.Equal(HttpStatusCode.NoContent, await SetStaffPermissionsAsync(staffOwner, moderatorId, "ManageTeamLinks", "ViewTeamsAndUsers"));
 
+            // Making team links includes a new team's one channel; giving a team more is the Owner's alone (badrfly 2026-11-19)
             Assert.Equal(HttpStatusCode.Forbidden, (await moderator.PostAsJsonAsync($"/api/admin/teams/{teamId}/channels", new { login = "ellsya" }, ct)).StatusCode);
-            Assert.Equal(HttpStatusCode.Forbidden,
-                (await moderator.PostAsJsonAsync("/api/admin/links", new { kind = "registration", channels = new[] { "arky" } }, ct)).StatusCode);
-            Assert.Equal(HttpStatusCode.Created, (await moderator.PostAsJsonAsync("/api/admin/links", new { kind = "registration" }, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Created, (await moderator.PostAsJsonAsync("/api/admin/links", new { kind = "registration", channel = "arky" }, ct)).StatusCode);
             Assert.Equal(HttpStatusCode.OK, (await moderator.GetAsync($"/api/admin/teams/{teamId}/channels", ct)).StatusCode);
 
             Assert.Equal(HttpStatusCode.NoContent, await SetStaffPermissionsAsync(staffOwner, moderatorId, "ManageTeamChannels"));
-            Assert.Equal(HttpStatusCode.Created, (await moderator.PostAsJsonAsync($"/api/admin/teams/{teamId}/channels", new { login = "ellsya" }, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await moderator.PostAsJsonAsync($"/api/admin/teams/{teamId}/channels", new { login = "ellsya" }, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.Created, (await staffOwner.PostAsJsonAsync($"/api/admin/teams/{teamId}/channels", new { login = "ellsya" }, ct)).StatusCode);
+
+            // Taking a channel away stays with the permission
+            var ellsya = (await GetJsonAsync(staffOwner, $"/api/admin/teams/{teamId}/channels")).EnumerateArray().Single(x => x.GetProperty("login").GetString() == "ellsya");
+            var removed = await moderator.DeleteAsync($"/api/admin/teams/{teamId}/channels/{ellsya.GetProperty("id").GetInt32()}?mode=future", ct);
+            Assert.True(removed.IsSuccessStatusCode, removed.StatusCode.ToString());
         }
     }
 }

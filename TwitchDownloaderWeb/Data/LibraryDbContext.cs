@@ -340,6 +340,7 @@ namespace TwitchDownloaderWeb.Data
                 entity.Property(x => x.TokenHash).HasMaxLength(64);
                 entity.Property(x => x.Note).HasMaxLength(200);
                 entity.Property(x => x.ChannelsJson).HasMaxLength(8000);
+                entity.Property(x => x.TeamName).HasMaxLength(100);
                 entity.HasIndex(x => x.TokenHash).IsUnique();
                 entity.HasIndex(x => x.TeamId);
                 entity.HasOne(x => x.Team).WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);

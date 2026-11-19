@@ -179,7 +179,7 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal(1, (await GetJsonAsync(owner, "/api/segment-downloads?vodIds=50")).GetArrayLength());
             var staff = await StaffClientAsync();
             var other = NewClient();
-            await AcceptAsync(other, await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channels = new[] { "arky" } }), "sg1other", newAccount: true, teamName: "Other");
+            await AcceptAsync(other, await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channel = "arky", teamName = "Other" }), "sg1other", newAccount: true, teamName: "Other");
             Assert.Equal(HttpStatusCode.NotFound, (await other.GetAsync($"/api/segment-downloads/{id}", ct)).StatusCode);
             Assert.Equal(HttpStatusCode.NotFound, (await other.GetAsync($"/api/segment-downloads/{id}/zip", ct)).StatusCode);
             Assert.Equal(HttpStatusCode.BadRequest, (await other.PostAsJsonAsync("/api/vods/50/segment-downloads", new { markerIds = new[] { a } }, ct)).StatusCode);

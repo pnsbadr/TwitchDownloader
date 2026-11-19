@@ -171,6 +171,12 @@ namespace TwitchDownloaderWeb.Data
         /// </summary>
         public string? ChannelsJson { get; set; }
 
+        /// <summary>
+        /// Team registration links: the new team's name, chosen when the link is made (default "{channel}'s Team", badrfly 2026-11-19).
+        /// Null on links made before that, where the person opening it typed the name.
+        /// </summary>
+        public string? TeamName { get; set; }
+
         public DateTime CreatedAtUtc { get; set; }
         public DateTime ExpiresAtUtc { get; set; }
         public int? CreatedByStaffId { get; set; }

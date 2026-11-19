@@ -155,7 +155,7 @@ namespace TwitchDownloaderWeb.Tests
         public async Task RegistrationLinkMakesANewTeamWithItsOwnLibrary()
         {
             var staff = await StaffClientAsync();
-            var token = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channels = new[] { "arky" } });
+            var token = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channel = "arky", teamName = "Creator team" });
 
             var owner = NewClient();
             var accepted = await AcceptAsync(owner, token, "creator1", newAccount: true, teamName: "Creator team");
@@ -179,7 +179,7 @@ namespace TwitchDownloaderWeb.Tests
         public async Task OwnerLinkClaimsTheMainTeamAndAnAccountCanBeInSeveralTeams()
         {
             var staff = await StaffClientAsync();
-            var registration = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channels = new[] { "arky" } });
+            var registration = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channel = "arky", teamName = "Side team" });
             var user = NewClient();
             Assert.Equal(HttpStatusCode.OK, (await AcceptAsync(user, registration, "badrfly", newAccount: true, teamName: "Side team")).StatusCode);
 
@@ -208,7 +208,7 @@ namespace TwitchDownloaderWeb.Tests
         public async Task InvitedMembersStartWithNoAccess()
         {
             var staff = await StaffClientAsync();
-            var registration = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channels = new[] { "arky" } });
+            var registration = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channel = "arky", teamName = "Team A" });
             var owner = NewClient();
             await AcceptAsync(owner, registration, "teamowner", newAccount: true, teamName: "Team A");
 
@@ -237,7 +237,7 @@ namespace TwitchDownloaderWeb.Tests
         public async Task RevokedLinksDontWork()
         {
             var staff = await StaffClientAsync();
-            var create = await staff.PostAsJsonAsync("/api/admin/links", new { kind = "registration", channels = new[] { "arky" } }, TestContext.Current.CancellationToken);
+            var create = await staff.PostAsJsonAsync("/api/admin/links", new { kind = "registration", channel = "arky" }, TestContext.Current.CancellationToken);
             var json = await create.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
             var url = json.GetProperty("url").GetString()!;
             Assert.Equal(HttpStatusCode.NoContent, (await staff.DeleteAsync($"/api/admin/links/{json.GetProperty("id").GetInt32()}", TestContext.Current.CancellationToken)).StatusCode);
@@ -253,7 +253,7 @@ namespace TwitchDownloaderWeb.Tests
             // A staff session is not a team session
             Assert.Equal(HttpStatusCode.Unauthorized, (await staff.GetAsync("/api/entries", TestContext.Current.CancellationToken)).StatusCode);
 
-            var registration = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channels = new[] { "arky" } });
+            var registration = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channel = "arky", teamName = "Team B" });
             var user = NewClient();
             await AcceptAsync(user, registration, "editor", newAccount: true, teamName: "Team B");
             // ...and a team session is not a staff session
@@ -267,7 +267,7 @@ namespace TwitchDownloaderWeb.Tests
         public async Task WrongPasswordsLockTheAccount()
         {
             var staff = await StaffClientAsync();
-            var registration = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channels = new[] { "arky" } });
+            var registration = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channel = "arky", teamName = "Team C" });
             await AcceptAsync(NewClient(), registration, "target", newAccount: true, teamName: "Team C");
 
             var client = NewClient();
@@ -293,7 +293,7 @@ namespace TwitchDownloaderWeb.Tests
         private async Task<(HttpClient Owner, HttpClient Member, int TeamId, int MemberId)> TeamWithMemberAsync(string prefix)
         {
             var staff = await StaffClientAsync();
-            var registration = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channels = new[] { "arky" } });
+            var registration = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channel = "arky", teamName = prefix + " team" });
             var owner = NewClient();
             await AcceptAsync(owner, registration, prefix + "owner", newAccount: true, teamName: prefix + " team");
             var invite = await MakeLinkAsync(owner, "/api/team/invites", new { });
