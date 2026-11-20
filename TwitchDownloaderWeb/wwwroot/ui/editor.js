@@ -378,8 +378,12 @@ function unloadPlayer1(text) {
   $("p1-media").hidden = true;
   $("p1-hint").hidden = false;
   showNote("p1", text);
+  refusalShown.p1 = Boolean(text);
   renderTools();
 }
+
+// A player left empty with a note why its VOD was refused: the note goes once the team's channels change again (assigned again)
+const refusalShown = { p1: false, p2: false };
 
 function playerNotes(player) {
   const notes = [];
@@ -575,6 +579,7 @@ async function refusePlayer2(error) {
     $("p2-hint").hidden = false;
   }
   showNote("p2", channelRefusalText(error));
+  refusalShown.p2 = true;
 }
 
 async function closeProject() {
@@ -2625,6 +2630,11 @@ function setUpLiveUpdates() {
 }
 
 async function dropRefusedVods() {
+  for (const which of ["p1", "p2"]) {
+    const empty = which === "p1" ? !p1Vod : !store?.open;
+    if (refusalShown[which] && empty) showNote(which, "");
+    refusalShown[which] = false;
+  }
   const p1 = p1Vod;
   if (p1) {
     try {

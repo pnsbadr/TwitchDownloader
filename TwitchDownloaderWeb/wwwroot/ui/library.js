@@ -2434,6 +2434,12 @@ function renderStatusBar() {
   const fade = () => bar.classList.toggle("more", bar.scrollWidth - bar.scrollLeft > bar.clientWidth + 2);
   requestAnimationFrame(fade);
   bar.onscroll = fade;
+  // Its scrollbar is hidden, so a mouse wheel scrolls it sideways
+  bar.onwheel = (event) => {
+    if (bar.scrollWidth <= bar.clientWidth || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+    event.preventDefault();
+    bar.scrollLeft += event.deltaY;
+  };
 }
 
 function setStatusFilter(value) {
