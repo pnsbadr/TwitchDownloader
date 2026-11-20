@@ -332,6 +332,14 @@ button.team-pill:hover { background: var(--bg-4); }
   overflow: hidden;
 }
 .p2-tree { overflow: auto; padding: 6px 0; flex: 1 1 auto; min-height: 60px; }
+/* Its search box and ★ (badrfly 2026-11-20, Large libraries step 5) */
+.tree-search { flex: none; display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3); border-bottom: 1px solid var(--line); }
+.tree-search > sl-icon { color: var(--text-faint); flex: none; }
+.tree-search-input { flex: 1; min-width: 0; height: var(--control-h); padding: 0 var(--space-2); border: 1px solid var(--line-strong); border-radius: var(--radius-small); background: var(--bg-2); color: var(--text); font: 13px var(--font-ui); }
+.tree-search-input:focus { outline: none; border-color: var(--accent); }
+.tree-star-only.on, .tree-star.on { color: var(--warn, #f5c542); }
+.tree-starred { flex: none; font-size: 11px; color: var(--warn, #f5c542); }
+.tree-row:hover .tree-starred, .tree-row:focus-within .tree-starred { display: none; }
 .tree-row {
   display: flex;
   align-items: center;

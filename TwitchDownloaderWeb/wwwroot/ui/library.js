@@ -2610,6 +2610,11 @@ export async function toggleStar(type, item) {
   }
 }
 
+// Player 2's picker reads them too
+export function myMarks() {
+  return state.marks;
+}
+
 // editor.js: a VOD, clip or video was loaded in a player
 export async function noteOpened(type, item) {
   const list = MARK_LISTS[type];

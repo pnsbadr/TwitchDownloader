@@ -9,6 +9,10 @@
 // siblings. When the menu opens with something loaded in Player 2, only the path to it is open. Click a clip or video line to open
 // it and double-click (or its load icon) to load it; segments and edits load with one click. Names are the team's own: whoever made
 // something (or a role with EditAnyEntries) renames it with the pencil or the right-click menu. The word "project" is never shown.
+//
+// Large libraries (badrfly 2026-11-20, step 5): a search box over the tree (titles of clips and videos, segment labels; the VODs whose work
+// matches, from GET /api/vods/matches, opened to what matched) and a ★ button that keeps only what the member starred. Their starred VODs
+// come right after Player 1's, then the ones they opened lately; starred lines carry a star, which the star icon on each line toggles.
 
 import { el, api, me, can, formatDate, formatDuration, toast, iconButton } from "./core.js";
 import { askText, confirmAction } from "./dialogs.js";
@@ -23,7 +27,12 @@ const state = {
   vods: new Map(),     // vodId → { clips, videos, edits, loading, error }
   titles: new Map(),   // vodId → title (from the library's VOD list or /api/vods/info)
   expanded: new Set(),
+  query: "",           // the search box (lower case)
+  only: "",            // "starred": only what the member starred
+  matches: null,       // VOD IDs the search / ★ keeps (GET /api/vods/matches), or null
 };
+let matchSeq = 0;
+let matchTimer = 0;
 
 let hooks = {
   root: null,              // the element the tree is drawn in
@@ -40,11 +49,103 @@ let hooks = {
   onChanged: () => {},     // (kind) a clip / video / segment / edit was renamed
   onAddSegments: null,     // (video): the link tool with the video's segments (videos across streams)
   vodDay: () => null,      // (vodId) "19 Nov" once known
+  marks: () => null,       // the member's { starred, recent } IDs (library.js myMarks)
+  toggleStar: null,        // (type, item) → Promise: star / unstar (library.js)
   close: () => {},
 };
 
 export function setUpTree(options) {
   hooks = { ...hooks, ...options };
+  if (!hooks.root || hooks.root.previousElementSibling?.classList.contains("tree-search")) return;
+  const input = el("input", { type: "search", class: "tree-search-input", placeholder: "Search clips, videos, segments", "aria-label": "Search the VODs' work", spellcheck: "false" });
+  const starOnly = iconButton({ icon: "star", label: "Only what you starred", className: "tree-star-only", onClick: (event) => {
+    state.only = state.only ? "" : "starred";
+    event.currentTarget.name = state.only ? "star-fill" : "star";
+    event.currentTarget.classList.toggle("on", Boolean(state.only));
+    findMatches();
+  } });
+  input.addEventListener("input", () => {
+    clearTimeout(matchTimer);
+    matchTimer = setTimeout(() => {
+      state.query = input.value.trim().toLowerCase();
+      findMatches();
+    }, 250);
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      hooks.root.querySelector(".tree-row")?.focus();
+    } else if (event.key === "Escape" && input.value) {
+      // Clears the box first; the next Esc closes the menu
+      event.stopPropagation();
+      input.value = "";
+      state.query = "";
+      findMatches();
+    }
+  });
+  // Typing in the box mustn't reach the editor's keys (or Shoelace's menu type-to-select)
+  input.addEventListener("keydown", (event) => event.stopPropagation());
+  hooks.root.before(el("div", { class: "tree-search" }, el("sl-icon", { library: "ph", name: "magnifying-glass" }), input, starOnly));
+}
+
+// The search box or ★ changed: which VODs to keep, then open the first few to what matched
+async function findMatches() {
+  const seq = ++matchSeq;
+  if (!state.query && !state.only) {
+    state.matches = null;
+    render();
+    return;
+  }
+  const query = new URLSearchParams();
+  if (state.query) query.set("q", state.query);
+  if (state.only) query.set("mark", state.only);
+  try {
+    const found = await api("GET", `/api/vods/matches?${query}`);
+    if (seq !== matchSeq) return;
+    state.matches = new Set(found.vodIds.map(Number));
+  } catch {
+    if (seq !== matchSeq) return;
+    state.matches = new Set();
+  }
+  for (const vodId of vodIds().slice(0, 3)) {
+    state.expanded.add(`v:${vodId}`);
+    state.expanded.add(`v:${vodId}:videos`);
+    state.expanded.add(`v:${vodId}:clips`);
+    if (!state.vods.get(vodId)) loadVod(vodId);
+  }
+  render();
+  lookUpTitles();
+}
+
+const marks = () => hooks.marks?.() ?? null;
+function starred(type, id) {
+  const list = { vod: "vods", clip: "clips", video: "videos" }[type];
+  return Boolean(marks()?.starred?.[list]?.includes(String(id)));
+}
+
+function searching() {
+  return Boolean(state.query || state.only);
+}
+
+// Under a search: does a clip / video match (a video by its title or a segment's label); with ★ only, is it starred
+function keepClip(clip, vodStarred) {
+  if (state.only && !vodStarred && !starred("clip", clip.id)) return false;
+  return !state.query || clip.title.toLowerCase().includes(state.query);
+}
+
+function keepVideo(video, vodStarred) {
+  if (state.only && !vodStarred && !starred("video", video.id)) return false;
+  return !state.query || video.title.toLowerCase().includes(state.query)
+    || video.segments.some((s) => (s.label ?? "").toLowerCase().includes(state.query));
+}
+
+function starAction(type, item, id) {
+  if (!hooks.toggleStar || me?.support) return null;
+  const on = starred(type, id);
+  return iconButton({ icon: on ? "star-fill" : "star", label: on ? "Unstar" : "Star", className: `tree-star${on ? " on" : ""}`, onClick: async () => {
+    await hooks.toggleStar(type, item);
+    render();
+  } });
 }
 
 // The menu opened: read the VODs again and open only the path to what's loaded
@@ -138,8 +239,15 @@ function vodIds() {
   const ids = state.work.map((w) => Number(w.vodId));
   const loaded = Number(hooks.loaded()?.vodId || 0);
   const p1 = Number(hooks.player1VodId() || 0);
-  const first = [p1, loaded].filter((id, i, all) => id && all.indexOf(id) === i);
-  return [...first, ...ids.filter((id) => !first.includes(id))];
+  // Player 1's and what's loaded, then the member's starred VODs, then the ones they opened lately, then the rest by newest work
+  const mine = marks();
+  const order = [p1, loaded, ...(mine?.starred?.vods ?? []).map(Number), ...(mine?.recent?.vods ?? []).map(Number), ...ids];
+  const all = order.filter((id, i) => id && order.indexOf(id) === i);
+  if (!state.matches) return all.filter((id) => ids.includes(id) || id === p1 || id === loaded || starred("vod", id));
+  // Searching: the VODs whose work matches (the server's order) and loaded titles that match
+  const titled = all.filter((id) => state.query && (state.titles.get(id) ?? "").toLowerCase().includes(state.query) && (!state.only || starred("vod", id)));
+  const found = [...state.matches];
+  return [...all.filter((id) => found.includes(id) || titled.includes(id)), ...found.filter((id) => !all.includes(id))];
 }
 
 // ---------- drawing ----------
@@ -174,13 +282,14 @@ export function render() {
   const ids = vodIds();
   if (!ids.length) {
     rows.push(el("p", { class: "tree-empty faint" }, state.workError
-      || (state.loadingWork ? "Loading…" : "Nothing yet. Mark segments or clips on a VOD in Player 1, then load them here.")));
+      || (searching() ? (state.only && !state.query ? "Nothing starred yet. Star clips, videos or VODs with the ☆ on their line." : "Nothing matches.")
+        : state.loadingWork ? "Loading…" : "Nothing yet. Mark segments or clips on a VOD in Player 1, then load them here.")));
   }
   for (const vodId of ids) rows.push(...vodRows(vodId, loaded));
   root.replaceChildren(...rows);
 }
 
-function row({ key = null, parent = null, depth, icon, label, detail = null, current = false, expandable = false, onClick, onDouble, actions = [], menu = null, title = null }) {
+function row({ key = null, parent = null, depth, icon, label, detail = null, current = false, expandable = false, onClick, onDouble, actions = [], menu = null, title = null, star = false }) {
   const open = key && state.expanded.has(key);
   const node = el("div", {
     class: `tree-row${current ? " current" : ""}`,
@@ -194,6 +303,7 @@ function row({ key = null, parent = null, depth, icon, label, detail = null, cur
   el("sl-icon", { library: "ph", name: expandable ? (open ? "caret-down" : "caret-right") : "dot", class: "tree-caret" }),
   el("sl-icon", { library: "ph", name: icon, class: "tree-icon" }),
   el("span", { class: "tree-label" }, label),
+  star ? el("sl-icon", { library: "ph", name: "star-fill", class: "tree-starred", "aria-label": "Starred" }) : null,
   detail ? el("span", { class: "tree-detail num" }, detail) : null,
   el("span", { class: "tree-actions" }, ...actions));
   const activate = () => (expandable ? toggle(key, parent) : onClick?.());
@@ -248,9 +358,12 @@ function vodRows(vodId, loaded) {
   const counts = work ? [work.videos && `${work.videos} video${work.videos === 1 ? "" : "s"}`, work.clips && `${work.clips} clip${work.clips === 1 ? "" : "s"}`].filter(Boolean).join(" · ") : "";
   const rows = [row({
     key, depth: 0, icon: "broadcast", label, detail: counts || null, expandable: true,
-    current: Number(loaded?.vodId) === vodId,
+    current: Number(loaded?.vodId) === vodId, star: starred("vod", vodId),
     title: `${label}${work?.streamDateUtc ? ` · ${formatDate(work.streamDateUtc, false)}` : ""}`,
-    actions: [iconButton({ icon: "monitor-play", label: "Load in Player 1", onClick: () => { hooks.onLoadVod(vodId, state.titles.get(vodId) ?? label); hooks.close(); } })],
+    actions: [
+      starAction("vod", { vodId }, vodId),
+      iconButton({ icon: "monitor-play", label: "Load in Player 1", onClick: () => { hooks.onLoadVod(vodId, state.titles.get(vodId) ?? label); hooks.close(); } }),
+    ].filter(Boolean),
     menu: () => [{ label: "Load in Player 1", icon: "broadcast", run: () => hooks.onLoadVod(vodId, state.titles.get(vodId) ?? label) }],
   })];
   if (!state.expanded.has(key)) return rows;
@@ -275,21 +388,32 @@ function vodRows(vodId, loaded) {
   }
 
   const editsOf = (field, id) => data.edits.filter((e) => e[field] === id);
+  // Searching: only what matches (a starred VOD keeps all its work under ★); groups with nothing left are left out
+  const vodStarred = starred("vod", vodId);
+  const videos = searching() ? data.videos.filter((v) => keepVideo(v, vodStarred)) : data.videos;
+  const clips = searching() ? data.clips.filter((c) => keepClip(c, vodStarred)) : data.clips;
   const videosKey = `${key}:videos`;
-  rows.push(row({ key: videosKey, parent: key, depth: 1, icon: "film-strip", label: "Videos", detail: String(data.videos.length), expandable: true }));
-  if (state.expanded.has(videosKey)) {
-    if (!data.videos.length) rows.push(el("p", { class: "tree-empty faint", style: "--depth:2" }, "No videos yet. Link segments on Player 1 to make one."));
-    for (const video of data.videos) rows.push(...videoRows(video, editsOf("videoId", video.id), videosKey, loaded));
+  if (!searching() || videos.length) {
+    rows.push(row({ key: videosKey, parent: key, depth: 1, icon: "film-strip", label: "Videos", detail: String(videos.length), expandable: true }));
+    if (state.expanded.has(videosKey)) {
+      if (!videos.length) rows.push(el("p", { class: "tree-empty faint", style: "--depth:2" }, "No videos yet. Link segments on Player 1 to make one."));
+      for (const video of videos) rows.push(...videoRows(video, editsOf("videoId", video.id), videosKey, loaded));
+    }
   }
 
   const clipsKey = `${key}:clips`;
-  rows.push(row({ key: clipsKey, parent: key, depth: 1, icon: "scissors", label: "Clips", detail: String(data.clips.length), expandable: true }));
-  if (state.expanded.has(clipsKey)) {
-    if (!data.clips.length) rows.push(el("p", { class: "tree-empty faint", style: "--depth:2" }, "No clips yet. Mark one on Player 1 (X)."));
-    for (const clip of data.clips) rows.push(...clipRows(clip, editsOf("entryId", clip.id), clipsKey, loaded));
+  if (!searching() || clips.length) {
+    rows.push(row({ key: clipsKey, parent: key, depth: 1, icon: "scissors", label: "Clips", detail: String(clips.length), expandable: true }));
+    if (state.expanded.has(clipsKey)) {
+      if (!clips.length) rows.push(el("p", { class: "tree-empty faint", style: "--depth:2" }, "No clips yet. Mark one on Player 1 (X)."));
+      for (const clip of clips) rows.push(...clipRows(clip, editsOf("entryId", clip.id), clipsKey, loaded));
+    }
+  }
+  if (searching() && !videos.length && !clips.length) {
+    rows.push(el("p", { class: "tree-empty faint", style: "--depth:1" }, state.query ? "Matches a segment or moment on its timeline." : "Starred."));
   }
 
-  const other = data.edits.filter((e) => !e.entryId && !e.videoId);
+  const other = searching() ? [] : data.edits.filter((e) => !e.entryId && !e.videoId);
   if (other.length) {
     const otherKey = `${key}:other`;
     rows.push(row({ key: otherKey, parent: key, depth: 1, icon: "stack", label: "Other edits", detail: String(other.length), expandable: true,
@@ -309,11 +433,12 @@ function videoRows(video, edits, parent, loaded) {
   // A video may span several streams: it's listed under each VOD it plays from
   const streams = new Set(video.segments.map((s) => String(s.vodId ?? video.vodId))).size;
   const rows = [row({
-    key, parent, depth: 2, icon: "film-strip", label: video.title, expandable: true, current: isLoaded,
+    key, parent, depth: 2, icon: "film-strip", label: video.title, expandable: true, current: isLoaded, star: starred("video", video.id),
     detail: `${streams > 1 ? `${streams} streams · ` : ""}${formatDuration(Math.round(video.lengthSeconds ?? 0))}`,
     title: `${video.title}${video.createdBy ? ` · by ${video.createdBy}` : ""} (double-click to load)`,
     onDouble: load,
     actions: [
+      starAction("video", video, video.id),
       iconButton({ icon: "play", label: "Load in Player 2", onClick: load }),
       video.canEdit ? iconButton({ icon: "pencil-simple", label: "Rename", onClick: () => renameVideo(video) }) : null,
     ].filter(Boolean),
@@ -378,12 +503,13 @@ function clipRows(clip, edits, parent, loaded) {
     hooks.close();
   };
   const rows = [row({
-    key, parent, depth: 2, icon: "scissors", label: clip.title, expandable: true,
+    key, parent, depth: 2, icon: "scissors", label: clip.title, expandable: true, star: starred("clip", clip.id),
     current: Number(loaded?.entryId) === clip.id && !loaded?.editId,
     detail: formatDuration(Math.round(clip.clipLengthSeconds ?? 0)),
     title: `${clip.title}${clip.addedBy ? ` · by ${clip.addedBy}` : ""} (double-click to load)`,
     onDouble: load,
     actions: [
+      starAction("clip", clip, clip.id),
       iconButton({ icon: "play", label: "Load in Player 2", onClick: load }),
       canRename ? iconButton({ icon: "pencil-simple", label: "Rename", onClick: () => renameClip(clip) }) : null,
     ].filter(Boolean),
