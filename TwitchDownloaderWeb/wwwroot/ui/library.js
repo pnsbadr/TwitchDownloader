@@ -77,12 +77,14 @@ export function setUpLibrary(options) {
   state.view = loadSetting(viewKey(), "rows") === "cards" ? "cards" : "rows";
   $("side-list").addEventListener("scroll", () => {
     if (state.view === "rows") scheduleWindow();
+    litScrub();
     loadMoreIfNear();
   });
   // Moving from a row to its card at the bottom keeps that card (its buttons can be clicked)
   $("side-list").addEventListener("mouseleave", (event) => { if (!$("side-peek").contains(event.relatedTarget)) setHovered(""); });
   $("side-peek").addEventListener("mouseleave", (event) => { if (!$("side-list").contains(event.relatedTarget)) setHovered(""); });
   $("side-view").addEventListener("click", () => setView(state.view === "rows" ? "cards" : "rows"));
+  setUpScrub();
   new ResizeObserver(() => { if (state.view === "rows") scheduleWindow(); }).observe($("side-list"));
   renderViewButton();
   setUpFilter();
@@ -746,6 +748,7 @@ function render() {
   if (!items.length) {
     rowsModel = null;
     list.replaceChildren(el("p", { class: "side-empty" }, EMPTY[state.list]()));
+    renderScrub(null);
     renderPeek();
     return;
   }
@@ -754,11 +757,13 @@ function render() {
     renderRows(lines);
   } else {
     rowsModel = null;
-    const nodes = lines.map((line) => (line.head ? el("div", { class: "side-day" }, line.head, el("span", { class: "faint" }, String(line.count)))
+    const nodes = lines.map((line, index) => (line.head
+      ? el("div", { class: "side-day", "data-line": String(index) }, line.head, el("span", { class: "faint" }, String(line.count)))
       : card(specFor(line.item))));
     if (listLoadingMore()) nodes.push(el("p", { class: "side-empty" }, "Loading more…"));
     list.replaceChildren(...nodes);
   }
+  renderScrub(lines);
   renderPeek();
   // A short first page that doesn't fill the panel can't be scrolled to load the next one
   requestAnimationFrame(loadMoreIfNear);
@@ -825,13 +830,118 @@ function linesFor(items) {
     if (bucket.key !== dayKey) {
       dayKey = bucket.key;
       // The same day can come back in a list that isn't sorted on this date: each heading still needs its own key
-      head = { head: bucket.label, key: `day:${bucket.key}:${lines.length}`, count: 0 };
+      head = { head: bucket.label, key: `day:${bucket.key}:${lines.length}`, count: 0, at: p };
       lines.push(head);
     }
     head.count++;
-    lines.push({ key: itemKey(item), item });
+    lines.push({ key: itemKey(item), item, at: p });
   }
   return lines;
+}
+
+// ---------- the month bar on the list's right edge (badrfly 2026-11-20) ----------
+// One mark per month of this year that the loaded list reaches, then one per earlier year ('25); click or drag to jump. The mark of
+// what's at the top of the list is lit. Months not loaded yet aren't shown: scrolling (or the last mark) loads further.
+
+const scrubFormatters = new Map();
+let scrubMarks = [];  // [{ label, line }] in list order
+
+function scrubMarksFor(lines) {
+  const zone = viewerTimeZone();
+  const thisYear = zonedParts(Date.now(), zone).year;
+  let formatter = scrubFormatters.get(zone);
+  if (!formatter) scrubFormatters.set(zone, formatter = new Intl.DateTimeFormat(undefined, { month: "short", timeZone: "UTC" }));
+  const marks = [];
+  let last = null;
+  lines.forEach((line, index) => {
+    if (!line.at) return;
+    const key = line.at.year === thisYear ? `${line.at.year}-${line.at.month}` : `${line.at.year}`;
+    if (key === last) return;
+    last = key;
+    const label = line.at.year === thisYear ? formatter.format(new Date(Date.UTC(line.at.year, line.at.month - 1, 15))) : `'${String(line.at.year).slice(-2)}`;
+    marks.push({ key, label, line: index });
+  });
+  return marks;
+}
+
+function renderScrub(lines) {
+  const scrub = $("side-scrub");
+  scrubMarks = lines ? scrubMarksFor(lines) : [];
+  const show = scrubMarks.length > 1 || (scrubMarks.length === 1 && listHasMore());
+  scrub.hidden = !show;
+  $("side-list").classList.toggle("with-scrub", show);
+  if (!show) return;
+  const nodes = scrubMarks.map((mark, i) => el("span", { class: "scrub-mark", "data-index": String(i) }, mark.label));
+  if (listHasMore()) nodes.push(el("span", { class: "scrub-mark more", title: "Load older" }, "…"));
+  scrub.replaceChildren(...nodes);
+  litScrub();
+}
+
+function listHasMore() {
+  return state.list === "vods" ? moreVods() : state.list === "clips" ? Boolean(state.clipsCursor) : Boolean(state.videosCursor);
+}
+
+// The line at the top of the list (rows: by position; cards: the last heading above the top)
+function topLine() {
+  const list = $("side-list");
+  if (state.view === "rows") return Math.floor(list.scrollTop / ROW_H);
+  const heads = list.querySelectorAll(":scope > .side-day[data-line]");
+  let index = 0;
+  for (const head of heads) {
+    if (head.offsetTop - list.offsetTop > list.scrollTop + 4) break;
+    index = Number(head.dataset.line);
+  }
+  return index;
+}
+
+function litScrub() {
+  const scrub = $("side-scrub");
+  if (scrub.hidden || !scrubMarks.length) return;
+  const top = topLine();
+  let lit = 0;
+  scrubMarks.forEach((mark, i) => { if (mark.line <= top) lit = i; });
+  for (const node of scrub.querySelectorAll(".scrub-mark")) node.classList.toggle("on", node.dataset.index === String(lit));
+}
+
+function jumpToMark(index) {
+  const mark = scrubMarks[index];
+  if (!mark) return;
+  const list = $("side-list");
+  if (state.view === "rows") list.scrollTop = mark.line * ROW_H;
+  else {
+    const head = list.querySelector(`:scope > .side-day[data-line="${mark.line}"]`);
+    if (head) list.scrollTop = head.offsetTop - list.offsetTop;
+  }
+  litScrub();
+}
+
+function setUpScrub() {
+  const scrub = $("side-scrub");
+  const pick = (event) => {
+    const marks = [...scrub.querySelectorAll(".scrub-mark")];
+    let best = null;
+    for (const node of marks) {
+      const rect = node.getBoundingClientRect();
+      const d = Math.abs(event.clientY - (rect.top + rect.height / 2));
+      if (!best || d < best.d) best = { node, d };
+    }
+    if (!best) return;
+    if (best.node.classList.contains("more")) {
+      const list = $("side-list");
+      list.scrollTop = list.scrollHeight;
+      loadMoreIfNear();
+    } else jumpToMark(Number(best.node.dataset.index));
+  };
+  scrub.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    scrub.setPointerCapture(event.pointerId);
+    scrub.classList.add("dragging");
+    pick(event);
+  });
+  scrub.addEventListener("pointermove", (event) => { if (scrub.hasPointerCapture(event.pointerId)) pick(event); });
+  const end = () => scrub.classList.remove("dragging");
+  scrub.addEventListener("pointerup", end);
+  scrub.addEventListener("pointercancel", end);
 }
 
 function itemKey(item) {

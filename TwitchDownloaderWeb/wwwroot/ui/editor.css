@@ -1355,3 +1355,34 @@ body:not(.linking) .link-chips { display: none; }
   background: var(--bg-1);
 }
 .side-peek .card { background: var(--bg-2); }
+
+/* The month bar on the list's right edge (badrfly 2026-11-20): months of this year, then years; the one at the top of the list is lit */
+.side-listwrap { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
+.side-scrub {
+  position: absolute;
+  top: var(--space-2);
+  bottom: var(--space-2);
+  right: 2px;
+  width: 30px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-end;
+  z-index: 3;
+  cursor: ns-resize;
+  user-select: none;
+  touch-action: none;
+}
+.scrub-mark {
+  font: 600 10px/1 var(--font-ui);
+  color: var(--text-faint);
+  padding: 2px 4px;
+  border-radius: var(--radius-xs);
+  font-variant-numeric: tabular-nums;
+}
+.side-scrub:hover .scrub-mark, .side-scrub.dragging .scrub-mark { color: var(--text-dim); }
+.scrub-mark.on, .side-scrub:hover .scrub-mark.on { color: var(--text); background: var(--accent); }
+.side-list.with-scrub { padding-right: 34px; }
+.side-list.rows.with-scrub { padding-right: 0; }
+.side-list.rows.with-scrub .lrow { right: 34px; }
+.side-list.rows.with-scrub .vsticky { margin-right: 34px; }

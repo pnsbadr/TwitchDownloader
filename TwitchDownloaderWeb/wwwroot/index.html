@@ -136,7 +136,11 @@
             </div>
           </sl-dropdown>
         </div>
-        <div class="side-list" id="side-list" role="list"></div>
+        <div class="side-listwrap">
+          <div class="side-list" id="side-list" role="list"></div>
+          <!-- Months of the list: click or drag to jump -->
+          <div class="side-scrub" id="side-scrub" aria-hidden="true" hidden></div>
+        </div>
         <!-- Rows view: the card of the row under the mouse, else the selected one -->
         <div class="side-peek" id="side-peek" hidden></div>
       </aside>
