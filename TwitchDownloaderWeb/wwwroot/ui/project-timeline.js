@@ -1898,16 +1898,16 @@ export class ProjectTimeline {
     const x2 = this.timeToX(pieceEnd(piece), width);
     if (x2 < -2 || x1 > width + 2) return;
     const color = this.colorPreview?.id === piece.id ? (MARKER_COLORS[this.colorPreview.color] ?? colorOf(piece)) : colorOf(piece);
-    const w = Math.max(2, x2 - x1 - 1);
+    const w = Math.max(2, x2 - x1 - 2);
     ctx.save();
     ctx.globalAlpha = faint ? 0.25 : hidden ? 0.35 : 1;
     ctx.fillStyle = invalid ? "#f05252" : color;
-    roundRect(ctx, x1, y + 4, w, h - 8, 4);
+    roundRect(ctx, x1, y + 4, w, h - 8, 3);
     ctx.fill();
     // covered by a higher row: darker
     if (!faint && !hidden && !solo) {
       ctx.save();
-      roundRect(ctx, x1, y + 4, w, h - 8, 4);
+      roundRect(ctx, x1, y + 4, w, h - 8, 3);
       ctx.clip();
       for (const range of this.coveredRanges(piece)) {
         const cx1 = this.timeToX(range.start, width);
@@ -1925,7 +1925,7 @@ export class ProjectTimeline {
     // sound wave (W), drawn darker on the piece: a laugh or a shout is a spike on both streams
     if (this.waves && !faint && w > 8) {
       ctx.save();
-      roundRect(ctx, x1, y + 4, w, h - 8, 4);
+      roundRect(ctx, x1, y + 4, w, h - 8, 3);
       ctx.clip();
       const top = h > ROW_HEIGHT ? y + 24 : y + 21;
       drawWave(ctx, {
@@ -1937,9 +1937,9 @@ export class ProjectTimeline {
     // label
     if (w > 24) {
       ctx.save();
-      roundRect(ctx, x1, y + 4, w, h - 8, 4);
+      roundRect(ctx, x1, y + 4, w, h - 8, 3);
       ctx.clip();
-      ctx.fillStyle = "#0b0b10";
+      ctx.fillStyle = "#141518";
       ctx.font = "600 12px Barlow, system-ui, sans-serif";
       ctx.textBaseline = "top";
       const text = piece.label || "Untitled";

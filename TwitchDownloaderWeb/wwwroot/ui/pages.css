@@ -65,7 +65,7 @@ main.narrow { max-width: 460px; padding-top: 48px; }
 .panel {
   background: var(--bg-1);
   border: 1px solid var(--line);
-  border-radius: var(--radius);
+  border-radius: var(--radius-large);
   padding: 18px;
 }
 h2 {
