@@ -78,6 +78,9 @@ const state = {
   statusFilter: "",     // a status ID, "none", or "" for any
   tagFilter: "",        // a tag name
   statusVods: null,     // VOD IDs with clips or videos of that status / tag (GET /api/vods/matches), or null
+  // The member's own stars and recently opened items (GET /api/my/marks; step 5) and the ★ / Recent chip picked ("starred", "recent" or "")
+  marks: { starred: { clips: [], videos: [], vods: [] }, recent: { clips: [], videos: [], vods: [] } },
+  mark: "",
   // "Sync with" (Player 2's piece menu) waiting for a channel to be picked: { onPick, onCancel, shade }
   picking: null,
 };
@@ -104,6 +107,7 @@ export function setUpLibrary(options) {
   setUpFilter();
   setUpSearch();
   loadStatuses();
+  loadMarks();
   if (options.sample) showSample(options.sample);
   else {
     loadChannels();
@@ -556,6 +560,7 @@ function rememberMembers(pairs) {
 // The VOD and member filters on the query of clips (entries) or videos
 function whoQuery(query, list) {
   statusQuery(query);
+  if (state.mark) query.set("mark", state.mark);
   const who = state.who;
   if (who.vodId) query.set(list === "clips" ? "vodId" : "vodIds", who.vodId);
   if (who.memberId) {
@@ -752,7 +757,8 @@ function visibleItems() {
     return mergedVods().filter((v) => (!search || v.title.toLowerCase().includes(search) || state.vodMatches?.has(String(v.vodId)))
       && (!state.onlyWorked || state.work.has(String(v.vodId)))
       && (!bounds || (vodTime(v) >= from && vodTime(v) < to))
-      && (!state.statusVods || state.statusVods.has(String(v.vodId))));
+      && (!state.statusVods || state.statusVods.has(String(v.vodId)))
+      && (!state.mark || marked(state.mark, "vod", v)));
   }
   return state.list === "clips" ? state.clips : state.videos;
 }
@@ -1311,9 +1317,9 @@ function hashText(text) {
 function rowSig(item, type = listType()) {
   if (type === "vod") {
     const work = state.work.get(String(item.vodId));
-    return `${item.isLive}|${work ? workCount(work) : ""}|${hasKids(item)}|${state.open.has(String(item.vodId))}|${shownChannels().length > 1}|${state.cards.get(item.channel)?.profileImageUrl ?? ""}`;
+    return `${marked("starred", type, item)}|${item.isLive}|${work ? workCount(work) : ""}|${hasKids(item)}|${state.open.has(String(item.vodId))}|${shownChannels().length > 1}|${state.cards.get(item.channel)?.profileImageUrl ?? ""}`;
   }
-  return `${item.title}|${item.status}|${item.generationStatus}|${item.color}|${item.clipLengthSeconds ?? item.lengthSeconds}|${item.teamStatusId}|${(item.tags ?? []).join()}`;
+  return `${marked("starred", type, item)}|${item.title}|${item.status}|${item.generationStatus}|${item.color}|${item.clipLengthSeconds ?? item.lengthSeconds}|${item.teamStatusId}|${(item.tags ?? []).join()}`;
 }
 
 function listRow(line) {
@@ -1326,6 +1332,7 @@ function listRow(line) {
       : r.lead ?? el("span", { class: "ldot", style: `background:${r.color ?? CLIP_COLOR}` }),
     el("span", { class: "ltitle", title: spec.title }, spec.title),
     ...(r.tags ?? []).filter(Boolean),
+    starButton(line.type, line.item),
     el("span", { class: "llen" }, r.length ?? ""),
     r.who ?? el("span", { class: "lwho empty" }));
   wireItem(node, spec);
@@ -1337,6 +1344,13 @@ function listRow(line) {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       moveSelection(event.key === "ArrowDown" ? 1 : -1);
+    }
+    // * stars or unstars the row's item (keybinds.js rowStar)
+    if (keybindFor("library", event) === "rowStar") {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleStar(line.type, line.item);
+      return;
     }
     // 1–9 give the row's clip or video the team's status of that number, 0 takes it off (keybinds.js rowStatus)
     if (keybindFor("library", event) === "rowStatus" && (line.type === "clip" || line.type === "video") && state.canSetStatus) {
@@ -1454,7 +1468,7 @@ function card(spec) {
     el("div", { class: "card-body" },
       el("div", { class: "card-title", title }, title),
       ...meta.filter(Boolean).map((line) => (line instanceof Node ? line : el("div", { class: "card-meta" }, line))),
-      el("div", { class: "card-actions" }, ...actions)));
+      el("div", { class: "card-actions" }, spec.star ? starButton(...spec.star) : null, ...actions)));
   wireItem(node, spec);
   return node;
 }
@@ -1529,6 +1543,7 @@ function vodSpec(vod) {
     badges,
     meta: [[formatDate(vod.createdAtUtc, false), vod.game].filter(Boolean).join(" · "), work ? workLine(work) : null],
     actions,
+    star: ["vod", vod],
     dragData: item,
     channel,
     row: {
@@ -1545,6 +1560,7 @@ function vodSpec(vod) {
       hasKids(vod) && { label: state.open.has(String(vod.vodId)) ? "Hide its videos and clips" : "Show its videos and clips here", icon: "caret-down", run: () => toggleVod(vod) },
       work?.clips && { label: "Show its clips", icon: "scissors", run: () => showVodWork(vod.vodId, "clips") },
       work?.videos && { label: "Show its videos", icon: "film-strip", run: () => showVodWork(vod.vodId, "videos") },
+      starMenuItem("vod", vod),
     ].filter(Boolean),
   };
 }
@@ -1614,6 +1630,7 @@ function clipSpec(entry) {
       statusLine(entry),
     ],
     actions: [exportButton({ kind: "clip", data: item })],
+    star: ["clip", entry],
     dragData: item,
     channel: channelByName(entry.channelName),
     row: {
@@ -1640,6 +1657,7 @@ function clipMenu(entry) {
   return [
     { label: "Load in Player 2", icon: "film-strip", run: () => handlers.onLoad({ kind: "clip", data: entry }) },
     { label: "Export", icon: "download-simple", run: () => handlers.onExport({ kind: "clip", data: entry }) },
+    starMenuItem("clip", entry),
     entry.vodId && String(entry.vodId) !== state.who.vodId && { label: "Show this VOD's clips", icon: "funnel-simple", run: () => showVodWork(entry.vodId, "clips") },
     canOnEntry(entry, "EditOwnEntries", "EditAnyEntries") && { label: "Rename", icon: "pencil-simple", run: () => renameClip(entry) },
     canOnEntry(entry, "DeleteOwnEntries", "DeleteAnyEntries") && { label: "Delete", icon: "trash", danger: true, run: () => deleteClip(entry) },
@@ -1696,6 +1714,7 @@ function videoSpec(video) {
       statusLine(video),
     ],
     actions: [exportButton({ kind: "video", data: item })],
+    star: ["video", video],
     dragData: item,
     channel: channelByName(video.channelName),
     row: {
@@ -1707,6 +1726,7 @@ function videoSpec(video) {
     menu: () => [
       { label: "Load in Player 2", icon: "film-strip", run: () => handlers.onLoad({ kind: "video", data: item }) },
       { label: "Export", icon: "download-simple", run: () => handlers.onExport({ kind: "video", data: item }) },
+      starMenuItem("video", item),
       String(video.vodId) !== state.who.vodId && { label: "Show this VOD's videos", icon: "funnel-simple", run: () => showVodWork(video.vodId, "videos") },
       video.canEdit && handlers.onAddSegments && { label: "Add segments…", icon: "link", run: () => handlers.onAddSegments(item) },
       video.canEdit && { label: "Rename", icon: "pencil-simple", run: () => renameVideo(item) },
@@ -1746,7 +1766,7 @@ export async function deleteVideo(video) {
 // ---------- filter popover ----------
 
 function filtersOn() {
-  if (state.statusFilter || state.tagFilter) return true;
+  if (state.statusFilter || state.tagFilter || state.mark) return true;
   const day = Boolean(state.clipFilter.day || state.clipFilter.last24h);
   if (state.list === "vods") return Boolean(state.vodSearch) || state.vodType !== "archive" || state.onlyWorked || day;
   const who = Boolean(state.who.vodId || state.who.memberId);
@@ -1834,6 +1854,7 @@ function setUpFilter() {
     state.statusFilter = "";
     state.tagFilter = "";
     state.statusVods = null;
+    state.mark = "";
     renderStatusBar();
     if (state.clipsLoaded || state.list === "clips") loadClips();
     if (state.videosLoaded || state.list === "videos") loadVideos();
@@ -2392,7 +2413,7 @@ function statusCount(status) {
 function renderStatusBar() {
   const bar = $("status-bar");
   if (!bar) return;
-  bar.hidden = !state.statuses.length;
+  bar.hidden = state.demo;
   if (bar.hidden) return;
   const chip = (value, label, color, count, title) => {
     const on = state.statusFilter === value;
@@ -2403,6 +2424,8 @@ function renderStatusBar() {
   };
   const none = state.noStatus ? (state.list === "clips" ? state.noStatus.clips : state.list === "videos" ? state.noStatus.videos : state.noStatus.clips + state.noStatus.videos) : 0;
   bar.replaceChildren(
+    ...quickChips(),
+    state.statuses.length ? el("span", { class: "sbar-gap", "aria-hidden": "true" }) : "",
     ...state.statuses.map((s) => chip(String(s.id), s.name, statusColor(s), statusCount(s), s.hideFromLists ? "Hidden from lists unless picked" : "")),
     none ? chip("none", "No status", null, none, "") : "");
   // Fades out on the right while more chips are hidden there
@@ -2509,4 +2532,135 @@ async function editTags(kind, item) {
 function renderPeekAgain() {
   peekKey = null;
   renderPeek();
+}
+
+// ---------- the member's own stars, Recent and Mine (badrfly 2026-11-20, "Redesign the library for large teams" step 5) ----------
+// ★ on a row (shown on hover, filled when on), on a card and in the menus (or * on a row) stars a VOD, clip or video for this member only
+// (PUT / DELETE /api/my/stars/{kind}/{id}). Loading one in a player puts it in their Recent (POST /api/my/opened, from editor.js). The
+// chips at the front of the status row filter the open list by them; Mine = clips / videos they made (the member filter's "made by").
+
+const MARK_LISTS = { vod: "vods", clip: "clips", video: "videos" };
+const markId = (type, item) => String(type === "vod" ? item.vodId : item.id);
+
+async function loadMarks() {
+  if (state.demo) return;
+  try {
+    const data = await api("GET", "/api/my/marks");
+    const sets = (group) => ({ clips: group.clips.map(String), videos: group.videos.map(String), vods: group.vods.map(String) });
+    state.marks = { starred: sets(data.starred), recent: sets(data.recent) };
+  } catch {
+    return;
+  }
+  renderStatusBar();
+  render();
+}
+
+// Is the item starred / recently opened by this member (type: vod, clip or video)
+function marked(mark, type, item) {
+  const list = MARK_LISTS[type];
+  return Boolean(list && item && state.marks[mark]?.[list]?.includes(markId(type, item)));
+}
+
+function starButton(type, item) {
+  if (!MARK_LISTS[type] || state.demo) return null;
+  const on = marked("starred", type, item);
+  const button = el("button", {
+    type: "button", class: `lstar${on ? " on" : ""}`, tabindex: "-1", "aria-pressed": String(on),
+    "aria-label": on ? "Unstar" : "Star", title: `${on ? "Unstar" : "Star"} (${keybindLabel("rowStar")})`,
+  }, el("sl-icon", { library: "ph", name: on ? "star-fill" : "star" }));
+  button.addEventListener("pointerdown", (event) => event.stopPropagation());
+  button.addEventListener("dblclick", (event) => event.stopPropagation());
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleStar(type, item);
+  });
+  return button;
+}
+
+function starMenuItem(type, item) {
+  if (state.demo) return null;
+  const on = marked("starred", type, item);
+  return { label: on ? "Unstar" : "Star", icon: on ? "star-fill" : "star", hint: keybindLabel("rowStar"), run: () => toggleStar(type, item) };
+}
+
+export async function toggleStar(type, item) {
+  const list = MARK_LISTS[type];
+  if (!list || state.demo) return;
+  const id = markId(type, item);
+  const stars = state.marks.starred;
+  const on = !stars[list].includes(id);
+  stars[list] = on ? [id, ...stars[list]] : stars[list].filter((x) => x !== id);
+  render();
+  renderPeekAgain();
+  renderStatusBar();
+  try {
+    await api(on ? "PUT" : "DELETE", `/api/my/stars/${type}/${id}`);
+  } catch (error) {
+    stars[list] = on ? stars[list].filter((x) => x !== id) : [id, ...stars[list]];
+    render();
+    renderPeekAgain();
+    renderStatusBar();
+    toast(error.message, "error");
+    return;
+  }
+  // Unstarred while only stars are shown: it leaves the list
+  if (state.mark === "starred" && !on) {
+    if (type === "clip") loadClips();
+    if (type === "video") loadVideos();
+  }
+}
+
+// editor.js: a VOD, clip or video was loaded in a player
+export async function noteOpened(type, item) {
+  const list = MARK_LISTS[type];
+  if (!list || state.demo || !item) return;
+  const id = markId(type, item);
+  if (!id || id === "undefined" || id === "0") return;
+  const recent = state.marks.recent;
+  recent[list] = [id, ...recent[list].filter((x) => x !== id)].slice(0, 50);
+  renderStatusBar();
+  try {
+    await api("POST", "/api/my/opened", { kind: type, id: Number(id) });
+  } catch {
+    // Recent is a convenience
+  }
+}
+
+// ★ / Recent / Mine at the front of the status row
+function quickChips() {
+  const list = state.list;
+  const count = (mark) => state.marks[mark][list]?.length ?? 0;
+  const chip = (on, icon, label, n, title, run) => {
+    const node = el("button", { type: "button", class: `sbar-chip quick${on ? " on" : ""}`, "aria-pressed": String(on), title },
+      icon ? el("sl-icon", { library: "ph", name: icon }) : null, label, n == null ? null : el("span", { class: "sbar-n" }, n.toLocaleString()));
+    node.addEventListener("click", run);
+    return node;
+  };
+  const mine = state.who.memberId === String(me.id) && state.who.mode !== "edited";
+  return [
+    chip(state.mark === "starred", state.mark === "starred" ? "star-fill" : "star", "", count("starred"), "Only what you starred", () => setMark("starred")),
+    chip(state.mark === "recent", "clock-counter-clockwise", "Recent", null, "Only what you opened lately", () => setMark("recent")),
+    list === "vods" ? null : chip(mine, null, "Mine", null, `Only ${list} you made`, () => toggleMine()),
+  ].filter(Boolean);
+}
+
+function setMark(mark) {
+  state.mark = state.mark === mark ? "" : mark;
+  renderStatusBar();
+  renderFilter();
+  if (state.clipsLoaded || state.list === "clips") loadClips();
+  if (state.videosLoaded || state.list === "videos") loadVideos();
+  render();
+}
+
+function toggleMine() {
+  const mine = state.who.memberId === String(me.id) && state.who.mode !== "edited";
+  if (mine) Object.assign(state.who, { memberId: "" });
+  else {
+    rememberMembers([[me.id, me.username]]);
+    Object.assign(state.who, { memberId: String(me.id), mode: "made" });
+  }
+  renderStatusBar();
+  renderChips();
+  reloadWho();
 }

@@ -1580,3 +1580,28 @@ body:not(.linking) .link-chips { display: none; }
   .lrow .lpill { padding: 0; background: none; font-size: 0; gap: 0; }
   .lrow .lpill i { width: 8px; height: 8px; }
 }
+
+/* The member's own stars, Recent and Mine (badrfly 2026-11-20, "Redesign the library for large teams" step 5) */
+.sbar-chip.quick sl-icon { font-size: 13px; }
+.sbar-chip.quick:first-child { padding: 0 var(--space-2) 0 7px; }
+.sbar-chip.quick.on sl-icon[name="star-fill"] { color: var(--warn, #f5c542); }
+.sbar-gap { flex: none; width: 1px; margin: 3px 2px; background: var(--line-strong); }
+.lstar {
+  flex: none;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 13px;
+}
+.lrow:hover .lstar, .lrow:focus-within .lstar, .lrow.sel .lstar, .lstar.on { display: inline-flex; }
+.lstar:hover { color: var(--text); background: var(--bg-4); }
+.lstar.on { color: var(--warn, #f5c542); }
+.card-actions .lstar { display: inline-flex; width: var(--control-h); height: var(--control-h); font-size: var(--icon-size); }

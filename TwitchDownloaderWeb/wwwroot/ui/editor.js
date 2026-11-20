@@ -6,7 +6,7 @@ import { registerIconLibrary } from "https://cdn.jsdelivr.net/npm/@shoelace-styl
 import { setUpStart, openStart, startIsOpen } from "./start.js";
 import { $, el, api, me, can, loadMe, startLiveEvents, sessionHandlers, TEAM_PAGE_PERMISSIONS, wireIconButtons, loadSetting, saveSetting, toast, formatDuration, formatDate } from "./core.js";
 import { dropTarget, watchDrags, shadePath } from "./drag.js";
-import { setUpLibrary, showList, refreshClips, refreshVideos, refreshLibraryFilters, knownVod, knownVodTitle, pickChannel, teamChannels, adjacentVod, focusLibrarySearch } from "./library.js";
+import { setUpLibrary, noteOpened, showList, refreshClips, refreshVideos, refreshLibraryFilters, knownVod, knownVodTitle, pickChannel, teamChannels, adjacentVod, focusLibrarySearch } from "./library.js";
 import { setUpLinkTray, renderLinkTray, savedLinking, addSegmentsTo, vodDay, vodInfo } from "./link-tray.js";
 import { setUpTree, openTree, forgetTree, render as renderTree } from "./p2-tree.js";
 import { MARKER_COLORS } from "./colors.js";
@@ -266,6 +266,7 @@ async function openVod(vod, { start = 0, paused = false, back = null } = {}) {
   p1Vod = vod;
   p1Back = back;
   p1Away = null;
+  noteOpened("vod", vod);
   if (pip) {
     pip.close();
     pip = null;
@@ -447,6 +448,7 @@ async function loadInPlayer2(item, { show = true, quiet = false, original = fals
     return false;
   }
   if (opened !== p2Opened) return false;
+  if (item.kind === "clip" || item.kind === "video") noteOpened(item.kind, data);
   const title = itemTitle(item);
   const parent = item.kind === "clip" ? { entryId: data.id } : item.kind === "video" ? { videoId: data.id } : {};
   // The new edit's name: "clip · Edit n", counting the item's edits so far

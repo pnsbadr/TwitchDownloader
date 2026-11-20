@@ -35,6 +35,12 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal([a], Ids(await GetJsonAsync(member, "/api/entries?paged=true&mark=starred")));
             Assert.Empty(Ids(await GetJsonAsync(owner, "/api/entries?paged=true&mark=starred")));
             Assert.Equal(HttpStatusCode.BadRequest, (await member.GetAsync("/api/entries?mark=liked", ct)).StatusCode);
+            var c = AddEntry(teamId, ownerId, "Elsewhere", vodId: 731);
+            Assert.Equal(HttpStatusCode.NoContent, (await member.PutAsync($"/api/my/stars/clip/{c}", null, ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.NoContent, (await member.PutAsync("/api/my/stars/vod/732", null, ct)).StatusCode);
+            var starredVods = (await GetJsonAsync(member, "/api/vods/matches?mark=starred")).GetProperty("vodIds").EnumerateArray().Select(x => x.GetInt64()).ToList();
+            Assert.Equal(new[] { 730L, 731L, 732L }, starredVods.Order().ToArray());
+            Assert.Equal(HttpStatusCode.NoContent, (await member.DeleteAsync($"/api/my/stars/clip/{c}", ct)).StatusCode);
 
             // Recent = opened last, newest first
             Assert.Equal(HttpStatusCode.NoContent, (await member.PostAsJsonAsync("/api/my/opened", new { kind = "clip", id = b }, ct)).StatusCode);

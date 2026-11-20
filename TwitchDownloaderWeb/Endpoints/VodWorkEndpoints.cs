@@ -34,12 +34,20 @@ namespace TwitchDownloaderWeb.Endpoints
         /// </summary>
         /// <param name="status">Only clips and videos with this team status (an ID or "none"; segments and moments then don't count).</param>
         /// <param name="tag">Only clips and videos with this tag.</param>
-        private static async Task<IResult> Matches(string? q, string? status, string? tag, LibraryDbContext db, CancellationToken cancellationToken)
+        /// <param name="mark">"starred" / "recent": only the caller's own starred / recently opened clips and videos, and those VODs themselves
+        /// (Player 2's picker, step 5).</param>
+        private static async Task<IResult> Matches(string? q, string? status, string? tag, string? mark, TeamContext team, LibraryDbContext db,
+            CancellationToken cancellationToken)
         {
             var (statusId, noStatus, tagName, problem) = StatusEndpoints.ParseFilters(status, tag);
             if (problem is not null)
                 return problem;
-            var filtered = statusId is not null || noStatus || tagName is not null;
+            var (markedClips, markProblem) = MarkEndpoints.Filter(db, mark, MarkKind.Clip, team.UserId);
+            if (markProblem is not null)
+                return markProblem;
+            var (markedVideos, _) = MarkEndpoints.Filter(db, mark, MarkKind.Video, team.UserId);
+            var (markedVods, _) = MarkEndpoints.Filter(db, mark, MarkKind.Vod, team.UserId);
+            var filtered = statusId is not null || noStatus || tagName is not null || markedClips is not null;
             if (string.IsNullOrWhiteSpace(q) && !filtered)
                 return Results.Ok(new WorkMatchesDto([], 0, 0, 0, 0));
             var pattern = "%" + (q ?? "").Trim().Replace(@"\", @"\\").Replace("%", @"\%").Replace("_", @"\_") + "%";
@@ -60,6 +68,11 @@ namespace TwitchDownloaderWeb.Endpoints
                 entryQuery = entryQuery.Where(x => db.EntryTags.Any(t => t.EntryId == x.Id && t.Tag!.Name == tagName));
                 videoQuery = videoQuery.Where(x => db.VideoTags.Any(t => t.VideoId == x.Id && t.Tag!.Name == tagName));
             }
+            if (markedClips is not null && markedVideos is not null)
+            {
+                entryQuery = entryQuery.Where(x => markedClips.Contains(x.Id));
+                videoQuery = videoQuery.Where(x => markedVideos.Contains(x.Id));
+            }
             var clips = await entryQuery.Select(x => new { x.VodId, At = x.UpdatedAtUtc }).ToListAsync(cancellationToken);
             // Segments and moments have no status or tags: with those filters only clips and videos count
             var markers = await db.Markers.AsNoTracking().Where(x => !filtered && x.RemovedAtUtc == null && EF.Functions.Like(x.Label, pattern, @"\"))
@@ -69,7 +82,11 @@ namespace TwitchDownloaderWeb.Endpoints
             var vods = clips.Where(x => x.VodId > 0).Select(x => (x.VodId, x.At))
                 .Concat(markers.Select(x => (x.VodId, x.At)))
                 .Concat(videos.SelectMany(x => x.SegmentVods.Append(x.VodId).Distinct().Select(vod => (vod, x.At))))
-                .GroupBy(x => x.Item1).OrderByDescending(g => g.Max(x => x.Item2)).Select(g => g.Key).Take(MaxVods).ToList();
+                .GroupBy(x => x.Item1).OrderByDescending(g => g.Max(x => x.Item2)).Select(g => g.Key).ToList();
+            // The VODs the caller starred / opened themselves come first
+            if (markedVods is not null)
+                vods = (await markedVods.ToListAsync(cancellationToken)).Where(x => x > 0).Concat(vods).Distinct().ToList();
+            vods = vods.Take(MaxVods).ToList();
             return Results.Ok(new WorkMatchesDto(vods, clips.Count, videos.Count, markers.Count(x => x.Segment), markers.Count(x => !x.Segment)));
         }
 
