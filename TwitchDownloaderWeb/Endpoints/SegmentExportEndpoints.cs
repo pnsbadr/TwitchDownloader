@@ -80,7 +80,7 @@ namespace TwitchDownloaderWeb.Endpoints
             }
 
             // The query filter keeps other teams' markers out
-            var markers = await db.Markers.AsNoTracking().Where(x => x.VodId == vodId && markerIds.Contains(x.Id)).ToListAsync(cancellationToken);
+            var markers = await db.Markers.AsNoTracking().Where(x => x.VodId == vodId && markerIds.Contains(x.Id) && x.RemovedAtUtc == null).ToListAsync(cancellationToken);
             if (markers.Count != markerIds.Count)
                 return Invalid("markerIds", "Some of those segments aren't on this VOD any more. Reload and pick again.");
             if (markers.Any(x => x.EndSeconds is null))

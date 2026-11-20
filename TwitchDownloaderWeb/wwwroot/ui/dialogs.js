@@ -79,3 +79,36 @@ export function chooseEditTarget({ what, owner }) {
     customElements.whenDefined("sl-dialog").then(() => box.show());
   });
 }
+
+// Deleting segments that are in videos (badrfly 2026-11-20, everywhere a segment is deleted): "unlink" takes them out of the videos
+// (a video left with none is deleted), "keep" leaves the videos as they are (the segment leaves the timeline but the videos still play it).
+// titles = the videos' titles. Resolves "unlink", "keep" or null (cancel).
+export function chooseSegmentDelete({ count = 1, titles = [] }) {
+  return new Promise((resolve) => {
+    const keep = el("sl-button", { slot: "footer", variant: "primary" }, "Delete, keep videos as they are");
+    const unlink = el("sl-button", { slot: "footer", variant: "danger", outline: true }, "Delete and unlink from videos");
+    const cancel = el("sl-button", { slot: "footer", variant: "text" }, "Cancel");
+    const what = count === 1 ? "This segment is" : `${count} of these segments are`;
+    const names = titles.slice(0, 4).map((t) => `"${t}"`).join(", ") + (titles.length > 4 ? ` and ${titles.length - 4} more` : "");
+    const box = el("sl-dialog", { label: count === 1 ? "Delete a segment that's in a video?" : "Delete segments that are in videos?", class: "small-dialog" },
+      el("p", {}, `${what} in ${titles.length === 1 ? "the video" : `${titles.length} videos`}: ${names}.`),
+      el("p", { style: "color: var(--text-dim)" }, "Keep: it leaves the timeline, but the videos stay as they are and still play it. Unlink: it's taken out of the videos too (a video left with no segments is deleted)."),
+      cancel, unlink, keep);
+    let result = null;
+    const finish = (value) => { result = value; box.hide(); };
+    keep.addEventListener("click", () => finish("keep"));
+    unlink.addEventListener("click", () => finish("unlink"));
+    cancel.addEventListener("click", () => finish(null));
+    box.addEventListener("sl-initial-focus", (event) => {
+      event.preventDefault();
+      customElements.whenDefined("sl-button").then(() => keep.focus());
+    });
+    box.addEventListener("sl-after-hide", (event) => {
+      if (event.target !== box) return;
+      box.remove();
+      resolve(result);
+    });
+    document.body.append(box);
+    customElements.whenDefined("sl-dialog").then(() => box.show());
+  });
+}

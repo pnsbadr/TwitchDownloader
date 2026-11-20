@@ -222,7 +222,7 @@ namespace TwitchDownloaderWeb.Endpoints
 
                 case "segment":
                 {
-                    var marker = request.MarkerId is { } markerId ? await db.Markers.AsNoTracking().FirstOrDefaultAsync(x => x.Id == markerId, cancellationToken) : null;
+                    var marker = request.MarkerId is { } markerId ? await db.Markers.AsNoTracking().FirstOrDefaultAsync(x => x.Id == markerId && x.RemovedAtUtc == null, cancellationToken) : null;
                     if (marker is null)
                         return ([], Invalid(index, "That segment is gone."));
                     if (marker.EndSeconds is not { } end)

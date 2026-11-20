@@ -37,6 +37,13 @@ namespace TwitchDownloaderWeb.Data
         /// <summary>Cut-out parts (<see cref="CutOuts"/>), JSON in VOD seconds; null = none.</summary>
         public string? Cuts { get; set; }
 
+        /// <summary>
+        /// Deleted from its timeline but kept for the videos that link it (badrfly 2026-11-20: deleting a segment asks "unlink from videos" or
+        /// "keep videos as they are"). Such a segment is left out of timelines, lists, copies and exports of segments; its videos still play it.
+        /// Deleted for real once no video links it (<see cref="Endpoints.VideoEndpoints.DeleteEmptyAsync"/>). Null = on its timeline.
+        /// </summary>
+        public DateTime? RemovedAtUtc { get; set; }
+
         public const int MaxLabelLength = 200;
         // New colors go at the end (the page lists them in this order); the first is the default
         public static readonly IReadOnlyList<string> Colors = ["yellow", "blue", "pink", "orange", "red", "lime", "teal", "violet", "gray"];
