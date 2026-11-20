@@ -15,6 +15,7 @@ const ACTION_LABELS = {
   "team.owner_changed": "became the owner", "user.password_reset_link": "made a password reset link", "user.password_reset": "reset their password",
   "channel.added": "got a channel", "channel.removed": "lost a channel",
   "marker.added": "added a marker", "marker.changed": "changed a marker", "marker.deleted": "deleted a marker", "row.deleted": "deleted a timeline row",
+  "status.changed": "set a status", "tags.changed": "changed tags", "statuses.changed": "changed the team's statuses",
   "video.added": "made a video", "video.changed": "changed a video", "video.deleted": "deleted a video", "entry.moved_row": "moved a clip to another row",
   "entry.followed_markers": "moved with the markers", "segments.requested": "asked for segment files", "segments.deleted": "deleted segment files",
   "edit.added": "saved an edit", "edit.deleted": "deleted an edit", "edit.applied": "applied an edit", "edit.reverted": "undid an applied edit", "project.added": "made a project", "project.deleted": "deleted a project",
@@ -53,6 +54,7 @@ async function load() {
   renderRoles();
   if (has("ViewActivity")) { loadActivity(); loadLog(true); }
   if (has("InviteMembers")) loadInvites();
+  if (has("ManageStatuses")) loadStatuses();
   loadSettings();
 }
 
@@ -334,6 +336,131 @@ $("invite-form").addEventListener("submit", async (event) => {
   } catch (error) {
     setMessage($("team-message"), error.message, "error");
   }
+});
+
+// ---------- statuses and tags (badrfly 2026-11-20, "Redesign the library for large teams" step 4) ----------
+
+// Same names and order as VodMarker.Colors (ui/colors.js MARKER_COLORS)
+const STATUS_COLORS = {
+  yellow: "#f2c230", blue: "#3d8bfd", pink: "#ff5fa2", orange: "#ff8a3d",
+  red: "#ff4d4d", lime: "#9be15d", teal: "#2ec4b6", violet: "#a78bfa", gray: "#a1a1aa",
+};
+const SET_WHEN = [
+  ["ByHand", "By hand only"], ["NewItem", "When it's made"], ["EditMade", "When a Player 2 edit is made"],
+  ["VerticalEditMade", "When a vertical edit is made"], ["Exported", "When it's exported"],
+];
+let statusData = null;
+let draggedStatus = null;
+
+async function loadStatuses() {
+  try {
+    showStatuses(await api("GET", "/api/team/statuses"));
+  } catch (error) {
+    setMessage($("status-message"), error.message, "error");
+  }
+}
+
+// Every change answers with the whole list again
+async function statusCall(method, url, body) {
+  setMessage($("status-message"), "");
+  try {
+    showStatuses(await api(method, url, body));
+    return true;
+  } catch (error) {
+    setMessage($("status-message"), error.message, "error");
+    return false;
+  }
+}
+
+function showStatuses(data) {
+  statusData = data;
+  $("statuses-panel").hidden = false;
+  $("status-form").hidden = data.statuses.length >= 12;
+  $("statuses").replaceChildren(...data.statuses.map(statusRow));
+  $("tags").replaceChildren(...(data.tags.length ? data.tags.map((tag) => el("span", { class: "tag-chip" },
+    `#${tag.name}`, el("span", { class: "muted" }, ` ${tag.clips + tag.videos}`),
+    el("button", { type: "button", class: "link small", "aria-label": `Delete tag ${tag.name}`, title: "Delete this tag", onclick: () => deleteTag(tag) }, "×")))
+    : [el("span", { class: "muted small-text" }, "No tags yet.")]));
+}
+
+function statusRow(status) {
+  const count = status.clips + status.videos;
+  const row = el("li", { class: "status-row", draggable: "true", "data-id": String(status.id) });
+  const grip = el("span", { class: "status-grip", title: "Drag to reorder", "aria-hidden": "true" }, "⋮⋮");
+  const swatch = el("button", { type: "button", class: "status-swatch", style: `background:${STATUS_COLORS[status.color] ?? STATUS_COLORS.gray}`,
+    "aria-label": `Color: ${status.color}`, title: "Color" });
+  const palette = el("div", { class: "status-palette", hidden: "" }, ...Object.entries(STATUS_COLORS).map(([name, hex]) =>
+    el("button", { type: "button", class: `status-swatch${name === status.color ? " on" : ""}`, style: `background:${hex}`, "aria-label": name, title: name,
+      onclick: () => statusCall("PUT", `/api/team/statuses/${status.id}`, { color: name }) })));
+  swatch.addEventListener("click", () => { palette.hidden = !palette.hidden; });
+  const name = el("input", { class: "status-name", value: status.name, maxlength: "40", "aria-label": "Status name" });
+  const saveName = () => {
+    const value = name.value.trim();
+    if (!value) name.value = status.name;
+    else if (value !== status.name) statusCall("PUT", `/api/team/statuses/${status.id}`, { name: value });
+  };
+  name.addEventListener("change", saveName);
+  name.addEventListener("keydown", (event) => { if (event.key === "Enter") name.blur(); if (event.key === "Escape") { name.value = status.name; name.blur(); } });
+  const when = el("select", { class: "small", "aria-label": "Set by itself" }, ...SET_WHEN.map(([value, label]) =>
+    el("option", { value, ...(value === status.setWhen ? { selected: "" } : {}) }, label)));
+  when.addEventListener("change", () => statusCall("PUT", `/api/team/statuses/${status.id}`, { setWhen: when.value }));
+  const hide = el("input", { type: "checkbox", ...(status.hideFromLists ? { checked: "" } : {}) });
+  hide.addEventListener("change", () => statusCall("PUT", `/api/team/statuses/${status.id}`, { hideFromLists: hide.checked }));
+  const remove = el("button", { type: "button", class: "link small danger", title: "Delete this status", onclick: () => askDeleteStatus(status, row) }, "Delete");
+  row.append(grip, swatch, name, when,
+    el("label", { class: "status-hide", title: "Leave its clips and videos out of the library's lists unless this status is picked" }, hide, "Hide from lists"),
+    el("span", { class: "muted small-text status-count" }, `${count} item${count === 1 ? "" : "s"}`), remove, palette);
+
+  // Drag to reorder (the inputs keep their own text selection)
+  row.addEventListener("dragstart", (event) => {
+    if (event.target.closest("input, select")) { event.preventDefault(); return; }
+    draggedStatus = row;
+    row.classList.add("dragging");
+    event.dataTransfer.effectAllowed = "move";
+  });
+  row.addEventListener("dragover", (event) => {
+    if (!draggedStatus || draggedStatus === row) return;
+    event.preventDefault();
+    const box = row.getBoundingClientRect();
+    row.parentNode.insertBefore(draggedStatus, event.clientY < box.top + box.height / 2 ? row : row.nextSibling);
+  });
+  row.addEventListener("dragend", () => {
+    row.classList.remove("dragging");
+    if (!draggedStatus) return;
+    draggedStatus = null;
+    const ids = [...$("statuses").children].map((node) => Number(node.dataset.id));
+    if (ids.join() !== statusData.statuses.map((s) => s.id).join()) statusCall("PUT", "/api/team/statuses/order", { ids });
+  });
+  return row;
+}
+
+// Deleting asks where its clips and videos go (another status, or none)
+function askDeleteStatus(status, row) {
+  const count = status.clips + status.videos;
+  const others = statusData.statuses.filter((s) => s.id !== status.id);
+  const target = el("select", { class: "small", "aria-label": "Move its items to" },
+    el("option", { value: "" }, "No status"), ...others.map((s) => el("option", { value: String(s.id) }, s.name)));
+  const box = el("div", { class: "status-delete" },
+    el("span", {}, count ? `Delete "${status.name}" and move its ${count} item${count === 1 ? "" : "s"} to ` : `Delete "${status.name}"?`),
+    count ? target : null,
+    el("button", { type: "button", class: "secondary small danger", onclick: () =>
+      statusCall("DELETE", `/api/team/statuses/${status.id}${target.value ? `?moveTo=${target.value}` : ""}`) }, "Delete"),
+    el("button", { type: "button", class: "link small", onclick: () => box.remove() }, "Cancel"));
+  row.querySelector(".status-delete")?.remove();
+  row.append(box);
+}
+
+async function deleteTag(tag) {
+  const count = tag.clips + tag.videos;
+  if (count && !confirm(`Delete #${tag.name}? It comes off ${count} clip${count === 1 ? "" : "s"} and video${count === 1 ? "" : "s"}.`)) return;
+  statusCall("DELETE", `/api/team/tags/${tag.id}`);
+}
+
+$("status-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const name = $("status-name").value.trim();
+  if (!name) return;
+  if (await statusCall("POST", "/api/team/statuses", { name, color: "gray" })) $("status-name").value = "";
 });
 
 // ---------- settings ----------
