@@ -1333,6 +1333,33 @@ body:not(.linking) .link-chips { display: none; }
   color: var(--bg-0);
 }
 .lwho.empty { background: none; }
+/* A VOD opened to its videos and clips (step 3): the arrow, then its rows indented under it */
+.lcaret {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-left: -4px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.lcaret.empty { cursor: default; }
+.lcaret:hover { background: var(--bg-4); color: var(--text); }
+.lcaret sl-icon { font-size: 11px; transition: transform 0.12s; }
+.lcaret.open sl-icon { transform: rotate(90deg); }
+.lrow.kid { padding-left: calc(var(--space-2) + 20px); }
+.lrow.kid::before { content: ""; position: absolute; left: calc(var(--space-2) + 3px); top: 0; bottom: 0; width: 1px; background: var(--line); }
+.lkind { flex: none; font-size: 13px; }
+.lrow-kidnote { color: var(--text-faint); font-size: var(--font-size-small); border: 0; background: none; text-align: left; font-family: inherit; }
+.lrow-kidnote.link { color: var(--accent-strong); cursor: pointer; }
+.lrow-kidnote.link:hover { text-decoration: underline; }
+/* In the cards view an opened VOD's rows follow its card */
+.side-list:not(.rows) > .lrow { position: relative; left: auto; right: auto; flex: none; }
 .side-peek {
   flex: none;
   padding: var(--space-2);
