@@ -274,6 +274,43 @@ export const editing = {
     return this.syncedRow(rowId)?.vodId ?? this.vodId;
   },
 
+  // < / > on Player 1: slide a synced row's VOD 0.1 s against this one (the selected item's row, else the row clicked last, else the
+  // only synced VOD). step > 0 = their footage later on this VOD's clock. Saved for the VOD pair (PUT /sync, debounced), so every
+  // synced row of that VOD and Player 2's Sync with use it too.
+  slideSynced(step) {
+    const vods = [...new Set(this.rows.filter((r) => this.syncedRow(r.id)).map((r) => String(r.vodId)))];
+    const row = this.syncedRow(this.selectedItem()?.row?.id) ?? this.syncedRow(this.activeRowId)
+      ?? (vods.length === 1 ? this.rows.find((r) => this.syncedRow(r.id)) : null);
+    if (!row) {
+      toast(vods.length ? "Click a synced row's name first, then < / > slide it." : "< / > slide a synced row (another streamer's VOD) on Player 1.");
+      return;
+    }
+    const shift = Math.round((row.shift - step) * 1000) / 1000;
+    for (const r of this.rows) if (this.syncedRow(r.id) && String(r.vodId) === String(row.vodId)) r.shift = shift;
+    const reshift = (item) => {
+      const r = this.syncedRow(item.rowId);
+      return r && item.raw ? { ...shiftTimes(item.raw, -r.shift), raw: item.raw } : item;
+    };
+    this.markers = this.markers.map(reshift);
+    this.clips = this.clips.map(reshift);
+    this.dirty = true;
+    const moved = this.slideMoved = Math.round(((this.slideMoved ?? 0) + step) * 10) / 10;
+    toast(`${row.name || "Their row"}: ${moved > 0 ? "+" : ""}${moved.toFixed(1)} s`);
+    clearTimeout(this.slideTimer);
+    const vodId = this.vodId;
+    this.slideTimer = setTimeout(async () => {
+      this.slideMoved = 0;
+      if (vodId !== this.vodId) return;
+      const at = Math.max(0, this.getPosition() ?? this.xToTime(this.track.clientWidth / 2, this.track.clientWidth));
+      try {
+        await api("PUT", `/api/vods/${encodeURIComponent(vodId)}/sync/${row.vodId}`, { at, otherAt: at + shift });
+      } catch (error) {
+        toast(`Couldn't save the line-up: ${error.message}`, "error");
+      }
+      this.load();
+    }, 600);
+  },
+
   // A marker or entry body on this VOD's clock -> its own VOD's seconds
   toServer(body, rowId) {
     const row = this.syncedRow(rowId);
@@ -875,13 +912,15 @@ export const editing = {
     try {
       if (draft.kind === "clip") {
         this.lastClipColor = color;
+        // on a synced clip row the clip is the other VOD's, in its seconds
+        const times = this.toServer({ start: draft.start, end: draft.end }, draft.rowId);
         const entry = await api("POST", "/api/entries", {
-          vodId: vodId,
+          vodId: this.rowVod(draft.rowId),
           title: title || null,
           color: color === "violet" ? null : color,
           trimMode: "Exact",
-          startTime: trimValue(draft.start),
-          endTime: trimValue(draft.end),
+          startTime: trimValue(times.start),
+          endTime: trimValue(times.end),
           rowId: draft.rowId ?? undefined,
         });
         await this.load();
