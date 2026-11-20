@@ -10,15 +10,24 @@
 // (GET /api/channels/cards), with a blinking red ring while it's live. Clicking pictures turns channels on and off; the ones off go dark
 // (a live one keeps a faint ring), and none on = every channel. It starts on the channel the team is known by (isPrimary). It filters all
 // three lists: VODs of several channels are merged newest first, clips and videos are asked for with ?channels=.
+//
+// Large teams (badrfly 2026-11-20, "Redesign the library for large teams"): clips and videos come a page at a time (?paged=true, a
+// cursor per list) as the list scrolls, so nothing is cut off at 500. Every list is shown as slim rows under day headings by default
+// (only the rows in view are drawn), with the card of the row under the mouse, else the selected one, at the bottom of the panel;
+// the cards view is one click away and remembered per member (clipco.library.view.{userId}).
 
 import { $, el, api, me, can, liveChannels, formatDate, formatDuration, loadSetting, saveSetting, toast, iconButton, withTooltip, twitchThumb, thumbStyle } from "./core.js";
 import { draggable, shadePath } from "./drag.js";
-import { dayRange, todayIn, viewerTimeZone } from "./dates.js";
+import { dayRange, todayIn, viewerTimeZone, zonedParts } from "./dates.js";
+import { clipColor, CLIP_COLOR, STREAM_COLORS } from "./colors.js";
 import { askText, confirmAction } from "./dialogs.js";
 import { openMenu } from "./menu.js";
 
 const POLL_MS = 3000;
 const NEAR_BOTTOM_PX = 300;
+const PAGE_SIZE = 100;
+const ROW_H = 30;        // one row or day heading in the rows view (the list is drawn from this, keep editor.css .lrow in step)
+const ROW_OVERSCAN = 12; // rows drawn above and below the visible part
 
 const state = {
   list: "vods",
@@ -34,10 +43,20 @@ const state = {
   clips: [],
   clipsLoaded: false,
   clipsError: "",
+  clipsCursor: null,    // the next page's cursor (null = all loaded)
+  clipsTotal: 0,
+  clipsMore: false,     // a next page is loading
   clipFilter: { search: "", sort: loadSetting("clipco.library.sort", "dateAdded"), order: "desc", last24h: false, day: "" },
   videos: [],
   videosLoaded: false,
   videosError: "",
+  videosCursor: null,
+  videosTotal: 0,
+  videosMore: false,
+  // "rows" (slim lines under day headings) or "cards"
+  view: "rows",
+  selected: { vods: "", clips: "", videos: "" }, // key of the selected row per list (rows view)
+  hovered: "",
   // VODs: what the team made on each (vodId → GET /api/vods/work row) and the "only with work" switch
   work: new Map(),
   onlyWorked: false,
@@ -55,10 +74,17 @@ let searchTimer = null;
 
 export function setUpLibrary(options) {
   handlers = { ...handlers, ...options };
+  state.view = loadSetting(viewKey(), "rows") === "cards" ? "cards" : "rows";
   $("side-list").addEventListener("scroll", () => {
-    const list = $("side-list");
-    if (state.list === "vods" && list.scrollTop + list.clientHeight > list.scrollHeight - NEAR_BOTTOM_PX) loadMoreVods();
+    if (state.view === "rows") scheduleWindow();
+    loadMoreIfNear();
   });
+  // Moving from a row to its card at the bottom keeps that card (its buttons can be clicked)
+  $("side-list").addEventListener("mouseleave", (event) => { if (!$("side-peek").contains(event.relatedTarget)) setHovered(""); });
+  $("side-peek").addEventListener("mouseleave", (event) => { if (!$("side-list").contains(event.relatedTarget)) setHovered(""); });
+  $("side-view").addEventListener("click", () => setView(state.view === "rows" ? "cards" : "rows"));
+  new ResizeObserver(() => { if (state.view === "rows") scheduleWindow(); }).observe($("side-list"));
+  renderViewButton();
   setUpFilter();
   if (options.sample) showSample(options.sample);
   else {
@@ -522,9 +548,10 @@ function reloadWho() {
   if (state.list === "clips" || state.clipsLoaded) loadClips();
 }
 
-async function loadClips() {
+// The clips query for the current filters (without paging)
+function clipsQuery() {
   const f = state.clipFilter;
-  const query = new URLSearchParams({ sort: f.sort, order: f.order, limit: "500" });
+  const query = new URLSearchParams({ sort: f.sort, order: f.order, paged: "true", limit: String(PAGE_SIZE) });
   if (f.search) query.set("search", f.search);
   whoQuery(query, "clips");
   channelQuery(query);
@@ -539,38 +566,135 @@ async function loadClips() {
     query.set("to", range.to);
     query.set("dateField", dateField);
   }
+  return query;
+}
+
+// The first page of clips for the current filters (a newer call wins over one still loading)
+let clipsSeq = 0;
+async function loadClips() {
+  const seq = ++clipsSeq;
   try {
-    state.clips = await api("GET", `/api/entries?${query}`);
+    const page = await api("GET", `/api/entries?${clipsQuery()}`);
+    if (seq !== clipsSeq) return;
+    state.clips = page.items;
+    state.clipsCursor = page.nextCursor;
+    state.clipsTotal = page.total;
     rememberMembers(state.clips.map((c) => [c.addedByUserId, c.addedBy]));
     state.clipsError = "";
   } catch (error) {
+    if (seq !== clipsSeq) return;
     state.clipsError = error.message;
   }
+  state.clipsMore = false;
   state.clipsLoaded = true;
   if (state.list === "clips") render();
   schedulePoll();
 }
 
-function schedulePoll() {
-  clearTimeout(pollTimer);
-  const busy = state.clips.some((c) => ["Queued", "Downloading"].includes(c.status) || ["Queued", "Generating"].includes(c.generationStatus));
-  if (busy) pollTimer = setTimeout(loadClips, POLL_MS);
+async function loadMoreClips() {
+  if (!state.clipsCursor || state.clipsMore || state.demo) return;
+  const seq = clipsSeq;
+  state.clipsMore = true;
+  const query = clipsQuery();
+  query.set("cursor", state.clipsCursor);
+  try {
+    const page = await api("GET", `/api/entries?${query}`);
+    if (seq !== clipsSeq) return;
+    const known = new Set(state.clips.map((c) => c.id));
+    state.clips.push(...page.items.filter((c) => !known.has(c.id)));
+    state.clipsCursor = page.nextCursor;
+    state.clipsTotal = page.total;
+    rememberMembers(page.items.map((c) => [c.addedByUserId, c.addedBy]));
+  } catch (error) {
+    if (seq === clipsSeq) toast(error.message, "error");
+  }
+  if (seq !== clipsSeq) return;
+  state.clipsMore = false;
+  if (state.list === "clips") render();
+  schedulePoll();
 }
 
-// The team's videos (segments linked on one row), newest first
+const isBusy = (c) => ["Queued", "Downloading"].includes(c.status) || ["Queued", "Generating"].includes(c.generationStatus);
+
+// Clips still downloading are read again one by one (the list may hold thousands; only these change by themselves)
+function schedulePoll() {
+  clearTimeout(pollTimer);
+  if (state.clips.some(isBusy)) pollTimer = setTimeout(pollBusyClips, POLL_MS);
+}
+
+async function pollBusyClips() {
+  const busy = state.clips.filter(isBusy).slice(0, 20);
+  await Promise.all(busy.map(async (clip) => {
+    try {
+      const fresh = await api("GET", `/api/entries/${clip.id}`);
+      const index = state.clips.indexOf(clip);
+      if (index >= 0) state.clips[index] = { ...fresh, addedBy: fresh.addedBy ?? clip.addedBy };
+    } catch (error) {
+      if (error.status === 404) state.clips = state.clips.filter((c) => c !== clip);
+    }
+  }));
+  if (state.list === "clips") render();
+  schedulePoll();
+}
+
+function videosQuery() {
+  const query = new URLSearchParams({ paged: "true", limit: String(PAGE_SIZE) });
+  whoQuery(query, "videos");
+  channelQuery(query);
+  if (state.clipFilter.search) query.set("search", state.clipFilter.search);
+  return query;
+}
+
+// The team's videos (segments linked into one), newest first, a page at a time
+let videosSeq = 0;
 async function loadVideos() {
+  const seq = ++videosSeq;
   try {
-    const query = new URLSearchParams({ limit: "500" });
-    whoQuery(query, "videos");
-    channelQuery(query);
-    state.videos = await api("GET", `/api/videos?${query}`);
+    const page = await api("GET", `/api/videos?${videosQuery()}`);
+    if (seq !== videosSeq) return;
+    state.videos = page.items;
+    state.videosCursor = page.nextCursor;
+    state.videosTotal = page.total;
     rememberMembers(state.videos.map((v) => [v.userId, v.createdBy]));
     state.videosError = "";
   } catch (error) {
+    if (seq !== videosSeq) return;
     state.videosError = error.message;
   }
+  state.videosMore = false;
   state.videosLoaded = true;
   if (state.list === "videos") render();
+}
+
+async function loadMoreVideos() {
+  if (!state.videosCursor || state.videosMore || state.demo) return;
+  const seq = videosSeq;
+  state.videosMore = true;
+  const query = videosQuery();
+  query.set("cursor", state.videosCursor);
+  try {
+    const page = await api("GET", `/api/videos?${query}`);
+    if (seq !== videosSeq) return;
+    const known = new Set(state.videos.map((v) => v.id));
+    state.videos.push(...page.items.filter((v) => !known.has(v.id)));
+    state.videosCursor = page.nextCursor;
+    state.videosTotal = page.total;
+    rememberMembers(page.items.map((v) => [v.userId, v.createdBy]));
+  } catch (error) {
+    if (seq === videosSeq) toast(error.message, "error");
+  }
+  if (seq !== videosSeq) return;
+  state.videosMore = false;
+  if (state.list === "videos") render();
+}
+
+// Near the end of the list (or the list doesn't fill the panel yet): the next page of the list shown
+function loadMoreIfNear() {
+  const list = $("side-list");
+  if (list.scrollTop + list.clientHeight <= list.scrollHeight - NEAR_BOTTOM_PX) return;
+  if (state.list === "vods") loadMoreVods();
+  else if (state.list === "clips") loadMoreClips();
+  else loadMoreVideos();
 }
 
 export function refreshVideos() {
@@ -598,37 +722,336 @@ function visibleItems() {
     const search = state.vodSearch.toLowerCase();
     return mergedVods().filter((v) => (!search || v.title.toLowerCase().includes(search)) && (!state.onlyWorked || state.work.has(String(v.vodId))));
   }
-  if (state.list === "videos" && state.clipFilter.search) {
-    const search = state.clipFilter.search.toLowerCase();
-    return state.videos.filter((v) => v.title.toLowerCase().includes(search));
-  }
   return state.list === "clips" ? state.clips : state.videos;
+}
+
+function countText(items) {
+  const noun = { vods: "VOD", videos: "video", clips: "clip" }[state.list];
+  const total = state.list === "clips" ? state.clipsTotal : state.list === "videos" ? state.videosTotal : items.length;
+  const more = state.list === "vods" && moreVods() ? "+" : "";
+  if (!items.length && !total) return "";
+  return `${total.toLocaleString()}${more} ${noun}${total === 1 && !more ? "" : "s"}`;
+}
+
+function listLoadingMore() {
+  return state.list === "vods" ? vodsLoading() : state.list === "clips" ? state.clipsMore : state.videosMore;
 }
 
 function render() {
   const items = visibleItems();
-  const noun = { vods: "VOD", videos: "video", clips: "clip" }[state.list];
-  const more = state.list === "vods" && moreVods() ? "+" : "";
-  $("side-count").textContent = items.length ? `${items.length}${more} ${noun}${items.length === 1 && !more ? "" : "s"}` : "";
+  $("side-count").textContent = countText(items);
   $("side-filter").toggleAttribute("data-active", filtersOn());
+  const list = $("side-list");
+  list.classList.toggle("rows", state.view === "rows");
   if (!items.length) {
-    $("side-list").replaceChildren(el("p", { class: "side-empty" }, EMPTY[state.list]()));
+    rowsModel = null;
+    list.replaceChildren(el("p", { class: "side-empty" }, EMPTY[state.list]()));
+    renderPeek();
     return;
   }
-  const cards = items.map((item) => (state.list === "vods" ? vodCard(item) : state.list === "clips" ? clipCard(item) : videoCard(item)));
-  if (state.list === "vods" && vodsLoading()) cards.push(el("p", { class: "side-empty" }, "Loading more…"));
-  $("side-list").replaceChildren(...cards);
+  const lines = linesFor(items);
+  if (state.view === "rows") {
+    renderRows(lines);
+  } else {
+    rowsModel = null;
+    const nodes = lines.map((line) => (line.head ? el("div", { class: "side-day" }, line.head, el("span", { class: "faint" }, String(line.count)))
+      : card(specFor(line.item))));
+    if (listLoadingMore()) nodes.push(el("p", { class: "side-empty" }, "Loading more…"));
+    list.replaceChildren(...nodes);
+  }
+  renderPeek();
+  // A short first page that doesn't fill the panel can't be scrolled to load the next one
+  requestAnimationFrame(loadMoreIfNear);
+}
+
+// ---------- rows view: day headings, only the rows in view drawn ----------
+
+const dayFormatters = new Map();
+
+// What a list is grouped by: the date the list is sorted on (clips: added or stream date; videos: made; VODs: streamed)
+function itemDate(item) {
+  if (state.list === "clips") return state.clipFilter.sort === "streamDate" ? item.streamDateUtc : item.addedAtUtc;
+  return item.createdAtUtc;
+}
+
+// "Today", "Yesterday", "Thu 14 Nov", "Thu 14 Nov 2025" in the viewer's time zone
+function dayLabel(ms, zone) {
+  const day = zonedParts(ms, zone);
+  const today = zonedParts(Date.now(), zone);
+  const key = (p) => Date.UTC(p.year, p.month - 1, p.day);
+  const diff = Math.round((key(today) - key(day)) / 86400_000);
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Yesterday";
+  const withYear = day.year !== today.year;
+  let formatter = dayFormatters.get(`${zone}|${withYear}`);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(undefined, { timeZone: zone, weekday: "short", day: "numeric", month: "short", ...(withYear ? { year: "numeric" } : {}) });
+    dayFormatters.set(`${zone}|${withYear}`, formatter);
+  }
+  return formatter.format(new Date(ms));
+}
+
+// VODs are about one a day, so they're grouped by week, then month: "This week", "Last week", "October", "October 2025"
+const monthFormatters = new Map();
+function vodBucket(ms, zone) {
+  const day = zonedParts(ms, zone);
+  const today = zonedParts(Date.now(), zone);
+  const dayNumber = (p) => Math.floor(Date.UTC(p.year, p.month - 1, p.day) / 86400_000);
+  const weekStart = dayNumber(today) - ((new Date(Date.UTC(today.year, today.month - 1, today.day)).getUTCDay() + 6) % 7); // Monday
+  const n = dayNumber(day);
+  if (n >= weekStart) return { key: "this-week", label: "This week" };
+  if (n >= weekStart - 7) return { key: "last-week", label: "Last week" };
+  const withYear = day.year !== today.year;
+  let formatter = monthFormatters.get(`${zone}|${withYear}`);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(undefined, { timeZone: zone, month: "long", ...(withYear ? { year: "numeric" } : {}) });
+    monthFormatters.set(`${zone}|${withYear}`, formatter);
+  }
+  return { key: `${day.year}-${day.month}`, label: formatter.format(new Date(ms)) };
+}
+
+// The list as lines: a heading for each day (VODs: week or month), then that day's items ({ key, item }; their card or row is made when drawn)
+function linesFor(items) {
+  const zone = viewerTimeZone();
+  const lines = [];
+  let dayKey = null;
+  let head = null;
+  for (const item of items) {
+    const at = itemDate(item);
+    const ms = at ? new Date(at).getTime() : NaN;
+    const p = Number.isNaN(ms) ? null : zonedParts(ms, zone);
+    const bucket = !p ? { key: "none", label: "No date" }
+      : state.list === "vods" ? vodBucket(ms, zone) : { key: `${p.year}-${p.month}-${p.day}`, label: dayLabel(ms, zone) };
+    if (bucket.key !== dayKey) {
+      dayKey = bucket.key;
+      // The same day can come back in a list that isn't sorted on this date: each heading still needs its own key
+      head = { head: bucket.label, key: `day:${bucket.key}:${lines.length}`, count: 0 };
+      lines.push(head);
+    }
+    head.count++;
+    lines.push({ key: itemKey(item), item });
+  }
+  return lines;
+}
+
+function itemKey(item) {
+  return state.list === "vods" ? `vod:${item.vodId}` : state.list === "clips" ? `clip:${item.id}` : `video:${item.id}`;
+}
+
+function specFor(item) {
+  return state.list === "vods" ? vodSpec(item) : state.list === "clips" ? clipSpec(item) : videoSpec(item);
+}
+
+let rowsModel = null;  // { lines, nodes: Map key → { item, node } } of the rows view on screen
+let windowFrame = 0;
+
+function renderRows(lines) {
+  const list = $("side-list");
+  const old = rowsModel?.nodes ?? new Map();
+  rowsModel = { lines, nodes: new Map() };
+  // Rows of items that didn't change keep their node (focus and hover stay put)
+  for (const line of lines) {
+    const kept = old.get(line.key);
+    if (kept && kept.item === line.item && kept.count === line.count && (line.head || kept.sig === rowSig(line.item))) rowsModel.nodes.set(line.key, kept);
+  }
+  let inner = list.querySelector(":scope > .vlist");
+  if (!inner) {
+    inner = el("div", { class: "vlist" });
+    list.replaceChildren(el("div", { class: "side-day vsticky", "aria-hidden": "true", hidden: "" }), inner);
+  }
+  const extra = listLoadingMore() ? 1 : 0;
+  inner.style.height = `${(lines.length + extra) * ROW_H + 8}px`;
+  drawWindow();
+}
+
+function scheduleWindow() {
+  if (windowFrame) return;
+  windowFrame = requestAnimationFrame(() => {
+    windowFrame = 0;
+    drawWindow();
+  });
+}
+
+function drawWindow() {
+  if (!rowsModel) return;
+  const list = $("side-list");
+  const inner = list.querySelector(":scope > .vlist");
+  if (!inner) return;
+  const { lines, nodes } = rowsModel;
+  const top = list.scrollTop;
+  const first = Math.max(0, Math.floor(top / ROW_H) - ROW_OVERSCAN);
+  const last = Math.min(lines.length, Math.ceil((top + list.clientHeight) / ROW_H) + ROW_OVERSCAN);
+  const wanted = [];
+  for (let i = first; i < last; i++) {
+    const line = lines[i];
+    let entry = nodes.get(line.key);
+    if (!entry) {
+      entry = { item: line.item, count: line.count, sig: line.head ? "" : rowSig(line.item), node: line.head ? dayRow(line) : listRow(line) };
+      nodes.set(line.key, entry);
+    }
+    entry.node.style.top = `${i * ROW_H}px`;
+    entry.node.classList.toggle("sel", !line.head && state.selected[state.list] === line.key);
+    wanted.push(entry.node);
+  }
+  if (listLoadingMore()) {
+    const loading = el("div", { class: "lrow lrow-note faint" }, "Loading more…");
+    loading.style.top = `${lines.length * ROW_H}px`;
+    wanted.push(loading);
+  }
+  // Keep the focused row in the page even when it scrolled out of view (keyboard focus isn't lost)
+  const focused = document.activeElement?.closest?.(".lrow");
+  if (focused && inner.contains(focused) && !wanted.includes(focused)) wanted.push(focused);
+  inner.replaceChildren(...wanted);
+  // The heading of the day at the top stays put while its rows scroll
+  const sticky = list.querySelector(":scope > .vsticky");
+  let headIndex = Math.min(lines.length - 1, Math.floor(top / ROW_H));
+  while (headIndex > 0 && !lines[headIndex].head) headIndex--;
+  const head = lines[headIndex];
+  sticky.hidden = !head?.head || top < 1;
+  if (head?.head) sticky.replaceChildren(head.head, el("span", { class: "faint" }, String(head.count)));
+}
+
+function dayRow(line) {
+  return el("div", { class: "lrow side-day", role: "presentation" }, line.head, el("span", { class: "faint" }, String(line.count)));
+}
+
+// Who made it: their initial on a color picked from their user ID (names are in the tooltip and the card)
+function whoBadge(userId, name) {
+  if (!name) return el("span", { class: "lwho empty" });
+  const color = STREAM_COLORS[Math.abs(Number(userId) || hashText(name)) % STREAM_COLORS.length];
+  return el("span", { class: "lwho", style: `background:${color}`, title: name }, name.trim().charAt(0).toUpperCase());
+}
+
+function hashText(text) {
+  let h = 0;
+  for (const ch of text) h = (h * 31 + ch.charCodeAt(0)) | 0;
+  return h;
+}
+
+// What a row shows that can change on the same item (VOD work loads later, clip downloads finish)
+function rowSig(item) {
+  if (state.list === "vods") {
+    const work = state.work.get(String(item.vodId));
+    return `${item.isLive}|${work ? workCount(work) : ""}|${shownChannels().length > 1}|${state.cards.get(item.channel)?.profileImageUrl ?? ""}`;
+  }
+  return `${item.title}|${item.status}|${item.generationStatus}|${item.color}|${item.clipLengthSeconds ?? item.lengthSeconds}`;
+}
+
+function listRow(line) {
+  const spec = specFor(line.item);
+  const r = spec.row;
+  const node = el("div", { class: "lrow item", role: "listitem", tabindex: "0", "aria-label": spec.title, "data-key": line.key },
+    r.lead ?? el("span", { class: "ldot", style: `background:${r.color ?? CLIP_COLOR}` }),
+    el("span", { class: "ltitle", title: spec.title }, spec.title),
+    ...(r.tags ?? []).filter(Boolean),
+    el("span", { class: "llen" }, r.length ?? ""),
+    r.who ?? el("span", { class: "lwho empty" }));
+  wireItem(node, spec);
+  node.addEventListener("click", () => select(line.key, { focus: false }));
+  node.addEventListener("mouseenter", () => setHovered(line.key));
+  node.addEventListener("focus", () => select(line.key, { focus: false }));
+  node.addEventListener("keydown", (event) => {
+    if (event.target !== node) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      moveSelection(event.key === "ArrowDown" ? 1 : -1);
+    }
+  });
+  return node;
+}
+
+function itemLines() {
+  return rowsModel ? rowsModel.lines.filter((line) => !line.head) : [];
+}
+
+function select(key, { focus = true } = {}) {
+  if (state.selected[state.list] === key) return;
+  state.selected[state.list] = key;
+  for (const node of $("side-list").querySelectorAll(".lrow.item")) node.classList.toggle("sel", node.dataset.key === key);
+  renderPeek();
+  if (focus) focusRow(key);
+}
+
+function moveSelection(step) {
+  const lines = rowsModel?.lines ?? [];
+  let index = lines.findIndex((line) => line.key === state.selected[state.list]);
+  do index += step; while (index >= 0 && index < lines.length && lines[index].head);
+  if (index < 0 || index >= lines.length) return;
+  const list = $("side-list");
+  const y = index * ROW_H;
+  if (y < list.scrollTop + ROW_H) list.scrollTop = y - ROW_H;
+  else if (y + ROW_H > list.scrollTop + list.clientHeight) list.scrollTop = y + ROW_H - list.clientHeight;
+  drawWindow();
+  select(lines[index].key);
+}
+
+function focusRow(key) {
+  const node = rowsModel?.nodes.get(key)?.node;
+  node?.focus({ preventScroll: true });
+}
+
+function setHovered(key) {
+  if (state.hovered === key) return;
+  state.hovered = key;
+  renderPeek();
+}
+
+// The rows view's card at the bottom: the row under the mouse, else the selected one
+let peekKey = null;
+function renderPeek() {
+  const peek = $("side-peek");
+  const lines = state.view === "rows" ? itemLines() : [];
+  const line = lines.find((l) => l.key === state.hovered) ?? lines.find((l) => l.key === state.selected[state.list]);
+  peek.hidden = !line;
+  if (!line) {
+    peekKey = null;
+    peek.replaceChildren();
+    return;
+  }
+  if (peekKey === line.key && peek.firstChild?._item === line.item && peek.firstChild?._sig === rowSig(line.item)) return;
+  peekKey = line.key;
+  const node = card(specFor(line.item));
+  node._sig = rowSig(line.item);
+  node._item = line.item;
+  peek.replaceChildren(node);
+}
+
+function viewKey() {
+  return `clipco.library.view.${me?.id ?? "anon"}`;
+}
+
+function setView(view) {
+  state.view = view;
+  saveSetting(viewKey(), view);
+  renderViewButton();
+  $("side-list").scrollTop = 0;
+  render();
+}
+
+function renderViewButton() {
+  const button = $("side-view");
+  const rows = state.view === "rows";
+  button.name = rows ? "cards" : "rows";
+  button.label = rows ? "Show as cards" : "Show as rows";
+  if (button.parentElement?.tagName === "SL-TOOLTIP") button.parentElement.content = button.label;
 }
 
 // A card: thumbnail with badges, title, meta lines, and icon actions. item.kind decides where it can be dropped.
 // thumb may be a list (first on top: see thumbStyle).
-function card({ kind, title, thumb, badges = [], meta = [], actions = [], dragData, menu, channel = null, stacked = false }) {
+function card(spec) {
+  const { title, thumb, badges = [], meta = [], actions = [], channel = null, stacked = false } = spec;
   const node = el("div", { class: "card", role: "listitem", tabindex: "0", "aria-label": title },
     el("div", { class: `card-thumb${stacked ? " stacked" : ""}`, style: thumbStyle(thumb) }, ...badges, cardChannel(channel)),
     el("div", { class: "card-body" },
       el("div", { class: "card-title", title }, title),
       ...meta.filter(Boolean).map((line) => (line instanceof Node ? line : el("div", { class: "card-meta" }, line))),
       el("div", { class: "card-actions" }, ...actions)));
+  wireItem(node, spec);
+  return node;
+}
+
+// Drag, double-click / Enter to load, right-click / Menu key for the menu: the same on cards and rows
+function wireItem(node, { kind, title, dragData, menu }) {
   const item = { kind, label: title, data: dragData };
   draggable(node, () => item);
   node.addEventListener("dblclick", () => handlers.onLoad(item));
@@ -661,7 +1084,7 @@ const RESCUE_TEXT = {
   Failed: "Saving the audio failed",
 };
 
-function vodCard(vod) {
+function vodSpec(vod) {
   const thumb = twitchThumb(vod.thumbnailUrl);
   const badges = [
     vod.isLive ? el("span", { class: "card-badge live" }, "LIVE") : null,
@@ -685,7 +1108,8 @@ function vodCard(vod) {
   actions.push(exportButton({ kind: "vod", data: vod }));
   const item = { ...vod, kind: "vod" };
   const work = state.work.get(String(vod.vodId));
-  return card({
+  const channel = channelByLogin(vod.channel);
+  return {
     kind: "vod",
     title: vod.title,
     thumb,
@@ -693,15 +1117,27 @@ function vodCard(vod) {
     meta: [[formatDate(vod.createdAtUtc, false), vod.game].filter(Boolean).join(" · "), work ? workLine(work) : null],
     actions,
     dragData: item,
-    channel: channelByLogin(vod.channel),
+    channel,
+    row: {
+      lead: shownChannels().length > 1 && channel ? channelPicture(channel, "lchan") : el("span", { class: "ldot vod" }),
+      length: vod.isLive ? "" : vod.length ?? "",
+      tags: [
+        vod.isLive ? el("span", { class: "ltag live" }, "LIVE") : null,
+        work ? el("span", { class: "ltag work", title: workText(work) }, el("sl-icon", { library: "ph", name: "stack" }), String(workCount(work))) : null,
+      ],
+    },
     menu: () => [
       { label: "Load in Player 1", icon: "broadcast", run: () => handlers.onLoad({ kind: "vod", data: item }) },
       { label: "Export", icon: "download-simple", run: () => handlers.onExport({ kind: "vod", data: item }) },
       work?.clips && { label: "Show its clips", icon: "scissors", run: () => showVodWork(vod.vodId, "clips") },
       work?.videos && { label: "Show its videos", icon: "film-strip", run: () => showVodWork(vod.vodId, "videos") },
     ].filter(Boolean),
-  });
+  };
 }
+
+const workCount = (work) => (work.clips || 0) + (work.videos || 0) + (work.edits || 0) || (work.segments || 0) + (work.moments || 0);
+const workText = (work) => [["clip", work.clips], ["video", work.videos], ["edit", work.edits], ["segment", work.segments], ["moment", work.moments]]
+  .filter(([, n]) => n).map(([word, n]) => `${n} ${word}${n === 1 ? "" : "s"}`).join(" · ");
 
 // "3 clips · 1 video · 2 edits" on a VOD card (segments and moments when there's nothing else)
 function workLine(work) {
@@ -743,14 +1179,15 @@ function isLongClip(entry) {
   return end - start > (me?.maxStoredClipSeconds || 180) + 0.01;
 }
 
-function clipCard(entry) {
+function clipSpec(entry) {
   const badges = [
     el("span", { class: "card-badge num" }, formatDuration(entry.clipLengthSeconds)),
     entry.kind === "Clip" ? el("span", { class: "card-badge tag" }, "Twitch") : null,
     entry.kind !== "Clip" && isLongClip(entry) ? el("span", { class: "card-badge tag", title: "Longer than the stored-clip limit: not stored, made on demand" }, "Long") : null,
   ];
   const item = entry; // keeps entry.kind (Vod / Clip): the card's own kind is "clip"
-  return card({
+  const problem = ["Failed", "VodUnavailable"].includes(entry.status);
+  return {
     kind: "clip",
     title: entry.title,
     // A frame from the middle of the clip (Twitch clips: Twitch's own thumbnail)
@@ -764,8 +1201,19 @@ function clipCard(entry) {
     actions: [exportButton({ kind: "clip", data: item })],
     dragData: item,
     channel: channelByName(entry.channelName),
+    row: {
+      color: clipColor(entry.color),
+      length: formatDuration(entry.clipLengthSeconds),
+      who: whoBadge(entry.addedByUserId, entry.addedBy),
+      tags: [
+        entry.kind === "Clip" ? el("span", { class: "ltag" }, "Twitch") : null,
+        entry.kind !== "Clip" && isLongClip(entry) ? el("span", { class: "ltag", title: "Longer than the stored-clip limit: not stored, made on demand" }, "Long") : null,
+        isBusy(entry) ? el("sl-icon", { library: "ph", name: "hourglass-medium", class: "lstate", title: "Downloading" }) : null,
+        problem ? el("sl-icon", { library: "ph", name: "warning", class: "lstate error", title: entry.error || (entry.status === "Failed" ? "Download failed" : entry.kind === "Clip" ? "Clip deleted" : "VOD deleted") }) : null,
+      ],
+    },
     menu: () => clipMenu(item),
-  });
+  };
 }
 
 function canOnEntry(entry, own, any) {
@@ -811,14 +1259,15 @@ export async function deleteClip(entry) {
 
 // --- videos: linked segments (length, the VOD's date, who made it); one video may span several streams ---
 
+
 export function videoStreams(video) {
   return new Set((video.segments ?? []).map((s) => String(s.vodId ?? video.vodId))).size || 1;
 }
 
-function videoCard(video) {
+function videoSpec(video) {
   const item = video;
   const streams = videoStreams(video);
-  return card({
+  return {
     kind: "video",
     title: video.title,
     thumb: [video.frameUrl, twitchThumb(video.thumbnailUrl)],
@@ -831,6 +1280,12 @@ function videoCard(video) {
     actions: [exportButton({ kind: "video", data: item })],
     dragData: item,
     channel: channelByName(video.channelName),
+    row: {
+      color: CLIP_COLOR,
+      length: formatDuration(video.lengthSeconds ?? 0),
+      who: whoBadge(video.userId, video.createdBy),
+      tags: [streams > 1 ? el("span", { class: "ltag", title: `Plays from ${streams} streams` }, `${streams} streams`) : null],
+    },
     menu: () => [
       { label: "Load in Player 2", icon: "film-strip", run: () => handlers.onLoad({ kind: "video", data: item }) },
       { label: "Export", icon: "download-simple", run: () => handlers.onExport({ kind: "video", data: item }) },
@@ -839,7 +1294,7 @@ function videoCard(video) {
       video.canEdit && { label: "Rename", icon: "pencil-simple", run: () => renameVideo(item) },
       video.canDelete && { label: "Delete", icon: "trash", danger: true, run: () => deleteVideo(item) },
     ].filter(Boolean),
-  });
+  };
 }
 
 export async function renameVideo(video) {
@@ -909,7 +1364,7 @@ function setUpFilter() {
         render();
       } else if (state.list === "videos") {
         state.clipFilter.search = value;
-        render();
+        loadVideos();
       } else {
         state.clipFilter.search = value;
         loadClips();
