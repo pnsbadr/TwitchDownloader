@@ -12,7 +12,7 @@
 // three lists: VODs of several channels are merged newest first, clips and videos are asked for with ?channels=.
 
 import { $, el, api, me, can, liveChannels, formatDate, formatDuration, loadSetting, saveSetting, toast, iconButton, withTooltip, twitchThumb, thumbStyle } from "./core.js";
-import { draggable } from "./drag.js";
+import { draggable, shadePath } from "./drag.js";
 import { dayRange, todayIn, viewerTimeZone } from "./dates.js";
 import { askText, confirmAction } from "./dialogs.js";
 import { openMenu } from "./menu.js";
@@ -45,6 +45,8 @@ const state = {
   who: { vodId: "", memberId: "", mode: "made" },
   members: new Map(),   // userId → name, from what's been loaded
   workedVods: [],       // GET /api/vods/work, for the VOD filter
+  // "Sync with" (Player 2's piece menu) waiting for a channel to be picked: { onPick, onCancel, shade }
+  picking: null,
 };
 
 let handlers = { onLoad: () => {}, onExport: () => {} };
@@ -181,22 +183,88 @@ function channelPicture(channel, className) {
 function renderChannelBar() {
   const bar = $("side-channels");
   bar.hidden = state.channels.length === 0;
-  bar.classList.toggle("single", !several());
+  bar.classList.toggle("single", !several() && !state.picking);
+  bar.classList.toggle("picking", Boolean(state.picking));
   bar.replaceChildren(...state.channels.map((channel) => {
-    const on = state.picked.has(channel.login);
-    const lit = !several() || !state.picked.size || on;
+    const picking = Boolean(state.picking);
+    const on = !picking && state.picked.has(channel.login);
+    const lit = picking || !several() || !state.picked.size || on;
     const live = channelIsLive(channel.login);
     const name = channel.displayName || channel.login;
-    const tip = `${name}${live ? " · live" : ""}${several() ? (on ? " · click to hide" : " · click to show") : ""}`;
+    const tip = picking
+      ? `Sync with ${name}`
+      : `${name}${live ? " · live" : ""}${several() ? (on ? " · click to hide" : " · click to show") : ""}`;
     const button = el("button", {
       type: "button",
-      class: `chan${live ? " live" : ""}${lit ? "" : " dim"}${several() && on ? " on" : ""}`,
-      "aria-label": `${name}${live ? " (live)" : ""}`,
-      "aria-pressed": several() ? String(on) : null,
-      onclick: () => toggleChannel(channel.login),
+      class: `chan${live ? " live" : ""}${lit ? "" : " dim"}${several() && on ? " on" : ""}${picking ? " pick" : ""}`,
+      "aria-label": picking ? `Sync with ${name}` : `${name}${live ? " (live)" : ""}`,
+      "aria-pressed": several() && !picking ? String(on) : null,
+      onclick: () => channelClicked(channel.login),
     }, channelPicture(channel, "chan-picture"));
     return withTooltip(button, tip, null, "bottom");
   }));
+}
+
+// ---------- picking a channel for "Sync with" ----------
+//
+// Player 2's piece menu asks for a channel: the rest of the editor goes dark (the drag shade) with only the channel bar lit, every
+// picture lit, and a click on one hands its login to onPick instead of filtering the lists. Esc, a click in the dark or another
+// "Sync with" cancels it.
+
+export function teamChannels() {
+  return state.channels.map((c) => ({ login: c.login, displayName: c.displayName || c.login }));
+}
+
+export function pickChannel({ onPick, onCancel }) {
+  cancelChannelPick();
+  const shade = el("div", { class: "focus-shade pick-shade", title: "Click to cancel (Esc)" });
+  shade.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    cancelChannelPick();
+  });
+  document.body.append(shade);
+  const cut = () => {
+    const bar = $("side-channels");
+    const r = bar.getBoundingClientRect();
+    shade.style.clipPath = shadePath([{ left: r.left - 6, top: r.top - 6, right: r.right + 6, bottom: r.bottom + 6 }]);
+  };
+  const onKey = (event) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    cancelChannelPick();
+  };
+  document.addEventListener("keydown", onKey, true);
+  window.addEventListener("resize", cut);
+  state.picking = {
+    onPick, onCancel,
+    stop: () => {
+      shade.remove();
+      document.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("resize", cut);
+    },
+  };
+  renderChannelBar();
+  cut();
+  $("side-channels").querySelector(".chan")?.focus();
+}
+
+export function cancelChannelPick() {
+  const picking = state.picking;
+  if (!picking) return;
+  state.picking = null;
+  picking.stop();
+  renderChannelBar();
+  picking.onCancel?.();
+}
+
+function channelClicked(login) {
+  const picking = state.picking;
+  if (!picking) return toggleChannel(login);
+  state.picking = null;
+  picking.stop();
+  renderChannelBar();
+  picking.onPick(login);
 }
 
 function toggleChannel(login) {

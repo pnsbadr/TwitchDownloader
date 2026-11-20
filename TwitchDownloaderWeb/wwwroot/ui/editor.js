@@ -4,9 +4,9 @@
 
 import { registerIconLibrary } from "https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.20.1/cdn/utilities/icon-library.js";
 import { setUpStart, openStart, startIsOpen } from "./start.js";
-import { $, el, api, me, can, loadMe, startLiveEvents, sessionHandlers, TEAM_PAGE_PERMISSIONS, wireIconButtons, loadSetting, saveSetting, toast, formatDuration } from "./core.js";
+import { $, el, api, me, can, loadMe, startLiveEvents, sessionHandlers, TEAM_PAGE_PERMISSIONS, wireIconButtons, loadSetting, saveSetting, toast, formatDuration, formatDate } from "./core.js";
 import { dropTarget, watchDrags, shadePath } from "./drag.js";
-import { setUpLibrary, showList, refreshClips, refreshVideos, refreshLibraryFilters, knownVod, knownVodTitle } from "./library.js";
+import { setUpLibrary, showList, refreshClips, refreshVideos, refreshLibraryFilters, knownVod, knownVodTitle, pickChannel, teamChannels } from "./library.js";
 import { setUpTree, openTree, forgetTree, render as renderTree } from "./p2-tree.js";
 import { MARKER_COLORS } from "./colors.js";
 import { MediaPlayer, formatClock } from "./media.js";
@@ -472,6 +472,88 @@ async function closeProject() {
   renderTools();
 }
 
+// ---------- "Sync with" (badrfly 2026-11-20): the same moment from another streamer's point of view ----------
+//
+// Right-click a piece in Player 2 > Sync with…, then click a channel's picture in the library's channel bar. The server turns the
+// piece's VOD range into wall-clock time (the VOD's stream start + seconds) and finds that channel's past broadcast recording then;
+// what matched goes on a new row (named after the channel) right under the piece's row, at the same place on the edit's clock. Being
+// lower, it's covered and silent until the member cuts the row above away where the other view is better. Where the other stream
+// wasn't recording, that part is left out (a gap). Twitch's start times can be a few seconds apart between streams: "Slide the
+// footage" (< / >) lines it up.
+
+const SLIDE_STEP = 0.1;
+
+function syncWith(pieces) {
+  if (!store.open || !store.canEdit || !pieces.length) return;
+  if (teamChannels().length < 2) {
+    toast("Your team has only one channel, so there's no one else to sync with. The app Owner can give it more.", "error");
+    return;
+  }
+  if (rowFocus) endRowFocus();
+  const ids = pieces.map((p) => p.id);
+  toast("Sync with: click a streamer's picture above the list. Esc cancels.");
+  pickChannel({ onPick: (login) => runSync(ids, login) });
+}
+
+async function runSync(ids, login) {
+  const content = store.content;
+  const pieces = (content?.pieces ?? []).filter((p) => ids.includes(p.id)).sort((a, b) => a.at - b.at);
+  if (!pieces.length) return;
+  const name = teamChannels().find((c) => c.login === login)?.displayName ?? login;
+  const added = [];
+  let asked = 0;
+  let covered = 0;
+  let empty = null;
+  const notes = new Set();
+  for (const piece of pieces) {
+    let answer;
+    try {
+      const query = new URLSearchParams({ channel: login, start: String(piece.start), end: String(piece.end) });
+      answer = await api("GET", `/api/vods/${piece.vodId}/sync?${query}`);
+    } catch (error) {
+      toast(error.message, "error");
+      return;
+    }
+    asked += piece.end - piece.start;
+    covered += answer.coveredSeconds;
+    if (!answer.matches.length) empty ??= answer;
+    for (const match of answer.matches) {
+      if (match.restricted) notes.add(`${name}'s VOD is for subscribers only, so it may only play in Twitch's player.`);
+      if (match.isLive) notes.add(`${name} is still live: the row ends where the stream is now.`);
+      added.push({
+        trackId: null, at: piece.at + match.offset, vodId: match.vodId, start: match.start, end: match.end,
+        source: { kind: "vod", id: match.vodId }, label: `${name} · ${piece.label || "Synced"}`.slice(0, 200), color: piece.color,
+      });
+    }
+  }
+  // The pieces might have been moved or trimmed while Twitch was asked
+  const now = (store.content?.pieces ?? []).filter((p) => ids.includes(p.id)).sort((a, b) => a.at - b.at);
+  if (JSON.stringify(now) !== JSON.stringify(pieces)) {
+    toast("The pieces changed while looking for the other stream. Try Sync with again.", "error");
+    return;
+  }
+  if (!added.length) {
+    toast(noSyncText(name, empty), "error");
+    return;
+  }
+  if (!timeline2.addSyncedRows(pieces, added, name)) return;
+  const missing = asked - covered;
+  const parts = [missing > 0.5
+    ? `Added ${name}'s view of ${formatDuration(covered)} (${name} wasn't streaming for ${formatDuration(missing)} of it, left as a gap).`
+    : `Added ${name}'s view on a row under it.`];
+  parts.push("It plays once you cut away the row above. < / > slide it if it's a little off.");
+  toast([...parts, ...notes].join(" "));
+}
+
+function noSyncText(name, answer) {
+  const when = (iso) => formatDate(iso);
+  const near = [
+    answer?.before && `their stream before ended ${when(answer.before.endedAtUtc)}`,
+    answer?.after && `the next started ${when(answer.after.startedAtUtc)}`,
+  ].filter(Boolean);
+  return `${name} wasn't streaming then (no past broadcast covers it)${near.length ? `: ${near.join(", ")}` : ""}.`;
+}
+
 // A new segment or clip from Player 1 goes into the open edit (not a clip loaded on its own, and only from the edit's VOD)
 function addToProject(item) {
   if (!store.open || store.isDraft || !store.canEdit) return;
@@ -906,6 +988,7 @@ function setUpPlayer2() {
     },
     onShowInPlayer1: showInPlayer1,
     onApplyToOriginal: applyToOriginal,
+    onSyncWith: syncWith,
     onFocusRow: (trackId) => focusRow("p2", trackId),
   });
   wirePlayerButtons(2, "p2");
@@ -1508,6 +1591,8 @@ function setUpKeys() {
       copyPieces: () => p2 && on && t.copySelected(),
       pastePieces: () => p2 && on && t.paste(),
       addRow: () => p2 && on && t.addTrack(),
+      slideBack: () => p2 && on && t.slideSelected(-SLIDE_STEP),
+      slideFwd: () => p2 && on && t.slideSelected(SLIDE_STEP),
       escape: () => {
         if (rowFocus) {
           endRowFocus();

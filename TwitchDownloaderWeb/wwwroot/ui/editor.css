@@ -712,6 +712,10 @@ button.team-pill:hover { background: var(--bg-4); }
 .chan:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--bg-1), 0 0 0 4px var(--accent); }
 .chan.on { box-shadow: 0 0 0 2px var(--bg-1), 0 0 0 3px var(--accent); }
 .chan.dim { opacity: 0.32; filter: grayscale(1); }
+/* "Sync with": the bar is the only lit thing, every picture can be picked */
+.chan-bar.picking { position: relative; z-index: 801; }
+.chan.pick { cursor: pointer; box-shadow: 0 0 0 2px var(--bg-1), 0 0 0 3px var(--accent); }
+.chan.pick:hover { transform: scale(1.08); }
 .chan.dim:hover { opacity: 0.6; }
 .chan.live { border-color: var(--live); animation: chan-live 1.2s ease-in-out infinite; }
 .chan.live.on { animation-name: chan-live-on; }

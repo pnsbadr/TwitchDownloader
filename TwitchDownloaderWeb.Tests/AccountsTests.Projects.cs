@@ -59,10 +59,7 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal([500L], after.GetProperty("vodIds").EnumerateArray().Select(x => x.GetInt64()));
             Assert.Equal(500, after.GetProperty("vodId").GetInt64()); // took its first piece's VOD
 
-            // Everything in an edit comes from its VOD (2026-11-17)
-            var otherVod = await member.PutAsJsonAsync($"/api/projects/{id}",
-                new { content = TwoTracks(Piece("a", "t1", 0, 500, 100, 110), Piece("z", "t2", 0, 501, 0, 10)) }, ct);
-            Assert.Equal(HttpStatusCode.BadRequest, otherVod.StatusCode);
+            // Another VOD comes in through "Sync with" (2026-11-20; AccountsTests.Sync)
             var keys = after.GetProperty("content").GetProperty("pieces")[0].GetProperty("layout").GetProperty("keys");
             Assert.Equal(108, keys[1].GetProperty("time").GetDouble());
             Assert.True(after.GetProperty("content").GetProperty("tracks")[1].GetProperty("muted").GetBoolean());
