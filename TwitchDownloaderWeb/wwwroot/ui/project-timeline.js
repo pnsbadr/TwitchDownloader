@@ -14,6 +14,7 @@ import { askText, confirmAction } from "./dialogs.js";
 import { MARKER_COLORS } from "./colors.js";
 import { openMenu } from "./menu.js";
 import { dropTarget } from "./drag.js";
+import { drawWave, onWaves } from "./waves.js";
 import {
   MAX_TRACKS, MAX_PIECES, MIN_PIECE, MAX_END, PROJECT_KINDS, round, pieceEnd, pieceLength, newId, trackName, piecesOn, fits,
   nearestFit, flatten, piecesFromItem, splitLayout, projectLength, makeTrack,
@@ -28,6 +29,7 @@ const EDGE_PX = 7;
 const DRAG_PX = 4;
 const SNAP_PX = 8;
 const SNAP_KEY = "clipLibrary.snap"; // shared with Player 1's timeline and the vertical editor
+const WAVES_KEY = "clipco.p2.waves";  // sound waves on the pieces (W)
 const TICK_STEPS = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
 
 let clipboard = null;           // copied pieces (Ctrl+C), relative to the first one's time: [{ piece, trackOffset }]
@@ -89,6 +91,8 @@ export class ProjectTimeline {
     this.active = false;
     this.tool = "pointer";
     this.snap = loadSetting(SNAP_KEY, true) !== false;
+    this.waves = loadSetting(WAVES_KEY, true) !== false;
+    onWaves(() => { this.dirty = true; });
     this.view = { start: 0, end: 60 };
     this.follow = true;
     this.selected = new Set();
@@ -491,6 +495,14 @@ export class ProjectTimeline {
     this.razorAt = null;
     this.updateCursor();
     this.changed();
+  }
+
+  // Sound waves on the pieces on/off (W): for lining a synced stream up by eye
+  toggleWaves() {
+    this.waves = !this.waves;
+    saveSetting(WAVES_KEY, this.waves);
+    this.dirty = true;
+    toast(this.waves ? "Sound waves on (they show once you zoom in to 20 minutes or less)." : "Sound waves off.");
   }
 
   toggleSnap() {
@@ -1215,6 +1227,10 @@ export class ProjectTimeline {
       if (canEdit) {
         items.push({ icon: "arrows-left-right", label: "Slide the footage…", run: () => this.askSlide(pieces) });
       }
+      // Side by side (badrfly 2026-11-20): this piece and the other stream over it, playing together, nudged until they match
+      if (canEdit && pieces.length === 1 && this.hooks.partnerOf?.(piece)) {
+        items.push({ icon: "columns", label: "Line up side by side…", run: () => this.hooks.onSideBySide?.(piece) });
+      }
       if (piece.source && (piece.source.kind === "clip" || piece.source.kind === "segment") && this.hooks.onApplyToOriginal) {
         items.push({ icon: "arrow-fat-line-up", label: "Apply this trim to the original", run: () => this.hooks.onApplyToOriginal(piece) });
       }
@@ -1775,6 +1791,18 @@ export class ProjectTimeline {
       }
       ctx.restore();
     }
+    // sound wave (W), drawn darker on the piece: a laugh or a shout is a spike on both streams
+    if (this.waves && !faint && w > 8) {
+      ctx.save();
+      roundRect(ctx, x1, y + 4, w, h - 8, 4);
+      ctx.clip();
+      const top = h > ROW_HEIGHT ? y + 24 : y + 21;
+      drawWave(ctx, {
+        vodId: piece.vodId, start: piece.start, end: piece.end, x1, x2: x1 + w, clipX1: 0, clipX2: width,
+        midY: (top + y + h - 4) / 2, halfHeight: (y + h - 4 - top) / 2, color: "rgb(0 0 0 / 0.45)",
+      });
+      ctx.restore();
+    }
     // label
     if (w > 24) {
       ctx.save();
@@ -1787,7 +1815,11 @@ export class ProjectTimeline {
       ctx.fillText(text, Math.max(x1, 0) + 6, y + 8);
       ctx.font = "11px Barlow, system-ui, sans-serif";
       ctx.globalAlpha *= 0.75;
-      ctx.fillText(formatDuration(pieceLength(piece), { short: false }), Math.max(x1, 0) + 6, y + 22);
+      // with sound waves the length goes next to the name, leaving the wave room below
+      const beside = this.waves && h <= ROW_HEIGHT;
+      ctx.font = beside ? "11px Barlow, system-ui, sans-serif" : ctx.font;
+      const lengthX = beside ? Math.max(x1, 0) + 6 + this.measureLabel(ctx, text) + 8 : Math.max(x1, 0) + 6;
+      ctx.fillText(formatDuration(pieceLength(piece), { short: false }), lengthX, beside ? y + 9 : y + 22);
       ctx.restore();
     }
     // moving-box keyframes: diamonds along the bottom (vertical edits only)
@@ -1822,6 +1854,14 @@ export class ProjectTimeline {
       ctx.fillRect(x1 + w - 4, y + 12, 3, h - 24);
     }
     ctx.restore();
+  }
+
+  measureLabel(ctx, text) {
+    ctx.save();
+    ctx.font = "600 12px Barlow, system-ui, sans-serif";
+    const width = ctx.measureText(text).width;
+    ctx.restore();
+    return width;
   }
 
   drawPlayhead(ctx, width, height, now, withHandle) {

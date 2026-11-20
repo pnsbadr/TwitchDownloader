@@ -19,6 +19,7 @@ import { ProjectTimeline, forgetLiveVodLengths } from "./project-timeline.js";
 import { ProjectPlayback } from "./project-playback.js";
 import { setUpExport, addToExport, exportShown, pausePreview } from "./export.js";
 import { showShortcuts } from "./shortcuts.js";
+import { openSyncView } from "./sync-view.js";
 import { setUpProjectVertical, openProjectVertical, closeProjectVertical, projectVerticalOpen, refreshProjectVertical, handleProjectVerticalKey, pauseProjectVertical } from "./project-vertical.js";
 
 // Phosphor icons, bold weight, as <sl-icon library="ph" name="…">
@@ -588,24 +589,29 @@ async function runSync(ids, login) {
 const AUDIO_MATCH_SECONDS = 45;
 const pairSaves = new Map();
 
+// The piece another one is lined up against: the closest row above (else below) with another VOD's piece playing at the same time
+function partnerOf(piece, content = store.content) {
+  if (!content || !piece) return null;
+  const rowOf = (p) => content.tracks.findIndex((t) => t.id === p.trackId);
+  const end = piece.at + (piece.end - piece.start);
+  const partners = content.pieces
+    .filter((p) => p.vodId !== piece.vodId && p.trackId !== piece.trackId && p.at < end - 0.5 && p.at + (p.end - p.start) > piece.at + 0.5)
+    .sort((a, b) => {
+      const da = rowOf(piece) - rowOf(a);
+      const db = rowOf(piece) - rowOf(b);
+      return (da > 0 ? da : 100 - da) - (db > 0 ? db : 100 - db);
+    });
+  return partners[0] ?? null;
+}
+
 function rememberSlide(ids) {
   const content = store.content;
   if (!content || !store.canEdit) return;
-  const rowOf = (piece) => content.tracks.findIndex((t) => t.id === piece.trackId);
   for (const id of ids) {
     const piece = content.pieces.find((p) => p.id === id);
-    if (!piece) continue;
-    const end = piece.at + (piece.end - piece.start);
-    // The closest row above (else below) with another VOD's piece playing at the same time
-    const partners = content.pieces
-      .filter((p) => p.vodId !== piece.vodId && p.trackId !== piece.trackId && p.at < end && p.at + (p.end - p.start) > piece.at)
-      .sort((a, b) => {
-        const da = rowOf(piece) - rowOf(a);
-        const db = rowOf(piece) - rowOf(b);
-        return (da > 0 ? da : 100 - da) - (db > 0 ? db : 100 - db);
-      });
-    const partner = partners[0];
+    const partner = partnerOf(piece, content);
     if (!partner) continue;
+    const end = piece.at + (piece.end - piece.start);
     const t = (Math.max(piece.at, partner.at) + Math.min(end, partner.at + (partner.end - partner.start))) / 2;
     const at = partner.start + (t - partner.at);
     const otherAt = piece.start + (t - piece.at);
@@ -616,6 +622,29 @@ function rememberSlide(ids) {
       api("PUT", `/api/vods/${partner.vodId}/sync/${piece.vodId}`, { at, otherAt }).catch(() => {});
     }, 800));
   }
+}
+
+// "Line up side by side…" (piece menu): both streams playing next to each other, nudged until they match (ui/sync-view.js)
+async function sideBySide(piece) {
+  const top = partnerOf(piece);
+  if (!top || !store.canEdit) return;
+  if (rowFocus) endRowFocus();
+  playback?.pause();
+  if (player1?.playing()) player1.pause();
+  const rowName = (p) => store.content.tracks.find((t) => t.id === p.trackId)?.name || p.label || "Stream";
+  const id = piece.id;
+  await openSyncView({
+    top: structuredClone(top), below: structuredClone(piece), now: playback?.time(),
+    names: { top: rowName(top), below: rowName(piece) },
+    onSave: (delta) => {
+      const now = store.content?.pieces.find((p) => p.id === id);
+      if (!now) {
+        toast("That piece is gone, so nothing was moved.", "error");
+        return;
+      }
+      if (timeline2.slideSelected(delta, [now])) toast(`Moved ${delta > 0 ? "+" : ""}${delta.toFixed(2)} s. These two VODs stay lined up for the next Sync with.`);
+    },
+  });
 }
 
 function noSyncText(name, answer) {
@@ -1063,6 +1092,8 @@ function setUpPlayer2() {
     onApplyToOriginal: applyToOriginal,
     onSyncWith: syncWith,
     onSlid: rememberSlide,
+    partnerOf: (piece) => partnerOf(piece),
+    onSideBySide: sideBySide,
     onFocusRow: (trackId) => focusRow("p2", trackId),
   });
   wirePlayerButtons(2, "p2");
@@ -1667,6 +1698,7 @@ function setUpKeys() {
       addRow: () => p2 && on && t.addTrack(),
       slideBack: () => p2 && on && t.slideSelected(-SLIDE_STEP),
       slideFwd: () => p2 && on && t.slideSelected(SLIDE_STEP),
+      toggleWaves: () => p2 && on && t.toggleWaves?.(),
       escape: () => {
         if (rowFocus) {
           endRowFocus();
@@ -1697,7 +1729,7 @@ function setUpKeys() {
 // screen, or the row going away ends it; the playhead stays where it stopped.
 
 let rowFocus = null;        // { which: "p1" | "p2", rowId }
-const FOCUS_KEYS = new Set(["playPause", "back10", "fwd10", "back5", "fwd5", "frameBack", "frameFwd", "fullscreen", "zoomIn", "zoomOut", "fit", "escape",
+const FOCUS_KEYS = new Set(["playPause", "back10", "fwd10", "back5", "fwd5", "frameBack", "frameFwd", "fullscreen", "zoomIn", "zoomOut", "fit", "escape", "toggleWaves",
   "toolPointer", "toolZoom", "toolHand", "marker"]);
 let focusShade = null;
 let focusFrame = 0;

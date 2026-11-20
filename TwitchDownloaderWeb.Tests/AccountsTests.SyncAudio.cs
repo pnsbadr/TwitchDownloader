@@ -60,8 +60,8 @@ namespace TwitchDownloaderWeb.Tests
                 if (!Streams.TryGetValue(vodId, out _))
                     return Task.FromResult<byte[]?>(null);
                 Interlocked.Increment(ref LevelReads);
-                // A VOD of 3600 s: the last block is cut short at its end
-                var frames = (int)(Math.Max(0, Math.Min(seconds, 3600 - start)) * AudioAligner.WaveRate);
+                // A VOD of 7200 s: the last block is cut short at its end
+                var frames = (int)(Math.Max(0, Math.Min(seconds, 7200 - start)) * AudioAligner.WaveRate);
                 var result = new byte[frames];
                 for (var i = 0; i < frames; i++)
                     result[i] = (byte)(Call((long)((start + (double)i / AudioAligner.WaveRate) * AudioAligner.Rate)) * 80);
@@ -173,7 +173,7 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal(reads, _loudness.LevelReads); // kept on disk
 
             // Past the end: empty; no audio: 404; no block: 400
-            Assert.Empty(Convert.FromBase64String((await GetJsonAsync(owner, "/api/vods/710/waves?block=70")).GetProperty("levels").GetString()!));
+            Assert.Empty(Convert.FromBase64String((await GetJsonAsync(owner, "/api/vods/710/waves?block=130")).GetProperty("levels").GetString()!));
             _vods.Vods[812] = new VodDetails(812, "Bonnie solo", "Bonnie", 3600, DateTime.UtcNow.AddDays(-1), null, ChannelLogin: "bonnie");
             Assert.Equal(HttpStatusCode.NotFound, (await owner.GetAsync("/api/vods/812/waves?block=0", ct)).StatusCode);
             Assert.Equal(HttpStatusCode.BadRequest, (await owner.GetAsync("/api/vods/710/waves", ct)).StatusCode);
