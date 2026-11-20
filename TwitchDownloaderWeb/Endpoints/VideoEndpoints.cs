@@ -162,11 +162,18 @@ namespace TwitchDownloaderWeb.Endpoints
         /// <param name="userId">Only videos this member made.</param>
         /// <param name="editedBy">Only videos this member made an edit of (Player 2).</param>
         /// <param name="channels">Only videos of these team channels (logins, comma separated; the library's channel bar).</param>
-        /// <param name="search">Title substring (LIKE, case-insensitive for ASCII).</param>
+        /// <param name="search">Substring of the title or of a segment's label (LIKE, case-insensitive for ASCII).</param>
         /// <param name="paged">true: answer <c>{ items, nextCursor, total }</c>, newest first, <paramref name="cursor"/> = a page's nextCursor.</param>
+        /// <param name="from">Only videos made at or after this instant (ISO 8601 with an offset).</param>
+        /// <param name="to">Only videos made before this instant.</param>
         private static async Task<IResult> List(string? vodIds, int? userId, int? editedBy, string? channels, int? limit, string? search, bool? paged,
-            string? cursor, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
+            string? cursor, string? from, string? to, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
         {
+            if (!EntryEndpoints.TryParseInstant(from, out var fromUtc))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["from"] = ["Use an ISO 8601 date-time with an offset, e.g. 2026-10-09T07:00:00Z."] });
+            if (!EntryEndpoints.TryParseInstant(to, out var toUtc))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["to"] = ["Use an ISO 8601 date-time with an offset, e.g. 2026-10-10T07:00:00Z."] });
+
             PageCursor? after = null;
             if (!string.IsNullOrEmpty(cursor) && !PageCursor.TryParse(cursor, out after))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["cursor"] = ["Use the nextCursor of the page before."] });
@@ -195,8 +202,13 @@ namespace TwitchDownloaderWeb.Endpoints
             if (!string.IsNullOrWhiteSpace(search))
             {
                 var pattern = "%" + search.Trim().Replace(@"\", @"\\").Replace("%", @"\%").Replace("_", @"\_") + "%";
-                query = query.Where(x => EF.Functions.Like(x.Title, pattern, @"\"));
+                query = query.Where(x => EF.Functions.Like(x.Title, pattern, @"\")
+                    || x.Segments.Any(s => EF.Functions.Like(s.Marker!.Label, pattern, @"\")));
             }
+            if (fromUtc is { } lower)
+                query = query.Where(x => x.CreatedAtUtc >= lower);
+            if (toUtc is { } upper)
+                query = query.Where(x => x.CreatedAtUtc < upper);
 
             var take = Math.Clamp(limit ?? 200, 1, 1000);
             if (paged != true)

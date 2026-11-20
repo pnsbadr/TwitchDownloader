@@ -358,9 +358,11 @@ namespace TwitchDownloaderWeb.Endpoints
         /// <param name="channels">Only clips of these team channels (logins, comma separated; the library's channel bar).</param>
         /// <param name="paged">true: answer <c>{ items, nextCursor, total }</c> instead of a plain list (the library pages through thousands).</param>
         /// <param name="cursor">A page's <c>nextCursor</c>: the clips after it in the same sort (<see cref="PageCursor"/>).</param>
+        /// <param name="minSeconds">Only clips at least this long (what's kept, <see cref="LibraryEntry.ClipLengthSeconds"/>; the search box's "&gt;1m").</param>
+        /// <param name="maxSeconds">Only clips at most this long ("&lt;30s").</param>
         private static async Task<IResult> ListEntries(LibraryDbContext db, string? search, string? sort, string? order, int? limit,
             string? from, string? to, string? dateField, long? vodId, int? madeBy, int? editedBy, string? channels, bool? paged, string? cursor,
-            TeamContext team, CancellationToken cancellationToken)
+            double? minSeconds, double? maxSeconds, TeamContext team, CancellationToken cancellationToken)
         {
             PageCursor? after = null;
             if (!string.IsNullOrEmpty(cursor) && !PageCursor.TryParse(cursor, out after))
@@ -412,6 +414,11 @@ namespace TwitchDownloaderWeb.Endpoints
 
             if (toUtc is { } upper)
                 query = useStreamDate ? query.Where(x => x.StreamDateUtc < upper) : query.Where(x => x.AddedAtUtc < upper);
+
+            if (minSeconds is { } shortest)
+                query = query.Where(x => x.ClipLengthSeconds >= shortest);
+            if (maxSeconds is { } longest)
+                query = query.Where(x => x.ClipLengthSeconds <= longest);
 
             if (!string.IsNullOrWhiteSpace(search))
             {
@@ -469,7 +476,7 @@ namespace TwitchDownloaderWeb.Endpoints
         }
 
         /// <summary>Parses an instant that states its offset; a bare local time would be ambiguous. Blank parses to null.</summary>
-        private static bool TryParseInstant(string? text, out DateTime? utc)
+        internal static bool TryParseInstant(string? text, out DateTime? utc)
         {
             utc = null;
             if (string.IsNullOrWhiteSpace(text))
