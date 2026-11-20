@@ -633,9 +633,9 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   Shift keeps the time; below the last row makes a new row; red where it can't go; a single piece slides to the nearest free place), drag
   edges to trim (up to its neighbors and the VOD's length), I / O trim at the playhead, razor (C, white line) or S splits, Delete / Shift+Delete
   (ripple) deletes, Ctrl+C / Ctrl+V copy and paste (at the playhead, on the selected row), right-click on a gap = Close gap. Piece menu: Name and
-  color, Split at the playhead, Copy, Copy / Paste layout, Use this layout on every piece, Show in Player 1, **Apply this trim to the original**
+  color, Copy, Copy / Paste layout, Use this layout on every piece, **Apply this trim to the original**
   (clips and segments: the source's range and cut-out parts from every piece copied from it; `applyToOriginal` in `ui/editor.js`), Delete,
-  Delete and close the gap. Covered parts of lower rows are drawn darker; the ruler's bottom band shows what plays and hatches gaps. Snapping
+  Delete and close the gap (badrfly 2026-11-20: no Split at the playhead or Show in Player 1 there; the menu (`ui/menu.js`) opens upward when there's no room below). **Show in Player 1** = the crosshair in Player 2's controls: the piece at Player 2's playhead (else the selected one), Player 1 goes to the same VOD moment and zooms to the whole clip/segment it came from. Covered parts of lower rows are drawn darker; the ruler's bottom band shows what plays and hatches gaps. Snapping
   uses `clipLibrary.snap`. New pieces take the layout of the piece before them on their row.
   **Nothing is deleted from Player 2** except pieces of the project (badrfly 2026-11-16): unloading only closes the project; real deletes of
   clips/segments are on Player 1's timeline and the cards.
