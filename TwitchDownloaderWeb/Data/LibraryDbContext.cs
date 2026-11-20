@@ -50,6 +50,7 @@ namespace TwitchDownloaderWeb.Data
         public DbSet<ProjectVod> ProjectVods => Set<ProjectVod>();
         public DbSet<TwitchConnection> TwitchConnections => Set<TwitchConnection>();
         public DbSet<AppSettings> AppSettings => Set<AppSettings>();
+        public DbSet<VodSyncOffset> VodSyncOffsets => Set<VodSyncOffset>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -214,6 +215,14 @@ namespace TwitchDownloaderWeb.Data
                 entity.HasOne(x => x.Marker).WithMany().HasForeignKey(x => x.MarkerId).OnDelete(DeleteBehavior.Cascade);
                 // Same team as its segment (matches the markers' filter)
                 entity.HasQueryFilter(x => !ScopedToTeam || x.Marker!.TeamId == ScopeTeamId);
+            });
+
+            modelBuilder.Entity<VodSyncOffset>(entity =>
+            {
+                entity.HasIndex(x => new { x.TeamId, x.VodA, x.VodB }).IsUnique();
+                entity.Property(x => x.Source).HasMaxLength(16);
+                entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasQueryFilter(x => !ScopedToTeam || x.TeamId == ScopeTeamId);
             });
 
             modelBuilder.Entity<MemberVod>(entity =>
@@ -419,6 +428,9 @@ namespace TwitchDownloaderWeb.Data
                         break;
                     case Video video:
                         if (video.TeamId == 0 && _actor.TeamId is { } videoTeam) video.TeamId = videoTeam;
+                        break;
+                    case VodSyncOffset syncOffset:
+                        if (syncOffset.TeamId == 0 && _actor.TeamId is { } syncTeam) syncOffset.TeamId = syncTeam;
                         break;
                     case MemberVod memberVod:
                         if (memberVod.TeamId == 0 && _actor.TeamId is { } memberVodTeam) memberVod.TeamId = memberVodTeam;

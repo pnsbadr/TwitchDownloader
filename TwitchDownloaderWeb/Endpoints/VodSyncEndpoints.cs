@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using TwitchDownloaderWeb.Data;
 using TwitchDownloaderWeb.Services;
 using TwitchDownloaderWeb.Services.Accounts;
+using TwitchDownloaderWeb.Services.Sync;
 
 namespace TwitchDownloaderWeb.Endpoints
 {
@@ -10,8 +11,18 @@ namespace TwitchDownloaderWeb.Endpoints
     /// <paramref name="Start"/> / <paramref name="End"/> = the matching part in that VOD's seconds; <paramref name="Offset"/> = where it
     /// begins in the asked range (0 = at its start).
     /// </summary>
+    /// <param name="Lined">How the times were lined up: "start" (stream start times only), or the pair's saved sync ("audio" / "manual",
+    /// see <see cref="VodSyncOffset"/>).</param>
     public sealed record VodSyncMatch(long VodId, string Title, DateTime CreatedAtUtc, int LengthSeconds, bool IsLive, bool Restricted,
-        double Start, double End, double Offset);
+        double Start, double End, double Offset, string Lined = "start");
+
+    /// <param name="At">A moment in the VOD of the route, in its seconds.</param>
+    /// <param name="OtherAt">The same moment in the other VOD.</param>
+    public sealed record VodSyncPairRequest(double? At, double? OtherAt, double? Seconds = null);
+
+    /// <param name="Trusted">The audio matched well enough to use (and was saved for the pair).</param>
+    /// <param name="Shift">How far the other VOD's moment moved from <c>otherAt</c> (+ = later).</param>
+    public sealed record VodSyncAudioDto(bool Trusted, double Shift, double OtherAt, double Correlation, double Confidence, string? Reason);
 
     /// <summary>The nearest VOD of the other channel before or after the range, when nothing matched.</summary>
     public sealed record VodSyncNeighbor(long VodId, string Title, DateTime StartedAtUtc, DateTime EndedAtUtc);
@@ -36,6 +47,8 @@ namespace TwitchDownloaderWeb.Endpoints
         public static IEndpointRouteBuilder MapVodSyncEndpoints(this IEndpointRouteBuilder app)
         {
             app.MapGet("/api/vods/{vodId}/sync", Find).RequireTeam(TeamPermission.ViewLibrary).RequireChannelVod();
+            app.MapPut("/api/vods/{vodId}/sync/{otherVodId}", SavePair).RequireTeam(TeamPermission.AddEntries).RequireChannelVod();
+            app.MapPost("/api/vods/{vodId}/sync/{otherVodId}/audio", MatchAudio).RequireTeam(TeamPermission.AddEntries).RequireChannelVod();
             return app;
         }
 
@@ -94,11 +107,21 @@ namespace TwitchDownloaderWeb.Endpoints
                 return ChannelEndpoints.TwitchUnreachable();
             }
 
+            // A pair lined up before (audio match or a member's nudge) uses that instead of the start times alone
+            var foundIds = found.Select(x => x.VodId).ToList();
+            var saved = await db.VodSyncOffsets.AsNoTracking()
+                .Where(x => (x.VodA == vodId && foundIds.Contains(x.VodB)) || (x.VodB == vodId && foundIds.Contains(x.VodA)))
+                .ToListAsync(cancellationToken);
+
             var matches = new List<VodSyncMatch>();
             foreach (var vod in found.Where(x => x.VodId != vodId).OrderBy(x => x.CreatedAtUtc))
             {
-                var vodEnd = vod.CreatedAtUtc.AddSeconds(vod.LengthSeconds);
-                var overlapStart = vod.CreatedAtUtc > rangeStart ? vod.CreatedAtUtc : rangeStart;
+                var pair = saved.FirstOrDefault(x => x.VodA == vod.VodId || x.VodB == vod.VodId);
+                var correction = pair is null ? 0 : CorrectionFrom(pair, vodId);
+                // The same moment is `correction` seconds later in this VOD: as if it had started that much earlier
+                var started = vod.CreatedAtUtc.AddSeconds(-correction);
+                var vodEnd = started.AddSeconds(vod.LengthSeconds);
+                var overlapStart = started > rangeStart ? started : rangeStart;
                 var overlapEnd = vodEnd < rangeEnd ? vodEnd : rangeEnd;
                 if ((overlapEnd - overlapStart).TotalSeconds < 0.5)
                     continue;
@@ -119,8 +142,8 @@ namespace TwitchDownloaderWeb.Endpoints
                 }
 
                 matches.Add(new VodSyncMatch(vod.VodId, vod.Title, vod.CreatedAtUtc, vod.LengthSeconds, live, restricted,
-                    Math.Round((overlapStart - vod.CreatedAtUtc).TotalSeconds, 3), Math.Round((overlapEnd - vod.CreatedAtUtc).TotalSeconds, 3),
-                    Math.Round((overlapStart - rangeStart).TotalSeconds, 3)));
+                    Math.Round((overlapStart - started).TotalSeconds, 3), Math.Round((overlapEnd - started).TotalSeconds, 3),
+                    Math.Round((overlapStart - rangeStart).TotalSeconds, 3), pair?.Source ?? "start"));
             }
 
             var covered = Math.Round(matches.Sum(x => x.End - x.Start), 3);
@@ -134,6 +157,116 @@ namespace TwitchDownloaderWeb.Endpoints
 
             var displayName = await db.Channels.AsNoTracking().Where(x => x.Login == login).Select(x => x.DisplayName).FirstOrDefaultAsync(cancellationToken) ?? login;
             return Results.Ok(new VodSyncDto(login, displayName, rangeStart, rangeEnd, covered, matches, before, after));
+        }
+
+        /// <summary>Seconds the same moment is later in the other VOD of <paramref name="pair"/> than stream start times say, seen from <paramref name="fromVod"/>.</summary>
+        private static double CorrectionFrom(VodSyncOffset pair, long fromVod) => pair.VodA == fromVod ? pair.Seconds : -pair.Seconds;
+
+        /// <summary>Checks both VODs and reads their start times.</summary>
+        private static async Task<(VodDetails A, VodDetails B, IResult? Problem)> PairAsync(long vodId, long otherVodId, TeamContext team, IVodDetailsSource vods,
+            TeamChannelAccess access, CancellationToken cancellationToken)
+        {
+            if (otherVodId == vodId || otherVodId <= 0)
+                return (null!, null!, Invalid("otherVodId", "Pick another VOD."));
+            if (TeamChannelAccess.Refusal(await access.CheckVodAsync(team.TeamId, otherVodId, cancellationToken), otherVodId) is { } refused)
+                return (null!, null!, refused);
+            VodDetails? a, b;
+            try
+            {
+                a = await vods.GetVodAsync(vodId);
+                b = await vods.GetVodAsync(otherVodId);
+            }
+            catch (HttpRequestException)
+            {
+                return (null!, null!, ChannelEndpoints.TwitchUnreachable());
+            }
+            if (a is null || b is null)
+                return (null!, null!, Results.Problem(detail: "Twitch no longer has one of these VODs.", statusCode: StatusCodes.Status404NotFound,
+                    extensions: new Dictionary<string, object?> { ["code"] = "vod-gone" }));
+            return (a, b, null);
+        }
+
+        /// <summary>Saves how the pair lines up, given one moment's time in each.</summary>
+        private static async Task<VodSyncOffset> StoreAsync(LibraryDbContext db, TeamContext team, VodDetails a, double at, VodDetails b, double otherAt,
+            string source, double? confidence, CancellationToken cancellationToken)
+        {
+            // Correction from a to b: otherAt = at + (a.start - b.start) + c
+            var c = otherAt - at - (a.StreamDateUtc - b.StreamDateUtc).TotalSeconds;
+            var (lowId, highId, seconds) = a.VodId < b.VodId ? (a.VodId, b.VodId, c) : (b.VodId, a.VodId, -c);
+            var row = await db.VodSyncOffsets.FirstOrDefaultAsync(x => x.VodA == lowId && x.VodB == highId, cancellationToken);
+            if (row is null)
+            {
+                row = new VodSyncOffset { VodA = lowId, VodB = highId };
+                db.VodSyncOffsets.Add(row);
+            }
+            row.Seconds = Math.Round(seconds, 3);
+            row.Source = source;
+            row.Confidence = confidence;
+            row.UpdatedByUserId = team.UserId == 0 ? null : team.UserId;
+            row.UpdatedAtUtc = DateTime.UtcNow;
+            await db.SaveChangesAsync(cancellationToken);
+            return row;
+        }
+
+        /// <summary>A member lined the two up by hand (a slide in Player 2): later syncs between them use it.</summary>
+        private static async Task<IResult> SavePair(long vodId, long otherVodId, VodSyncPairRequest request, TeamContext team, LibraryDbContext db,
+            IVodDetailsSource vods, TeamChannelAccess access, CancellationToken cancellationToken)
+        {
+            if (request.At is not { } at || request.OtherAt is not { } otherAt || !double.IsFinite(at) || !double.IsFinite(otherAt) || at < 0 || otherAt < 0)
+                return Invalid("at", "Give the moment's time in both VODs.");
+            var (a, b, problem) = await PairAsync(vodId, otherVodId, team, vods, access, cancellationToken);
+            if (problem is not null)
+                return problem;
+            var row = await StoreAsync(db, team, a, at, b, otherAt, VodSyncOffset.ByHand, null, cancellationToken);
+            return Results.Ok(new { vodA = row.VodA, vodB = row.VodB, seconds = row.Seconds, source = row.Source });
+        }
+
+        /// <summary>How far around the guess the audio match looks.</summary>
+        private const double SearchSeconds = 20;
+
+        /// <summary>
+        /// Lines the pair up by sound: <c>seconds</c> (default 45) of this VOD from <c>at</c> are looked for in the other VOD within 20 s of
+        /// <c>otherAt</c> (the stream-time guess). A good match is saved for the pair; a weak one changes nothing and says why.
+        /// </summary>
+        private static async Task<IResult> MatchAudio(long vodId, long otherVodId, VodSyncPairRequest request, TeamContext team, LibraryDbContext db,
+            IVodDetailsSource vods, TeamChannelAccess access, IVodLoudness loudness, CancellationToken cancellationToken)
+        {
+            if (request.At is not { } at || request.OtherAt is not { } otherAt || !double.IsFinite(at) || !double.IsFinite(otherAt) || at < 0 || otherAt < 0)
+                return Invalid("at", "Give the moment's time in both VODs.");
+            var seconds = Math.Clamp(request.Seconds ?? 45, 10, 90);
+            var (a, b, problem) = await PairAsync(vodId, otherVodId, team, vods, access, cancellationToken);
+            if (problem is not null)
+                return problem;
+
+            var searchFrom = Math.Max(0, otherAt - SearchSeconds);
+            float[]? mine, theirs;
+            try
+            {
+                mine = await loudness.GetAsync(vodId, at, seconds, cancellationToken);
+                theirs = mine is null ? null : await loudness.GetAsync(otherVodId, searchFrom, seconds + (otherAt - searchFrom) + SearchSeconds, cancellationToken);
+            }
+            catch (HttpRequestException)
+            {
+                return ChannelEndpoints.TwitchUnreachable();
+            }
+            catch (InvalidOperationException)
+            {
+                // ffmpeg failed on the audio
+                mine = theirs = null;
+            }
+
+            var found = mine is null || theirs is null ? null : AudioAligner.Find(mine, theirs);
+            if (found is null)
+                return Results.Ok(new VodSyncAudioDto(false, 0, otherAt, 0, 0, mine is null || theirs is null ? "Couldn't read the audio." : "One of them is silent there."));
+
+            var matchedAt = Math.Round(searchFrom + (double)found.Lag / AudioAligner.Rate, 3);
+            var shift = Math.Round(matchedAt - otherAt, 3);
+            if (!found.Trusted)
+                return Results.Ok(new VodSyncAudioDto(false, shift, otherAt, Math.Round(found.Correlation, 3), Math.Round(found.Confidence, 2),
+                    "The sound didn't match clearly (are they in the same voice call?)."));
+
+            await StoreAsync(db, team, a, at, b, matchedAt, VodSyncOffset.FromAudio, Math.Round(found.Confidence, 2), cancellationToken);
+            return Results.Ok(new VodSyncAudioDto(true, shift, matchedAt, Math.Round(found.Correlation, 3), Math.Round(found.Confidence, 2), null));
         }
 
         private static IResult Invalid(string field, string message) =>
