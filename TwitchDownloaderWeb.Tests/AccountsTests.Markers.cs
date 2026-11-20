@@ -91,91 +91,22 @@ namespace TwitchDownloaderWeb.Tests
         }
     
         [Fact]
-        public async Task MarkersOnALiveStreamMakeAReferenceEntryThatFollowsThem()
+        public async Task MarkersOnALiveStreamMakeNoEntry()
         {
+            // The live markers entry was removed (badrfly 2026-11-20): markers never make or move a library entry
             var ct = TestContext.Current.CancellationToken;
             var (owner, _, _, _) = await TeamWithMemberAsync("m3");
             var streamStart = new DateTime(2026, 11, 10, 20, 9, 0, DateTimeKind.Utc);
             _vods.Vods[500] = new VodDetails(500, "Live grind", "Subroza", 1600, streamStart, null, IsLive: true);
-            _vods.Vods[501] = new VodDetails(501, "Finished stream", "Subroza", 5000, streamStart, null);
 
-            async Task<JsonElement> AddAsync(long vodId, object body)
-            {
-                var response = await owner.PostAsJsonAsync($"/api/vods/{vodId}/markers", body, ct);
-                Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-                return await response.Content.ReadFromJsonAsync<JsonElement>(ct);
-            }
-
-            async Task<JsonElement[]> LiveEntriesAsync() =>
-                (await GetJsonAsync(owner, "/api/entries")).EnumerateArray().Where(x => x.GetProperty("followsMarkers").GetBoolean()).ToArray();
-
-            // A finished VOD's markers make nothing
-            Assert.Equal(JsonValueKind.Null, (await AddAsync(501, new { seconds = 100 })).GetProperty("liveEntry").ValueKind);
-            Assert.Empty(await LiveEntriesAsync());
-
-            // Markers added, changed or deleted in a library card's Review (makeLiveEntry=false) make no card, even on the live VOD
-            var inReview = await owner.PostAsJsonAsync("/api/vods/500/markers?makeLiveEntry=false", new { seconds = 620, endSeconds = 640 }, ct);
-            Assert.Equal(HttpStatusCode.Created, inReview.StatusCode);
-            var reviewMarker = await inReview.Content.ReadFromJsonAsync<JsonElement>(ct);
-            Assert.Equal(JsonValueKind.Null, reviewMarker.GetProperty("liveEntry").ValueKind);
-            var reviewMarkerId = reviewMarker.GetProperty("id").GetInt32();
-            Assert.Equal(HttpStatusCode.OK, (await owner.PutAsJsonAsync($"/api/markers/{reviewMarkerId}?makeLiveEntry=false", new { seconds = 625, endSeconds = 640 }, ct)).StatusCode);
-            Assert.Empty(await LiveEntriesAsync());
-            Assert.Equal(HttpStatusCode.NoContent, (await owner.DeleteAsync($"/api/markers/{reviewMarkerId}?makeLiveEntry=false", ct)).StatusCode);
-            Assert.Empty(await LiveEntriesAsync());
-
-            // The first marker on the live VOD makes a reference entry 30 s either side of it
-            var first = await AddAsync(500, new { seconds = 600, label = "round 9" });
-            var change = first.GetProperty("liveEntry");
-            Assert.True(change.GetProperty("created").GetBoolean());
-            var entry = Assert.Single(await LiveEntriesAsync());
-            Assert.Equal(change.GetProperty("entryId").GetInt32(), entry.GetProperty("id").GetInt32());
-            Assert.Equal("Live grind", entry.GetProperty("title").GetString());
-            Assert.Equal("ReferenceOnly", entry.GetProperty("status").GetString());
-            Assert.Equal(570, entry.GetProperty("startSeconds").GetDouble());
-            Assert.Equal(630, entry.GetProperty("endSeconds").GetDouble());
-
-            // A segment near the live edge: the end stops at what has been streamed so far (1600 s), but covers the segment
-            var segment = await AddAsync(500, new { seconds = 1500, endSeconds = 1590 });
-            Assert.False(segment.GetProperty("liveEntry").GetProperty("created").GetBoolean());
-            entry = Assert.Single(await LiveEntriesAsync());
-            Assert.Equal(570, entry.GetProperty("startSeconds").GetDouble());
-            Assert.Equal(1600, entry.GetProperty("endSeconds").GetDouble());
-            var past = await AddAsync(500, new { seconds = 1650 }); // the player is ahead of Twitch's length
-            entry = Assert.Single(await LiveEntriesAsync());
-            Assert.Equal(1650, entry.GetProperty("endSeconds").GetDouble());
-
-            // The stream ended: the entry still follows its markers; deleting one shrinks it again
-            _vods.Vods[500] = _vods.Vods[500] with { LengthSeconds = 4000, IsLive = false };
-            Assert.Equal(HttpStatusCode.NoContent, (await owner.DeleteAsync($"/api/markers/{past.GetProperty("id").GetInt32()}", ct)).StatusCode);
-            entry = Assert.Single(await LiveEntriesAsync());
-            Assert.Equal(1620, entry.GetProperty("endSeconds").GetDouble());
-            await AddAsync(500, new { seconds = 100 });
-            entry = Assert.Single(await LiveEntriesAsync());
-            Assert.Equal(70, entry.GetProperty("startSeconds").GetDouble());
-
-            // A cut picked by hand stays put
-            var id = entry.GetProperty("id").GetInt32();
-            Assert.Equal(HttpStatusCode.OK, (await owner.PutAsJsonAsync($"/api/entries/{id}/trim", new { startTime = "0:01:00", endTime = "0:30:00" }, ct)).StatusCode);
-            Assert.Equal(JsonValueKind.Null, (await AddAsync(500, new { seconds = 3000 })).GetProperty("liveEntry").ValueKind);
-            var kept = await GetJsonAsync(owner, $"/api/entries/{id}");
-            Assert.False(kept.GetProperty("followsMarkers").GetBoolean());
-            Assert.Equal(1800, kept.GetProperty("endSeconds").GetDouble());
-            Assert.Empty(await LiveEntriesAsync());
-
-            // ...and markers on the VOD while it's live don't make a second card (one live markers card per VOD)
-            _vods.Vods[500] = _vods.Vods[500] with { IsLive = true };
-            Assert.Equal(JsonValueKind.Null, (await AddAsync(500, new { seconds = 3100 })).GetProperty("liveEntry").ValueKind);
-            Assert.Single((await GetJsonAsync(owner, "/api/entries")).EnumerateArray(), x => x.GetProperty("vodId").GetInt64() == 500);
-
-            // Undoing the hand cut makes it follow again, moved to where the markers are now
-            var undone = await owner.PutAsJsonAsync($"/api/entries/{id}/trim", new { startTime = "0:01:10", endTime = "0:27:00", followMarkers = true }, ct);
-            Assert.Equal(HttpStatusCode.OK, undone.StatusCode);
-            var following = await undone.Content.ReadFromJsonAsync<JsonElement>(ct);
-            Assert.True(following.GetProperty("followsMarkers").GetBoolean());
-            Assert.Equal("ReferenceOnly", following.GetProperty("status").GetString());
-            Assert.Equal(70, following.GetProperty("startSeconds").GetDouble());
-            Assert.Equal(3130, following.GetProperty("endSeconds").GetDouble());
+            var moment = await owner.PostAsJsonAsync("/api/vods/500/markers", new { seconds = 600, label = "round 9" }, ct);
+            Assert.Equal(HttpStatusCode.Created, moment.StatusCode);
+            Assert.Equal(JsonValueKind.Null, (await moment.Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("liveEntry").ValueKind);
+            var segment = await owner.PostAsJsonAsync("/api/vods/500/markers", new { seconds = 1500, endSeconds = 1590 }, ct);
+            Assert.Equal(HttpStatusCode.Created, segment.StatusCode);
+            var segmentId = (await segment.Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("id").GetInt32();
+            Assert.Equal(HttpStatusCode.NoContent, (await owner.DeleteAsync($"/api/markers/{segmentId}", ct)).StatusCode);
+            Assert.Equal(0, (await GetJsonAsync(owner, "/api/entries")).GetArrayLength());
         }
     
         [Fact]
