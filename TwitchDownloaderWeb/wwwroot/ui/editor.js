@@ -1107,9 +1107,12 @@ function setUpPlayer2() {
   });
   $("p2-vertical").addEventListener("click", () => toggleVertical());
   $("p2-show").addEventListener("click", () => {
+    // the piece playing at the playhead (the top one), else the selected one
     const now = playback.time();
-    const piece = timeline2.selectedPieces()[0] ?? store.content?.pieces.find((p) => now >= p.at && now < p.at + p.end - p.start);
+    const s = stretchAt(flatten(store.content), now);
+    const piece = s?.piece ?? timeline2.selectedPieces()[0];
     if (piece) showInPlayer1(piece);
+    else toast("Move Player 2's playhead onto a piece first.");
   });
   $("p2-rename").addEventListener("click", renameProject);
   $("p2-delete").addEventListener("click", closeProject);
@@ -1120,10 +1123,13 @@ function setUpPlayer2() {
   restoreLastLoaded();
 }
 
-// Player 2's crosshair (or a piece's right-click): Player 1 opens the piece's VOD, goes to it and shows its range; the clip or
-// segment it was copied from is selected when it's still there
+// Player 2's crosshair: Player 1 opens the piece's VOD at the moment under Player 2's playhead (the piece's start when the playhead
+// isn't on it) and zooms out to the whole clip or segment it was copied from (selected when it's still there), else the piece
 async function showInPlayer1(piece) {
   const vodId = String(piece.vodId);
+  const now = playback.time();
+  const on = now >= piece.at && now < piece.at + (piece.end - piece.start);
+  const seconds = on ? piece.start + (now - piece.at) : piece.start;
   playback.pause();
   if (!p1Vod || String(p1Vod.vodId) !== vodId) {
     let info;
@@ -1133,14 +1139,16 @@ async function showInPlayer1(piece) {
       toast(error.message, "error");
       return;
     }
-    await openVod({ vodId: info.vodId, title: info.title, lengthSeconds: info.lengthSeconds, isLive: info.isLive }, { start: piece.start, paused: true });
+    await openVod({ vodId: info.vodId, title: info.title, lengthSeconds: info.lengthSeconds, isLive: info.isLive }, { start: seconds, paused: true });
   } else {
     player1.pause();
-    player1.seek(piece.start);
+    player1.seek(seconds);
   }
   timelineTabs.pick("p1");
   const focus = piece.source?.kind === "clip" ? { type: "clip", id: piece.source.id } : piece.source?.kind === "segment" ? { type: "marker", id: piece.source.id } : { type: null, id: null };
-  timeline.reveal(focus, { start: piece.start, end: piece.end });
+  const item = timeline.reveal(focus, { start: piece.start, end: piece.end });
+  // the whole clip or segment, and the piece too if it reaches past it (a trim made in Player 2)
+  if (item?.end != null) timeline.reveal(focus, { start: Math.min(item.start, piece.start), end: Math.max(item.end, piece.end) });
 }
 
 // ---------- moments and clips made from Player 2 ----------

@@ -1202,7 +1202,6 @@ export class ProjectTimeline {
       const pieces = this.selectedPieces();
       if (canEdit) {
         items.push({ icon: "pencil-simple", label: "Name and color", run: () => this.editPieceTitle(piece) });
-        items.push({ icon: "scissors", label: "Split at the playhead", run: () => this.splitAtPlayhead() });
       }
       items.push({ icon: "copy", label: pieces.length > 1 ? `Copy ${pieces.length} pieces` : "Copy", run: () => this.copySelected() });
       // Layouts belong to vertical edits only (Player 2's horizontal edits have none)
@@ -1219,7 +1218,6 @@ export class ProjectTimeline {
       if (vertical && canEdit && this.content.pieces.length > 1) {
         items.push({ icon: "stack", label: "Use this layout on every piece", run: () => this.layoutEverywhere(piece) });
       }
-      items.push({ icon: "crosshair", label: "Show in Player 1", run: () => this.hooks.onShowInPlayer1?.(piece) });
       // "Sync with" (badrfly 2026-11-20): the same moment from another streamer's VOD, on a new row under this one
       if (this.store.canEdit && this.hooks.onSyncWith) {
         items.push({ icon: "users-three", label: pieces.length > 1 ? `Sync ${pieces.length} pieces with…` : "Sync with…", run: () => this.hooks.onSyncWith(pieces) });

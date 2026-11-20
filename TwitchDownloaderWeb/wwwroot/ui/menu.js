@@ -38,11 +38,25 @@ export function openMenu(x, y, items) {
     return entry;
   }));
   menu.hidden = false;
-  // Keep it on screen
-  const rect = menu.getBoundingClientRect();
-  menu.style.left = `${Math.min(x, window.innerWidth - rect.width - 8)}px`;
-  menu.style.top = `${Math.min(y, window.innerHeight - rect.height - 8)}px`;
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  place(menu, x, y);
+  // The items get their real height once Shoelace has drawn them: place it again then, so it's never cut off at the bottom
+  requestAnimationFrame(() => place(menu, x, y));
+  Promise.all([customElements.whenDefined("sl-menu-item"), ...[...menu.children].map((item) => item.updateComplete)])
+    .then(() => requestAnimationFrame(() => place(menu, x, y)));
   menu.querySelector("sl-menu-item")?.focus();
+}
+
+// Keep it on screen: opens up from the pointer when there's no room below, left of it when there's none on the right
+function place(menu, x, y) {
+  if (menu.hidden) return;
+  const rect = menu.getBoundingClientRect();
+  const fitsBelow = y + rect.height + 8 <= window.innerHeight;
+  const top = fitsBelow ? y : Math.max(8, y - rect.height);
+  const left = x + rect.width + 8 <= window.innerWidth ? x : Math.max(8, x - rect.width);
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
 }
 
 export function closeMenu() {

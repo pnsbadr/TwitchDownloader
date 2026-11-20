@@ -787,6 +787,8 @@ button.team-pill:hover { background: var(--bg-4); }
   position: fixed;
   z-index: 1800;
   min-width: 190px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   box-shadow: 0 10px 30px rgb(0 0 0 / 0.5);
 }
 .context-menu sl-menu-item.danger::part(base) { color: #ff8585; }
