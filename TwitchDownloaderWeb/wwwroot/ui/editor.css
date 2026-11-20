@@ -1144,3 +1144,50 @@ body.row-focus .tl-foot-left sl-icon-button { opacity: .25; pointer-events: none
   color: #fff;
   text-shadow: 0 1px 2px #000;
 }
+
+/* link tray (videos across streams, badrfly 2026-11-20): the segments picked for a video, kept while other VODs are opened */
+.link-tray {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  margin: -2px 0 8px;
+  padding: 6px 10px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+.link-icon { color: var(--accent-strong); font-size: 16px; flex: none; }
+.link-text { color: var(--text-dim); flex: 0 1 auto; min-width: 0; }
+.link-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; flex: 1 1 200px; min-width: 0; }
+.link-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 2px 0 4px;
+  border-radius: 13px;
+  background: var(--bg-3);
+  border: 1px solid var(--line-strong);
+  cursor: grab;
+  white-space: nowrap;
+  max-width: 260px;
+}
+.link-chip:hover { border-color: var(--text-faint); }
+.link-chip.here { border-color: var(--accent); }
+.link-chip.removed { opacity: 0.6; border-style: dashed; }
+.link-chip.sortable-ghost { opacity: 0.35; }
+.link-num {
+  display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px;
+  background: var(--accent); color: #fff; font-weight: 700; font-size: 11px;
+}
+.link-dot { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+.link-label { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.link-day { color: var(--text-faint); font-size: 12px; }
+.link-day:empty { display: none; }
+.link-x::part(base) { padding: 2px; font-size: 12px; }
+.link-break { width: 1px; height: 18px; background: var(--line-strong); margin: 0 2px; }
+
+/* a video that spans several streams: its card's picture looks like a small stack */
+.card-thumb.stacked { box-shadow: 4px -4px 0 -1px var(--bg-1), 4px -4px 0 0 var(--line-strong); margin: 4px 4px 0 0; }

@@ -1669,8 +1669,47 @@ export class ProjectTimeline {
       ctx.fillRect(x1, height - 6, Math.max(1, x2 - x1), 6);
       ctx.globalAlpha = 1;
     }
+    this.drawStreamChanges(ctx, width, height);
     this.drawEnd(ctx, width, height);
     this.drawPlayhead(ctx, width, height, now, true);
+  }
+
+  // A video that spans several streams (badrfly 2026-11-20): a dashed line on the ruler where its next piece on the same row comes
+  // from another VOD, with that stream's day ("20 Nov"), so a jump to the next day reads as one
+  drawStreamChanges(ctx, width, height) {
+    const changes = [];
+    for (const track of this.content.tracks) {
+      const pieces = this.content.pieces.filter((p) => p.trackId === track.id && p.source?.kind === "video").sort((a, b) => a.at - b.at);
+      for (let i = 1; i < pieces.length; i++) {
+        const before = pieces[i - 1];
+        const after = pieces[i];
+        if (String(before.vodId) === String(after.vodId) || after.at - pieceEnd(before) > 0.2) continue;
+        if (before.source.id !== after.source.id) continue;
+        changes.push(after);
+      }
+    }
+    if (!changes.length) return;
+    ctx.save();
+    ctx.font = "600 11px Barlow, system-ui, sans-serif";
+    ctx.textBaseline = "top";
+    for (const piece of changes) {
+      const x = Math.round(this.timeToX(piece.at, width)) + 0.5;
+      if (x < -60 || x > width) continue;
+      ctx.strokeStyle = "rgb(255 255 255 / 0.7)";
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, height);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const text = this.hooks.vodDay?.(piece.vodId) ?? "next stream";
+      const w = ctx.measureText(text).width + 10;
+      ctx.fillStyle = "#373b42";
+      ctx.fillRect(x + 3, height - 22, w, 14);
+      ctx.fillStyle = "#f4f5f7";
+      ctx.fillText(text, x + 8, height - 21);
+    }
+    ctx.restore();
   }
 
   drawEnd(ctx, width, height) {
