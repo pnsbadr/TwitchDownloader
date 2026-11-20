@@ -79,6 +79,7 @@ namespace TwitchDownloaderWeb.Data
                 entity.Property(x => x.GenerationStatus).HasConversion<string>().HasMaxLength(32);
                 entity.Property(x => x.TrimMode).HasConversion<string>().HasMaxLength(16);
                 entity.Property(x => x.Kind).HasConversion<string>().HasMaxLength(16);
+                entity.Property(x => x.Color).HasMaxLength(16);
                 entity.HasOne(x => x.Row).WithMany().HasForeignKey(x => x.RowId).OnDelete(DeleteBehavior.SetNull);
                 entity.Property(x => x.ClipSlug).HasMaxLength(200);
                 entity.HasIndex(x => x.StreamDateUtc);

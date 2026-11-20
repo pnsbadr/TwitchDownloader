@@ -651,6 +651,10 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("Color")
+                        .HasMaxLength(16)
+                        .HasColumnType("TEXT");
+
                     b.Property<int?>("CopiedFromEntryId")
                         .HasColumnType("INTEGER");
 

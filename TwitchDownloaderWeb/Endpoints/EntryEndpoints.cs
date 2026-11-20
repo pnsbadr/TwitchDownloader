@@ -23,9 +23,11 @@ namespace TwitchDownloaderWeb.Endpoints
     /// <param name="RowId">One of the caller's clip rows on that VOD; blank = their first one (made if they have none).</param>
     /// <param name="Cuts">Cut-out parts in VOD seconds (see <see cref="CutOuts"/>); the stored-clip limit counts the whole range.</param>
     public sealed record AddEntryRequest(string? VodId, string? Title, string? Quality, string? TrimMode, string? StartTime, string? EndTime,
-        int? RowId = null, IReadOnlyList<CutRange>? Cuts = null);
+        int? RowId = null, IReadOnlyList<CutRange>? Cuts = null, string? Color = null);
 
-    public sealed record RenameEntryRequest(string? Title);
+    /// <param name="Title">The new title; blank keeps it when <paramref name="Color"/> is given.</param>
+    /// <param name="Color">One of <see cref="VodMarker.Colors"/>; null keeps it.</param>
+    public sealed record RenameEntryRequest(string? Title, string? Color = null);
 
     /// <param name="StartTime">"h:mm:ss" offset from the start of the VOD. Blank is the start.</param>
     /// <param name="EndTime">"h:mm:ss" offset from the start of the VOD, not a duration. Blank is the end.</param>
@@ -94,6 +96,7 @@ namespace TwitchDownloaderWeb.Endpoints
         {
             StartSeconds = entry.StartTime.TotalSeconds,
             EndSeconds = entry.EndTime?.TotalSeconds,
+            Color = entry.Color,
             FollowsMarkers = entry.FollowsMarkers,
             RowId = entry.RowId,
             CopiedFromEntryId = entry.CopiedFromEntryId,
@@ -141,6 +144,9 @@ namespace TwitchDownloaderWeb.Endpoints
 
         /// <summary>The clip row it sits on in the VOD's timeline (see <see cref="TimelineRow"/>).</summary>
         public int? RowId { get; init; }
+
+        /// <summary>The clip's color (null = the default violet).</summary>
+        public string? Color { get; init; }
 
         /// <summary>The trim (or a clip's place in its VOD) in seconds, so the page can place the VOD's markers and segments on it.</summary>
         public double StartSeconds { get; init; }
@@ -316,6 +322,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 Status = isStored ? EntryStatus.Queued : EntryStatus.ReferenceOnly,
                 RowId = request.RowId,
                 Cuts = CutOuts.Write(cuts),
+                Color = request.Color is { } c && c != "violet" && VodMarker.Colors.Contains(c) ? c : null,
             };
 
             // Two saves because the audit event needs the new entry's ID; the transaction keeps them together
@@ -458,10 +465,12 @@ namespace TwitchDownloaderWeb.Endpoints
         private static async Task<IResult> RenameEntry(int id, RenameEntryRequest request, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
         {
             var title = request.Title?.Trim();
-            if (string.IsNullOrEmpty(title))
+            if (request.Color is { } color && !VodMarker.Colors.Contains(color))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["color"] = [$"Color must be one of: {string.Join(", ", VodMarker.Colors)}."] });
+            if (string.IsNullOrEmpty(title) && request.Color is null)
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["title"] = ["Title cannot be blank."] });
 
-            if (title.Length > MaxTitleLength)
+            if (title?.Length > MaxTitleLength)
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["title"] = [$"Title cannot be longer than {MaxTitleLength} characters."] });
 
             var entry = await db.Entries.FindAsync([id], cancellationToken);
@@ -471,13 +480,18 @@ namespace TwitchDownloaderWeb.Endpoints
             if (!team.CanOnOwnOrAny(entry.AddedByUserId, TeamPermission.EditOwnEntries, TeamPermission.EditAnyEntries))
                 return NotYours("edit");
 
-            if (entry.Title != title)
+            if (!string.IsNullOrEmpty(title) && entry.Title != title)
             {
                 db.Audit(AuditActions.EntryRenamed, entry.Id, $"\"{entry.Title}\" -> \"{title}\"");
                 entry.Title = title;
                 entry.UpdatedAtUtc = DateTime.UtcNow;
-                await db.SaveChangesAsync(cancellationToken);
             }
+            if (request.Color is { } newColor && entry.Color != newColor)
+            {
+                entry.Color = newColor == "violet" ? null : newColor;
+                entry.UpdatedAtUtc = DateTime.UtcNow;
+            }
+            await db.SaveChangesAsync(cancellationToken);
 
             return Results.Ok(EntryDto.From(entry));
         }
