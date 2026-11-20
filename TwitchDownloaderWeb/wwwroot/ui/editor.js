@@ -276,7 +276,9 @@ async function openVod(vod, { start = 0, paused = false, back = null } = {}) {
   $("p1-hint").hidden = true;
   $("p1-media").hidden = false;
   showNote("p1", "Loading…");
-  const loaded = timeline.open(vod);
+  // A live VOD's length from Twitch can lag behind (or be 0): the timeline must reach the moment we open at, or its view is
+  // clamped to the start and shows nothing (badrfly 2026-11-20, Show in Player 1 on a live VOD)
+  const loaded = timeline.open({ ...vod, lengthSeconds: Math.max(Number(vod.lengthSeconds) || 0, start || 0) });
   try {
     await player1.open(vod.vodId, start);
     if (paused) player1.pause();
