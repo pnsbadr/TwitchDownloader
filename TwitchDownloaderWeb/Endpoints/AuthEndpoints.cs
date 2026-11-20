@@ -160,6 +160,7 @@ namespace TwitchDownloaderWeb.Endpoints
             AuditActions.VideoAdded, AuditActions.VideoChanged, AuditActions.VideoDeleted,
             AuditActions.EditAdded, AuditActions.EditDeleted, AuditActions.EditApplied, AuditActions.EditReverted,
             AuditActions.ProjectAdded, AuditActions.ProjectDeleted, AuditActions.ShortformRequested, AuditActions.ShortformDeleted,
+            AuditActions.ItemStatusChanged, AuditActions.ItemTagsChanged,
         ];
 
         /// <summary>

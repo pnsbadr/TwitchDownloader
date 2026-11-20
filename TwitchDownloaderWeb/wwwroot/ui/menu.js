@@ -1,4 +1,5 @@
-// The right-click menu shared by cards and the timeline: openMenu(x, y, [{ icon, label, run, danger }]).
+// The right-click menu shared by cards and the timeline: openMenu(x, y, [{ icon, label, run, danger }]). An item may instead have a color
+// dot (swatch), be checked (✓ on the right) or show a key (hint); { divider: true } draws a line.
 // One <sl-menu id="context-menu"> at the end of the page; it closes on a click elsewhere, Esc, scrolling or leaving the window.
 
 import { $, el } from "./core.js";
@@ -32,8 +33,14 @@ export function openMenu(x, y, items) {
   if (!items.length) return;
   const menu = $("context-menu");
   menu.replaceChildren(...items.map((item) => {
+    if (item.divider) return el("sl-divider");
     const entry = el("sl-menu-item", { class: item.danger ? "danger" : "" },
-      el("sl-icon", { slot: "prefix", library: "ph", name: item.icon }), item.label);
+      item.swatch
+        ? el("span", { slot: "prefix", class: "menu-swatch", style: `background:${item.swatch}` })
+        : el("sl-icon", { slot: "prefix", library: "ph", name: item.icon }),
+      item.label,
+      item.checked ? el("sl-icon", { slot: "suffix", library: "ph", name: "check", class: "menu-check" })
+        : item.hint ? el("span", { slot: "suffix", class: "menu-hint" }, item.hint) : null);
     entry.run = item.run;
     return entry;
   }));

@@ -232,6 +232,9 @@ namespace TwitchDownloaderWeb.Endpoints
             if (SetContent(project, content) is { } tooBig)
                 return tooBig;
             db.Projects.Add(project);
+            // The clip or video may move on to the team's "edit made" status
+            await ItemStatuses.AdvanceAsync(db, team.TeamId, project.Vertical ? StatusTrigger.VerticalEditMade : StatusTrigger.EditMade,
+                entryId is { } madeOfEntry ? [madeOfEntry] : null, videoId is { } madeOfVideo ? [madeOfVideo] : null, cancellationToken);
             await db.SaveChangesAsync(cancellationToken);
             db.Audit(AuditActions.ProjectAdded, null, $"{(project.Vertical ? "vertical" : "horizontal")} project {project.Id}{TitleText(project)}, {project.PieceCount} piece{(project.PieceCount == 1 ? "" : "s")}");
             await db.SaveChangesAsync(cancellationToken);
@@ -362,6 +365,8 @@ namespace TwitchDownloaderWeb.Endpoints
             };
             SetContent(copy, content);
             db.Projects.Add(copy);
+            await ItemStatuses.AdvanceAsync(db, team.TeamId, copy.Vertical ? StatusTrigger.VerticalEditMade : StatusTrigger.EditMade,
+                copy.EntryId is { } madeOfEntry ? [madeOfEntry] : null, copy.VideoId is { } madeOfVideo ? [madeOfVideo] : null, cancellationToken);
             await db.SaveChangesAsync(cancellationToken);
             db.Audit(AuditActions.ProjectAdded, null, $"project {copy.Id}{TitleText(copy)} (copy of project {source.Id})");
             await db.SaveChangesAsync(cancellationToken);

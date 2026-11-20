@@ -294,3 +294,29 @@ table.activity tbody tr:hover { background: var(--bg-2); }
 .team-rename { padding: 6px 0; }
 /* buttons that sit inside a line of text keep the text's height */
 .tiny-text button, .team-name button, .report-who button, .report-detail button.link, .twitch-user-code button { min-height: 0; }
+
+/* Team page: the team's statuses and tags (badrfly 2026-11-20) */
+.status-list { display: flex; flex-direction: column; gap: var(--space-1); margin-bottom: var(--space-3); }
+.status-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+}
+.status-row.dragging { opacity: 0.5; }
+.status-grip { color: var(--text-faint); letter-spacing: -2px; cursor: grab; user-select: none; }
+.status-swatch { width: 18px; height: 18px; min-height: 0; padding: 0; border-radius: 50%; border: 2px solid var(--bg-1); box-shadow: 0 0 0 1px var(--line-strong); cursor: pointer; flex: none; }
+.status-swatch.on { box-shadow: 0 0 0 2px var(--text); }
+.status-name { flex: 1 1 140px; min-width: 0; min-height: var(--control-h); }
+.status-hide { display: inline-flex; flex-direction: row; align-items: center; gap: var(--space-1); margin: 0; font-size: 13px; color: var(--text-dim); white-space: nowrap; }
+.status-hide input { width: auto; min-height: 0; margin: 0; }
+#statuses-panel h3 { margin-top: var(--space-5); }
+.status-count { min-width: 56px; text-align: right; }
+.status-palette, .status-delete { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-1) 0 var(--space-1) 26px; }
+.status-palette[hidden] { display: none; }
+.tag-list { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.tag-chip { display: inline-flex; align-items: center; gap: var(--space-1); padding: 0 var(--space-1) 0 var(--space-2); min-height: 24px; border-radius: 999px; background: var(--bg-3); border: 1px solid var(--line-strong); font-size: 13px; }

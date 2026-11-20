@@ -97,6 +97,7 @@ namespace TwitchDownloaderWeb.Endpoints
             StartSeconds = entry.StartTime.TotalSeconds,
             EndSeconds = entry.EndTime?.TotalSeconds,
             Color = entry.Color,
+            TeamStatusId = entry.TeamStatusId,
             FollowsMarkers = entry.FollowsMarkers,
             RowId = entry.RowId,
             CopiedFromEntryId = entry.CopiedFromEntryId,
@@ -123,6 +124,12 @@ namespace TwitchDownloaderWeb.Endpoints
 
         /// <summary>See <see cref="HasFileCuts"/>; false = the file covers the clip's whole range.</summary>
         public bool FileHasCuts { get; init; }
+
+        /// <summary>The team's workflow status (<see cref="TeamStatus"/>); null = none. <see cref="Status"/> is the download's.</summary>
+        public int? TeamStatusId { get; init; }
+
+        /// <summary>The team's tags on it (lists and single reads; empty elsewhere).</summary>
+        public IReadOnlyList<string> Tags { get; init; } = [];
 
         /// <summary>Cut-out parts (VOD seconds, inside the trim): left out of files made from it and of lengths (<see cref="ClipLengthSeconds"/>
         /// is what's left), but not of the entry's own file (see <see cref="FileCuts"/>).</summary>
@@ -362,8 +369,12 @@ namespace TwitchDownloaderWeb.Endpoints
         /// <param name="maxSeconds">Only clips at most this long ("&lt;30s").</param>
         private static async Task<IResult> ListEntries(LibraryDbContext db, string? search, string? sort, string? order, int? limit,
             string? from, string? to, string? dateField, long? vodId, int? madeBy, int? editedBy, string? channels, bool? paged, string? cursor,
-            double? minSeconds, double? maxSeconds, TeamContext team, CancellationToken cancellationToken)
+            double? minSeconds, double? maxSeconds, string? status, string? tag, TeamContext team, CancellationToken cancellationToken)
         {
+            var (statusId, noStatus, tagName, filterProblem) = StatusEndpoints.ParseFilters(status, tag);
+            if (filterProblem is not null)
+                return filterProblem;
+
             PageCursor? after = null;
             if (!string.IsNullOrEmpty(cursor) && !PageCursor.TryParse(cursor, out after))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["cursor"] = ["Use the nextCursor of the page before."] });
@@ -415,6 +426,16 @@ namespace TwitchDownloaderWeb.Endpoints
             if (toUtc is { } upper)
                 query = useStreamDate ? query.Where(x => x.StreamDateUtc < upper) : query.Where(x => x.AddedAtUtc < upper);
 
+            // The team's statuses and tags (badrfly 2026-11-20): a status picked shows only it; otherwise hidden statuses are left out
+            if (statusId is { } wanted)
+                query = query.Where(x => x.TeamStatusId == wanted);
+            else if (noStatus)
+                query = query.Where(x => x.TeamStatusId == null);
+            else
+                query = query.Where(x => x.TeamStatus == null || !x.TeamStatus.HideFromLists);
+            if (tagName is not null)
+                query = query.Where(x => db.EntryTags.Any(t => t.EntryId == x.Id && t.Tag!.Name == tagName));
+
             if (minSeconds is { } shortest)
                 query = query.Where(x => x.ClipLengthSeconds >= shortest);
             if (maxSeconds is { } longest)
@@ -463,7 +484,12 @@ namespace TwitchDownloaderWeb.Endpoints
                 next = new PageCursor(byStreamDate ? last.StreamDateUtc : last.AddedAtUtc, last.Id).ToString();
             }
             var names = await UsernamesAsync(db, entries.Select(x => x.AddedByUserId), cancellationToken);
-            var dtos = entries.Select(x => EntryDto.From(x) with { AddedBy = x.AddedByUserId is { } u ? names.GetValueOrDefault(u) : null }).ToList();
+            var tags = await ItemStatuses.EntryTagNamesAsync(db, entries.Select(x => x.Id), cancellationToken);
+            var dtos = entries.Select(x => EntryDto.From(x) with
+            {
+                AddedBy = x.AddedByUserId is { } u ? names.GetValueOrDefault(u) : null,
+                Tags = tags.GetValueOrDefault(x.Id) ?? [],
+            }).ToList();
             return paged == true ? Results.Ok(new Page<EntryDto>(dtos, next, total)) : Results.Ok(dtos);
         }
 
@@ -497,7 +523,12 @@ namespace TwitchDownloaderWeb.Endpoints
             if (entry is null)
                 return EntryNotFound(id);
             var names = await UsernamesAsync(db, [entry.AddedByUserId], cancellationToken);
-            return Results.Ok(EntryDto.From(entry) with { AddedBy = entry.AddedByUserId is { } u ? names.GetValueOrDefault(u) : null });
+            var tags = await ItemStatuses.EntryTagNamesAsync(db, [entry.Id], cancellationToken);
+            return Results.Ok(EntryDto.From(entry) with
+            {
+                AddedBy = entry.AddedByUserId is { } u ? names.GetValueOrDefault(u) : null,
+                Tags = tags.GetValueOrDefault(entry.Id) ?? [],
+            });
         }
 
         private static async Task<IResult> RenameEntry(int id, RenameEntryRequest request, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)

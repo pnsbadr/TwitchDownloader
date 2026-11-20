@@ -32,16 +32,39 @@ namespace TwitchDownloaderWeb.Endpoints
         /// segment and moment labels, video titles; LIKE, case-insensitive for ASCII), and on which VODs, so the VOD list can show streams whose
         /// work matches and the box can say "also matches 12 segment labels".
         /// </summary>
-        private static async Task<IResult> Matches(string? q, LibraryDbContext db, CancellationToken cancellationToken)
+        /// <param name="status">Only clips and videos with this team status (an ID or "none"; segments and moments then don't count).</param>
+        /// <param name="tag">Only clips and videos with this tag.</param>
+        private static async Task<IResult> Matches(string? q, string? status, string? tag, LibraryDbContext db, CancellationToken cancellationToken)
         {
-            if (string.IsNullOrWhiteSpace(q))
+            var (statusId, noStatus, tagName, problem) = StatusEndpoints.ParseFilters(status, tag);
+            if (problem is not null)
+                return problem;
+            var filtered = statusId is not null || noStatus || tagName is not null;
+            if (string.IsNullOrWhiteSpace(q) && !filtered)
                 return Results.Ok(new WorkMatchesDto([], 0, 0, 0, 0));
-            var pattern = "%" + q.Trim().Replace(@"\", @"\\").Replace("%", @"\%").Replace("_", @"\_") + "%";
-            var clips = await db.Entries.AsNoTracking().Where(x => EF.Functions.Like(x.Title, pattern, @"\"))
-                .Select(x => new { x.VodId, At = x.UpdatedAtUtc }).ToListAsync(cancellationToken);
-            var markers = await db.Markers.AsNoTracking().Where(x => x.RemovedAtUtc == null && EF.Functions.Like(x.Label, pattern, @"\"))
+            var pattern = "%" + (q ?? "").Trim().Replace(@"\", @"\\").Replace("%", @"\%").Replace("_", @"\_") + "%";
+            var entryQuery = db.Entries.AsNoTracking().Where(x => EF.Functions.Like(x.Title, pattern, @"\"));
+            var videoQuery = db.Videos.AsNoTracking().Where(x => EF.Functions.Like(x.Title, pattern, @"\"));
+            if (statusId is { } wanted)
+            {
+                entryQuery = entryQuery.Where(x => x.TeamStatusId == wanted);
+                videoQuery = videoQuery.Where(x => x.TeamStatusId == wanted);
+            }
+            else if (noStatus)
+            {
+                entryQuery = entryQuery.Where(x => x.TeamStatusId == null);
+                videoQuery = videoQuery.Where(x => x.TeamStatusId == null);
+            }
+            if (tagName is not null)
+            {
+                entryQuery = entryQuery.Where(x => db.EntryTags.Any(t => t.EntryId == x.Id && t.Tag!.Name == tagName));
+                videoQuery = videoQuery.Where(x => db.VideoTags.Any(t => t.VideoId == x.Id && t.Tag!.Name == tagName));
+            }
+            var clips = await entryQuery.Select(x => new { x.VodId, At = x.UpdatedAtUtc }).ToListAsync(cancellationToken);
+            // Segments and moments have no status or tags: with those filters only clips and videos count
+            var markers = await db.Markers.AsNoTracking().Where(x => !filtered && x.RemovedAtUtc == null && EF.Functions.Like(x.Label, pattern, @"\"))
                 .Select(x => new { x.VodId, At = x.CreatedAtUtc, Segment = x.EndSeconds != null }).ToListAsync(cancellationToken);
-            var videos = await db.Videos.AsNoTracking().Where(x => EF.Functions.Like(x.Title, pattern, @"\"))
+            var videos = await videoQuery
                 .Select(x => new { x.VodId, At = x.UpdatedAtUtc, SegmentVods = x.Segments.Select(s => s.Marker!.VodId).ToList() }).ToListAsync(cancellationToken);
             var vods = clips.Where(x => x.VodId > 0).Select(x => (x.VodId, x.At))
                 .Concat(markers.Select(x => (x.VodId, x.At)))

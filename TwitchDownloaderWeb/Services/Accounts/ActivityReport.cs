@@ -26,6 +26,8 @@ namespace TwitchDownloaderWeb.Services.Accounts
             [AuditActions.EntryRetrimmed] = "edited",
             [AuditActions.EditApplied] = "edited",
             [AuditActions.EditReverted] = "edited",
+            [AuditActions.ItemStatusChanged] = "edited",
+            [AuditActions.ItemTagsChanged] = "edited",
             [AuditActions.EntryDeleted] = "deleted",
             [AuditActions.FileServed] = "downloaded",
             [AuditActions.GenerationRequested] = "generated",

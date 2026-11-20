@@ -176,6 +176,14 @@ namespace TwitchDownloaderWeb.Endpoints
                 items[i].Position = i + 1;
             var batch = new ExportBatch { Status = ExportStatus.Queued, CreatedAtUtc = now, UpdatedAtUtc = now, Items = items };
             db.ExportBatches.Add(batch);
+            // Clips and videos sent to Export (an edit's: its clip or video) may move on to the team's "exported" status
+            var projectIds = items.Where(x => x.ProjectId is not null).Select(x => x.ProjectId!.Value).ToList();
+            var parents = projectIds.Count == 0 ? [] : await db.Projects.AsNoTracking().Where(x => projectIds.Contains(x.Id))
+                .Select(x => new { x.EntryId, x.VideoId }).ToListAsync(cancellationToken);
+            await ItemStatuses.AdvanceAsync(db, team.TeamId, StatusTrigger.Exported,
+                items.Where(x => x.EntryId is not null).Select(x => x.EntryId!.Value).Concat(parents.Where(x => x.EntryId is not null).Select(x => x.EntryId!.Value)),
+                items.Where(x => x.VideoId is not null).Select(x => x.VideoId!.Value).Concat(parents.Where(x => x.VideoId is not null).Select(x => x.VideoId!.Value)),
+                cancellationToken);
             await db.SaveChangesAsync(cancellationToken);
             db.Audit(AuditActions.ExportRequested, items.Select(x => x.EntryId).FirstOrDefault(x => x is not null),
                 $"Export {batch.Id}: {items.Count} file(s) ({string.Join(", ", items.GroupBy(x => x.Kind).Select(g => $"{g.Count()} {g.Key}"))}), "

@@ -20,7 +20,7 @@
 import { $, el, api, me, can, liveChannels, formatDate, formatDuration, loadSetting, saveSetting, toast, iconButton, withTooltip, twitchThumb, thumbStyle } from "./core.js";
 import { draggable, shadePath } from "./drag.js";
 import { dayRange, todayIn, viewerTimeZone, zonedParts } from "./dates.js";
-import { clipColor, CLIP_COLOR, STREAM_COLORS } from "./colors.js";
+import { clipColor, CLIP_COLOR, MARKER_COLORS, STREAM_COLORS } from "./colors.js";
 import { askText, confirmAction } from "./dialogs.js";
 import { openMenu } from "./menu.js";
 
@@ -71,6 +71,13 @@ const state = {
   // VODs opened to show their videos and clips under them (step 3 of Large libraries): vodId → { clips, videos, clipsTotal, videosTotal, loading, error }
   open: new Set(),
   kids: new Map(),
+  // The team's statuses and tags (GET /api/team/statuses; badrfly 2026-11-20, step 4) and the status / tag picked as a filter
+  statuses: [],
+  tags: [],
+  canSetStatus: false,
+  statusFilter: "",     // a status ID, "none", or "" for any
+  tagFilter: "",        // a tag name
+  statusVods: null,     // VOD IDs with clips or videos of that status / tag (GET /api/vods/matches), or null
   // "Sync with" (Player 2's piece menu) waiting for a channel to be picked: { onPick, onCancel, shade }
   picking: null,
 };
@@ -96,6 +103,7 @@ export function setUpLibrary(options) {
   renderViewButton();
   setUpFilter();
   setUpSearch();
+  loadStatuses();
   if (options.sample) showSample(options.sample);
   else {
     loadChannels();
@@ -149,6 +157,7 @@ function showSample(sample) {
 export function showList(list) {
   state.list = list;
   renderFilter();
+  renderStatusBar();
   renderChips();
   render();
   if (list === "clips" && !state.clipsLoaded) loadClips();
@@ -196,6 +205,7 @@ export function showVodWork(vodId, list = "clips") {
 // Something was made, renamed or deleted elsewhere: counts and lists follow
 export function refreshLibraryFilters() {
   loadWorkFor(loadedVods().map((v) => v.vodId));
+  scheduleStatuses();
   if (state.clipsLoaded) loadClips();
   if (state.videosLoaded) loadVideos();
 }
@@ -545,6 +555,7 @@ function rememberMembers(pairs) {
 
 // The VOD and member filters on the query of clips (entries) or videos
 function whoQuery(query, list) {
+  statusQuery(query);
   const who = state.who;
   if (who.vodId) query.set(list === "clips" ? "vodId" : "vodIds", who.vodId);
   if (who.memberId) {
@@ -740,7 +751,8 @@ function visibleItems() {
     const to = bounds?.to ? Date.parse(bounds.to) : Infinity;
     return mergedVods().filter((v) => (!search || v.title.toLowerCase().includes(search) || state.vodMatches?.has(String(v.vodId)))
       && (!state.onlyWorked || state.work.has(String(v.vodId)))
-      && (!bounds || (vodTime(v) >= from && vodTime(v) < to)));
+      && (!bounds || (vodTime(v) >= from && vodTime(v) < to))
+      && (!state.statusVods || state.statusVods.has(String(v.vodId))));
   }
   return state.list === "clips" ? state.clips : state.videos;
 }
@@ -908,8 +920,8 @@ async function loadKids(id) {
     } else {
       const limit = String(KIDS_MAX);
       const [clips, videos] = await Promise.all([
-        api("GET", `/api/entries?${new URLSearchParams({ paged: "true", limit, vodId: id })}`),
-        api("GET", `/api/videos?${new URLSearchParams({ paged: "true", limit, vodIds: id })}`),
+        api("GET", `/api/entries?${statusQuery(new URLSearchParams({ paged: "true", limit, vodId: id }))}`),
+        api("GET", `/api/videos?${statusQuery(new URLSearchParams({ paged: "true", limit, vodIds: id }))}`),
       ]);
       Object.assign(kids, { clips: clips.items, videos: videos.items, clipsTotal: clips.total, videosTotal: videos.total });
       rememberMembers([...clips.items.map((c) => [c.addedByUserId, c.addedBy]), ...videos.items.map((v) => [v.userId, v.createdBy])]);
@@ -1233,12 +1245,15 @@ function drawWindow() {
     wanted.push(loading);
   }
   // Keep the focused row in the page even when it scrolled out of view (keyboard focus isn't lost)
+  // A row drawn anew (its item changed) takes the focus over from its old node
   const focused = document.activeElement?.closest?.(".lrow");
-  if (focused && inner.contains(focused) && !wanted.includes(focused)) wanted.push(focused);
+  const replacement = focused && !wanted.includes(focused) && focused.dataset.key ? wanted.find((n) => n.dataset.key === focused.dataset.key) : null;
+  if (focused && inner.contains(focused) && !wanted.includes(focused) && !replacement) wanted.push(focused);
   // Only rows that come or go are moved (rows are placed by top, so order doesn't matter): taking a focused row out and back loses its focus
   const keep = new Set(wanted);
   for (const child of [...inner.children]) if (!keep.has(child)) child.remove();
   for (const node of wanted) if (node.parentNode !== inner) inner.append(node);
+  replacement?.focus({ preventScroll: true });
 }
 
 // The line before a day's rows (badrfly 2026-11-20: a thin line instead of a heading; the date is on the month bar and in the tooltip)
@@ -1288,7 +1303,7 @@ function rowSig(item, type = listType()) {
     const work = state.work.get(String(item.vodId));
     return `${item.isLive}|${work ? workCount(work) : ""}|${hasKids(item)}|${state.open.has(String(item.vodId))}|${shownChannels().length > 1}|${state.cards.get(item.channel)?.profileImageUrl ?? ""}`;
   }
-  return `${item.title}|${item.status}|${item.generationStatus}|${item.color}|${item.clipLengthSeconds ?? item.lengthSeconds}`;
+  return `${item.title}|${item.status}|${item.generationStatus}|${item.color}|${item.clipLengthSeconds ?? item.lengthSeconds}|${item.teamStatusId}|${(item.tags ?? []).join()}`;
 }
 
 function listRow(line) {
@@ -1312,6 +1327,15 @@ function listRow(line) {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       moveSelection(event.key === "ArrowDown" ? 1 : -1);
+    }
+    // 1–9 give the row's clip or video the team's status of that number, 0 takes it off (keybinds.js rowStatus)
+    if (keybindFor("library", event) === "rowStatus" && (line.type === "clip" || line.type === "video") && state.canSetStatus) {
+      const status = event.key === "0" ? null : state.statuses[Number(event.key) - 1];
+      if (event.key === "0" || status) {
+        event.preventDefault();
+        setItemStatus(line.type, line.item, status?.id ?? null);
+      }
+      return;
     }
     // → opens a VOD, ← closes it (from one of its rows: back to the VOD)
     if ((event.key === "ArrowRight" || event.key === "ArrowLeft") && (line.type === "vod" || line.kid) && state.list === "vods") {
@@ -1577,6 +1601,7 @@ function clipSpec(entry) {
       `VOD ${formatDate(entry.streamDateUtc, false)}`,
       entry.addedBy ? `by ${entry.addedBy}` : null,
       clipStatus(entry),
+      statusLine(entry),
     ],
     actions: [exportButton({ kind: "clip", data: item })],
     dragData: item,
@@ -1588,6 +1613,7 @@ function clipSpec(entry) {
       tags: [
         entry.kind === "Clip" ? el("span", { class: "ltag" }, "Twitch") : null,
         entry.kind !== "Clip" && isLongClip(entry) ? el("span", { class: "ltag", title: "Longer than the stored-clip limit: not stored, made on demand" }, "Long") : null,
+        statusPill(entry.teamStatusId),
         isBusy(entry) ? el("sl-icon", { library: "ph", name: "hourglass-medium", class: "lstate", title: "Downloading" }) : null,
         problem ? el("sl-icon", { library: "ph", name: "warning", class: "lstate error", title: entry.error || (entry.status === "Failed" ? "Download failed" : entry.kind === "Clip" ? "Clip deleted" : "VOD deleted") }) : null,
       ],
@@ -1607,6 +1633,7 @@ function clipMenu(entry) {
     entry.vodId && String(entry.vodId) !== state.who.vodId && { label: "Show this VOD's clips", icon: "funnel-simple", run: () => showVodWork(entry.vodId, "clips") },
     canOnEntry(entry, "EditOwnEntries", "EditAnyEntries") && { label: "Rename", icon: "pencil-simple", run: () => renameClip(entry) },
     canOnEntry(entry, "DeleteOwnEntries", "DeleteAnyEntries") && { label: "Delete", icon: "trash", danger: true, run: () => deleteClip(entry) },
+    ...statusMenu("clip", entry),
   ].filter(Boolean);
 }
 
@@ -1656,6 +1683,7 @@ function videoSpec(video) {
     meta: [
       video.streamDateUtc ? `VOD ${formatDate(video.streamDateUtc, false)}${streams > 1 ? ` · ${streams} streams` : ""}` : streams > 1 ? `${streams} streams` : null,
       video.createdBy ? `by ${video.createdBy}` : null,
+      statusLine(video),
     ],
     actions: [exportButton({ kind: "video", data: item })],
     dragData: item,
@@ -1664,7 +1692,7 @@ function videoSpec(video) {
       color: CLIP_COLOR,
       length: formatDuration(video.lengthSeconds ?? 0),
       who: whoBadge(video.userId, video.createdBy),
-      tags: [streams > 1 ? el("span", { class: "ltag", title: `Plays from ${streams} streams` }, `${streams} streams`) : null],
+      tags: [streams > 1 ? el("span", { class: "ltag", title: `Plays from ${streams} streams` }, `${streams} streams`) : null, statusPill(video.teamStatusId)],
     },
     menu: () => [
       { label: "Load in Player 2", icon: "film-strip", run: () => handlers.onLoad({ kind: "video", data: item }) },
@@ -1673,6 +1701,7 @@ function videoSpec(video) {
       video.canEdit && handlers.onAddSegments && { label: "Add segments…", icon: "link", run: () => handlers.onAddSegments(item) },
       video.canEdit && { label: "Rename", icon: "pencil-simple", run: () => renameVideo(item) },
       video.canDelete && { label: "Delete", icon: "trash", danger: true, run: () => deleteVideo(item) },
+      ...statusMenu("video", item),
     ].filter(Boolean),
   };
 }
@@ -1707,6 +1736,7 @@ export async function deleteVideo(video) {
 // ---------- filter popover ----------
 
 function filtersOn() {
+  if (state.statusFilter || state.tagFilter) return true;
   const day = Boolean(state.clipFilter.day || state.clipFilter.last24h);
   if (state.list === "vods") return Boolean(state.vodSearch) || state.vodType !== "archive" || state.onlyWorked || day;
   const who = Boolean(state.who.vodId || state.who.memberId);
@@ -1791,6 +1821,10 @@ function setUpFilter() {
     }
     Object.assign(state.clipFilter, { search: "", last24h: false, day: "", minSeconds: null, maxSeconds: null });
     Object.assign(state.who, { vodId: "", memberId: "" });
+    state.statusFilter = "";
+    state.tagFilter = "";
+    state.statusVods = null;
+    renderStatusBar();
     if (state.clipsLoaded || state.list === "clips") loadClips();
     if (state.videosLoaded || state.list === "videos") loadVideos();
     renderFilter();
@@ -1838,7 +1872,7 @@ function renderFilter() {
 // nov 14 / today / yesterday / 24h (a day), >1m / <30s (clip length). The suggestions offer them as you type.
 
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
-const PREFIXED = /^(@|by:|vod:|[<>])/i;
+const PREFIXED = /^(@|#|by:|vod:|[<>])/i;
 const search = { items: [], active: -1, matches: null, matchesFor: "", timer: 0, optionsAt: 0 };
 
 function searchInput() {
@@ -1949,6 +1983,9 @@ function buildSuggestions() {
   } else if (lower.startsWith("vod:")) {
     const rest = token.slice(4);
     for (const w of state.workedVods) if (!rest || sameText(vodOptionLabel(w), rest)) add({ kind: "vod", vodId: String(w.vodId), label: vodOptionLabel(w), hint: "Stream", consume: 1 });
+  } else if (lower.startsWith("#")) {
+    const rest = lower.slice(1);
+    for (const tag of state.tags) if (tag.name.startsWith(rest)) add({ kind: "tag", name: tag.name, label: `#${tag.name}`, hint: `Tag · ${tag.clips + tag.videos}`, consume: 1 });
   } else if (lower.startsWith(">") || lower.startsWith("<")) {
     const length = parseLength(lower);
     if (length) add({ kind: "length", ...length, label: length.minSeconds != null ? `Longer than ${lengthText(length.minSeconds)}` : `Up to ${lengthText(length.maxSeconds)}`, hint: "Clips", consume: 1 });
@@ -1963,6 +2000,16 @@ function buildSuggestions() {
       }
     }
     if (lower.length >= 2) {
+      // A step of the team's work ("ready")
+      for (const n of [2, 1]) {
+        if (words.length < n) continue;
+        const said = words.slice(-n).join(" ").toLowerCase();
+        const status = state.statuses.find((x) => x.name.toLowerCase().startsWith(said));
+        if (status) {
+          add({ kind: "status", id: String(status.id), label: status.name, hint: "Status", consume: n });
+          break;
+        }
+      }
       for (const c of state.channels) if (several() && (c.login.startsWith(lower) || (c.displayName ?? "").toLowerCase().startsWith(lower)))
         add({ kind: "channel", login: c.login, label: c.displayName || c.login, hint: "Channel", consume: 1 });
       for (const m of memberChoices()) if (m.name.toLowerCase().startsWith(lower)) add({ kind: "member", id: m.id, mode: "made", label: `Made by ${m.name}`, hint: m.id === String(me?.id) ? "You" : "Member", consume: 1 });
@@ -2072,6 +2119,12 @@ function pickSuggestion(item) {
       Object.assign(state.clipFilter, { minSeconds: item.minSeconds ?? null, maxSeconds: item.maxSeconds ?? null });
       loadClipsIfShown();
       break;
+    case "status":
+      setStatusFilter(item.id);
+      break;
+    case "tag":
+      setTagFilter(item.name);
+      break;
     default:
       break;
   }
@@ -2148,6 +2201,9 @@ function applyTypedShortcuts() {
     } else if (lower.startsWith("vod:")) {
       const found = state.workedVods.filter((w) => sameText(vodOptionLabel(w), word.slice(4)));
       if (found.length === 1) item = { kind: "vod", vodId: String(found[0].vodId) };
+    } else if (lower.startsWith("#")) {
+      const tag = state.tags.find((t) => t.name === lower.slice(1));
+      if (tag) item = { kind: "tag", name: tag.name };
     } else {
       const length = parseLength(lower);
       if (length) item = { kind: "length", ...length };
@@ -2187,6 +2243,11 @@ function renderChips() {
       Object.assign(state.clipFilter, { minSeconds: null, maxSeconds: null });
       loadClipsIfShown();
     }, lists === "clips", "Clips");
+  }
+  if (state.tagFilter) chip(`#${state.tagFilter}`, () => setTagFilter(""), true, "");
+  if (state.statusFilter) {
+    const status = state.statusFilter === "none" ? { name: "No status" } : statusById(state.statusFilter);
+    chip(status?.name ?? "Status", () => setStatusFilter(""), true, "");
   }
   if (state.onlyWorked) chip("With work", () => { state.onlyWorked = false; renderFilter(); render(); }, lists === "vods", "VODs");
   if (state.vodType !== "archive") chip(state.vodType === "highlight" ? "Highlights" : "Uploads", () => {
@@ -2259,4 +2320,183 @@ function setUpSearch() {
     }
   });
   renderChips();
+}
+
+// ---------- the team's statuses and tags (badrfly 2026-11-20, "Redesign the library for large teams" step 4) ----------
+// The team owner (or a role with Manage statuses) makes the steps on the Team page; members set one on a clip or video from its menu or with
+// 1–9 on its row, and tags with "Tags…". The status row under the search box filters every list by one (counts: clips on CLIPS, videos on
+// VIDEOS, both on VODs, which keeps the streams that have some). "#tag" in the search box filters by a tag.
+
+let statusesTimer = 0;
+async function loadStatuses() {
+  if (state.demo) return;
+  try {
+    const data = await api("GET", "/api/team/statuses");
+    state.statuses = data.statuses;
+    state.tags = data.tags;
+    state.noStatus = { clips: data.noStatusClips, videos: data.noStatusVideos };
+    state.canSetStatus = data.canSet;
+  } catch {
+    // The library works without them
+  }
+  renderStatusBar();
+  render();
+}
+
+function scheduleStatuses() {
+  clearTimeout(statusesTimer);
+  statusesTimer = setTimeout(loadStatuses, 400);
+}
+
+function statusById(id) {
+  return state.statuses.find((s) => String(s.id) === String(id)) ?? null;
+}
+
+function statusColor(status) {
+  return MARKER_COLORS[status?.color] ?? MARKER_COLORS.gray;
+}
+
+// The small status label on a row
+function statusPill(statusId) {
+  const status = statusId ? statusById(statusId) : null;
+  if (!status) return null;
+  return el("span", { class: "lpill", title: `Status: ${status.name}` }, el("i", { style: `background:${statusColor(status)}` }), status.name);
+}
+
+// "● Editing · #boxing #collab" on a card
+function statusLine(item) {
+  const status = item.teamStatusId ? statusById(item.teamStatusId) : null;
+  const tags = item.tags ?? [];
+  if (!status && !tags.length) return null;
+  return el("div", { class: "card-meta card-status" },
+    status ? el("span", { class: "lpill" }, el("i", { style: `background:${statusColor(status)}` }), status.name) : null,
+    ...tags.map((tag) => el("span", { class: "card-tag" }, `#${tag}`)));
+}
+
+function statusCount(status) {
+  if (state.list === "clips") return status.clips;
+  if (state.list === "videos") return status.videos;
+  return status.clips + status.videos;
+}
+
+function renderStatusBar() {
+  const bar = $("status-bar");
+  if (!bar) return;
+  bar.hidden = !state.statuses.length;
+  if (bar.hidden) return;
+  const chip = (value, label, color, count, title) => {
+    const on = state.statusFilter === value;
+    const node = el("button", { type: "button", class: `sbar-chip${on ? " on" : ""}`, "aria-pressed": String(on), title },
+      color ? el("i", { style: `background:${color}` }) : null, label, el("span", { class: "sbar-n" }, count.toLocaleString()));
+    node.addEventListener("click", () => setStatusFilter(on ? "" : value));
+    return node;
+  };
+  const none = state.noStatus ? (state.list === "clips" ? state.noStatus.clips : state.list === "videos" ? state.noStatus.videos : state.noStatus.clips + state.noStatus.videos) : 0;
+  bar.replaceChildren(
+    ...state.statuses.map((s) => chip(String(s.id), s.name, statusColor(s), statusCount(s), s.hideFromLists ? "Hidden from lists unless picked" : "")),
+    none ? chip("none", "No status", null, none, "") : "");
+  // Fades out on the right while more chips are hidden there
+  const fade = () => bar.classList.toggle("more", bar.scrollWidth - bar.scrollLeft > bar.clientWidth + 2);
+  requestAnimationFrame(fade);
+  bar.onscroll = fade;
+}
+
+function setStatusFilter(value) {
+  state.statusFilter = value ? String(value) : "";
+  applyStatusFilters();
+}
+
+function setTagFilter(name) {
+  state.tagFilter = name ?? "";
+  applyStatusFilters();
+}
+
+// The status / tag filter changed: every list follows (VODs: the streams that have such clips or videos)
+function applyStatusFilters() {
+  renderStatusBar();
+  renderChips();
+  renderFilter();
+  if (state.clipsLoaded || state.list === "clips") loadClips();
+  if (state.videosLoaded || state.list === "videos") loadVideos();
+  for (const id of [...state.kids.keys()]) if (!state.open.has(id)) state.kids.delete(id);
+  for (const id of state.open) loadKids(id);
+  loadStatusVods();
+}
+
+let statusVodsSeq = 0;
+async function loadStatusVods() {
+  const seq = ++statusVodsSeq;
+  if ((!state.statusFilter && !state.tagFilter) || state.demo) {
+    state.statusVods = null;
+  } else {
+    const query = statusQuery(new URLSearchParams());
+    try {
+      const found = await api("GET", `/api/vods/matches?${query}`);
+      if (seq !== statusVodsSeq) return;
+      state.statusVods = new Set(found.vodIds.map(String));
+    } catch {
+      if (seq !== statusVodsSeq) return;
+      state.statusVods = null;
+    }
+  }
+  if (state.list === "vods") render();
+}
+
+function statusQuery(query) {
+  if (state.statusFilter) query.set("status", state.statusFilter);
+  if (state.tagFilter) query.set("tag", state.tagFilter);
+  return query;
+}
+
+// The statuses and Tags… at the end of a clip's or video's menu
+function statusMenu(kind, item) {
+  if (!state.canSetStatus || !state.statuses.length) return [];
+  return [
+    { divider: true },
+    ...state.statuses.map((s, i) => ({
+      label: s.name, swatch: statusColor(s), checked: item.teamStatusId === s.id, hint: i < 9 ? String(i + 1) : "",
+      run: () => setItemStatus(kind, item, s.id),
+    })),
+    item.teamStatusId && { label: "No status", icon: "x", hint: "0", run: () => setItemStatus(kind, item, null) },
+    { label: "Tags…", icon: "tag", run: () => editTags(kind, item) },
+  ].filter(Boolean);
+}
+
+export async function setItemStatus(kind, item, statusId) {
+  if ((item.teamStatusId ?? null) === statusId) return;
+  try {
+    await api("PUT", `/api/${kind === "clip" ? "entries" : "videos"}/${item.id}/status`, { statusId });
+    item.teamStatusId = statusId;
+    const status = statusId ? statusById(statusId) : null;
+    toast(status ? `"${item.title}" is now ${status.name}.` : `Took the status off "${item.title}".`);
+    render();
+    renderPeekAgain();
+    scheduleStatuses();
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+async function editTags(kind, item) {
+  const text = await askText({
+    heading: "Tags", label: "Tags, separated by spaces (e.g. #boxing #collab)", value: (item.tags ?? []).map((t) => `#${t}`).join(" "),
+    confirm: "Save", maxLength: 400,
+  });
+  if (text === null) return;
+  const tags = text.split(/[\s,]+/).map((t) => t.replace(/^#+/, "")).filter(Boolean);
+  try {
+    const result = await api("PUT", `/api/${kind === "clip" ? "entries" : "videos"}/${item.id}/tags`, { tags });
+    item.tags = result.tags;
+    render();
+    renderPeekAgain();
+    scheduleStatuses();
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+// The bottom card shows the same item changed in place: draw it again
+function renderPeekAgain() {
+  peekKey = null;
+  renderPeek();
 }

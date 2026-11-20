@@ -51,6 +51,10 @@ namespace TwitchDownloaderWeb.Data
         public DbSet<TwitchConnection> TwitchConnections => Set<TwitchConnection>();
         public DbSet<AppSettings> AppSettings => Set<AppSettings>();
         public DbSet<VodSyncOffset> VodSyncOffsets => Set<VodSyncOffset>();
+        public DbSet<TeamStatus> TeamStatuses => Set<TeamStatus>();
+        public DbSet<TeamTag> TeamTags => Set<TeamTag>();
+        public DbSet<EntryTag> EntryTags => Set<EntryTag>();
+        public DbSet<VideoTag> VideoTags => Set<VideoTag>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -81,6 +85,7 @@ namespace TwitchDownloaderWeb.Data
                 entity.Property(x => x.Kind).HasConversion<string>().HasMaxLength(16);
                 entity.Property(x => x.Color).HasMaxLength(16);
                 entity.HasOne(x => x.Row).WithMany().HasForeignKey(x => x.RowId).OnDelete(DeleteBehavior.SetNull);
+                entity.HasOne(x => x.TeamStatus).WithMany().HasForeignKey(x => x.TeamStatusId).OnDelete(DeleteBehavior.SetNull);
                 entity.Property(x => x.ClipSlug).HasMaxLength(200);
                 entity.HasIndex(x => x.StreamDateUtc);
                 entity.HasIndex(x => x.AddedAtUtc);
@@ -206,6 +211,7 @@ namespace TwitchDownloaderWeb.Data
                 entity.HasIndex(x => new { x.TeamId, x.VodId });
                 entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
                 entity.HasOne<TimelineRow>().WithMany().HasForeignKey(x => x.RowId).OnDelete(DeleteBehavior.SetNull);
+                entity.HasOne(x => x.TeamStatus).WithMany().HasForeignKey(x => x.TeamStatusId).OnDelete(DeleteBehavior.SetNull);
                 entity.HasMany(x => x.Segments).WithOne().HasForeignKey(x => x.VideoId).OnDelete(DeleteBehavior.Cascade);
                 // A video with a segment on any VOD hidden from the team is hidden whole (a video may span several VODs)
                 entity.HasQueryFilter(x => !ScopedToTeam || (x.TeamId == ScopeTeamId && !HiddenVods.Any(h => h.TeamId == ScopeTeamId && h.VodId == x.VodId)
@@ -220,6 +226,43 @@ namespace TwitchDownloaderWeb.Data
                 entity.HasOne(x => x.Marker).WithMany().HasForeignKey(x => x.MarkerId).OnDelete(DeleteBehavior.Cascade);
                 // Same team as its segment (matches the markers' filter)
                 entity.HasQueryFilter(x => !ScopedToTeam || x.Marker!.TeamId == ScopeTeamId);
+            });
+
+            // The team's statuses and tags for clips and videos (badrfly 2026-11-20)
+            modelBuilder.Entity<TeamStatus>(entity =>
+            {
+                entity.Property(x => x.Name).HasMaxLength(TeamStatus.MaxNameLength);
+                entity.Property(x => x.Color).HasMaxLength(16);
+                entity.Property(x => x.SetWhen).HasConversion<string>().HasMaxLength(24);
+                entity.HasIndex(x => x.TeamId);
+                entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasQueryFilter(x => !ScopedToTeam || x.TeamId == ScopeTeamId);
+            });
+
+            modelBuilder.Entity<TeamTag>(entity =>
+            {
+                entity.Property(x => x.Name).HasMaxLength(TeamTag.MaxNameLength);
+                entity.HasIndex(x => new { x.TeamId, x.Name }).IsUnique();
+                entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasQueryFilter(x => !ScopedToTeam || x.TeamId == ScopeTeamId);
+            });
+
+            modelBuilder.Entity<EntryTag>(entity =>
+            {
+                entity.HasKey(x => new { x.EntryId, x.TagId });
+                entity.HasIndex(x => x.TagId);
+                entity.HasOne<LibraryEntry>().WithMany().HasForeignKey(x => x.EntryId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(x => x.Tag).WithMany().HasForeignKey(x => x.TagId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasQueryFilter(x => !ScopedToTeam || x.Tag!.TeamId == ScopeTeamId);
+            });
+
+            modelBuilder.Entity<VideoTag>(entity =>
+            {
+                entity.HasKey(x => new { x.VideoId, x.TagId });
+                entity.HasIndex(x => x.TagId);
+                entity.HasOne<Video>().WithMany().HasForeignKey(x => x.VideoId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(x => x.Tag).WithMany().HasForeignKey(x => x.TagId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasQueryFilter(x => !ScopedToTeam || x.Tag!.TeamId == ScopeTeamId);
             });
 
             modelBuilder.Entity<VodSyncOffset>(entity =>
@@ -463,6 +506,20 @@ namespace TwitchDownloaderWeb.Data
                     case SavedChannel channel:
                         if (channel.TeamId == 0 && _actor.TeamId is { } channelTeam) channel.TeamId = channelTeam;
                         channel.AddedByUserId ??= userId;
+                        break;
+                }
+            }
+
+            // New clips and videos get the team's "set when made" status (badrfly 2026-11-20)
+            foreach (var added in ChangeTracker.Entries().Where(x => x.State == EntityState.Added).ToList())
+            {
+                switch (added.Entity)
+                {
+                    case LibraryEntry { TeamStatusId: null, TeamStatus: null, TeamId: > 0 } entry:
+                        entry.TeamStatus = await ItemStatuses.ForNewItemAsync(this, entry.TeamId, cancellationToken);
+                        break;
+                    case Video { TeamStatusId: null, TeamStatus: null, TeamId: > 0 } video:
+                        video.TeamStatus = await ItemStatuses.ForNewItemAsync(this, video.TeamId, cancellationToken);
                         break;
                 }
             }
