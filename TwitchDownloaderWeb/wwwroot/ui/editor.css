@@ -1159,8 +1159,10 @@ body.row-focus .tl-foot-left sl-icon-button { opacity: .25; pointer-events: none
   font-size: 13px;
 }
 .link-icon { color: var(--accent-strong); font-size: 16px; flex: none; }
-.link-text { color: var(--text-dim); flex: 0 1 auto; min-width: 0; }
-.link-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; flex: 1 1 200px; min-width: 0; }
+.link-text { color: var(--text-dim); flex: 1 1 200px; min-width: 0; }
+/* the chips get their own line under the text and buttons */
+.link-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; flex: 1 1 100%; order: 10; min-width: 0; }
+.link-chips:empty { display: none; }
 .link-chip {
   display: inline-flex;
   align-items: center;
