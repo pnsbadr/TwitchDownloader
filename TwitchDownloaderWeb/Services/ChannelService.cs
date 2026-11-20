@@ -25,8 +25,15 @@ namespace TwitchDownloaderWeb.Services
         Task<ChannelDetails?> GetChannelAsync(string login);
     }
 
+    /// <summary>A channel's VODs from Twitch, newest first. <see cref="ChannelService"/> in the app; a fake in tests.</summary>
+    public interface IChannelVodSource
+    {
+        /// <returns>The page, or null if Twitch has no user with that login.</returns>
+        Task<ChannelVodPage?> GetVodsAsync(string login, VodType type, string? cursor, int limit);
+    }
+
     /// <summary>Looks up Twitch channels and lists their VODs with Core's GQL helpers (the same ones the desktop Mass Downloader uses).</summary>
-    public sealed partial class ChannelService : IChannelLookup
+    public sealed partial class ChannelService : IChannelLookup, IChannelVodSource
     {
         /// <summary>
         /// How long after a VOD ends Twitch's unmuted segments are assumed to still exist. Core uses the same 24 hours

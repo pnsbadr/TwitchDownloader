@@ -151,17 +151,14 @@ namespace TwitchDownloaderWeb.Endpoints
         /// Checks the content and that every VOD it uses that <paramref name="known"/> doesn't already have is one the team may open
         /// (a VOD already in the project stays usable, like other work on a channel the Owner stopped).
         /// </summary>
-        private static async Task<IResult?> CheckContentAsync(ProjectContent content, IReadOnlyCollection<long> known, long projectVodId, TeamContext team,
+        private static async Task<IResult?> CheckContentAsync(ProjectContent content, IReadOnlyCollection<long> known, TeamContext team,
             TeamChannelAccess access, CancellationToken cancellationToken)
         {
             if (content.Validate() is { } error)
                 return Invalid("content", error);
 
-            // Everything in an edit comes from its VOD (VODs an older project already uses stay)
-            var editVod = projectVodId != 0 ? projectVodId : content.VodIds.FirstOrDefault();
-            if (content.VodIds.Any(x => x != editVod && !known.Contains(x)))
-                return Invalid("content", "Everything in an edit has to come from its VOD.");
-
+            // An edit belongs to its VOD; other VODs come in through "Sync with" (badrfly 2026-11-20: the same moment from another
+            // streamer's point of view, on a row of its own). Any VOD the team may open is fine.
             foreach (var vodId in content.VodIds.Where(x => !known.Contains(x)))
                 if (TeamChannelAccess.Refusal(await access.CheckVodAsync(team.TeamId, vodId, cancellationToken), vodId) is { } refused)
                     return refused;
@@ -223,7 +220,7 @@ namespace TwitchDownloaderWeb.Endpoints
 
             if (vodId != 0 && TeamChannelAccess.Refusal(await access.CheckVodAsync(team.TeamId, vodId, cancellationToken), vodId) is { } refused)
                 return refused;
-            if (await CheckContentAsync(content, [], vodId, team, access, cancellationToken) is { } problem)
+            if (await CheckContentAsync(content, [], team, access, cancellationToken) is { } problem)
                 return problem;
 
             var now = DateTime.UtcNow;
@@ -271,7 +268,7 @@ namespace TwitchDownloaderWeb.Endpoints
 
             if (request.Content is { } content)
             {
-                if (await CheckContentAsync(content, project.Vods.Select(x => x.VodId).ToList(), project.VodId, team, access, cancellationToken) is { } problem)
+                if (await CheckContentAsync(content, project.Vods.Select(x => x.VodId).ToList(), team, access, cancellationToken) is { } problem)
                     return problem;
                 if (project.VodId == 0)
                     project.VodId = content.VodIds.FirstOrDefault();
@@ -344,7 +341,7 @@ namespace TwitchDownloaderWeb.Endpoints
 
             // The copy is new work, so its VODs must be open to the team now
             var content = ProjectContent.Read(source.Content);
-            if (await CheckContentAsync(content, source.Vods.Select(x => x.VodId).ToList(), source.VodId, team, access, cancellationToken) is { } problem)
+            if (await CheckContentAsync(content, source.Vods.Select(x => x.VodId).ToList(), team, access, cancellationToken) is { } problem)
                 return problem;
             foreach (var vodId in content.VodIds)
                 if (TeamChannelAccess.Refusal(await access.CheckVodAsync(team.TeamId, vodId, cancellationToken), vodId) is { } refused)

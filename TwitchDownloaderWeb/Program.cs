@@ -35,6 +35,7 @@ builder.Services.AddSingleton<ClipInfoService>();
 builder.Services.AddSingleton<IVodLookup>(sp => sp.GetRequiredService<VodInfoService>());
 builder.Services.AddSingleton<ChannelService>();
 builder.Services.AddSingleton<IChannelLookup>(sp => sp.GetRequiredService<ChannelService>());
+builder.Services.AddSingleton<IChannelVodSource>(sp => sp.GetRequiredService<ChannelService>());
 builder.Services.AddScoped<TeamChannelAccess>();
 builder.Services.AddHttpClient(nameof(AudioRescueService), client => client.Timeout = TimeSpan.FromSeconds(60));
 builder.Services.AddHttpClient(nameof(AudioRestoreService), client => client.Timeout = TimeSpan.FromSeconds(60));
@@ -149,6 +150,7 @@ app.MapVideoEndpoints();
 app.MapItemEditEndpoints();
 app.MapProjectEndpoints();
 app.MapVodWorkEndpoints();
+app.MapVodSyncEndpoints();
 app.MapLiveEndpoints();
 
 app.Run();
