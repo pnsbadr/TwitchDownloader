@@ -37,6 +37,11 @@ namespace TwitchDownloaderWeb.Endpoints
     {
         /// <summary>A frame from the middle of the video for its card (see <see cref="CardThumbnailService"/>); null without segments.</summary>
         public string? FrameUrl { get; init; }
+
+        /// <summary>The team's workflow status (<see cref="TeamStatus"/>); null = none.</summary>
+        public int? TeamStatusId { get; init; }
+
+        public IReadOnlyList<string> Tags { get; init; } = [];
     }
 
     /// <summary>
@@ -69,6 +74,7 @@ namespace TwitchDownloaderWeb.Endpoints
         internal static async Task<List<VideoDto>> ToDtosAsync(LibraryDbContext db, IReadOnlyList<Video> videos, TeamContext team, CancellationToken cancellationToken)
         {
             var names = await TimelineEndpoints.UserNamesAsync(db, videos.Select(x => x.UserId), cancellationToken);
+            var tags = await ItemStatuses.VideoTagNamesAsync(db, videos.Select(x => x.Id), cancellationToken);
             return videos.Select(video =>
             {
                 var segments = video.Segments.Where(x => x.Marker is { EndSeconds: not null }).OrderBy(x => x.Position)
@@ -86,6 +92,8 @@ namespace TwitchDownloaderWeb.Endpoints
                     video.CopiedFromVideoId, video.CreatedAtUtc, video.UpdatedAtUtc, CanEdit(team, video), CanDelete(team, video))
                 {
                     FrameUrl = CardThumbnailService.VideoUrl(video.Id, PlayedParts(video)),
+                    TeamStatusId = video.TeamStatusId,
+                    Tags = tags.GetValueOrDefault(video.Id) ?? [],
                 };
             }).ToList();
         }
@@ -167,8 +175,11 @@ namespace TwitchDownloaderWeb.Endpoints
         /// <param name="from">Only videos made at or after this instant (ISO 8601 with an offset).</param>
         /// <param name="to">Only videos made before this instant.</param>
         private static async Task<IResult> List(string? vodIds, int? userId, int? editedBy, string? channels, int? limit, string? search, bool? paged,
-            string? cursor, string? from, string? to, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
+            string? cursor, string? from, string? to, string? status, string? tag, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
         {
+            var (statusId, noStatus, tagName, filterProblem) = StatusEndpoints.ParseFilters(status, tag);
+            if (filterProblem is not null)
+                return filterProblem;
             if (!EntryEndpoints.TryParseInstant(from, out var fromUtc))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["from"] = ["Use an ISO 8601 date-time with an offset, e.g. 2026-10-09T07:00:00Z."] });
             if (!EntryEndpoints.TryParseInstant(to, out var toUtc))
@@ -205,6 +216,15 @@ namespace TwitchDownloaderWeb.Endpoints
                 query = query.Where(x => EF.Functions.Like(x.Title, pattern, @"\")
                     || x.Segments.Any(s => EF.Functions.Like(s.Marker!.Label, pattern, @"\")));
             }
+            // The team's statuses and tags: a status picked shows only it; otherwise hidden statuses are left out
+            if (statusId is { } wanted)
+                query = query.Where(x => x.TeamStatusId == wanted);
+            else if (noStatus)
+                query = query.Where(x => x.TeamStatusId == null);
+            else
+                query = query.Where(x => x.TeamStatus == null || !x.TeamStatus.HideFromLists);
+            if (tagName is not null)
+                query = query.Where(x => db.VideoTags.Any(t => t.VideoId == x.Id && t.Tag!.Name == tagName));
             if (fromUtc is { } lower)
                 query = query.Where(x => x.CreatedAtUtc >= lower);
             if (toUtc is { } upper)

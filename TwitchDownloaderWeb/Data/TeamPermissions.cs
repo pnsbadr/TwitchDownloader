@@ -45,11 +45,13 @@ namespace TwitchDownloaderWeb.Data
         DownloadTeamVerticals = 1L << 18,
         /// <summary>See teammates' vertical edits (projects and 9:16 renders), view only (badrfly 2026-11-17). See <c>Services.Accounts.VerticalAccess</c>.</summary>
         ViewTeamVerticals = 1L << 19,
+        /// <summary>Make, change, order and delete the team's statuses and delete its tags (badrfly 2026-11-20; the Team page's Statuses card).</summary>
+        ManageStatuses = 1L << 20,
 
-        All = (1L << 20) - 1,
+        All = (1L << 21) - 1,
 
         /// <summary>Any of these lets a member open the Team page.</summary>
-        TeamPage = InviteMembers | AssignRoles | ManageRoles | RemoveMembers | ResetPasswords | ViewActivity,
+        TeamPage = InviteMembers | AssignRoles | ManageRoles | RemoveMembers | ResetPasswords | ViewActivity | ManageStatuses,
     }
 
     public sealed record TeamPermissionInfo(string Key, string Group, string Label, string Description);
@@ -79,6 +81,7 @@ namespace TwitchDownloaderWeb.Data
             (TeamPermission.RemoveMembers, new("RemoveMembers", "Team", "Remove members", "Remove people from the team.")),
             (TeamPermission.ResetPasswords, new("ResetPasswords", "Team", "Reset passwords", "Make password reset links for members who aren't in any other team.")),
             (TeamPermission.ViewActivity, new("ViewActivity", "Team", "See member activity", "See what each member works on, how active they are, their disk use and the team log.")),
+            (TeamPermission.ManageStatuses, new("ManageStatuses", "Team", "Manage statuses", "Make, rename, order and delete the team's statuses for clips and videos, and delete its tags.")),
         ];
 
         public static IReadOnlyList<string> ToKeys(TeamPermission permissions) =>

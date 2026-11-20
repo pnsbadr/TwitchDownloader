@@ -153,6 +153,7 @@ app.MapVideoEndpoints();
 app.MapItemEditEndpoints();
 app.MapProjectEndpoints();
 app.MapVodWorkEndpoints();
+app.MapStatusEndpoints();
 app.MapVodSyncEndpoints();
 app.MapLiveEndpoints();
 

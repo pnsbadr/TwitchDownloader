@@ -106,6 +106,11 @@ namespace TwitchDownloaderWeb.Data
         /// <summary>Staff downloaded or deleted error reports (the Reports tab).</summary>
         public const string ErrorReportsDownloaded = "reports.downloaded";
         public const string ErrorReportsDeleted = "reports.deleted";
+        /// <summary>A clip's or video's team status or tags changed (counts as "edited").</summary>
+        public const string ItemStatusChanged = "status.changed";
+        public const string ItemTagsChanged = "tags.changed";
+        /// <summary>The team's statuses were made, changed, ordered or deleted, or a tag was deleted (Team page).</summary>
+        public const string StatusesChanged = "statuses.changed";
     }
 
     /// <summary>

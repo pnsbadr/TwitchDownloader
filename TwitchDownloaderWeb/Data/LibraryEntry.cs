@@ -72,6 +72,10 @@ namespace TwitchDownloaderWeb.Data
         /// <summary>The clip's color on the timeline (one of <see cref="VodMarker.Colors"/>); null = the default violet (badrfly 2026-11-20).</summary>
         public string? Color { get; set; }
 
+        /// <summary>The team's workflow status (<see cref="Data.TeamStatus"/>, badrfly 2026-11-20); null = none. Not <see cref="Status"/>, the download's.</summary>
+        public int? TeamStatusId { get; set; }
+        public TeamStatus? TeamStatus { get; set; }
+
         public EntryStatus Status { get; set; }
 
         /// <summary>Last failure message, if any.</summary>

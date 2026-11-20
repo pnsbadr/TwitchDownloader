@@ -32,6 +32,10 @@ namespace TwitchDownloaderWeb.Data
         public DateTime CreatedAtUtc { get; set; }
         public DateTime UpdatedAtUtc { get; set; }
 
+        /// <summary>The team's workflow status (<see cref="Data.TeamStatus"/>, badrfly 2026-11-20); null = none.</summary>
+        public int? TeamStatusId { get; set; }
+        public TeamStatus? TeamStatus { get; set; }
+
         public List<VideoSegment> Segments { get; set; } = [];
 
         public const int MaxTitleLength = 500;

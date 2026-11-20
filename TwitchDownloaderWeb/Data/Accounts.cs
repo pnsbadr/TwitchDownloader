@@ -86,6 +86,9 @@ namespace TwitchDownloaderWeb.Data
         /// </summary>
         public bool CombineSegmentDownloads { get; set; }
 
+        /// <summary>When the team got its first statuses (<see cref="TeamStatus.Defaults"/>); null = not yet, they're made the first time they're needed.</summary>
+        public DateTime? StatusesMadeAtUtc { get; set; }
+
         public List<TeamMember> Members { get; set; } = [];
     }
 
