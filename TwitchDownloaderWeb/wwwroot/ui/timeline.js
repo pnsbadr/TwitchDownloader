@@ -218,6 +218,8 @@ export class Timeline {
     const start = range?.start ?? item.start;
     const end = range?.end ?? item.end ?? item.start;
     const room = Math.max((end - start) * 0.2, 2);
+    // The item is there, so the VOD is at least that long (a live VOD's known length can lag behind): don't clamp the view short of it
+    if (this.mode === "vod") this.knownLength = Math.max(this.knownLength, end + room);
     this.follow = true;
     this.setView(start - room, end + room);
     return item;
