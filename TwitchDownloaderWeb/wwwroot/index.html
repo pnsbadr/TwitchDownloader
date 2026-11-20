@@ -246,23 +246,24 @@
                 <span class="tools-sep"></span>
                 <sl-icon-button library="ph" name="map-pin" label="Moment marker" data-keybind="marker" data-create="marker" disabled></sl-icon-button>
                 <sl-icon-button library="ph" name="brackets-square" label="Segment" data-keybind="segment" data-create="segment" disabled></sl-icon-button>
-                <sl-icon-button library="ph" name="link-simple" label="Link segments into a video" data-create="video" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="link" label="Link segments into a video" data-create="video" disabled></sl-icon-button>
                 <span class="tools-sep"></span>
                 <sl-icon-button library="ph" name="arrow-u-up-left" label="Undo" data-keybind="undo" disabled></sl-icon-button>
                 <sl-icon-button library="ph" name="arrow-u-up-right" label="Redo" data-keybind="redo" disabled></sl-icon-button>
               </div>
               <div class="item-editor" id="item-editor" hidden>
                 <sl-input id="item-title" size="small" placeholder="Title" maxlength="200" aria-label="Title"></sl-input>
-                <sl-icon-button library="ph" name="check" label="Apply (Enter)" id="item-apply" class="item-apply" hidden></sl-icon-button>
+                <!-- the link tool's picked segments (ui/link-tray.js): numbered chips, colored by stream -->
+                <div class="link-chips" id="link-chips" aria-label="Segments in the video, in play order"></div>
                 <div class="swatches" id="item-colors" role="radiogroup" aria-label="Color"></div>
+                <sl-icon-button library="ph" name="check" label="Apply (Enter)" id="item-apply" class="item-apply" hidden></sl-icon-button>
               </div>
             </div>
 
             <!-- Link tray: the segments picked for a video, kept while other VODs are opened (videos across streams) -->
             <div class="link-tray" id="link-tray" hidden data-tip-placement="top">
-              <sl-icon library="ph" name="link-simple" class="link-icon"></sl-icon>
+              <sl-icon library="ph" name="link" class="link-icon"></sl-icon>
               <span class="link-text" id="link-text"></span>
-              <div class="link-chips" id="link-chips"></div>
               <sl-button size="small" id="link-sort">Sort by stream time</sl-button>
               <sl-button size="small" variant="text" id="link-cancel">Cancel</sl-button>
             </div>

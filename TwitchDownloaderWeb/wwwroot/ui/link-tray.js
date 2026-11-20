@@ -4,7 +4,7 @@
 // time" puts them in the order they happened. The tray is kept in this tab (sessionStorage) so a reload doesn't lose the picks.
 
 import { $, el, api, iconButton, toast } from "./core.js";
-import { MARKER_COLORS } from "./colors.js";
+import { STREAM_COLORS } from "./colors.js";
 
 const STORAGE_KEY = "clipco.p1.linking";
 
@@ -84,17 +84,20 @@ export function renderLinkTray(linking) {
     : `${what}: click segments in the order they play. You can open other VODs and keep clicking.`;
   $("link-sort").disabled = picks.length < 2;
 
+  // Each stream gets a color, in the order the picks first use it, so the chips show where one stream ends and the next begins
+  const streamOrder = [...new Set(picks.map((p) => p.vodId))];
+  const streamColor = (vodId) => STREAM_COLORS[streamOrder.indexOf(vodId) % STREAM_COLORS.length];
   const chips = picks.map((pick, i) => {
     const day = vodDay(pick.vodId, () => renderLinkTray(hooks.timeline.linking));
     const chip = el("div", {
       class: `link-chip${pick.vodId === here ? " here" : ""}${pick.removed ? " removed" : ""}`,
       "data-id": String(pick.id),
+      style: `--stream: ${streamColor(pick.vodId)}`,
       title: pick.removed
         ? "Deleted from its timeline, still in this video. × takes it out."
         : pick.vodId === here ? "On this VOD: click to go to it" : "On another stream: click to open it there",
     },
       el("span", { class: "link-num num" }, String(i + 1)),
-      el("span", { class: "link-dot", style: `background: ${MARKER_COLORS[pick.color] ?? MARKER_COLORS.yellow}` }),
       el("span", { class: "link-label" }, pick.label || "Segment"),
       el("span", { class: "link-day" }, day ?? ""),
     );

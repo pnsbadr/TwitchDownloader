@@ -835,7 +835,7 @@ function videoCard(video) {
       { label: "Load in Player 2", icon: "film-strip", run: () => handlers.onLoad({ kind: "video", data: item }) },
       { label: "Export", icon: "download-simple", run: () => handlers.onExport({ kind: "video", data: item }) },
       String(video.vodId) !== state.who.vodId && { label: "Show this VOD's videos", icon: "funnel-simple", run: () => showVodWork(video.vodId, "videos") },
-      video.canEdit && handlers.onAddSegments && { label: "Add segments…", icon: "link-simple", run: () => handlers.onAddSegments(item) },
+      video.canEdit && handlers.onAddSegments && { label: "Add segments…", icon: "link", run: () => handlers.onAddSegments(item) },
       video.canEdit && { label: "Rename", icon: "pencil-simple", run: () => renameVideo(item) },
       video.canDelete && { label: "Delete", icon: "trash", danger: true, run: () => deleteVideo(item) },
     ].filter(Boolean),
