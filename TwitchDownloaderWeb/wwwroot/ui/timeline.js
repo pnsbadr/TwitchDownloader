@@ -9,7 +9,7 @@
 // and one for the rows; row headers are DOM next to it so they can hold buttons. Times are seconds into the VOD.
 
 import { timelineWheel } from "./timeline-input.js";
-import { $, el, api, me, can, toast, formatDuration, withTooltip } from "./core.js";
+import { $, el, api, me, can, toast, formatDuration, withTooltip, loadSetting, saveSetting } from "./core.js";
 import { askText, confirmAction } from "./dialogs.js";
 import { MARKER_COLORS, clipColor } from "./colors.js";
 import { formatClock } from "./media.js";
@@ -17,8 +17,11 @@ import { editing, shiftTimes } from "./timeline-edit.js";
 import { isDragging } from "./drag.js";
 import { rowPlayButton } from "./project-timeline.js";
 import { keptParts } from "./cuts.js";
+import { drawWave, onWaves } from "./waves.js";
 
 const ROW_HEIGHT = 36;
+const WAVES_KEY = "clipco.p1.waves";      // sound waves on synced rows (W on Player 1)
+const WAVES_MAX_SPAN = 20 * 60;           // they show once 20 min or less is in view
 const FOCUS_ROW_HEIGHT = 64;    // the row that plays alone (row focus, editor.js focusRow)
 const FOLDED_ROW_HEIGHT = 16;   // the other rows meanwhile
 const MIN_SPAN = 10;
@@ -58,6 +61,8 @@ export class Timeline {
     this.videos = [];
     this.audio = [];        // [{ start, end, clean }]
     this.rowState = new Map(); // rowId -> { hidden, solo, locked, toggled }
+    this.waves = loadSetting(WAVES_KEY, true) !== false;
+    onWaves(() => { this.dirty = true; });
     this.view = { start: 0, end: 60 };
     this.follow = true;     // the view follows the playhead until the user scrolls it away
     this.hover = null;
@@ -316,43 +321,59 @@ export class Timeline {
       };
       const synced = !item && row.shift != null && row.vodId != null && String(row.vodId) !== String(this.vodId);
       const name = el("div", { class: "row-name", title: synced ? "Synced row: another streamer's VOD, lined up with this one" : "" },
-        el("sl-icon", { library: "ph", name: synced ? "users-three" : isClip ? "film-strip" : "brackets-square", class: "row-kind" }),
+        el("sl-icon", { library: "ph", name: isClip ? "film-strip" : "brackets-square", class: "row-kind" }),
         el("span", { class: "row-title", title: row.canEdit ? "Double-click to rename" : "" }, this.rowTitle(row)),
         el("span", { class: "row-owner" + (own ? " own" : "") }, own ? "you" : row.username));
       if (row.canEdit) name.addEventListener("dblclick", () => this.renameRow(row));
-      const check = !item && this.canDeleteRow(row)
-        ? el("sl-checkbox", { size: "small", class: "row-check", checked: state.toggled, "aria-label": "Select row to delete" })
+      // Checked rows play together (row play button / footer) and are what "Delete checked rows" deletes (the ones this member may)
+      const check = !item && !me?.support
+        ? el("sl-checkbox", { size: "small", class: "row-check", checked: state.toggled, "aria-label": "Check row (play together, delete)" })
         : el("span", { class: "row-check-gap" });
       check.addEventListener?.("sl-change", (event) => {
         state.toggled = event.target.checked;
         this.renderFooter();
       });
-      const focusClass = this.focus ? (this.focus === row.id ? " focused" : " folded") : "";
+      const focusClass = this.focus ? (this.focus.includes(row.id) ? " focused" : " folded") : "";
       const head = el("div", { class: "row-head" + (own ? " own" : "") + (index % 2 ? " odd" : "") + focusClass, style: `height:${this.rowGeom()[index].h}px` },
         check,
-        item ? null : synced ? this.openSyncedButton(row) : rowPlayButton(this.focus === row.id, () => this.hooks.onFocusRow?.(row.id)),
+        item ? null : rowPlayButton(Boolean(this.focus?.includes(row.id)), () => this.hooks.onFocusRow?.(this.playSet(row.id))),
+
         name,
         el("div", { class: "row-btns" },
           item ? null : toggle("hidden", state.hidden ? "Show row" : "Hide row", "eye", "eye-slash"),
-          item ? null : toggle("solo", "Solo (only this row)", "headphones", "headphones"),
+          // a synced row: their stream in Player 1's corner (whose header opens it in Player 1) instead of solo (room for the name)
+          synced ? this.pipButton(row) : null,
+          item || synced ? null : toggle("solo", "Solo (only this row)", "headphones", "headphones"),
           row.canEdit ? toggle("locked", state.locked ? "Unlock row" : "Lock row", "lock-simple-open", "lock-simple") : null));
       // While a row plays alone, clicking another row's (folded) head plays that one instead
       head.addEventListener("click", (event) => {
-        if (this.focus && this.focus !== row.id && !event.target.closest("sl-icon-button, sl-checkbox")) this.hooks.onFocusRow?.(row.id);
+        if (event.target.closest("sl-icon-button, sl-checkbox")) return;
+        if (this.focus && !this.focus.includes(row.id)) this.hooks.onFocusRow?.([row.id]);
+        // the row < / > slide (a synced row) and new items go to
+        else if (!this.focus && row.userId === me?.id) this.activeRowId = row.id;
       });
       return head;
     }));
     this.dirty = true;
   }
 
-  // A synced row's head: Player 1 opens that row's VOD at the same moment (the playhead + the row's shift)
-  openSyncedButton(row) {
-    const button = el("sl-icon-button", { library: "ph", name: "monitor-play", label: "Open their VOD here", class: "row-btn row-play" });
+  // A synced row's head: their stream plays small in Player 1's corner, following Player 1
+  pipButton(row) {
+    const on = this.hooks.pipShowing?.(row) ?? false;
+    const button = el("sl-icon-button", { library: "ph", name: "picture-in-picture", label: on ? "Hide their stream" : "Watch their stream in a corner", class: "row-btn" });
+    if (on) button.setAttribute("data-active", "");
     button.addEventListener("click", (event) => {
       event.stopPropagation();
-      this.hooks.onOpenSynced?.(row, (this.getPosition() ?? 0) + row.shift);
+      this.hooks.onPip?.(row);
+      this.renderHeads();
     });
-    return withTooltip(button, "Open their VOD at this moment");
+    return withTooltip(button, on ? "Hide their stream" : "Watch their stream in Player 1's corner, following it");
+  }
+
+  // The rows a row's play button plays: every checked row when it's one of them, else just it
+  playSet(rowId) {
+    const checked = this.rows.filter((r) => this.stateOf(r).toggled).map((r) => r.id);
+    return checked.length > 1 && checked.includes(rowId) ? checked : [rowId];
   }
 
   async renameRow(row) {
@@ -376,6 +397,10 @@ export class Timeline {
     on("tl-add-clip", "click", () => this.addRow("clip"));
     on("tl-add-synced", "click", () => this.hooks.onAddSyncedRow?.(this.getPosition() ?? 0));
     on("tl-delete-rows", "click", () => this.deleteToggledRows());
+    on("tl-play-checked", "click", () => {
+      const checked = this.rows.filter((r) => this.stateOf(r).toggled).map((r) => r.id);
+      if (checked.length) this.hooks.onFocusRow?.(checked);
+    });
     on("tl-zoom-in", "click", () => this.zoomBy(0.5));
     on("tl-zoom-out", "click", () => this.zoomBy(2));
     on("tl-fit", "click", () => this.fit());
@@ -389,7 +414,8 @@ export class Timeline {
     $("tl-add-video").disabled = !canAdd;
     $("tl-add-clip").disabled = !canAdd;
     $("tl-add-synced").disabled = !canAdd || !this.hooks.onAddSyncedRow;
-    $("tl-delete-rows").disabled = !rows || !this.rows.some((row) => this.stateOf(row).toggled);
+    $("tl-delete-rows").disabled = !rows || !this.rows.some((row) => this.stateOf(row).toggled && this.canDeleteRow(row));
+    $("tl-play-checked").disabled = !rows || !this.rows.some((row) => this.stateOf(row).toggled);
     for (const id of ["tl-zoom-in", "tl-zoom-out", "tl-fit", "tl-zoom"]) $(id).disabled = !this.vodId;
     $("tl-zoom").value = this.sliderValue();
   }
@@ -406,7 +432,7 @@ export class Timeline {
   }
 
   async deleteToggledRows() {
-    const rows = this.rows.filter((row) => this.stateOf(row).toggled);
+    const rows = this.rows.filter((row) => this.stateOf(row).toggled && this.canDeleteRow(row));
     if (!rows.length) return;
     const items = rows.reduce((n, row) => n + this.markers.filter((m) => m.rowId === row.id).length, 0);
     const ok = await confirmAction({
@@ -691,8 +717,10 @@ export class Timeline {
 
   // ---------- row focus: one row plays alone (editor.js focusRow); it's taller, the others fold to thin lines ----------
 
-  setFocus(rowId) {
-    this.focus = rowId ?? null;
+  // rowIds: the rows that play (one, or the checked ones together), or null
+  setFocus(rowIds) {
+    const ids = rowIds == null ? [] : Array.isArray(rowIds) ? rowIds : [rowIds];
+    this.focus = ids.length ? ids : null;
     this.renderHeads();
     this.dirty = true;
   }
@@ -700,7 +728,7 @@ export class Timeline {
   rowGeom() {
     let y = 0;
     return this.rows.map((row) => {
-      const h = !this.focus ? ROW_HEIGHT : row.id === this.focus ? FOCUS_ROW_HEIGHT : FOLDED_ROW_HEIGHT;
+      const h = !this.focus ? ROW_HEIGHT : this.focus.includes(row.id) ? (this.focus.length > 2 ? ROW_HEIGHT : FOCUS_ROW_HEIGHT) : FOLDED_ROW_HEIGHT;
       const g = { y, h };
       y += h;
       return g;
@@ -711,21 +739,64 @@ export class Timeline {
     return this.rowGeom().reduce((sum, g) => sum + g.h, 0);
   }
 
-  // What the focused row plays, in VOD seconds: its segments' and clips' kept parts joined where they overlap (moments are skipped)
+  // What the focused rows play, on this VOD's clock: their segments' and clips' kept parts (moments are skipped), in time order.
+  // [{ start, end, vodId, shift }]: a synced row's parts play from its own VOD at clock + shift. Where checked rows overlap the
+  // higher row plays (like Player 2's rows).
   focusParts() {
-    const row = this.rows.find((r) => r.id === this.focus);
-    if (!row) return [];
-    const parts = this.itemsOf(row)
-      .filter((item) => item.end != null && item.end > item.start)
-      .flatMap((item) => keptParts(item.start, item.end, item.cuts ?? []))
-      .sort((a, b) => a.start - b.start);
-    const joined = [];
-    for (const part of parts) {
-      const last = joined[joined.length - 1];
-      if (last && part.start <= last.end + 0.05) last.end = Math.max(last.end, part.end);
-      else joined.push({ start: part.start, end: part.end });
+    if (!this.focus) return [];
+    const rows = this.rows.filter((r) => this.focus.includes(r.id));
+    const perRow = rows.map((row, rank) => {
+      const synced = row.shift != null && row.vodId != null && String(row.vodId) !== String(this.vodId);
+      const parts = this.itemsOf(row)
+        .filter((item) => item.end != null && item.end > item.start)
+        .flatMap((item) => keptParts(item.start, item.end, item.cuts ?? []))
+        .sort((a, b) => a.start - b.start);
+      const joined = [];
+      for (const part of parts) {
+        const last = joined[joined.length - 1];
+        if (last && part.start <= last.end + 0.05) last.end = Math.max(last.end, part.end);
+        else joined.push({ start: part.start, end: part.end, rank, vodId: String(synced ? row.vodId : this.vodId), shift: synced ? row.shift : 0 });
+      }
+      return joined;
+    });
+    if (perRow.length === 1) return perRow[0];
+    const all = perRow.flat();
+    const cuts = [...new Set(all.flatMap((p) => [p.start, p.end]))].sort((a, b) => a - b);
+    const out = [];
+    for (let i = 0; i + 1 < cuts.length; i++) {
+      const a = cuts[i];
+      const b = cuts[i + 1];
+      if (b - a < 0.01) continue;
+      const mid = (a + b) / 2;
+      let top = null;
+      for (const p of all) if (p.start <= mid && mid < p.end && (!top || p.rank < top.rank)) top = p;
+      if (!top) continue;
+      const last = out[out.length - 1];
+      if (last && last.rank === top.rank && Math.abs(last.end - a) < 0.01) last.end = b;
+      else out.push({ start: a, end: b, rank: top.rank, vodId: top.vodId, shift: top.shift });
     }
-    return joined;
+    return out;
+  }
+
+  // Sound waves on synced rows on/off (W on Player 1)
+  toggleWaves() {
+    this.waves = !this.waves;
+    saveSetting(WAVES_KEY, this.waves);
+    this.dirty = true;
+    toast(this.waves ? "Sound waves on synced rows: on (they show once you zoom in to 20 minutes or less)." : "Sound waves on synced rows: off.");
+  }
+
+  // A synced row's background: their stream's sound wave above the middle, this VOD's below, so a laugh or a shout lines up by eye
+  drawSyncWaves(ctx, row, y, width) {
+    if (!this.waves || row.shift == null || row.vodId == null || String(row.vodId) === String(this.vodId)) return;
+    const start = Math.max(0, this.xToTime(0, width));
+    const end = this.xToTime(width, width);
+    if (!(end > start) || end - start > WAVES_MAX_SPAN) return;
+    const x1 = this.timeToX(start, width);
+    const x2 = this.timeToX(end, width);
+    const quarter = ROW_HEIGHT / 4;
+    drawWave(ctx, { vodId: row.vodId, start: start + row.shift, end: end + row.shift, x1, x2, midY: y + quarter + 1, halfHeight: quarter - 2, color: "rgb(255 255 255 / 0.16)" });
+    drawWave(ctx, { vodId: this.vodId, start, end, x1, x2, midY: y + 3 * quarter - 1, halfHeight: quarter - 2, color: "rgb(139 124 246 / 0.3)" });
   }
 
   drawFocused(now) {
@@ -740,7 +811,7 @@ export class Timeline {
       ctx.fillStyle = line;
       ctx.fillRect(0, y + h - 1, width, 1);
       const items = this.itemsOf(row);
-      if (row.id !== this.focus) {
+      if (!this.focus.includes(row.id)) {
         ctx.save();
         ctx.globalAlpha = 0.8;
         for (const item of items) {
@@ -784,6 +855,7 @@ export class Timeline {
       ctx.fillStyle = css.getPropertyValue("--line");
       ctx.fillRect(0, y + ROW_HEIGHT - 1, width, 1);
       if (state.hidden) return;
+      this.drawSyncWaves(ctx, row, y, width);
       ctx.globalAlpha = anySolo && !state.solo ? 0.25 : state.locked ? 0.7 : 1;
       const items = this.itemsOf(row);
       // the selected item on top

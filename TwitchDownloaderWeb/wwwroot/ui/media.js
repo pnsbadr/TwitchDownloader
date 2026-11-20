@@ -76,6 +76,8 @@ function loadPlayerVolume(video) {
 }
 
 function savePlayerVolume(video) {
+  // a player with its own volume (Player 1's corner player) doesn't change the saved one
+  if (video.dataset.ownVolume) return;
   try {
     localStorage.setItem(PLAYER_VOLUME_STORAGE_KEY, JSON.stringify({ volume: video.volume, muted: video.muted }));
   } catch {

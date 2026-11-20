@@ -723,9 +723,21 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   their items **on this VOD's clock** (`load()`: their seconds − `shift`, `raw` = as sent; `shiftTimes` in `ui/timeline-edit.js`) and
   turns them back at every server call (`toServer` / `fromServer` in `postMarker`, `putMarker`, `trimClip`, copies; posts go to the row's
   VOD). Drops only go on rows of the item's own VOD (`rowVod`); a dragged item carries its own VOD and times. `targetRow` prefers this VOD's
-  rows unless a synced row was clicked last. Player 1 keeps playing this VOD; the row head's monitor button (instead of the play button)
-  opens their VOD at the same moment and `#p1-synced-back` returns. Player 2 / Export: a video's segments play from `segment.vodId`; the
-  Export preview plays only the video's own VOD's segments (and says so).
+  rows unless a synced row (head or item) was clicked last. Adding one makes a video row and a clip row of their VOD (clips made there are
+  theirs: `POST /api/entries` with the row's VOD and times). Player 1 keeps playing this VOD; a synced row's head has a picture-in-picture
+  button instead of solo (`ui/p1-pip.js` `SyncedPip`: their stream small in Player 1's corner, following Player 1 at position + shift, muted
+  until its speaker is pressed, its own volume not saved (`video.dataset.ownVolume`); its arrows / double-click open their VOD in Player 1
+  at the same moment (`openSynced`) and `#p1-synced-back` returns). **W** draws sound waves on synced rows (theirs above the middle, this
+  VOD's below; `clipco.p1.waves`, ≤ 20 min in view) and **< / >** move a synced row 0.1 s (`slideSynced`: the selected item's row, else
+  the row clicked last, else the only synced VOD; every synced row of that VOD moves at once, saved for the pair after 0.6 s with
+  `PUT /api/vods/{id}/sync/{other}`). Player 2 / Export: a video's segments play from `segment.vodId`; the Export preview plays only the
+  video's own VOD's segments (and says so).
+- **Checked rows play together** (badrfly 2026-11-20): every Player 1 row head has a checkbox (also what "Delete the checked rows" deletes,
+  only those the member may). The footer's play button, or a checked row's own play button, plays all checked rows through row focus
+  (`focusRow("p1", ids)`, `Timeline.focus` is a list): `focusParts()` = `{ start, end, vodId, shift }` on this VOD's clock, the higher row
+  winning where they overlap; a synced row's parts play from its own VOD (`playPartP1` opens it in Player 1 without touching the timeline;
+  `p1Away = { vodId, shift }` meanwhile, `p1Position()` = the timeline's clock, details of another VOD don't reach the timeline) and
+  `endRowFocus` comes back to this VOD at the same moment.
 - **Cut-out parts** (step 7, `ui/cuts.js` mirrors the server's `CutOuts` rules): set from Player 2 by a piece's "Apply this trim to the
   original" (the parts of the clip/segment that no piece copied from it keeps). Drawn darker on Player 1 (tip: "Cut out … · left out of
   files") and their edges are snap points. Player 1 skips them while a selected segment or clip plays on its own; a clip dropped into a

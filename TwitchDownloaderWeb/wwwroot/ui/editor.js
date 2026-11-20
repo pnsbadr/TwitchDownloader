@@ -20,6 +20,7 @@ import { ProjectPlayback } from "./project-playback.js";
 import { setUpExport, addToExport, exportShown, pausePreview } from "./export.js";
 import { showShortcuts } from "./shortcuts.js";
 import { openSyncView } from "./sync-view.js";
+import { SyncedPip } from "./p1-pip.js";
 import { setUpProjectVertical, openProjectVertical, closeProjectVertical, projectVerticalOpen, refreshProjectVertical, handleProjectVerticalKey, pauseProjectVertical } from "./project-vertical.js";
 
 // Phosphor icons, bold weight, as <sl-icon library="ph" name="…">
@@ -138,7 +139,7 @@ window.clipcoReports?.setContext(() => {
     view: $("view-export")?.hidden === false ? "export" : "editor",
     activePlayer,
     timeline: activePlayer,
-    rowFocus: rowFocus ? `${rowFocus.which} row ${rowFocus.rowId}` : null,
+    rowFocus: rowFocus ? `${rowFocus.which} row ${rowFocus.rowIds.join(",")}` : null,
     vodId: p1Vod?.id ?? p2?.vodId ?? null,
     entryId: project?.entryId ?? null,
     player1: p1Vod ? { vodId: p1Vod.id, title: p1Vod.title, playing: Boolean(player1?.ready && player1.playing()), time: Math.round(player1?.position?.() ?? 0) } : null,
@@ -263,6 +264,11 @@ async function openVod(vod, { start = 0, paused = false, back = null } = {}) {
   }
   p1Vod = vod;
   p1Back = back;
+  p1Away = null;
+  if (pip) {
+    pip.close();
+    pip = null;
+  }
   $("p1-synced-back").hidden = !back;
   if (back) $("p1-synced-back").label = `Back to ${back.vod.title}`;
   $("p1-info").textContent = vod.title;
@@ -971,19 +977,24 @@ function wirePlayerButtons(n, which) {
 function setUpPlayer1() {
   player1 = new MediaPlayer($("p1-media"), {
     onTick: (position) => {
-      renderClock(position);
-      if (rowFocus?.which === "p1") focusTickP1(position);
+      renderClock(p1Position() ?? position);
+      pip?.follow();
+      if (rowFocus?.which === "p1") focusTickP1(p1Position());
       else p1Tick(position);
     },
     onState: () => {
       playAlone(player1, player2);
       renderPlayer1();
     },
-    onDetails: (details) => timeline.setDetails(details),
+    // (not while checked rows play another VOD in it: the timeline stays on this one)
+    onDetails: (details) => {
+      if (String(player1.vodId) === String(p1Vod?.vodId)) timeline.setDetails(details);
+    },
   });
   timeline = new Timeline({
-    onSeek: (seconds) => player1.seek(seconds),
-    getPosition: () => (player1.ready ? player1.position() : null),
+    // While checked rows play, Player 1 may be on a synced row's VOD: the timeline's clock is still this VOD's
+    onSeek: (seconds) => player1.seek(p1Away ? seconds + p1Away.shift : seconds),
+    getPosition: () => p1Position(),
     openItemEditor,
     closeItemEditor: () => closeItemEditor(false),
     onChange: () => {
@@ -1005,7 +1016,8 @@ function setUpPlayer1() {
     onEdited: () => {},
     onFocusRow: (rowId) => focusRow("p1", rowId),
     onAddSyncedRow: addSyncedRow,
-    onOpenSynced: openSynced,
+    onPip: togglePip,
+    pipShowing: (row) => Boolean(pip && String(pip.vodId) === String(row.vodId)),
   });
   $("p1-synced-back").addEventListener("click", backFromSynced);
   wirePlayerButtons(1, "p1");
@@ -1216,12 +1228,14 @@ async function runSyncedRow(login, now) {
     toast(`You already have a synced row of ${name}'s VOD here.`);
     return;
   }
+  // A video row (segments) and a clip row of their VOD, like the first rows of any VOD
   let row;
   try {
     row = await api("POST", `/api/vods/${encodeURIComponent(vod.vodId)}/rows`, { kind: "video", syncedVodId: Number(match.vodId) });
+    await api("POST", `/api/vods/${encodeURIComponent(vod.vodId)}/rows`, { kind: "clip", syncedVodId: Number(match.vodId) });
   } catch (error) {
     toast(error.message, "error");
-    return;
+    if (!row) return;
   }
   const notes = [];
   if (match.restricted) notes.push(`${name}'s VOD is for subscribers only.`);
@@ -1249,7 +1263,7 @@ async function runSyncedRow(login, now) {
   await timeline.load();
   timeline.renderHeads();
   timeline.renderFooter();
-  toast([`Added a row of ${name}'s VOD, lined up with this one. What you mark on it is theirs.`, ...notes].join(" "));
+  toast([`Added rows of ${name}'s VOD (segments and clips), lined up with this one. What you mark on them is theirs.`, ...notes].join(" "));
 }
 
 // A synced row's monitor button: Player 1 opens that row's VOD at the same moment
@@ -1266,6 +1280,33 @@ async function openSynced(row, at) {
   const paused = !player1.playing();
   await openVod({ vodId: info.vodId, title: info.title, lengthSeconds: info.lengthSeconds, isLive: info.isLive },
     { start: Math.max(0, at), paused, back: { vod: from, shift: row.shift } });
+}
+
+// ---------- their stream in Player 1's corner (badrfly 2026-11-20) ----------
+
+let pip = null;
+
+function togglePip(row) {
+  if (pip && String(pip.vodId) === String(row.vodId)) {
+    pip.close();
+    pip = null;
+  } else {
+    pip?.close();
+    pip = new SyncedPip($("p1-screen"), {
+      vodId: row.vodId,
+      title: timeline.rowTitle(row),
+      // the row's shift now (a < / > slide changes it), and this VOD's moment
+      shift: () => timeline.rows.find((r) => String(r.vodId) === String(row.vodId) && r.shift != null)?.shift ?? row.shift,
+      clock: () => (p1Away ? null : p1Position()),
+      playing: () => player1.playing(),
+      onClose: () => {
+        pip = null;
+        timeline.renderHeads();
+      },
+      onSwap: () => openSynced(row, (p1Position() ?? 0) + row.shift),
+    });
+  }
+  timeline.renderHeads();
 }
 
 async function backFromSynced() {
@@ -1865,9 +1906,9 @@ function setUpKeys() {
       copyPieces: () => p2 && on && t.copySelected(),
       pastePieces: () => p2 && on && t.paste(),
       addRow: () => p2 && on && t.addTrack(),
-      slideBack: () => p2 && on && t.slideSelected(-SLIDE_STEP),
-      slideFwd: () => p2 && on && t.slideSelected(SLIDE_STEP),
-      toggleWaves: () => p2 && on && t.toggleWaves?.(),
+      slideBack: () => on && (p2 ? t.slideSelected(-SLIDE_STEP) : t.slideSynced(-SLIDE_STEP)),
+      slideFwd: () => on && (p2 ? t.slideSelected(SLIDE_STEP) : t.slideSynced(SLIDE_STEP)),
+      toggleWaves: () => on && t.toggleWaves?.(),
       escape: () => {
         if (rowFocus) {
           endRowFocus();
@@ -1902,8 +1943,11 @@ function focusTimeline() {
   return rowFocus?.which === "p1" ? timeline : timeline2;
 }
 
-function focusRow(which, rowId) {
-  if (rowFocus?.which === which && rowFocus.rowId === rowId) {
+// rowIds: one row, or (Player 1) the checked rows, which play together, each from its own VOD
+function focusRow(which, rowIds) {
+  const ids = Array.isArray(rowIds) ? rowIds : [rowIds];
+  const rowId = ids[0];
+  if (rowFocus?.which === which && rowFocus.rowIds.length === ids.length && ids.every((id) => rowFocus.rowIds.includes(id))) {
     endRowFocus();
     return;
   }
@@ -1912,13 +1956,15 @@ function focusRow(which, rowId) {
   endRowFocus();
   closeItemEditor(false);
   if (activePlayer !== which) timelineTabs.pick(which);
-  rowFocus = { which, rowId };
+  rowFocus = { which, rowId, rowIds: ids };
   const t = focusTimeline();
   if (!["pointer", "zoom", "hand"].includes(t.tool)) t.setTool("pointer");
-  t.setFocus(rowId);
+  t.setFocus(which === "p1" ? ids : rowId);
   document.body.classList.add("row-focus", `row-focus-${which}`);
   const p1Row = which === "p1" ? timeline.rows.find((r) => r.id === rowId) : null;
-  const name = p1Row
+  const name = ids.length > 1
+    ? `${ids.length} rows`
+    : p1Row
     ? `${timeline.rowTitle(p1Row)} (${p1Row.userId === me?.id ? "you" : p1Row.username})`
     : trackName(store.content, store.content.tracks.find((tr) => tr.id === rowId));
   const badge = $(`${which}-focus`);
@@ -1941,7 +1987,7 @@ function focusRow(which, rowId) {
     playback.play();
   } else {
     if (!timeline.focusParts().length) {
-      toast("Nothing to play on this row (moments aren't played).");
+      toast(ids.length > 1 ? "Nothing to play on these rows (moments aren't played)." : "Nothing to play on this row (moments aren't played).");
       endRowFocus();
       return;
     }
@@ -1972,31 +2018,89 @@ function endRowFocus() {
     player1.stopAt = null;
     if (player1.ready) player1.pause();
     timeline.setFocus(null);
+    comeBackToP1Vod();
   }
   renderTools();
 }
 
-// Player 1: from the playhead when it's in one of the row's parts, else the next part (or the first one)
+// ---------- Player 1 playing checked rows of several VODs (badrfly 2026-11-20) ----------
+//
+// While checked rows play together, a synced row's parts play from its own VOD in Player 1 (opened without changing the timeline,
+// which stays on this VOD's clock: position - shift). p1Away = { vodId, shift } while Player 1 shows another VOD.
+
+let p1Away = null;
+
+function p1Position() {
+  if (!player1?.ready) return null;
+  const position = player1.position();
+  if (position == null) return null;
+  return p1Away ? position - p1Away.shift : position;
+}
+
+function p1PlayingVod() {
+  return p1Away ? String(p1Away.vodId) : String(p1Vod?.vodId ?? "");
+}
+
+// Plays a part from where the clock is (its own VOD, switching VODs when needed)
+async function playPartP1(part, clock) {
+  rowFocus.part = part;
+  rowFocus.seekAt = performance.now();
+  const at = Math.max(0, clock + part.shift);
+  if (String(part.vodId) === p1PlayingVod()) {
+    player1.seek(at);
+    if (!player1.playing()) player1.play();
+    return;
+  }
+  const focus = rowFocus;
+  focus.switching = true;
+  try {
+    await player1.open(part.vodId, at);
+    if (rowFocus !== focus) return;
+    p1Away = String(part.vodId) === String(p1Vod?.vodId) ? null : { vodId: String(part.vodId), shift: part.shift };
+    player1.play();
+  } catch (error) {
+    toast(`Couldn't play that stream: ${error.message}`, "error");
+    endRowFocus();
+  } finally {
+    focus.switching = false;
+    rowFocus && (rowFocus.seekAt = performance.now());
+  }
+}
+
+// Back on this VOD (at the same moment) once the rows stop playing
+function comeBackToP1Vod() {
+  if (!p1Away || !p1Vod) {
+    p1Away = null;
+    return;
+  }
+  const clock = p1Position() ?? 0;
+  p1Away = null;
+  player1.open(p1Vod.vodId, Math.max(0, clock)).then(() => player1.pause()).catch(() => {});
+}
+
+// Player 1: from the playhead when it's in one of the rows' parts, else the next part (or the first one)
 function playFocusedP1() {
   const parts = timeline.focusParts();
   if (!parts.length || !player1.ready) return;
-  const now = player1.position() ?? 0;
+  const now = p1Position() ?? 0;
   const inside = parts.find((p) => now >= p.start && now < p.end - 0.05);
-  const from = inside ? now : (parts.find((p) => p.start >= now) ?? parts[0]).start;
-  player1.playRange(from, parts[parts.length - 1].end);
+  const part = inside ?? parts.find((p) => p.start >= now) ?? parts[0];
+  playPartP1(part, inside ? now : part.start);
 }
 
 // Player 1 while a row plays alone: past a part's end (or in a gap), on to the next part
 // (the part it jumped to counts as playing even when the player reports a little before its start, or a stale position for a
 // moment after the seek, so it never seeks back and forth)
 function focusTickP1(position) {
-  if (!player1.playing()) return;
+  if (rowFocus.switching || position == null || !player1.playing()) return;
   const parts = timeline.focusParts();
-  const part = rowFocus.part && parts.find((p) => Math.abs(p.start - rowFocus.part.start) < 0.01);
-  if (part && position < part.end - 0.04 && (position >= part.start - 1.5 || performance.now() - rowFocus.seekAt < 1500)) return;
+  const part = rowFocus.part && parts.find((p) => Math.abs(p.start - rowFocus.part.start) < 0.01 && p.vodId === rowFocus.part.vodId);
+  if (part && part.vodId === p1PlayingVod() && position < part.end - 0.04
+    && (position >= part.start - 1.5 || performance.now() - rowFocus.seekAt < 1500)) return;
   const inside = parts.find((p) => position >= p.start - 0.05 && position < p.end - 0.04);
   if (inside) {
-    rowFocus.part = inside;
+    if (inside.vodId === p1PlayingVod()) rowFocus.part = inside;
+    else playPartP1(inside, position);
     return;
   }
   const next = parts.find((p) => p.start > position - 0.05);
@@ -2004,9 +2108,7 @@ function focusTickP1(position) {
     player1.pause();
     return;
   }
-  rowFocus.part = next;
-  rowFocus.seekAt = performance.now();
-  player1.seek(next.start);
+  playPartP1(next, next.start);
 }
 
 // Every frame while focused: the shade's holes follow the player and the row, the timeline is as tall as its rows, and the
