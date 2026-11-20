@@ -66,15 +66,16 @@ main.narrow { max-width: 460px; padding-top: 48px; }
   background: var(--bg-1);
   border: 1px solid var(--line);
   border-radius: var(--radius-large);
-  padding: 18px;
+  padding: var(--space-4) var(--space-5) var(--space-5);
 }
 h2 {
-  margin: 0 0 12px;
+  margin: 0 0 var(--space-2);
   font-family: var(--font-display);
   font-weight: 700;
-  font-size: 20px;
-  letter-spacing: 0.02em;
+  font-size: 18px;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
+  color: var(--text-dim);
 }
 h3 { margin: 0; font-size: 15px; font-weight: 600; }
 
@@ -98,18 +99,25 @@ label {
   color: var(--text-dim);
 }
 
+/* every control is one height and one text size (the editor's tokens), wherever it sits */
+input, select, button, a.button {
+  box-sizing: border-box;
+  min-height: 32px;
+  font-size: 14px;
+}
 input, select {
   background: var(--bg-3);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-small);
-  padding: 7px 9px;
+  padding: 0 var(--space-2);
   min-width: 0;
   color: var(--text);
 }
+select { padding-right: var(--space-1); cursor: pointer; }
 input::placeholder { color: var(--text-faint); }
 input:hover, select:hover { border-color: var(--text-faint); }
 input:focus, select:focus { border-color: var(--accent); outline: none; }
-input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; padding: 0; }
+input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; min-height: 0; padding: 0; }
 
 button, a.button {
   display: inline-flex;
@@ -122,7 +130,7 @@ button, a.button {
   color: #fff;
   font-weight: 600;
   border-radius: var(--radius-small);
-  padding: 7px 14px;
+  padding: 0 var(--space-3);
   cursor: pointer;
   white-space: nowrap;
 }
@@ -139,12 +147,13 @@ button.link {
   background: transparent;
   border-color: transparent;
   color: var(--text-dim);
-  padding: 4px 6px;
+  padding: 0 var(--space-2);
   font-weight: 500;
 }
 button.link:hover:not(:disabled) { background: var(--bg-3); border-color: transparent; color: var(--text); }
 button.danger, button.link.danger { color: var(--danger); }
-button.small { padding: 3px 9px; font-size: 13px; }
+button.small { min-height: var(--control-h); padding: 0 var(--space-2); font-size: 13px; }
+select.small, .small-control { min-height: var(--control-h); font-size: 13px; }
 button:disabled { opacity: 0.5; cursor: default; }
 
 /* segmented buttons (time zone, join mode, admin tabs) */
@@ -155,7 +164,7 @@ button:disabled { opacity: 0.5; cursor: default; }
   color: var(--text-dim);
   border: 1px solid var(--line-strong);
   border-radius: 0;
-  padding: 5px 12px;
+  padding: 0 var(--space-3);
   font-weight: 600;
 }
 .seg + .seg { margin-left: -1px; }
@@ -175,14 +184,14 @@ button:disabled { opacity: 0.5; cursor: default; }
 
 /* ---------- lists ---------- */
 .plain-list { list-style: none; margin: 0; padding: 0; }
-.list-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.list-row { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
 .list-row:first-child { border-top: none; }
 .list-row .badge { margin-left: 8px; }
 
 .badge {
   display: inline-block;
   padding: 1px 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   font-size: 12px;
   font-weight: 600;
   background: var(--bg-3);
@@ -192,7 +201,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 .badge.error { color: var(--danger); }
 .badge.ref { color: var(--text-faint); }
 
-.link-box { margin: 12px 0; padding: 12px; border: 1px solid var(--accent); border-radius: var(--radius); background: var(--accent-soft); }
+.link-box { margin: var(--space-3) 0; padding: var(--space-3); border: 1px solid var(--accent); border-radius: var(--radius); background: var(--accent-soft); }
 .link-box input { font-family: ui-monospace, monospace; font-size: 13px; }
 
 .role-form { margin-top: 12px; padding: 14px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--bg-2); display: grid; gap: 12px; }
@@ -211,12 +220,12 @@ button:disabled { opacity: 0.5; cursor: default; }
 
 .table-wrap { overflow-x: auto; }
 table.activity { border-collapse: collapse; width: 100%; font-size: 14px; }
-table.activity th, table.activity td { padding: 6px 8px; border-top: 1px solid var(--line); text-align: left; vertical-align: top; white-space: nowrap; }
+table.activity th, table.activity td { padding: var(--space-2); border-top: 1px solid var(--line); text-align: left; vertical-align: top; white-space: nowrap; }
 table.activity th { font-weight: 600; font-size: 13px; color: var(--text-dim); border-top: none; }
 table.activity td.num { text-align: right; font-variant-numeric: tabular-nums; }
 table.activity tbody tr:hover { background: var(--bg-2); }
 
-.log-list .log-row { display: flex; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.log-list .log-row { display: flex; align-items: baseline; gap: var(--space-3); padding: var(--space-2) 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
 .log-list .log-row:first-child { border-top: none; }
 .log-time { min-width: 160px; }
 
@@ -283,3 +292,5 @@ table.activity tbody tr:hover { background: var(--bg-2); }
 .team-rename .pencil { padding: 2px 6px; font-size: 15px; }
 .team-rename .name-edit input { width: 280px; padding: 4px 8px; }
 .team-rename { padding: 6px 0; }
+/* buttons that sit inside a line of text keep the text's height */
+.tiny-text button, .team-name button, .report-who button, .report-detail button.link, .twitch-user-code button { min-height: 0; }
