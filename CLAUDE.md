@@ -88,14 +88,10 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   (null = a moment; set = a **segment**, ≥ 0.5 s long), Label (≤ 200, may be blank), Color (`VodMarker.Colors`: yellow, blue, pink, orange,
   red, lime, teal, violet, gray; same order as `MARKER_COLORS` in `ui/colors.js`, add new ones at the end), CreatedByUserId,
   CreatedAtUtc. Audited `marker.added` / `marker.changed` / `marker.deleted`.
-- `LibraryEntries.FollowsMarkers`: a **live markers entry** (`LiveMarkerEntryService`, badrfly 2026-11-10). The first marker/segment a team
-  adds on a VOD that is still live (GQL video `status == "RECORDING"`, `VodDetails.IsLive`) makes a reference-only entry (always reference,
-  whatever its length; **not from a Review**: the player sends `?makeLiveEntry=false` on marker POST/PUT/DELETE while reviewing a card, badrfly 2026-11-11) from 30 s before the first marker to 30 s after the last, the end capped at the VOD's length so far but never before
-  the last marker. Every later marker add/delete on that VOD moves it (even after the stream ended; generated file dropped, audited
-  `entry.followed_markers`, not counted as a member edit) until someone saves a cut by hand (`PUT /trim` clears the flag). Deleting the last
-  marker leaves it as it is. **One per VOD per team**: `MadeFromMarkers` stays set after it stops following, so later markers don't make a
-  second card (they used to, which looked like cards duplicating; the migration backfilled it from the `entry.added` audit text).
-  `PUT /trim` with `followMarkers: true` (the player's undo of a hand re-cut) makes it follow again and moves it to the markers. `IVodDetailsSource` (VodInfoService; faked in `AccountsTests`) is where it reads the VOD.
+- `LibraryEntries.FollowsMarkers` / `MadeFromMarkers`: the old **live markers entry** (badrfly 2026-11-10: the first marker on a live VOD made a
+  reference-only entry ±30 s around the markers that moved with every marker change). **Removed** (badrfly 2026-11-20: segments mark ranges and
+  the clip tool makes clips on purpose): `LiveMarkerEntryService.MarkersChangedAsync` makes and moves nothing, marker responses' `liveEntry`
+  is always null. Entries it made stay; the columns stay but no longer act.
 - `TimelineRows` (`TimelineRow`) + `MemberVods` (badrfly, 2026-11-15, frontend rework): **rows** are a member's own lanes on one VOD's
   timeline (team query filter, cascade with the team): `VodId`, `UserId` (owner), `Kind` (`Video` = segments and moments, `Clip` = clips),
   `Position` (order among the owner's rows on the VOD), optional `Name` (≤ 60); at most 20 per member per VOD. Rows don't carry over to other
