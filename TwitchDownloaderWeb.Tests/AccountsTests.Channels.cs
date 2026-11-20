@@ -193,6 +193,14 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal(HttpStatusCode.NotFound, (await owner.DeleteAsync($"/api/markers/{segmentId}", ct)).StatusCode);
             Assert.Equal(HttpStatusCode.Forbidden, (await owner.GetAsync("/api/vods/401/timeline", ct)).StatusCode);
 
+            // The page asks before loading a VOD (badrfly 2026-11-20: the Twitch embed must not play it), and says access was revoked
+            var access = await owner.GetAsync("/api/vods/401/access", ct);
+            Assert.Equal(HttpStatusCode.Forbidden, access.StatusCode);
+            var refusal = await access.Content.ReadFromJsonAsync<JsonElement>(ct);
+            Assert.Equal("channel-not-assigned", refusal.GetProperty("code").GetString());
+            Assert.True(refusal.GetProperty("revoked").GetBoolean());
+            Assert.Equal(HttpStatusCode.NoContent, (await owner.GetAsync("/api/vods/400/access", ct)).StatusCode);
+
             var team = (await GetJsonAsync(staff, "/api/admin/teams")).EnumerateArray().Single(x => x.GetProperty("id").GetInt32() == teamId);
             var revoked = Assert.Single(team.GetProperty("revokedChannels").EnumerateArray());
             Assert.Equal("ellsya", revoked.GetProperty("login").GetString());

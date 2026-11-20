@@ -221,6 +221,7 @@ function timeLeft(seconds) {
 // (EventSub) and tells the page at once, so nothing here checks on a timer. Fires window events:
 //   clipco:live-hello  { watching, channels: [{ login, live, startedAtUtc, watched }] }  on every (re)connect: the state now
 //   clipco:stream      { login, live, startedAtUtc, atUtc }                              a channel started (live) or stopped
+//   clipco:channels    { logins }                                                        the app Owner changed the team's channels
 // Hidden tabs close the stream (browsers allow only ~6 connections per server over HTTP/1.1) and reopen it when shown; the hello
 // then brings them up to date.
 let liveSource = null;
@@ -246,6 +247,11 @@ export function startLiveEvents() {
       const known = liveChannels.get(data.login);
       liveChannels.set(data.login, { ...known, login: data.login, live: data.live, startedAtUtc: data.startedAtUtc });
       window.dispatchEvent(new CustomEvent("clipco:stream", { detail: data }));
+    });
+    // The app Owner changed the team's channels (added, revoked, ended one): { logins } = the team's channels now
+    liveSource.addEventListener("channels", (event) => {
+      const data = parseEvent(event);
+      if (data) window.dispatchEvent(new CustomEvent("clipco:channels", { detail: data }));
     });
     // EventSource reconnects by itself after a dropped connection (and gets a new hello)
   };

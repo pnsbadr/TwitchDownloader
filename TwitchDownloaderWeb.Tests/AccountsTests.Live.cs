@@ -50,6 +50,36 @@ namespace TwitchDownloaderWeb.Tests
         }
 
         [Fact]
+        public async Task LiveEventsTellAPageWhenItsTeamsChannelsChange()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            var staff = await StaffClientAsync();
+            var token = await MakeLinkAsync(staff, "/api/admin/links", new { kind = "registration", channel = "arky" });
+            var owner = NewClient();
+            Assert.Equal(HttpStatusCode.OK, (await AcceptAsync(owner, token, "livechowner", newAccount: true)).StatusCode);
+            var teamId = (await GetJsonAsync(owner, "/api/auth/me")).GetProperty("currentTeamId").GetInt32();
+            var added = await staff.PostAsJsonAsync($"/api/admin/teams/{teamId}/channels", new { login = "ellsya" }, ct);
+            var channelId = (await added.Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("id").GetInt32();
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, "/api/live/events");
+            using var response = await owner.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+            using var reader = new StreamReader(await response.Content.ReadAsStreamAsync(ct));
+            Assert.Equal("hello", (await ReadEventAsync(reader, ct)).Name);
+
+            // badrfly 2026-11-20: a revoke reaches open pages at once, so they drop that channel's VODs and items
+            Assert.Equal(HttpStatusCode.NoContent, (await staff.DeleteAsync($"/api/admin/teams/{teamId}/channels/{channelId}?mode=revoke", ct)).StatusCode);
+            var (name, data) = await ReadEventAsync(reader, ct);
+            Assert.Equal("channels", name);
+            Assert.Equal(["arky"], data.GetProperty("logins").EnumerateArray().Select(x => x.GetString()));
+
+            // Stream changes still come through after it
+            _factory.Services.GetRequiredService<LiveStreamHub>().Apply(new StreamChange("arky", "id-arky", true, null, DateTime.UtcNow));
+            var (streamName, stream) = await ReadEventAsync(reader, ct);
+            Assert.Equal("stream", streamName);
+            Assert.Equal("arky", stream.GetProperty("login").GetString());
+        }
+
+        [Fact]
         public async Task TwitchSettingsAreOwnerOnly()
         {
             var ct = TestContext.Current.CancellationToken;

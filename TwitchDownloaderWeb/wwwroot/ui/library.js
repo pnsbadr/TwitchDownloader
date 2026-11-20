@@ -66,7 +66,31 @@ export function setUpLibrary(options) {
     window.addEventListener("clipco:stream", (event) => onStreamChange(event.detail));
     window.addEventListener("clipco:live-hello", () => onLiveHello());
     window.addEventListener("clipco:stream", () => renderChannelBar());
+    window.addEventListener("clipco:channels", () => onChannelsChanged());
   }
+}
+
+// The app Owner changed the team's channels (core.js clipco:channels, badrfly 2026-11-20): a channel taken away leaves the bar and the
+// VOD list, and the clips and videos lists are read again (the server hides a revoked channel's work); a new one shows up
+async function onChannelsChanged() {
+  let channels;
+  try {
+    channels = await api("GET", "/api/channels");
+  } catch {
+    return;
+  }
+  state.channels = channels;
+  const logins = new Set(channels.map((c) => c.login));
+  for (const login of [...state.sources.keys()]) if (!logins.has(login)) state.sources.delete(login);
+  state.picked = new Set([...state.picked].filter((login) => logins.has(login)));
+  if (!state.picked.size) {
+    const primary = channels.find((c) => c.isPrimary) ?? channels[0];
+    if (primary) state.picked.add(primary.login);
+  }
+  renderChannelBar();
+  loadChannelCards();
+  refreshLibraryFilters();
+  await showChannelVods();
 }
 
 // Demo mode (?demo): sample data instead of the server (filters that call the server do nothing useful there)
