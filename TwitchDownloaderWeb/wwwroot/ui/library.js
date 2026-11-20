@@ -2563,8 +2563,9 @@ function marked(mark, type, item) {
   return Boolean(list && item && state.marks[mark]?.[list]?.includes(markId(type, item)));
 }
 
+// Stars and Recent are the member's own: a support visit has no member (and is read-only)
 function starButton(type, item) {
-  if (!MARK_LISTS[type] || state.demo) return null;
+  if (!MARK_LISTS[type] || state.demo || me?.support) return null;
   const on = marked("starred", type, item);
   const button = el("button", {
     type: "button", class: `lstar${on ? " on" : ""}`, tabindex: "-1", "aria-pressed": String(on),
@@ -2580,14 +2581,14 @@ function starButton(type, item) {
 }
 
 function starMenuItem(type, item) {
-  if (state.demo) return null;
+  if (state.demo || me?.support) return null;
   const on = marked("starred", type, item);
   return { label: on ? "Unstar" : "Star", icon: on ? "star-fill" : "star", hint: keybindLabel("rowStar"), run: () => toggleStar(type, item) };
 }
 
 export async function toggleStar(type, item) {
   const list = MARK_LISTS[type];
-  if (!list || state.demo) return;
+  if (!list || state.demo || me?.support) return;
   const id = markId(type, item);
   const stars = state.marks.starred;
   const on = !stars[list].includes(id);
@@ -2620,7 +2621,7 @@ export function myMarks() {
 // editor.js: a VOD, clip or video was loaded in a player
 export async function noteOpened(type, item) {
   const list = MARK_LISTS[type];
-  if (!list || state.demo || !item) return;
+  if (!list || state.demo || !item || me?.support) return;
   const id = markId(type, item);
   if (!id || id === "undefined" || id === "0") return;
   const recent = state.marks.recent;
