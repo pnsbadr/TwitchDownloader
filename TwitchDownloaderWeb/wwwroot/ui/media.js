@@ -98,10 +98,51 @@ function embedTime(seconds) {
 // Why the app player couldn't start. retryWithProxy: a loading error that might be the CDN refusing this page, so
 // loading the segments through the server may work.
 class PlayerUnavailable extends Error {
-  constructor(message, retryWithProxy = false) {
+  constructor(message, retryWithProxy = false, problem = null, status = 0) {
     super(message);
     this.retryWithProxy = retryWithProxy;
+    this.status = status;
+    this.code = problem?.code ?? null;
+    // The app Owner took the VOD's channel away from the team (server: TeamChannelAccess, revoked: true)
+    this.revoked = Boolean(problem?.revoked);
   }
+
+  // The team may not open this VOD at all: no player may try it (the Twitch embed would play it, and the server can't stop that)
+  get refused() {
+    return this.code === "channel-not-assigned";
+  }
+}
+
+// Is this a "your team can't open this VOD" error (from the player or from api())?
+export function isChannelRefusal(error) {
+  return error?.code === "channel-not-assigned";
+}
+
+// The text a player shows for it (badrfly 2026-11-20)
+export function channelRefusalText(error) {
+  return error?.revoked || error?.problem?.revoked
+    ? "Your team's access to this channel was revoked."
+    : "This VOD isn't from one of your team's channels.";
+}
+
+// Asks the server whether the team may open the VOD (GET /api/vods/{id}/access): throws the refusal when it may not. Anything else
+// (offline, Twitch unreachable, a gone VOD) is left to the players, which say what went wrong themselves.
+export async function checkVodAccess(vodId) {
+  let response;
+  try {
+    response = await fetch(`/api/vods/${encodeURIComponent(vodId)}/access`);
+  } catch {
+    return;
+  }
+  if (response.ok || response.status !== 403) return;
+  let problem = null;
+  try {
+    problem = await response.json();
+  } catch {
+    // Not a problem response
+  }
+  const error = new PlayerUnavailable(problemMessage(problem, response.status), false, problem, response.status);
+  if (error.refused) throw error;
 }
 
 function describeHlsError(data) {
@@ -142,7 +183,7 @@ class HlsBackend {
       } catch {
         // Not a problem response
       }
-      throw new PlayerUnavailable(problemMessage(problem, check.status));
+      throw new PlayerUnavailable(problemMessage(problem, check.status), false, problem, check.status);
     }
     // Muted segments the server will play with saved clean audio instead
     this.cleanSegments = Number(check.headers.get("X-Clean-Audio-Segments")) || 0;
@@ -457,6 +498,17 @@ export class MediaPlayer {
     this.timer = setInterval(() => this.tick(), PLAYER_TICK_MS);
     this.events.onState?.();
 
+    // A VOD the team may not open (a card or item left on the page from before the app Owner revoked its channel) is refused here,
+    // before either player tries it: the Twitch embed doesn't ask the server (badrfly 2026-11-20)
+    try {
+      await checkVodAccess(vodId);
+    } catch (error) {
+      if (generation !== this.generation) return;
+      this.close();
+      throw error;
+    }
+    if (generation !== this.generation) return;
+
     const wanted = mode ?? loadPlayerMode();
     let failure = null;
     for (const kind of wanted === "app" ? ["app", "twitch"] : ["twitch", "app"]) {
@@ -471,6 +523,8 @@ export class MediaPlayer {
         if (generation !== this.generation) return;
         console.warn(`The ${kind === "app" ? "app" : "Twitch"} player couldn't play VOD ${vodId}:`, error);
         failure = error;
+        // Refused for the team: the other player mustn't play it either
+        if (error.refused) break;
       }
     }
     this.close();

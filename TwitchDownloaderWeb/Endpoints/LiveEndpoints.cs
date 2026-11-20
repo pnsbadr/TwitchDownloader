@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using TwitchDownloaderWeb.Data;
+using TwitchDownloaderWeb.Services;
 using TwitchDownloaderWeb.Services.Accounts;
 using TwitchDownloaderWeb.Services.Live;
 
@@ -14,6 +15,9 @@ namespace TwitchDownloaderWeb.Endpoints
     public sealed record LiveHelloDto(bool Watching, IReadOnlyList<LiveChannelDto> Channels);
 
     public sealed record LiveStreamDto(string Login, bool Live, DateTime? StartedAtUtc, DateTime AtUtc);
+
+    /// <param name="Logins">The team's channels now (the Owner added, revoked or ended one).</param>
+    public sealed record LiveChannelsDto(IReadOnlyList<string> Logins);
 
     /// <param name="ClientIdSet">A Client ID is entered (here or in configuration).</param>
     /// <param name="ClientIdFromConfig">It comes from Twitch:ClientId, not the Admin page.</param>
@@ -48,42 +52,68 @@ namespace TwitchDownloaderWeb.Endpoints
             return app;
         }
 
-        private static async Task StreamEvents(HttpContext context, LibraryDbContext db, LiveStreamHub hub, CancellationToken cancellationToken)
+        private static async Task StreamEvents(HttpContext context, TeamContext team, LibraryDbContext db, LiveStreamHub hub,
+            CancellationToken cancellationToken)
         {
             var response = context.Response;
             response.Headers.ContentType = "text/event-stream";
             response.Headers.CacheControl = "no-store";
             response.Headers["X-Accel-Buffering"] = "no";
 
+            // The Owner changing this team's channels (badrfly 2026-11-20: a revoke must reach open pages at once)
+            var teamChanged = System.Threading.Channels.Channel.CreateBounded<bool>(
+                new System.Threading.Channels.BoundedChannelOptions(1) { FullMode = System.Threading.Channels.BoundedChannelFullMode.DropOldest });
+            void OnTeamChanged(int teamId)
+            {
+                if (teamId == team.TeamId)
+                    teamChanged.Writer.TryWrite(true);
+            }
+
             // Listen before reading the state, so nothing falls between the two
             using var listener = hub.Listen();
-            var logins = await TeamLoginsAsync(db, cancellationToken);
-            var hello = new LiveHelloDto(hub.Watching, logins.Select(login => ToDto(login, hub.Get(login))).ToList());
-            await WriteAsync(response, "hello", hello, cancellationToken);
-
+            TeamChannelAccess.TeamChannelsChanged += OnTeamChanged;
             try
             {
+                var logins = await TeamLoginsAsync(db, cancellationToken);
+                var hello = new LiveHelloDto(hub.Watching, logins.Select(login => ToDto(login, hub.Get(login))).ToList());
+                await WriteAsync(response, "hello", hello, cancellationToken);
+
                 while (!cancellationToken.IsCancellationRequested)
                 {
-                    using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                    wait.CancelAfter(Heartbeat);
-                    StreamChange change;
-                    try
+                    using (var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
                     {
-                        change = await listener.Reader.ReadAsync(wait.Token);
+                        wait.CancelAfter(Heartbeat);
+                        var stream = listener.Reader.WaitToReadAsync(wait.Token).AsTask();
+                        var channels = teamChanged.Reader.WaitToReadAsync(wait.Token).AsTask();
+                        await Task.WhenAny(stream, channels);
+                        // Lets the other wait end (cancelled, never observed as a failure)
+                        wait.Cancel();
                     }
-                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var wrote = false;
+                    if (teamChanged.Reader.TryRead(out _))
+                    {
+                        var now = await TeamLoginsAsync(db, cancellationToken);
+                        await WriteAsync(response, "channels", new LiveChannelsDto(now.Order().ToList()), cancellationToken);
+                        wrote = true;
+                    }
+                    while (listener.Reader.TryRead(out var change))
+                    {
+                        // Only the team's own channels (re-read: the Owner may have changed them since the page connected)
+                        if (!(await TeamLoginsAsync(db, cancellationToken)).Contains(change.Login))
+                            continue;
+                        await WriteAsync(response, "stream", new LiveStreamDto(change.Login, change.Live, change.StartedAtUtc, change.AtUtc), cancellationToken);
+                        wrote = true;
+                    }
+                    if (!wrote && listener.Reader.Completion.IsCompleted)
+                        break;
+                    if (!wrote)
                     {
                         // A comment line keeps proxies and the browser from closing a quiet connection (nothing is asked of Twitch)
                         await response.WriteAsync(": ping\n\n", cancellationToken);
                         await response.Body.FlushAsync(cancellationToken);
-                        continue;
                     }
-
-                    // Only the team's own channels (re-read: the Owner may have changed them since the page connected)
-                    if (!(await TeamLoginsAsync(db, cancellationToken)).Contains(change.Login))
-                        continue;
-                    await WriteAsync(response, "stream", new LiveStreamDto(change.Login, change.Live, change.StartedAtUtc, change.AtUtc), cancellationToken);
                 }
             }
             catch (OperationCanceledException)
@@ -92,6 +122,10 @@ namespace TwitchDownloaderWeb.Endpoints
             }
             catch (System.Threading.Channels.ChannelClosedException)
             {
+            }
+            finally
+            {
+                TeamChannelAccess.TeamChannelsChanged -= OnTeamChanged;
             }
         }
 

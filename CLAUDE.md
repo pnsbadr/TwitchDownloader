@@ -292,6 +292,13 @@ Plan and badrfly's decisions: Claude Doc "Logins, teams and permissions plan". B
   client declares `.RequireChannelVod()` (route `{vodId}`) or checks in the handler (`/api/vods/info`, `POST /api/entries`, channel VOD
   lists); refused → 403 `code: "channel-not-assigned"`. Answers are cached 30 s per team+VOD; a channel change clears them
   (`TeamChannelAccess.Forget`). `TeamPermission.ManageChannels` is no longer used (kept so the bit isn't reused, not in the catalog).
+  A VOD of a channel the Owner took away (revoked, or "Stop new VODs" on a VOD with no work) is refused with the same code plus
+  `revoked: true` ("Your team's access to this channel was revoked.", `VodAccess.Revoked`). **The page asks `GET /api/vods/{id}/access`
+  (204 or the refusal) before every player load** (`MediaPlayer.open` → `checkVodAccess` in `ui/media.js`; `loadInPlayer2` too) and never
+  falls back to the Twitch embed on that code (the embed doesn't ask the server): the player empties to its drop hint with that note
+  (`unloadPlayer1` / `refusePlayer2` in `ui/editor.js`, badrfly 2026-11-20). `Forget` also raises `TeamChannelsChanged(teamId)`, which
+  `/api/live/events` sends as `channels` `{ logins }` (core.js `clipco:channels`): the library re-reads its channels and lists, and
+  the editor unloads a loaded VOD/edit the team can no longer open, without a refresh.
   Twitch clip links → 403 `code: "clip-links-disabled"`; clip entries added before stay.
 - **Every `/api` request needs a team login** except `/api/auth/*`, `/api/links/*` and `/api/admin/*` (staff endpoints: see Staff below). `TeamScope` middleware (after `UseAuthentication`) checks membership, stores a `TeamContext`
   (bind it as an endpoint parameter) and fills the scoped `RequestActor`.

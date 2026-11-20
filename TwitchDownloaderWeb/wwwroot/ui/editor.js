@@ -9,7 +9,7 @@ import { dropTarget, watchDrags, shadePath } from "./drag.js";
 import { setUpLibrary, showList, refreshClips, refreshVideos, refreshLibraryFilters, knownVod, knownVodTitle, pickChannel, teamChannels } from "./library.js";
 import { setUpTree, openTree, forgetTree, render as renderTree } from "./p2-tree.js";
 import { MARKER_COLORS } from "./colors.js";
-import { MediaPlayer, formatClock } from "./media.js";
+import { MediaPlayer, formatClock, isChannelRefusal, channelRefusalText, checkVodAccess } from "./media.js";
 import { Timeline } from "./timeline.js";
 import { trimValue } from "./timeline-edit.js";
 import { skipCut, keptSeconds } from "./cuts.js";
@@ -284,9 +284,35 @@ async function openVod(vod, { start = 0, paused = false, back = null } = {}) {
     showNote("p1", playerNotes(player1), 8000);
   } catch (error) {
     if (p1Vod !== vod) return;
+    if (isChannelRefusal(error)) {
+      await loaded.catch(() => {});
+      if (p1Vod === vod) unloadPlayer1(channelRefusalText(error));
+      return;
+    }
     showNote("p1", `Couldn't play this VOD: ${error.message}`);
   }
   await loaded;
+}
+
+// Player 1 back to empty (its drop hint), with a note why: a VOD the team may no longer open (badrfly 2026-11-20)
+function unloadPlayer1(text) {
+  p1Away = null; // (so ending row focus doesn't open a VOD again)
+  if (rowFocus) endRowFocus();
+  p1Vod = null;
+  p1Back = null;
+  if (pip) {
+    pip.close();
+    pip = null;
+  }
+  player1.close();
+  timeline.close();
+  $("p1-synced-back").hidden = true;
+  $("p1-info").textContent = "";
+  $("p1-info").title = "";
+  $("p1-media").hidden = true;
+  $("p1-hint").hidden = false;
+  showNote("p1", text);
+  renderTools();
 }
 
 function playerNotes(player) {
@@ -351,6 +377,14 @@ async function loadInPlayer2(item, { show = true, quiet = false, original = fals
   const opened = ++p2Opened;
   const data = item.data;
   const vodId = Number(data.vodId);
+  // An item left on the page from before the app Owner revoked its channel: refused, Player 2 shows why (badrfly 2026-11-20)
+  try {
+    await checkVodAccess(vodId);
+  } catch (error) {
+    if (opened === p2Opened) await refusePlayer2(error);
+    return false;
+  }
+  if (opened !== p2Opened) return false;
   const title = itemTitle(item);
   const parent = item.kind === "clip" ? { entryId: data.id } : item.kind === "video" ? { videoId: data.id } : {};
   // The new edit's name: "clip · Edit n", counting the item's edits so far
@@ -463,6 +497,17 @@ async function restoreLastLoaded() {
   } catch {
     // Gone or not open to the team any more
   }
+}
+
+// Player 2 can't play what it was given (the team may no longer open its VOD): back to empty with its drop hint and a note why. A
+// saved edit isn't touched (the server hides it anyway); only what's loaded closes.
+async function refusePlayer2(error) {
+  if (store?.open) await closeProject();
+  else {
+    $("p2-media").hidden = true;
+    $("p2-hint").hidden = false;
+  }
+  showNote("p2", channelRefusalText(error));
 }
 
 async function closeProject() {
@@ -1086,7 +1131,10 @@ function setUpPlayer2() {
       timeline2.dirty = true;
     },
   });
-  playback.onError = (error) => showNote("p2", `Couldn't play this VOD: ${error.message}`, 8000);
+  playback.onError = (error) => {
+    if (isChannelRefusal(error)) refusePlayer2(error);
+    else showNote("p2", `Couldn't play this VOD: ${error.message}`, 8000);
+  };
   // Same as Player 1: say when our player couldn't play the VOD and Twitch's took over (and why)
   playback.onOpened = () => showNote("p2", playerNotes(player2), player2.fallbackReason ? 15000 : 8000);
   $("p2-quality-menu").addEventListener("sl-show", () => renderQualityMenu(player2, "p2-quality-items"));
@@ -2470,7 +2518,33 @@ function setUpLiveUpdates() {
       }
     }, 15_000);
   });
+  // The app Owner changed the team's channels (a revoke): whatever is loaded from a channel the team lost closes now, with a note why,
+  // instead of waiting for a refresh (badrfly 2026-11-20). The library re-reads its own lists.
+  window.addEventListener("clipco:channels", () => dropRefusedVods());
   startLiveEvents();
+}
+
+async function dropRefusedVods() {
+  const p1 = p1Vod;
+  if (p1) {
+    try {
+      await checkVodAccess(p1.vodId);
+    } catch (error) {
+      if (p1Vod === p1) unloadPlayer1(channelRefusalText(error));
+    }
+  }
+  if (store?.open) {
+    const project = store.project;
+    const vodIds = new Set([store.vodId, ...(store.content?.pieces ?? []).map((p) => p.vodId)].filter(Boolean).map(String));
+    for (const vodId of vodIds) {
+      try {
+        await checkVodAccess(vodId);
+      } catch (error) {
+        if (store.open && store.project === project) await refusePlayer2(error);
+        break;
+      }
+    }
+  }
 }
 
 start();

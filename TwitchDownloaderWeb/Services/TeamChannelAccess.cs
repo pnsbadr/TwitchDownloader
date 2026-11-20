@@ -16,6 +16,12 @@ namespace TwitchDownloaderWeb.Services
 
         /// <summary>Twitch couldn't be reached to find the VOD's channel.</summary>
         TwitchUnreachable,
+
+        /// <summary>
+        /// The VOD is from a channel the app Owner took away from the team ("Revoke now", or "Stop new VODs" for a VOD the team never
+        /// worked on). Refused like <see cref="NotAssigned"/>, but the page says access was revoked (badrfly 2026-11-20).
+        /// </summary>
+        Revoked,
     }
 
     /// <summary>
@@ -41,7 +47,7 @@ namespace TwitchDownloaderWeb.Services
             if (cache.TryGetValue(decisionKey, out VodAccess cached))
                 return cached;
 
-            var result = await DecideAsync(vodId, cancellationToken);
+            var result = await DecideAsync(teamId, vodId, cancellationToken);
             // Twitch being down is not a decision worth remembering
             if (result != VodAccess.TwitchUnreachable)
                 cache.Set(decisionKey, result, DecisionCacheTime);
@@ -63,16 +69,25 @@ namespace TwitchDownloaderWeb.Services
         {
             Generations.AddOrUpdate(teamId, 1, (_, n) => n + 1);
             ChannelsChanged?.Invoke();
+            TeamChannelsChanged?.Invoke(teamId);
         }
+
+        /// <summary>
+        /// One team's channels changed: its open pages hear it on <c>/api/live/events</c> (<c>channels</c>) and drop what they can no
+        /// longer open, without a refresh (badrfly 2026-11-20).
+        /// </summary>
+        public static event Action<int>? TeamChannelsChanged;
 
         /// <summary>A team's channels changed (<see cref="Forget"/>): live stream updates follow the new set (<see cref="Live.EventSubWatcher"/>).</summary>
         public static event Action? ChannelsChanged;
 
-        private async Task<VodAccess> DecideAsync(long vodId, CancellationToken cancellationToken)
+        private async Task<VodAccess> DecideAsync(int teamId, long vodId, CancellationToken cancellationToken)
         {
             var channels = await db.Channels.AsNoTracking().Select(x => new { x.Login, x.TwitchUserId, Ended = x.AccessEndedAtUtc != null })
                 .ToListAsync(cancellationToken);
-            if (channels.Count == 0)
+            var revoked = await db.RevokedChannels.AsNoTracking().Where(x => x.TeamId == teamId)
+                .Select(x => new { x.Login, x.TwitchUserId }).ToListAsync(cancellationToken);
+            if (channels.Count == 0 && revoked.Count == 0)
                 return VodAccess.NotAssigned;
 
             VodOwner? owner;
@@ -97,7 +112,11 @@ namespace TwitchDownloaderWeb.Services
                 (!string.IsNullOrEmpty(owner.UserId) && x.TwitchUserId == owner.UserId)
                 || (!string.IsNullOrEmpty(owner.Login) && string.Equals(x.Login, owner.Login, StringComparison.OrdinalIgnoreCase)));
             if (match is null)
-                return VodAccess.NotAssigned;
+                return revoked.Any(x =>
+                    (!string.IsNullOrEmpty(owner.UserId) && x.TwitchUserId == owner.UserId)
+                    || (!string.IsNullOrEmpty(owner.Login) && string.Equals(x.Login, owner.Login, StringComparison.OrdinalIgnoreCase)))
+                    ? VodAccess.Revoked
+                    : VodAccess.NotAssigned;
             if (!match.Ended)
                 return VodAccess.Allowed;
 
@@ -105,7 +124,7 @@ namespace TwitchDownloaderWeb.Services
             return await db.Entries.AsNoTracking().AnyAsync(x => x.VodId == vodId, cancellationToken)
                    || await db.Markers.AsNoTracking().AnyAsync(x => x.VodId == vodId, cancellationToken)
                 ? VodAccess.Allowed
-                : VodAccess.NotAssigned;
+                : VodAccess.Revoked;
         }
 
         /// <summary>
@@ -164,6 +183,9 @@ namespace TwitchDownloaderWeb.Services
             VodAccess.Allowed => null,
             VodAccess.NotFound => Results.Problem(detail: $"VOD {vodId} was not found.", statusCode: StatusCodes.Status404NotFound),
             VodAccess.TwitchUnreachable => Results.Problem(detail: "Couldn't reach Twitch. Try again in a moment.", statusCode: StatusCodes.Status502BadGateway),
+            // Same code as not assigned (callers check it), plus revoked: true so the page can say why
+            VodAccess.Revoked => Results.Problem(detail: "Your team's access to this channel was revoked.", statusCode: StatusCodes.Status403Forbidden,
+                extensions: new Dictionary<string, object?> { ["code"] = "channel-not-assigned", ["revoked"] = true }),
             _ => Results.Problem(detail: "This VOD isn't from one of your team's channels.", statusCode: StatusCodes.Status403Forbidden,
                 extensions: new Dictionary<string, object?> { ["code"] = "channel-not-assigned" }),
         };

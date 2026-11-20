@@ -14,6 +14,10 @@ namespace TwitchDownloaderWeb.Endpoints
     {
         public static IEndpointRouteBuilder MapPlaybackEndpoints(this IEndpointRouteBuilder app)
         {
+            // Can the team open this VOD? 204, else the refusal (403 channel-not-assigned, revoked: true when the Owner took the channel
+            // away). The page asks before every load, so an item or VOD card left on a page from before a revoke is refused instead of
+            // falling back to the Twitch embed, which the server can't stop (badrfly 2026-11-20).
+            app.MapGet("/api/vods/{vodId:long}/access", () => Results.NoContent()).RequireTeam(TeamPermission.ViewLibrary).RequireChannelVod();
             app.MapGet("/api/vods/{vodId:long}/play.m3u8", GetMaster).RequireTeam(TeamPermission.ViewLibrary).RequireChannelVod();
             app.MapGet("/api/vods/{vodId:long}/play/{variant:int}.m3u8", GetMedia).RequireTeam(TeamPermission.ViewLibrary).RequireChannelVod();
             app.MapGet("/api/vods/{vodId:long}/play/{variant:int}/{segment}", GetSegment).RequireTeam(TeamPermission.ViewLibrary).RequireChannelVod();
