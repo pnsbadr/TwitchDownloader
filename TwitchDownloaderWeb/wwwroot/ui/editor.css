@@ -549,7 +549,7 @@ button.team-pill:hover { background: var(--bg-4); }
 .row-head:hover .row-btns > sl-tooltip,
 .row-head:focus-within .row-btns > sl-tooltip { display: contents; }
 /* on hover they float over the end of the name instead of pushing it aside */
-.row-head { position: relative; }
+.row-head { position: relative; user-select: none; }
 .row-head:is(:hover, :focus-within):not(.folded) .row-btns {
   position: absolute;
   right: 0;
