@@ -14,7 +14,8 @@
 // Large teams (badrfly 2026-11-20, "Redesign the library for large teams"): clips and videos come a page at a time (?paged=true, a
 // cursor per list) as the list scrolls, so nothing is cut off at 500. Every list is shown as slim rows under day headings by default
 // (only the rows in view are drawn), with the card of the row under the mouse, else the selected one, at the bottom of the panel;
-// the cards view is one click away and remembered per member (clipco.library.view.{userId}).
+// the cards view is one click away and remembered per member (clipco.library.view.{userId}). The search box over the lists turns typed
+// shortcuts (by:, vod:, @channel, a day, >1m) into chips under it (see "the search box" below).
 
 import { $, el, api, me, can, liveChannels, formatDate, formatDuration, loadSetting, saveSetting, toast, iconButton, withTooltip, twitchThumb, thumbStyle } from "./core.js";
 import { draggable, shadePath } from "./drag.js";
@@ -47,7 +48,9 @@ const state = {
   clipsCursor: null,    // the next page's cursor (null = all loaded)
   clipsTotal: 0,
   clipsMore: false,     // a next page is loading
-  clipFilter: { search: "", sort: loadSetting("clipco.library.sort", "dateAdded"), order: "desc", last24h: false, day: "" },
+  // The search box's words (clips, videos; VODs use vodSearch + vodMatches) and the day / length chips. A day applies to every list.
+  clipFilter: { search: "", sort: loadSetting("clipco.library.sort", "dateAdded"), order: "desc", last24h: false, day: "", minSeconds: null, maxSeconds: null },
+  vodMatches: null,     // VOD IDs whose work matches the words searched (GET /api/vods/matches), or null
   videos: [],
   videosLoaded: false,
   videosError: "",
@@ -89,6 +92,7 @@ export function setUpLibrary(options) {
   new ResizeObserver(() => { if (state.view === "rows") scheduleWindow(); }).observe($("side-list"));
   renderViewButton();
   setUpFilter();
+  setUpSearch();
   if (options.sample) showSample(options.sample);
   else {
     loadChannels();
@@ -142,6 +146,7 @@ function showSample(sample) {
 export function showList(list) {
   state.list = list;
   renderFilter();
+  renderChips();
   render();
   if (list === "clips" && !state.clipsLoaded) loadClips();
   if (list === "videos" && !state.videosLoaded) loadVideos();
@@ -558,17 +563,14 @@ function clipsQuery() {
   if (f.search) query.set("search", f.search);
   whoQuery(query, "clips");
   channelQuery(query);
-  const dateField = f.sort;
-  if (f.last24h) {
-    query.set("from", new Date(Date.now() - 86400_000).toISOString());
-    query.set("dateField", dateField);
-  } else if (f.day) {
-    const [year, month, day] = f.day.split("-").map(Number);
-    const range = dayRange({ year, month, day }, viewerTimeZone());
-    query.set("from", range.from);
-    query.set("to", range.to);
-    query.set("dateField", dateField);
+  const bounds = dayBounds();
+  if (bounds) {
+    query.set("from", bounds.from);
+    if (bounds.to) query.set("to", bounds.to);
+    query.set("dateField", f.sort);
   }
+  if (f.minSeconds != null) query.set("minSeconds", String(f.minSeconds));
+  if (f.maxSeconds != null) query.set("maxSeconds", String(f.maxSeconds));
   return query;
 }
 
@@ -645,6 +647,11 @@ function videosQuery() {
   whoQuery(query, "videos");
   channelQuery(query);
   if (state.clipFilter.search) query.set("search", state.clipFilter.search);
+  const bounds = dayBounds();
+  if (bounds) {
+    query.set("from", bounds.from);
+    if (bounds.to) query.set("to", bounds.to);
+  }
   return query;
 }
 
@@ -723,7 +730,12 @@ const EMPTY = {
 function visibleItems() {
   if (state.list === "vods") {
     const search = state.vodSearch.toLowerCase();
-    return mergedVods().filter((v) => (!search || v.title.toLowerCase().includes(search)) && (!state.onlyWorked || state.work.has(String(v.vodId))));
+    const bounds = dayBounds();
+    const from = bounds ? Date.parse(bounds.from) : -Infinity;
+    const to = bounds?.to ? Date.parse(bounds.to) : Infinity;
+    return mergedVods().filter((v) => (!search || v.title.toLowerCase().includes(search) || state.vodMatches?.has(String(v.vodId)))
+      && (!state.onlyWorked || state.work.has(String(v.vodId)))
+      && (!bounds || (vodTime(v) >= from && vodTime(v) < to)));
   }
   return state.list === "clips" ? state.clips : state.videos;
 }
@@ -1533,13 +1545,14 @@ export async function deleteVideo(video) {
 // ---------- filter popover ----------
 
 function filtersOn() {
-  if (state.list === "vods") return Boolean(state.vodSearch) || state.vodType !== "archive" || state.onlyWorked;
+  const day = Boolean(state.clipFilter.day || state.clipFilter.last24h);
+  if (state.list === "vods") return Boolean(state.vodSearch) || state.vodType !== "archive" || state.onlyWorked || day;
   const who = Boolean(state.who.vodId || state.who.memberId);
   if (state.list === "clips") {
     const f = state.clipFilter;
-    return Boolean(f.search || f.last24h || f.day) || who;
+    return Boolean(f.search || day || f.minSeconds != null || f.maxSeconds != null) || who;
   }
-  return who || Boolean(state.clipFilter.search);
+  return who || day || Boolean(state.clipFilter.search);
 }
 
 // The filter popover opened: the VODs with work and the members known so far, for the pickers
@@ -1561,27 +1574,12 @@ function vodOptionLabel(work) {
 }
 
 function setUpFilter() {
-  $("filter-search").addEventListener("sl-input", () => {
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => {
-      const value = $("filter-search").value.trim();
-      if (state.list === "vods") {
-        state.vodSearch = value;
-        render();
-      } else if (state.list === "videos") {
-        state.clipFilter.search = value;
-        loadVideos();
-      } else {
-        state.clipFilter.search = value;
-        loadClips();
-      }
-    }, 250);
-  });
   $("filter-menu").addEventListener("sl-show", (event) => {
     if (event.target === $("filter-menu") && state.list !== "vods") loadFilterOptions();
   });
   $("filter-work").addEventListener("sl-change", (event) => {
     state.onlyWorked = event.target.checked;
+    renderChips();
     render();
   });
   $("filter-vod").addEventListener("sl-change", (event) => {
@@ -1612,38 +1610,27 @@ function setUpFilter() {
     loadClips();
   });
   $("filter-24h").addEventListener("sl-change", (event) => {
-    state.clipFilter.last24h = event.target.checked;
-    if (state.clipFilter.last24h) state.clipFilter.day = "";
-    renderFilter();
-    loadClips();
+    if (event.target.checked !== state.clipFilter.last24h) setDay(event.target.checked ? "24h" : "");
   });
   $("filter-day").addEventListener("sl-change", (event) => {
-    state.clipFilter.day = event.target.value;
-    if (state.clipFilter.day) state.clipFilter.last24h = false;
-    renderFilter();
-    loadClips();
+    if (event.target.value !== state.clipFilter.day) setDay(event.target.value);
   });
-  $("filter-today").addEventListener("click", () => {
-    state.clipFilter.day = todayIn(viewerTimeZone());
-    state.clipFilter.last24h = false;
-    renderFilter();
-    loadClips();
-  });
+  $("filter-today").addEventListener("click", () => setDay(todayIn(viewerTimeZone())));
   $("filter-clear").addEventListener("click", () => {
-    if (state.list === "vods") {
-      state.vodSearch = "";
-      state.onlyWorked = false;
-      if (state.vodType !== "archive") {
-        state.vodType = "archive";
-        saveSetting("clipco.library.vodType", "archive");
-        reloadVods();
-      }
-    } else {
-      Object.assign(state.clipFilter, { search: "", last24h: false, day: "" });
-      Object.assign(state.who, { vodId: "", memberId: "" });
-      loadClips();
-      if (state.videosLoaded) loadVideos();
+    // Everything the box and its chips hold, on every list
+    searchInput().value = "";
+    state.vodSearch = "";
+    state.vodMatches = null;
+    state.onlyWorked = false;
+    if (state.vodType !== "archive") {
+      state.vodType = "archive";
+      saveSetting("clipco.library.vodType", "archive");
+      reloadVods();
     }
+    Object.assign(state.clipFilter, { search: "", last24h: false, day: "", minSeconds: null, maxSeconds: null });
+    Object.assign(state.who, { vodId: "", memberId: "" });
+    if (state.clipsLoaded || state.list === "clips") loadClips();
+    if (state.videosLoaded || state.list === "videos") loadVideos();
     renderFilter();
     render();
   });
@@ -1655,8 +1642,6 @@ function renderFilter() {
   const clips = state.list === "clips";
   const videos = state.list === "videos";
   $("side-filter").disabled = false;
-  $("filter-search").value = vods ? state.vodSearch : state.clipFilter.search;
-  $("filter-search").placeholder = vods ? "Search loaded VODs" : "Search titles";
   $("filter-type-row").hidden = !vods;
   $("filter-work-row").hidden = !vods;
   $("filter-work").checked = state.onlyWorked;
@@ -1679,4 +1664,437 @@ function renderFilter() {
   order.parentElement.content = order.label;
   $("filter-24h").checked = state.clipFilter.last24h;
   $("filter-day").value = state.clipFilter.day;
+  // The day applies to every list now (the search box's chip)
+  $("filter-date-row").hidden = false;
+  renderChips();
+}
+
+// ---------- the search box (badrfly 2026-11-20, "Redesign the library for large teams" step 2) ----------
+// One box over the three lists. Plain words search on the server: clip titles, video titles and their segments' labels, and on the VODs
+// tab the loaded titles plus every VOD whose clips, segments, moments or videos match (GET /api/vods/matches). Typed shortcuts become
+// chips under the box, so what filters the list is always in sight: by:sam (made by), vod:… (one stream), @arky (the channel bar),
+// nov 14 / today / yesterday / 24h (a day), >1m / <30s (clip length). The suggestions offer them as you type.
+
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const PREFIXED = /^(@|by:|vod:|[<>])/i;
+const search = { items: [], active: -1, matches: null, matchesFor: "", timer: 0, optionsAt: 0 };
+
+function searchInput() {
+  return $("search-input");
+}
+
+export function focusLibrarySearch() {
+  const input = searchInput();
+  input.focus();
+  input.select();
+}
+
+// "2026-11-14" for "nov 14", "14 nov", "november 14 2025", "2026-11-14", "today", "yesterday"; "24h" for the last 24 hours; else null
+function parseDay(text) {
+  const t = text.trim().toLowerCase().replace(/,/g, " ").replace(/\s+/g, " ");
+  if (!t) return null;
+  const zone = viewerTimeZone();
+  const today = todayIn(zone);
+  const iso = (y, m, d) => `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  if (t === "today") return today;
+  if (t === "yesterday") {
+    const [y, m, d] = today.split("-").map(Number);
+    const at = new Date(Date.UTC(y, m - 1, d - 1));
+    return iso(at.getUTCFullYear(), at.getUTCMonth() + 1, at.getUTCDate());
+  }
+  if (t === "24h" || t === "last 24h") return "24h";
+  let m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  let year;
+  let month;
+  let day;
+  if (m) [year, month, day] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  else {
+    const monthOf = (word) => (word.length >= 3 ? MONTHS.findIndex((name) => word.startsWith(name)) + 1 : 0);
+    m = t.match(/^([a-z]+)\.? (\d{1,2})(?: (\d{4}))?$/);
+    if (m && monthOf(m[1])) [month, day, year] = [monthOf(m[1]), Number(m[2]), m[3] ? Number(m[3]) : null];
+    else {
+      m = t.match(/^(\d{1,2}) ([a-z]+)\.?(?: (\d{4}))?$/);
+      if (!m || !monthOf(m[2])) return null;
+      [day, month, year] = [Number(m[1]), monthOf(m[2]), m[3] ? Number(m[3]) : null];
+    }
+    // No year: the last time that date came round
+    if (!year) {
+      year = Number(today.slice(0, 4));
+      if (iso(year, month, day) > today) year--;
+    }
+  }
+  if (month < 1 || month > 12 || day < 1 || day > new Date(Date.UTC(year, month, 0)).getUTCDate()) return null;
+  return iso(year, month, day);
+}
+
+function dayChipLabel(day) {
+  if (day === "24h") return "Last 24 hours";
+  const today = todayIn(viewerTimeZone());
+  if (day === today) return "Today";
+  if (day === parseDay("yesterday")) return "Yesterday";
+  const [y, m, d] = day.split("-").map(Number);
+  const withYear = y !== Number(today.slice(0, 4));
+  return new Intl.DateTimeFormat(undefined, { timeZone: "UTC", weekday: "short", month: "short", day: "numeric", ...(withYear ? { year: "numeric" } : {}) })
+    .format(new Date(Date.UTC(y, m - 1, d)));
+}
+
+// ">1m" → { minSeconds: 60 }, "<30s" → { maxSeconds: 30 } (no unit = seconds)
+function parseLength(token) {
+  const m = token.trim().toLowerCase().match(/^([<>])=?(\d+(?:\.\d+)?)(s|sec|m|min|h)?$/);
+  if (!m) return null;
+  const seconds = Number(m[2]) * ({ m: 60, min: 60, h: 3600 }[m[3]] ?? 1);
+  return m[1] === ">" ? { minSeconds: seconds } : { maxSeconds: seconds };
+}
+
+function lengthText(seconds) {
+  return seconds >= 60 && seconds % 60 === 0 ? `${seconds / 60} min` : seconds >= 60 ? formatDuration(seconds) : `${seconds} s`;
+}
+
+// The words typed that aren't a shortcut: what's searched
+function searchText() {
+  return searchInput().value.split(/\s+/).filter((word) => word && !PREFIXED.test(word)).join(" ").trim();
+}
+
+function sameText(a, b) {
+  return a.toLowerCase().includes(b.toLowerCase());
+}
+
+function memberChoices() {
+  const members = [...state.members].map(([id, name]) => ({ id, name }));
+  if (me && !members.some((m) => m.id === String(me.id))) members.push({ id: String(me.id), name: me.username });
+  return members.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// What the box offers for the words before the caret (the last word, or the last two for a date like "nov 14")
+function buildSuggestions() {
+  const input = searchInput();
+  const before = input.value.slice(0, input.selectionStart ?? input.value.length);
+  const words = before.split(/\s+/).filter(Boolean);
+  const token = before.endsWith(" ") ? "" : (words[words.length - 1] ?? "");
+  const lower = token.toLowerCase();
+  const items = [];
+  const add = (item) => { if (items.length < 8) items.push(item); };
+  if (lower.startsWith("@")) {
+    const rest = lower.slice(1);
+    for (const c of state.channels) if (c.login.startsWith(rest) || (c.displayName ?? "").toLowerCase().startsWith(rest))
+      add({ kind: "channel", login: c.login, label: c.displayName || c.login, hint: "Channel", consume: 1 });
+  } else if (lower.startsWith("by:")) {
+    const rest = lower.slice(3);
+    for (const m of memberChoices()) if (!rest || m.name.toLowerCase().startsWith(rest) || (rest === "me" && m.id === String(me?.id))) {
+      add({ kind: "member", id: m.id, mode: "made", label: `Made by ${m.name}`, hint: m.id === String(me?.id) ? "You" : "Member", consume: 1 });
+      add({ kind: "member", id: m.id, mode: "edited", label: `Edited by ${m.name}`, hint: m.id === String(me?.id) ? "You" : "Member", consume: 1 });
+    }
+  } else if (lower.startsWith("vod:")) {
+    const rest = token.slice(4);
+    for (const w of state.workedVods) if (!rest || sameText(vodOptionLabel(w), rest)) add({ kind: "vod", vodId: String(w.vodId), label: vodOptionLabel(w), hint: "Stream", consume: 1 });
+  } else if (lower.startsWith(">") || lower.startsWith("<")) {
+    const length = parseLength(lower);
+    if (length) add({ kind: "length", ...length, label: length.minSeconds != null ? `Longer than ${lengthText(length.minSeconds)}` : `Up to ${lengthText(length.maxSeconds)}`, hint: "Clips", consume: 1 });
+  } else if (token) {
+    // A date of one or two words ("today", "nov 14", "14 nov")
+    for (const n of [3, 2, 1]) {
+      if (words.length < n) continue;
+      const day = parseDay(words.slice(-n).join(" "));
+      if (day) {
+        add({ kind: "day", day, label: dayChipLabel(day), hint: "Day", consume: n });
+        break;
+      }
+    }
+    if (lower.length >= 2) {
+      for (const c of state.channels) if (several() && (c.login.startsWith(lower) || (c.displayName ?? "").toLowerCase().startsWith(lower)))
+        add({ kind: "channel", login: c.login, label: c.displayName || c.login, hint: "Channel", consume: 1 });
+      for (const m of memberChoices()) if (m.name.toLowerCase().startsWith(lower)) add({ kind: "member", id: m.id, mode: "made", label: `Made by ${m.name}`, hint: m.id === String(me?.id) ? "You" : "Member", consume: 1 });
+      let streams = 0;
+      for (const w of state.workedVods) if (streams < 3 && sameText(vodOptionLabel(w), token)) {
+        streams++;
+        add({ kind: "vod", vodId: String(w.vodId), label: vodOptionLabel(w), hint: "Stream", consume: 1 });
+      }
+    }
+  }
+  const text = searchText();
+  if (text) items.push({ kind: "text", label: `Search “${text}”`, hint: matchesHint(text) });
+  return items;
+}
+
+// "Also in 12 segment labels · 3 video titles" for the words searched (GET /api/vods/matches)
+function matchesHint(text) {
+  const m = search.matchesFor === text ? search.matches : null;
+  if (!m) return "";
+  const parts = [[m.clips, "clip title"], [m.videos, "video title"], [m.segments, "segment label"], [m.moments, "moment label"]]
+    .filter(([n]) => n).map(([n, what]) => `${n} ${what}${n === 1 ? "" : "s"}`);
+  return parts.length ? `in ${parts.join(" · ")}` : "nothing in titles or labels";
+}
+
+async function loadMatches(text) {
+  if (!text || state.demo) {
+    search.matches = null;
+    search.matchesFor = text;
+    state.vodMatches = null;
+    return;
+  }
+  try {
+    const found = await api("GET", `/api/vods/matches?q=${encodeURIComponent(text)}`);
+    if (searchText() !== text) return;
+    search.matches = found;
+    search.matchesFor = text;
+    state.vodMatches = new Set(found.vodIds.map(String));
+  } catch {
+    return;
+  }
+  if (state.list === "vods") render();
+  if (!$("search-suggest").hidden) updateSuggestions();
+}
+
+function renderSuggestions() {
+  const box = $("search-suggest");
+  if (!search.items.length || document.activeElement !== searchInput()) {
+    box.hidden = true;
+    searchInput().setAttribute("aria-expanded", "false");
+    return;
+  }
+  box.replaceChildren(...search.items.map((item, i) => {
+    const node = el("div", { class: `sugg${i === search.active ? " on" : ""}${item.kind === "text" ? " text" : ""}`, role: "option", "aria-selected": String(i === search.active), id: `sugg-${i}` },
+      el("span", { class: "sugg-label" }, item.label), el("span", { class: "sugg-hint" }, item.hint ?? ""));
+    node.addEventListener("pointerdown", (event) => {
+      event.preventDefault(); // keep the box focused
+      pickSuggestion(item);
+    });
+    return node;
+  }));
+  box.hidden = false;
+  searchInput().setAttribute("aria-expanded", "true");
+  searchInput().setAttribute("aria-activedescendant", search.active >= 0 ? `sugg-${search.active}` : "");
+}
+
+function updateSuggestions() {
+  search.items = buildSuggestions();
+  // A shortcut being typed: Enter takes the first suggestion; plain words: Enter just searches
+  const input = searchInput();
+  const before = input.value.slice(0, input.selectionStart ?? input.value.length);
+  const token = before.split(/\s+/).pop() ?? "";
+  search.active = PREFIXED.test(token) && search.items.length && search.items[0].kind !== "text" ? 0 : -1;
+  renderSuggestions();
+}
+
+// Takes the words a suggestion stood for out of the box (the ones before the caret)
+function consumeWords(n) {
+  const input = searchInput();
+  const caret = input.selectionStart ?? input.value.length;
+  let before = input.value.slice(0, caret).replace(/\s+$/, "");
+  for (let i = 0; i < n; i++) before = before.replace(/\S+\s*$/, "");
+  const after = input.value.slice(caret).replace(/^\s+/, "");
+  input.value = (before.trimEnd() + (before.trim() && after ? " " : "") + after).replace(/^\s+/, "");
+  const at = before.trimEnd().length + (before.trim() ? 1 : 0);
+  input.setSelectionRange(Math.min(at, input.value.length), Math.min(at, input.value.length));
+  if (input.value && !input.value.endsWith(" ") && at >= input.value.length) input.value += " ";
+}
+
+function pickSuggestion(item) {
+  if (item.kind !== "text") consumeWords(item.consume ?? 1);
+  switch (item.kind) {
+    case "channel":
+      pickOnlyChannel(item.login);
+      break;
+    case "member":
+      Object.assign(state.who, { memberId: item.id, mode: item.mode });
+      reloadWho();
+      break;
+    case "vod":
+      state.who.vodId = item.vodId;
+      reloadWho();
+      break;
+    case "day":
+      setDay(item.day);
+      break;
+    case "length":
+      Object.assign(state.clipFilter, { minSeconds: item.minSeconds ?? null, maxSeconds: item.maxSeconds ?? null });
+      loadClipsIfShown();
+      break;
+    default:
+      break;
+  }
+  applySearchText();
+  // Picked: the suggestions close so the chips under the box show (typing opens them again)
+  search.items = [];
+  renderSuggestions();
+  renderChips();
+}
+
+// @channel: only that channel on in the channel bar
+function pickOnlyChannel(login) {
+  if (!several()) return;
+  state.picked = new Set([login]);
+  renderChannelBar();
+  showChannelVods();
+  if (state.demo) return render();
+  if (state.clipsLoaded || state.list === "clips") loadClips();
+  if (state.videosLoaded || state.list === "videos") loadVideos();
+}
+
+function setDay(day) {
+  state.clipFilter.last24h = day === "24h";
+  state.clipFilter.day = day === "24h" ? "" : day ?? "";
+  renderFilter();
+  reloadDated();
+}
+
+// A day applies to clips (on their sort date), videos (made) and VODs (streamed)
+function reloadDated() {
+  loadClipsIfShown();
+  if (state.list === "videos" || state.videosLoaded) loadVideos();
+  if (state.list === "vods") render();
+}
+
+function loadClipsIfShown() {
+  if (state.list === "clips" || state.clipsLoaded) loadClips();
+}
+
+// The from / to of the day chip, or null
+function dayBounds() {
+  const f = state.clipFilter;
+  if (f.last24h) return { from: new Date(Date.now() - 86400_000).toISOString(), to: null };
+  if (!f.day) return null;
+  const [year, month, day] = f.day.split("-").map(Number);
+  return dayRange({ year, month, day }, viewerTimeZone());
+}
+
+// The words typed (not shortcuts) search every list: clips and videos on the server, VODs by title and by their work's matches
+function applySearchText() {
+  const text = searchText();
+  if (text === state.clipFilter.search) return;
+  state.clipFilter.search = text;
+  state.vodSearch = text;
+  state.vodMatches = null;
+  loadMatches(text);
+  if (state.list === "vods") render();
+  loadClipsIfShown();
+  if (state.list === "videos" || state.videosLoaded) loadVideos();
+}
+
+// Enter with no suggestion picked: every shortcut that names exactly one thing becomes its chip; the rest stays in the box
+function applyTypedShortcuts() {
+  for (const word of searchInput().value.split(/\s+/).filter((w) => PREFIXED.test(w))) {
+    const lower = word.toLowerCase();
+    let item = null;
+    if (lower.startsWith("@")) {
+      const c = state.channels.find((x) => x.login === lower.slice(1) || (x.displayName ?? "").toLowerCase() === lower.slice(1));
+      if (c) item = { kind: "channel", login: c.login };
+    } else if (lower.startsWith("by:")) {
+      const name = lower.slice(3);
+      const found = name === "me" ? memberChoices().filter((m) => m.id === String(me?.id)) : memberChoices().filter((m) => m.name.toLowerCase() === name);
+      if (found.length === 1) item = { kind: "member", id: found[0].id, mode: "made" };
+    } else if (lower.startsWith("vod:")) {
+      const found = state.workedVods.filter((w) => sameText(vodOptionLabel(w), word.slice(4)));
+      if (found.length === 1) item = { kind: "vod", vodId: String(found[0].vodId) };
+    } else {
+      const length = parseLength(lower);
+      if (length) item = { kind: "length", ...length };
+    }
+    if (!item) continue;
+    const input = searchInput();
+    input.value = input.value.split(/\s+/).filter((w) => w !== word).join(" ");
+    pickSuggestion({ ...item, consume: 0 });
+  }
+}
+
+function renderChips() {
+  const chips = [];
+  const lists = state.list;
+  const chip = (label, onRemove, appliesHere, where) => {
+    const remove = el("button", { type: "button", class: "schip-x", "aria-label": `Remove ${label}` }, "×");
+    remove.addEventListener("click", () => {
+      onRemove();
+      renderChips();
+      searchInput().focus();
+    });
+    chips.push(el("span", { class: `schip${appliesHere ? "" : " off"}`, title: appliesHere ? "" : `Only on ${where}` }, label, remove));
+  };
+  const clipsOrVideos = lists !== "vods";
+  if (state.who.vodId) {
+    const work = state.workedVods.find((w) => String(w.vodId) === state.who.vodId) ?? { vodId: state.who.vodId };
+    chip(vodOptionLabel(work), () => { state.who.vodId = ""; reloadWho(); }, clipsOrVideos, "Clips and Videos");
+  }
+  if (state.who.memberId) {
+    const name = state.members.get(state.who.memberId) ?? (state.who.memberId === String(me?.id) ? me.username : "someone");
+    chip(`${state.who.mode === "edited" ? "Edited by" : "By"} ${name}`, () => { state.who.memberId = ""; reloadWho(); }, clipsOrVideos, "Clips and Videos");
+  }
+  const f = state.clipFilter;
+  if (f.day || f.last24h) chip(dayChipLabel(f.last24h ? "24h" : f.day), () => setDay(""), true, "");
+  if (f.minSeconds != null || f.maxSeconds != null) {
+    chip(f.minSeconds != null ? `Longer than ${lengthText(f.minSeconds)}` : `Up to ${lengthText(f.maxSeconds)}`, () => {
+      Object.assign(state.clipFilter, { minSeconds: null, maxSeconds: null });
+      loadClipsIfShown();
+    }, lists === "clips", "Clips");
+  }
+  if (state.onlyWorked) chip("With work", () => { state.onlyWorked = false; renderFilter(); render(); }, lists === "vods", "VODs");
+  if (state.vodType !== "archive") chip(state.vodType === "highlight" ? "Highlights" : "Uploads", () => {
+    state.vodType = "archive";
+    saveSetting("clipco.library.vodType", "archive");
+    renderFilter();
+    reloadVods();
+  }, lists === "vods", "VODs");
+  const box = $("search-chips");
+  box.replaceChildren(...chips);
+  box.hidden = !chips.length;
+}
+
+function setUpSearch() {
+  const input = searchInput();
+  input.addEventListener("input", () => {
+    updateSuggestions();
+    clearTimeout(search.timer);
+    search.timer = setTimeout(applySearchText, 250);
+  });
+  input.addEventListener("focus", () => {
+    // Members and streams to suggest (once a minute at most)
+    if (Date.now() - search.optionsAt > 60_000 && !state.demo) {
+      search.optionsAt = Date.now();
+      loadFilterOptions().then(() => { if (document.activeElement === input) updateSuggestions(); });
+    }
+    updateSuggestions();
+  });
+  input.addEventListener("blur", () => {
+    search.items = [];
+    renderSuggestions();
+  });
+  input.addEventListener("click", () => updateSuggestions());
+  input.addEventListener("keydown", (event) => {
+    const id = keybindFor("search", event);
+    const open = !$("search-suggest").hidden && search.items.length;
+    if (id === "searchMove" && open) {
+      event.preventDefault();
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      search.active = (search.active + step + search.items.length + 1) % (search.items.length + 1);
+      if (search.active === search.items.length) search.active = -1;
+      renderSuggestions();
+    } else if (id === "searchPick") {
+      if (event.key === "Tab" && !(open && search.active >= 0)) return;
+      event.preventDefault();
+      clearTimeout(search.timer);
+      if (open && search.active >= 0) pickSuggestion(search.items[search.active]);
+      else {
+        applyTypedShortcuts();
+        applySearchText();
+        search.items = [];
+        renderSuggestions();
+      }
+    } else if (id === "searchClose") {
+      event.preventDefault();
+      if (open) {
+        search.items = [];
+        renderSuggestions();
+      } else if (input.value) {
+        input.value = "";
+        applySearchText();
+      } else input.blur();
+    } else if (id === "searchChipBack" && !input.value && input.selectionStart === 0) {
+      // Backspace in an empty box takes off the last chip
+      const last = [...$("search-chips").querySelectorAll(".schip-x")].pop();
+      if (last) {
+        event.preventDefault();
+        last.click();
+      }
+    }
+  });
+  renderChips();
 }

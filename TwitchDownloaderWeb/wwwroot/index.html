@@ -87,16 +87,25 @@
           <button type="button" role="tab" class="side-tab display" data-list="videos" aria-selected="false">Videos</button>
           <button type="button" role="tab" class="side-tab display" data-list="clips" aria-selected="false">Clips</button>
                   </div>
+        <!-- The search box (badrfly 2026-11-20): words search titles and labels; by: vod: @channel, a day and >1m become chips -->
+        <div class="side-search" id="side-search">
+          <div class="search-box">
+            <sl-icon library="ph" name="magnifying-glass" aria-hidden="true"></sl-icon>
+            <input id="search-input" type="text" autocomplete="off" spellcheck="false" placeholder="Search   by:  vod:  @channel  nov 14  &gt;1m"
+              aria-label="Search the library" role="combobox" aria-autocomplete="list" aria-controls="search-suggest" aria-expanded="false"
+              title="Search titles and labels (Ctrl+K or /)">
+            <kbd class="search-key" aria-hidden="true">Ctrl K</kbd>
+          </div>
+          <div class="search-suggest" id="search-suggest" role="listbox" aria-label="Suggestions" hidden></div>
+          <div class="search-chips" id="search-chips" aria-label="Filters on" hidden></div>
+        </div>
         <div class="side-tools" data-tip-placement="bottom">
           <div class="chan-bar" id="side-channels" role="group" aria-label="Channels" hidden></div>
           <span class="side-count faint" id="side-count"></span>
           <sl-tooltip content="Show as cards" hoist><sl-icon-button library="ph" name="cards" label="Show as cards" id="side-view"></sl-icon-button></sl-tooltip>
           <sl-dropdown id="filter-menu" placement="bottom-end" distance="4" hoist stay-open-on-select>
-            <sl-icon-button slot="trigger" library="ph" name="funnel-simple" label="Search, sort and filter" id="side-filter"></sl-icon-button>
+            <sl-icon-button slot="trigger" library="ph" name="funnel-simple" label="Sort and filter" id="side-filter"></sl-icon-button>
             <div class="filter-panel" id="filter-panel">
-              <sl-input id="filter-search" size="small" clearable placeholder="Search titles" aria-label="Search">
-                <sl-icon library="ph" name="magnifying-glass" slot="prefix"></sl-icon>
-              </sl-input>
               <div class="filter-row" id="filter-type-row">
                 <sl-radio-group id="filter-type" size="small" label="Show" value="archive">
                   <sl-radio-button value="archive">Broadcasts</sl-radio-button>

@@ -1,3 +1,4 @@
+using System.Net.Http.Json;
 using System.Net;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
@@ -72,6 +73,52 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal(JsonValueKind.Null, second.GetProperty("nextCursor").ValueKind);
             var found = await GetJsonAsync(owner, "/api/videos?paged=true&search=boxing");
             Assert.Equal([videos[2]], found.GetProperty("items").EnumerateArray().Select(x => x.GetProperty("id").GetInt32()).ToArray());
+        }
+
+        [Fact]
+        public async Task SearchBoxFindsLabelsLengthsAndDates()
+        {
+            var (owner, _, teamId, _) = await TeamWithMemberAsync("sb1");
+            var ownerId = (await GetJsonAsync(owner, "/api/auth/me")).GetProperty("id").GetInt32();
+            var shortClip = AddEntry(teamId, ownerId, "Quick laugh", vodId: 700);
+            var longClip = AddEntry(teamId, ownerId, "Long boxing round", vodId: 701);
+            using (var scope = _factory.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+                db.Entries.Single(x => x.Id == shortClip).ClipLengthSeconds = 20;
+                db.Entries.Single(x => x.Id == longClip).ClipLengthSeconds = 95;
+                db.SaveChanges();
+            }
+            List<int> Ids(JsonElement page) => page.GetProperty("items").EnumerateArray().Select(x => x.GetProperty("id").GetInt32()).ToList();
+
+            // Length: ">1m" and "<30s"
+            Assert.Equal([longClip], Ids(await GetJsonAsync(owner, "/api/entries?paged=true&minSeconds=60")));
+            Assert.Equal([shortClip], Ids(await GetJsonAsync(owner, "/api/entries?paged=true&maxSeconds=30")));
+
+            // A video is found by a segment's label, not only its title
+            var labeled = await SegmentIdAsync(owner, 702, 10, 30);
+            Assert.Equal(HttpStatusCode.OK, (await owner.PutAsJsonAsync($"/api/markers/{labeled}", new { seconds = 10, endSeconds = 30, label = "Instigator walks in" }, TestContext.Current.CancellationToken)).StatusCode);
+            var moment = await SegmentIdAsync(owner, 703, 50, null);
+            Assert.Equal(HttpStatusCode.OK, (await owner.PutAsJsonAsync($"/api/markers/{moment}", new { seconds = 50, label = "instigator again" }, TestContext.Current.CancellationToken)).StatusCode);
+            var video = (await PostJsonAsync(owner, "/api/vods/702/videos", new { title = "Story", markerIds = new[] { labeled } }, HttpStatusCode.Created))
+                .GetProperty("id").GetInt32();
+            Assert.Equal([video], Ids(await GetJsonAsync(owner, "/api/videos?paged=true&search=instigator")));
+
+            // Dates on videos (when they were made)
+            var later = DateTime.UtcNow.AddDays(1).ToString("O");
+            Assert.Empty(Ids(await GetJsonAsync(owner, $"/api/videos?paged=true&from={Uri.EscapeDataString(later)}")));
+            Assert.Equal([video], Ids(await GetJsonAsync(owner, $"/api/videos?paged=true&to={Uri.EscapeDataString(later)}")));
+            Assert.Equal(HttpStatusCode.BadRequest, (await owner.GetAsync("/api/videos?from=2026-11-01", TestContext.Current.CancellationToken)).StatusCode);
+
+            // What matches across the team's work, and on which VODs
+            var matches = await GetJsonAsync(owner, "/api/vods/matches?q=instigator");
+            Assert.Equal(1, matches.GetProperty("segments").GetInt32());
+            Assert.Equal(1, matches.GetProperty("moments").GetInt32());
+            Assert.Equal(0, matches.GetProperty("clips").GetInt32());
+            Assert.Equal([702L, 703L], matches.GetProperty("vodIds").EnumerateArray().Select(x => x.GetInt64()).Order().ToArray());
+            var boxing = await GetJsonAsync(owner, "/api/vods/matches?q=boxing");
+            Assert.Equal(1, boxing.GetProperty("clips").GetInt32());
+            Assert.Equal([701L], boxing.GetProperty("vodIds").EnumerateArray().Select(x => x.GetInt64()).ToArray());
         }
     }
 }

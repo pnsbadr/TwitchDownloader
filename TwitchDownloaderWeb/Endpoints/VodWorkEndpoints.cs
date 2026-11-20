@@ -9,6 +9,9 @@ namespace TwitchDownloaderWeb.Endpoints
     public sealed record VodWorkDto(long VodId, int Clips, int Videos, int Segments, int Moments, int Edits, string? ChannelName,
         DateTime? StreamDateUtc, string? ThumbnailUrl, DateTime LastWorkUtc);
 
+    /// <param name="VodIds">VODs with something that matches, newest work first (at most <see cref="VodWorkEndpoints.MaxVods"/>).</param>
+    public sealed record WorkMatchesDto(IReadOnlyList<long> VodIds, int Clips, int Videos, int Segments, int Moments);
+
     /// <summary>
     /// The team's work per VOD (badrfly 2026-11-17: "the VOD is the project"): a VOD counts once something is on its timeline. Empty
     /// rows don't count. Hidden VODs are left out by the query filters.
@@ -20,7 +23,31 @@ namespace TwitchDownloaderWeb.Endpoints
         public static IEndpointRouteBuilder MapVodWorkEndpoints(this IEndpointRouteBuilder app)
         {
             app.MapGet("/api/vods/work", List).RequireTeam(TeamPermission.ViewLibrary);
+            app.MapGet("/api/vods/matches", Matches).RequireTeam(TeamPermission.ViewLibrary);
             return app;
+        }
+
+        /// <summary>
+        /// The library's search box (badrfly 2026-11-20): what of the team's work has <paramref name="q"/> in its title or label (clip titles,
+        /// segment and moment labels, video titles; LIKE, case-insensitive for ASCII), and on which VODs, so the VOD list can show streams whose
+        /// work matches and the box can say "also matches 12 segment labels".
+        /// </summary>
+        private static async Task<IResult> Matches(string? q, LibraryDbContext db, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(q))
+                return Results.Ok(new WorkMatchesDto([], 0, 0, 0, 0));
+            var pattern = "%" + q.Trim().Replace(@"\", @"\\").Replace("%", @"\%").Replace("_", @"\_") + "%";
+            var clips = await db.Entries.AsNoTracking().Where(x => EF.Functions.Like(x.Title, pattern, @"\"))
+                .Select(x => new { x.VodId, At = x.UpdatedAtUtc }).ToListAsync(cancellationToken);
+            var markers = await db.Markers.AsNoTracking().Where(x => x.RemovedAtUtc == null && EF.Functions.Like(x.Label, pattern, @"\"))
+                .Select(x => new { x.VodId, At = x.CreatedAtUtc, Segment = x.EndSeconds != null }).ToListAsync(cancellationToken);
+            var videos = await db.Videos.AsNoTracking().Where(x => EF.Functions.Like(x.Title, pattern, @"\"))
+                .Select(x => new { x.VodId, At = x.UpdatedAtUtc, SegmentVods = x.Segments.Select(s => s.Marker!.VodId).ToList() }).ToListAsync(cancellationToken);
+            var vods = clips.Where(x => x.VodId > 0).Select(x => (x.VodId, x.At))
+                .Concat(markers.Select(x => (x.VodId, x.At)))
+                .Concat(videos.SelectMany(x => x.SegmentVods.Append(x.VodId).Distinct().Select(vod => (vod, x.At))))
+                .GroupBy(x => x.Item1).OrderByDescending(g => g.Max(x => x.Item2)).Select(g => g.Key).Take(MaxVods).ToList();
+            return Results.Ok(new WorkMatchesDto(vods, clips.Count, videos.Count, markers.Count(x => x.Segment), markers.Count(x => !x.Segment)));
         }
 
         /// <param name="vodIds">These VODs (comma separated, up to 200; VODs with no work are left out); none = the VODs with work, newest work first.</param>
