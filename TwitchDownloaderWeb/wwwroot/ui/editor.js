@@ -1029,6 +1029,11 @@ function setUpProjectPicker() {
     renderProjectMenu();
     openTree();
   });
+  // The picker opens on its search box, so typing searches instead of reaching the editor's shortcuts (I, O, C…)
+  $("p2-project-menu").addEventListener("sl-after-show", (event) => {
+    if (event.target !== $("p2-project-menu")) return;
+    $("p2-project-menu").querySelector(".tree-search-input")?.focus({ preventScroll: true });
+  });
   $("p2-project-items").addEventListener("sl-select", (event) => {
     const value = event.detail.item.value;
     if (value === "export") exportProject();
