@@ -195,7 +195,7 @@ function editFields(edit, itemTitle, editName) {
 
 function videoFields(video) {
   const parts = [...(video.segments ?? [])].sort((a, b) => a.position - b.position).map((s) => ({
-    start: s.startSeconds, end: s.endSeconds, label: s.label, cuts: normalizeCuts([...(s.cuts ?? []), ...(s.videoCuts ?? [])], s.startSeconds, s.endSeconds),
+    vodId: s.vodId ?? video.vodId, start: s.startSeconds, end: s.endSeconds, label: s.label, cuts: normalizeCuts([...(s.cuts ?? []), ...(s.videoCuts ?? [])], s.startSeconds, s.endSeconds),
   }));
   return {
     title: video.title, vodDate: video.streamDateUtc, parts, frame: video.frameUrl ?? null, length: video.lengthSeconds ?? parts.reduce((sum, p) => sum + keptSeconds(p.start, p.end, p.cuts), 0),
@@ -654,8 +654,13 @@ function setUpPreview() {
 
 function previewPartsOf(item) {
   if (item.kind === "project") return [];
-  if (item.kind === "video") return (item.parts ?? []).flatMap((p) => keptParts(p.start, p.end, p.cuts ?? []));
+  // A video can link segments of other VODs (synced rows): the preview plays the ones of the video's own VOD
+  if (item.kind === "video") return otherVodParts(item, false).flatMap((p) => keptParts(p.start, p.end, p.cuts ?? []));
   return keptParts(item.start, item.end, item.cuts ?? []);
+}
+
+function otherVodParts(item, other) {
+  return (item.parts ?? []).filter((p) => (p.vodId != null && String(p.vodId) !== String(item.vodId)) === other);
 }
 
 const totalOf = (parts) => parts.reduce((sum, p) => sum + p.end - p.start, 0);
@@ -677,7 +682,10 @@ async function showPreview(item) {
     await xp.open(item.vodId, parts[0].start);
     xp.pause();
     if (preview?.key !== item.key) return;
-    note(xp.fallbackReason ? `Twitch player: our player couldn't play this VOD (${xp.fallbackReason}).` : "");
+    const others = item.kind === "video" && otherVodParts(item, true).length
+      ? "The preview plays this VOD's segments; the file has the other streams' segments too."
+      : "";
+    note([xp.fallbackReason ? `Twitch player: our player couldn't play this VOD (${xp.fallbackReason}).` : "", others].filter(Boolean).join(" "));
   } catch (error) {
     if (preview?.key === item.key) note(`Couldn't play this VOD: ${error.message}`);
   }

@@ -177,7 +177,7 @@ export function piecesFromItem({ kind, data }) {
       const cuts = [...(segment.cuts ?? []), ...(segment.videoCuts ?? [])];
       for (const part of keptParts(segment.startSeconds, segment.endSeconds, cuts)) {
         parts.push({
-          vodId, start: part.start, end: part.end, source: { kind: "video", id: data.id },
+          vodId: Number(segment.vodId ?? vodId), start: part.start, end: part.end, source: { kind: "video", id: data.id },
           label: segment.label ? `${data.title || "Video"} · ${segment.label}` : (data.title || "Video"), color: segment.color || "yellow",
         });
       }

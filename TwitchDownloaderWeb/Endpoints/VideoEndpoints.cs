@@ -5,7 +5,8 @@ using TwitchDownloaderWeb.Services.Accounts;
 
 namespace TwitchDownloaderWeb.Endpoints
 {
-    /// <param name="MarkerIds">The segments in the order they play. All on one video row of the video's owner, on the video's VOD.</param>
+    /// <param name="MarkerIds">The segments in the order they play: the video owner's, on any of their video rows and VODs (synced rows
+    /// included, badrfly 2026-11-20).</param>
     /// <param name="Cuts">Parts cut out of some of its segments in this video only (the segment itself keeps its range), by segment;
     /// segments not listed keep the ones they have, an empty list removes them.</param>
     public sealed record VideoRequest(string? Title, List<int>? MarkerIds, List<VideoCutsRequest>? Cuts = null);
@@ -17,10 +18,17 @@ namespace TwitchDownloaderWeb.Endpoints
     /// <param name="VideoCuts">Parts cut out of it in this video only.</param>
     /// <param name="KeptSeconds">What the video plays of it: its range without either.</param>
     public sealed record VideoSegmentDto(int MarkerId, int Position, double StartSeconds, double EndSeconds, string Label, string Color,
-        IReadOnlyList<CutRange> Cuts, IReadOnlyList<CutRange> VideoCuts, double KeptSeconds);
+        IReadOnlyList<CutRange> Cuts, IReadOnlyList<CutRange> VideoCuts, double KeptSeconds)
+    {
+        /// <summary>The segment's VOD (a video may link segments of several VODs since 2026-11-20).</summary>
+        public long VodId { get; init; }
+
+        /// <summary>The row it sits on.</summary>
+        public int? RowId { get; init; }
+    }
 
     /// <param name="LengthSeconds">All its segments together, without their cut-out parts.</param>
-    public sealed record VideoDto(int Id, long VodId, int RowId, int UserId, string? CreatedBy, string Title, string? ChannelName, DateTime StreamDateUtc,
+    public sealed record VideoDto(int Id, long VodId, int? RowId, int UserId, string? CreatedBy, string Title, string? ChannelName, DateTime StreamDateUtc,
         string? ThumbnailUrl, double LengthSeconds, IReadOnlyList<VideoSegmentDto> Segments, int? CopiedFromVideoId, DateTime CreatedAtUtc,
         DateTime UpdatedAtUtc, bool CanEdit, bool CanDelete)
     {
@@ -66,7 +74,8 @@ namespace TwitchDownloaderWeb.Endpoints
                         var (start, end) = (x.Marker!.Seconds, x.Marker.EndSeconds!.Value);
                         return new VideoSegmentDto(x.MarkerId, x.Position, start, end, x.Marker.Label, x.Marker.Color,
                             CutOuts.Normalize(CutOuts.Read(x.Marker.Cuts), start, end), CutOuts.Normalize(CutOuts.Read(x.Cuts), start, end),
-                            Math.Round(KeptParts(x).Sum(p => p.End - p.Start), 2));
+                            Math.Round(KeptParts(x).Sum(p => p.End - p.Start), 2))
+                        { VodId = x.Marker.VodId, RowId = x.Marker.RowId };
                     })
                     .ToList();
                 return new VideoDto(video.Id, video.VodId, video.RowId, video.UserId, names.GetValueOrDefault(video.UserId), video.Title, video.ChannelName,
@@ -127,7 +136,22 @@ namespace TwitchDownloaderWeb.Endpoints
             if (await WithSegments(db).AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, cancellationToken) is not { } video)
                 return Results.NotFound();
 
-            return EntryEndpoints.ThumbnailResult(await thumbnails.GetForVideoAsync(video.VodId, PlayedParts(video).ToList(), cancellationToken), context);
+            return EntryEndpoints.ThumbnailResult(await thumbnails.GetForVideoAsync(MiddleVod(video), PlayedParts(video).ToList(), cancellationToken), context);
+        }
+
+        /// <summary>The VOD of the segment playing halfway through the video (where its card's frame comes from).</summary>
+        internal static long MiddleVod(Video video)
+        {
+            var links = video.Segments.Where(x => x.Marker is { EndSeconds: not null }).OrderBy(x => x.Position).ToList();
+            var left = links.Sum(x => KeptParts(x).Sum(p => p.End - p.Start)) / 2;
+            foreach (var link in links)
+            {
+                var length = KeptParts(link).Sum(p => p.End - p.Start);
+                if (left <= length)
+                    return link.Marker!.VodId;
+                left -= length;
+            }
+            return links.LastOrDefault()?.Marker?.VodId ?? video.VodId;
         }
 
         /// <param name="vodIds">Only these VODs (comma separated); blank = all of the team's videos, newest first.</param>
@@ -168,9 +192,9 @@ namespace TwitchDownloaderWeb.Endpoints
             return video is null ? NotFound() : Results.Ok((await ToDtosAsync(db, [video], team, cancellationToken))[0]);
         }
 
-        /// <summary>Checks the title and segments. The segments must be <paramref name="ownerId"/>'s, on one video row of the VOD.</summary>
+        /// <summary>Checks the title and segments. The segments must be <paramref name="ownerId"/>'s, on their rows, of VODs the team can open.</summary>
         private static async Task<(string? Title, List<VodMarker> Markers, IResult? Problem)> ValidateAsync(LibraryDbContext db, VideoRequest request,
-            long vodId, int ownerId, int? requiredRowId, bool titleRequired, CancellationToken cancellationToken)
+            TeamContext team, TeamChannelAccess access, int ownerId, bool titleRequired, CancellationToken cancellationToken)
         {
             var title = request.Title?.Trim();
             if (string.IsNullOrEmpty(title))
@@ -195,27 +219,30 @@ namespace TwitchDownloaderWeb.Endpoints
 
             var markers = await db.Markers.Where(x => ids.Contains(x.Id)).ToListAsync(cancellationToken);
             string? error = null;
-            if (markers.Count != ids.Count || markers.Any(x => x.VodId != vodId))
-                error = "Pick segments on this VOD.";
+            if (markers.Count != ids.Count)
+                error = "Some of those segments are gone.";
             else if (markers.Any(x => x.EndSeconds is null))
                 error = "Only segments can be linked, not moments.";
             else if (markers.Any(x => x.CreatedByUserId != ownerId))
                 error = "A video links segments of one member.";
-            else if (markers.Select(x => x.RowId).Distinct().Count() != 1 || markers[0].RowId is null
-                     || (requiredRowId is { } row && markers[0].RowId != row))
-                error = "A video links segments from one row.";
+            else if (markers.Any(x => x.RowId is null))
+                error = "Link segments that are on a row.";
             if (error is not null)
                 return (null, [], Results.ValidationProblem(new Dictionary<string, string[]> { ["markerIds"] = [error] }));
+            // Segments of other streamers' VODs (synced rows): the team must still be able to open them
+            foreach (var vod in markers.Select(x => x.VodId).Distinct())
+                if (TeamChannelAccess.Refusal(await access.CheckVodAsync(team.TeamId, vod, cancellationToken), vod) is { } refused)
+                    return (null, [], refused);
 
             return (title, ids.Select(id => markers.First(x => x.Id == id)).ToList(), null);
         }
 
         private static async Task<IResult> Create(long vodId, VideoRequest request, TeamContext team, LibraryDbContext db, IVodDetailsSource vods,
-            CancellationToken cancellationToken)
+            TeamChannelAccess access, CancellationToken cancellationToken)
         {
             if (request.MarkerIds is null)
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["markerIds"] = ["Link at least one segment."] });
-            var (title, markers, problem) = await ValidateAsync(db, request, vodId, team.UserId, null, titleRequired: true, cancellationToken);
+            var (title, markers, problem) = await ValidateAsync(db, request, team, access, team.UserId, titleRequired: true, cancellationToken);
             if (problem is not null)
                 return problem;
 
@@ -233,7 +260,7 @@ namespace TwitchDownloaderWeb.Endpoints
             var now = DateTime.UtcNow;
             var video = new Video
             {
-                VodId = vodId, RowId = markers[0].RowId!.Value, UserId = team.UserId, Title = title!, ChannelName = vod?.ChannelName,
+                VodId = vodId, RowId = markers[0].RowId, UserId = team.UserId, Title = title!, ChannelName = vod?.ChannelName,
                 StreamDateUtc = vod?.StreamDateUtc ?? default, ThumbnailUrl = vod?.ThumbnailUrl, CreatedAtUtc = now, UpdatedAtUtc = now,
                 Segments = markers.Select((m, i) => new VideoSegment { MarkerId = m.Id, Marker = m, Position = i }).ToList(),
             };
@@ -249,7 +276,8 @@ namespace TwitchDownloaderWeb.Endpoints
         }
 
         /// <summary>Retitles it and/or sets its segments (the whole list, in order).</summary>
-        private static async Task<IResult> Update(int id, VideoRequest request, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
+        private static async Task<IResult> Update(int id, VideoRequest request, TeamContext team, LibraryDbContext db, TeamChannelAccess access,
+            CancellationToken cancellationToken)
         {
             var video = await WithSegments(db).FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
             if (video is null)
@@ -257,7 +285,7 @@ namespace TwitchDownloaderWeb.Endpoints
             if (!CanEdit(team, video))
                 return Results.Problem(detail: "Your role only lets you change your own videos. Make a copy instead.", statusCode: StatusCodes.Status403Forbidden);
 
-            var (title, markers, problem) = await ValidateAsync(db, request, video.VodId, video.UserId, video.RowId, titleRequired: false, cancellationToken);
+            var (title, markers, problem) = await ValidateAsync(db, request, team, access, video.UserId, titleRequired: false, cancellationToken);
             if (problem is not null)
                 return problem;
 
@@ -337,18 +365,24 @@ namespace TwitchDownloaderWeb.Endpoints
         internal static async Task<(Video? Copy, IResult? Problem)> CopyVideoAsync(Video source, int? rowId, TeamContext team, LibraryDbContext db,
             TeamChannelAccess access, CancellationToken cancellationToken)
         {
-            if (TeamChannelAccess.Refusal(await access.CheckVodAsync(team.TeamId, source.VodId, cancellationToken), source.VodId) is { } refused)
-                return (null, refused);
-            if (rowId is { } row
-                && await TimelineEndpoints.CheckRowAsync(db, row, source.VodId, TimelineRowKind.Video, team.UserId, cancellationToken) is { } rowProblem)
-                return (null, rowProblem);
-            var request = new CopyRequest(rowId);
+            var sourceVods = source.Segments.Where(x => x.Marker is not null).Select(x => x.Marker!.VodId).Append(source.VodId).Distinct().ToList();
+            foreach (var vod in sourceVods)
+                if (TeamChannelAccess.Refusal(await access.CheckVodAsync(team.TeamId, vod, cancellationToken), vod) is { } refused)
+                    return (null, refused);
+            // The row asked for takes the segments of its VOD; the others go on the caller's first video row of their own VOD
+            long? rowVod = null;
+            if (rowId is { } row)
+            {
+                rowVod = await db.TimelineRows.AsNoTracking().Where(x => x.Id == row).Select(x => (long?)x.VodId).FirstOrDefaultAsync(cancellationToken);
+                if (rowVod is null || await TimelineEndpoints.CheckRowAsync(db, row, rowVod.Value, TimelineRowKind.Video, team.UserId, cancellationToken) is { } rowProblem)
+                    return (null, Results.ValidationProblem(new Dictionary<string, string[]> { ["rowId"] = ["Pick one of your video rows."] }));
+            }
 
             var now = DateTime.UtcNow;
             var copies = source.Segments.Where(x => x.Marker is { EndSeconds: not null }).OrderBy(x => x.Position).Select(x => new VodMarker
             {
-                VodId = source.VodId, Seconds = x.Marker!.Seconds, EndSeconds = x.Marker.EndSeconds, Label = x.Marker.Label, Color = x.Marker.Color,
-                Cuts = x.Marker.Cuts, RowId = request.RowId, CopiedFromMarkerId = x.MarkerId, CreatedAtUtc = now,
+                VodId = x.Marker!.VodId, Seconds = x.Marker.Seconds, EndSeconds = x.Marker.EndSeconds, Label = x.Marker.Label, Color = x.Marker.Color,
+                Cuts = x.Marker.Cuts, RowId = x.Marker.VodId == rowVod ? rowId : null, CopiedFromMarkerId = x.MarkerId, CreatedAtUtc = now,
             }).ToList();
             var linkCuts = source.Segments.Where(x => x.Marker is { EndSeconds: not null }).OrderBy(x => x.Position).Select(x => x.Cuts).ToList();
             if (copies.Count == 0)
@@ -360,7 +394,7 @@ namespace TwitchDownloaderWeb.Endpoints
 
             var video = new Video
             {
-                VodId = source.VodId, RowId = copies[0].RowId!.Value, UserId = team.UserId, Title = source.Title, ChannelName = source.ChannelName,
+                VodId = source.VodId, RowId = copies[0].RowId, UserId = team.UserId, Title = source.Title, ChannelName = source.ChannelName,
                 StreamDateUtc = source.StreamDateUtc, ThumbnailUrl = source.ThumbnailUrl, CopiedFromVideoId = source.Id, CreatedAtUtc = now, UpdatedAtUtc = now,
                 Segments = copies.Select((m, i) => new VideoSegment { MarkerId = m.Id, Position = i, Cuts = linkCuts[i] }).ToList(),
             };
@@ -378,7 +412,8 @@ namespace TwitchDownloaderWeb.Endpoints
         /// </summary>
         internal static async Task DeleteEmptyAsync(LibraryDbContext db, long vodId, CancellationToken cancellationToken)
         {
-            var empty = await db.Videos.Where(x => x.VodId == vodId && !db.VideoSegments.Any(s => s.VideoId == x.Id)).ToListAsync(cancellationToken);
+            // Any VOD of the team's: a video may link segments of other VODs (synced rows)
+            var empty = await db.Videos.Where(x => !db.VideoSegments.Any(s => s.VideoId == x.Id)).ToListAsync(cancellationToken);
             if (empty.Count == 0)
                 return;
             foreach (var video in empty)

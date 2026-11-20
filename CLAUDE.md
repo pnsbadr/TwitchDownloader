@@ -106,12 +106,21 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   row doesn't come back). Migrations `TimelineRows` + `TimelineRowsBackfill` put existing markers on their creator's row and entries on
   their adder's (entries from before accounts: the team owner's) row. Deleting a row deletes its segments/moments (audited `row.deleted`);
   a clip row that still holds clips → 409 `code: "row-has-clips"`. Hide/solo/lock are page-only.
-- `Videos` (`Video`) + `VideoSegments` (badrfly, 2026-11-15, `VideoEndpoints`): a **video** is one or more segments from one video row of one VOD,
-  linked in order with a title (team query filter; `RowId` FK cascade; links cascade with the video and with the marker). Owner = the row's
+  **Synced rows** (badrfly 2026-11-20, migration `SyncedRows`): a row of another streamer's VOD shown on one VOD's timeline. It is a real row
+  of its own VOD (`VodId` = theirs, so their VOD's timeline shows it as a plain row) with `ShownOnVodId` = the VOD it's shown on and
+  `SyncBaseSeconds` (shown VOD's createdAt − its VOD's createdAt). `POST /api/vods/{id}/rows { kind, syncedVodId }` makes one (both VODs open
+  to the team, read from Twitch; name defaults to their channel). `GET /timeline` adds them (after the member's own rows) with their markers
+  and clips; rows carry `vodId`, `shownOnVodId` and `shift` (= `SyncBaseSeconds` + the pair's `VodSyncOffsets` correction:
+  their second = this VOD's second + shift); clips carry `vodId`. Items on them are items of their own VOD in its seconds. First rows
+  (`EnsureFirstRows`) and `DefaultRowAsync` ignore synced rows.
+- `Videos` (`Video`) + `VideoSegments` (badrfly, 2026-11-15, `VideoEndpoints`): a **video** is one or more segments of its member (since 2026-11-20 from
+  **any** of their video rows and VODs, synced rows included; each VOD must be open to the team), linked in order with a title (team query
+  filter; `RowId` FK SetNull, the row it was made on; segments carry `vodId` / `rowId`, exports cut each from its own VOD
+  (`ExportVideoPart.VodId`); the card's thumbnail is the middle segment's VOD; links cascade with the video and with the marker). Owner = the row's
   member; edit own (`AddEntries`) or anyone's (`EditAnyEntries`), delete own or anyone's (`DeleteAnyEntries`); others copy it
   (`POST /api/videos/{id}/copy`: segments copied onto the caller's row, linked the same way). It **follows its segments**: lengths come from the
   markers live; deleting a segment unlinks it and a video with none left is deleted (`VideoEndpoints.DeleteEmptyAsync`, after marker/row
-  deletes, audited `video.deleted`); a linked segment can't become a moment or move rows (409 `code: "segment-in-video"`). Deleting a video
+  deletes, audited `video.deleted`); a linked segment can't become a moment (409 `code: "segment-in-video"`); it may move rows of its VOD. Deleting a video
   keeps its segments. Channel name, stream date and thumbnail are read from Twitch when it's made. Audited `video.added`/`video.changed`.
 - **Copies** (`CopyEndpoints`, badrfly, 2026-11-15): others' segments/moments are editable only with `EditAnyEntries` (as before), clips with
   `EditAnyEntries`; otherwise members copy them onto their own row (`AddEntries`): `POST /api/markers/{id}/copy`, `POST /api/entries/{id}/copy`
@@ -704,10 +713,19 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   layout part under each piece's middle becomes its layout with keys in VOD seconds; title "item · edit title" or "item (edit)"). The edits,
   their endpoints and `kind: "edit"` exports stay on the server.
 - **Videos** (step 6): the tools bar's **link** tool (Player 1, `startLinking` / `toggleLink` / `saveLink` in `ui/timeline-edit.js`): click
-  segments on one of your own rows in play order (numbered badges; clicking again takes one out), type a title, press ✓ →
+  segments on any of your own rows in play order (synced rows too: segments of another VOD; numbered badges; clicking again takes one out), type a title, press ✓ →
   `POST /api/vods/{id}/videos`; the video shows in VIDEOS and loads in Player 2. Player 1 marks segments that are in a video with their
   position (tip: "In video "x" (n of m)"). In Player 2 a video becomes pieces of the project (its segments'
   kept parts). Rename and delete on the card's menu; others' videos are copied with `POST /api/videos/{id}/copy`.
+- **Synced rows on Player 1** (badrfly 2026-11-20, `addSyncedRow` / `runSyncedRow` / `openSynced` in `ui/editor.js`): the footer's
+  people button, then a channel picture (`pickChannel`): `GET /api/vods/{id}/sync` ±90 min around the playhead, the broadcast at the
+  playhead (else nearest) gets a synced row, lined up by sound when the pair wasn't (same call as Player 2's Sync with). The timeline keeps
+  their items **on this VOD's clock** (`load()`: their seconds − `shift`, `raw` = as sent; `shiftTimes` in `ui/timeline-edit.js`) and
+  turns them back at every server call (`toServer` / `fromServer` in `postMarker`, `putMarker`, `trimClip`, copies; posts go to the row's
+  VOD). Drops only go on rows of the item's own VOD (`rowVod`); a dragged item carries its own VOD and times. `targetRow` prefers this VOD's
+  rows unless a synced row was clicked last. Player 1 keeps playing this VOD; the row head's monitor button (instead of the play button)
+  opens their VOD at the same moment and `#p1-synced-back` returns. Player 2 / Export: a video's segments play from `segment.vodId`; the
+  Export preview plays only the video's own VOD's segments (and says so).
 - **Cut-out parts** (step 7, `ui/cuts.js` mirrors the server's `CutOuts` rules): set from Player 2 by a piece's "Apply this trim to the
   original" (the parts of the clip/segment that no piece copied from it keeps). Drawn darker on Player 1 (tip: "Cut out … · left out of
   files") and their edges are snap points. Player 1 skips them while a selected segment or clip plays on its own; a clip dropped into a

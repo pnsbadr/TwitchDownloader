@@ -13,7 +13,7 @@ import { $, el, api, me, can, toast, formatDuration, withTooltip } from "./core.
 import { askText, confirmAction } from "./dialogs.js";
 import { MARKER_COLORS, clipColor } from "./colors.js";
 import { formatClock } from "./media.js";
-import { editing } from "./timeline-edit.js";
+import { editing, shiftTimes } from "./timeline-edit.js";
 import { isDragging } from "./drag.js";
 import { rowPlayButton } from "./project-timeline.js";
 import { keptParts } from "./cuts.js";
@@ -164,8 +164,12 @@ export class Timeline {
       } else {
         const rowsChanged = JSON.stringify(timeline.rows) !== JSON.stringify(this.rows);
         this.rows = timeline.rows ?? [];
-        this.markers = timeline.markers ?? [];
-        this.clips = timeline.clips ?? [];
+        // Items on synced rows (another VOD's rows shown on this one, badrfly 2026-11-20) are kept on this VOD's clock:
+        // their own VOD's seconds - the row's shift. `raw` keeps them as the server sent them.
+        const shifts = new Map(this.rows.filter((r) => r.shift != null && r.vodId != null && String(r.vodId) !== String(vodId)).map((r) => [r.id, r.shift]));
+        const local = (item) => (shifts.has(item.rowId) ? { ...shiftTimes(item, -shifts.get(item.rowId)), raw: item } : item);
+        this.markers = (timeline.markers ?? []).map(local);
+        this.clips = (timeline.clips ?? []).map(local);
         this.videos = timeline.videos ?? [];
         if (rowsChanged) {
           this.renderHeads();
@@ -310,8 +314,9 @@ export class Timeline {
         });
         return withTooltip(button, label);
       };
-      const name = el("div", { class: "row-name" },
-        el("sl-icon", { library: "ph", name: isClip ? "film-strip" : "brackets-square", class: "row-kind" }),
+      const synced = !item && row.shift != null && row.vodId != null && String(row.vodId) !== String(this.vodId);
+      const name = el("div", { class: "row-name", title: synced ? "Synced row: another streamer's VOD, lined up with this one" : "" },
+        el("sl-icon", { library: "ph", name: synced ? "users-three" : isClip ? "film-strip" : "brackets-square", class: "row-kind" }),
         el("span", { class: "row-title", title: row.canEdit ? "Double-click to rename" : "" }, this.rowTitle(row)),
         el("span", { class: "row-owner" + (own ? " own" : "") }, own ? "you" : row.username));
       if (row.canEdit) name.addEventListener("dblclick", () => this.renameRow(row));
@@ -325,7 +330,7 @@ export class Timeline {
       const focusClass = this.focus ? (this.focus === row.id ? " focused" : " folded") : "";
       const head = el("div", { class: "row-head" + (own ? " own" : "") + (index % 2 ? " odd" : "") + focusClass, style: `height:${this.rowGeom()[index].h}px` },
         check,
-        item ? null : rowPlayButton(this.focus === row.id, () => this.hooks.onFocusRow?.(row.id)),
+        item ? null : synced ? this.openSyncedButton(row) : rowPlayButton(this.focus === row.id, () => this.hooks.onFocusRow?.(row.id)),
         name,
         el("div", { class: "row-btns" },
           item ? null : toggle("hidden", state.hidden ? "Show row" : "Hide row", "eye", "eye-slash"),
@@ -338,6 +343,16 @@ export class Timeline {
       return head;
     }));
     this.dirty = true;
+  }
+
+  // A synced row's head: Player 1 opens that row's VOD at the same moment (the playhead + the row's shift)
+  openSyncedButton(row) {
+    const button = el("sl-icon-button", { library: "ph", name: "monitor-play", label: "Open their VOD here", class: "row-btn row-play" });
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      this.hooks.onOpenSynced?.(row, (this.getPosition() ?? 0) + row.shift);
+    });
+    return withTooltip(button, "Open their VOD at this moment");
   }
 
   async renameRow(row) {
@@ -359,6 +374,7 @@ export class Timeline {
     });
     on("tl-add-video", "click", () => this.addRow("video"));
     on("tl-add-clip", "click", () => this.addRow("clip"));
+    on("tl-add-synced", "click", () => this.hooks.onAddSyncedRow?.(this.getPosition() ?? 0));
     on("tl-delete-rows", "click", () => this.deleteToggledRows());
     on("tl-zoom-in", "click", () => this.zoomBy(0.5));
     on("tl-zoom-out", "click", () => this.zoomBy(2));
@@ -372,6 +388,7 @@ export class Timeline {
     const canAdd = rows && Boolean(this.vodId) && can("AddEntries") && !me?.support;
     $("tl-add-video").disabled = !canAdd;
     $("tl-add-clip").disabled = !canAdd;
+    $("tl-add-synced").disabled = !canAdd || !this.hooks.onAddSyncedRow;
     $("tl-delete-rows").disabled = !rows || !this.rows.some((row) => this.stateOf(row).toggled);
     for (const id of ["tl-zoom-in", "tl-zoom-out", "tl-fit", "tl-zoom"]) $(id).disabled = !this.vodId;
     $("tl-zoom").value = this.sliderValue();

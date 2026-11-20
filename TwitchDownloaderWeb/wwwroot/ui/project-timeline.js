@@ -170,6 +170,7 @@ export class ProjectTimeline {
     this.tip.hidden = true;
     this.hover = null;
     $("tl-add-clip").hidden = on;
+    $("tl-add-synced").hidden = on;
     $("tl-add-video").label = on ? "Add a row" : "Insert video row";
     $("tl-delete-rows").label = on ? "Delete the selected row" : "Delete toggled rows";
     this.renderHeads();

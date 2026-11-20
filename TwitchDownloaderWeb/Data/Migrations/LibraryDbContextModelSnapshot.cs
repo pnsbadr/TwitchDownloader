@@ -1231,6 +1231,12 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<int>("Position")
                         .HasColumnType("INTEGER");
 
+                    b.Property<long?>("ShownOnVodId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double?>("SyncBaseSeconds")
+                        .HasColumnType("REAL");
+
                     b.Property<int>("TeamId")
                         .HasColumnType("INTEGER");
 
@@ -1241,6 +1247,8 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TeamId", "ShownOnVodId");
 
                     b.HasIndex("TeamId", "VodId", "UserId");
 
@@ -1354,7 +1362,7 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("TEXT");
 
-                    b.Property<int>("RowId")
+                    b.Property<int?>("RowId")
                         .HasColumnType("INTEGER");
 
                     b.Property<DateTime>("StreamDateUtc")
@@ -1819,8 +1827,7 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.HasOne("TwitchDownloaderWeb.Data.TimelineRow", null)
                         .WithMany()
                         .HasForeignKey("RowId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.SetNull);
 
                     b.HasOne("TwitchDownloaderWeb.Data.Team", null)
                         .WithMany()

@@ -128,6 +128,10 @@ namespace TwitchDownloaderWeb.Data
         [property: JsonPropertyName("end")] double End,
         [property: JsonPropertyName("cuts")] IReadOnlyList<CutRange> Cuts)
     {
+        /// <summary>The segment's VOD when it isn't the item's (a video linking segments of synced rows, badrfly 2026-11-20); null = the item's.</summary>
+        [JsonPropertyName("vodId")]
+        public long? VodId { get; init; }
+
         private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
         public static IReadOnlyList<ExportVideoPart> Read(string? json) =>
