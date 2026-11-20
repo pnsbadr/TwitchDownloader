@@ -1185,6 +1185,13 @@ export class ProjectTimeline {
         items.push({ icon: "stack", label: "Use this layout on every piece", run: () => this.layoutEverywhere(piece) });
       }
       items.push({ icon: "crosshair", label: "Show in Player 1", run: () => this.hooks.onShowInPlayer1?.(piece) });
+      // "Sync with" (badrfly 2026-11-20): the same moment from another streamer's VOD, on a new row under this one
+      if (this.store.canEdit && this.hooks.onSyncWith) {
+        items.push({ icon: "users-three", label: pieces.length > 1 ? `Sync ${pieces.length} pieces with…` : "Sync with…", run: () => this.hooks.onSyncWith(pieces) });
+      }
+      if (canEdit) {
+        items.push({ icon: "arrows-left-right", label: "Slide the footage…", run: () => this.askSlide(pieces) });
+      }
       if (piece.source && (piece.source.kind === "clip" || piece.source.kind === "segment") && this.hooks.onApplyToOriginal) {
         items.push({ icon: "arrow-fat-line-up", label: "Apply this trim to the original", run: () => this.hooks.onApplyToOriginal(piece) });
       }
@@ -1352,6 +1359,86 @@ export class ProjectTimeline {
     for (const piece of pieces) vodLength(piece.vodId);
     this.select(ids);
     return true;
+  }
+
+  // "Sync with": `pieces` (already at their place on the edit's clock) go on new rows right under the lowest row of `sources`,
+  // named after the channel; pieces that would overlap on one row get another row under it
+  addSyncedRows(sources, pieces, name) {
+    if (!this.store.canEdit || !pieces.length) return false;
+    const ids = [];
+    let problem = "";
+    const ok = this.store.edit((c) => {
+      if (c.pieces.length + pieces.length > MAX_PIECES) {
+        problem = `An edit can have at most ${MAX_PIECES} pieces.`;
+        return false;
+      }
+      const below = Math.max(...sources.map((p) => c.tracks.findIndex((t) => t.id === p.trackId)));
+      const rows = [];
+      for (const piece of [...pieces].sort((a, b) => a.at - b.at)) {
+        let trackId = rows.find((id) => fits(c, id, piece.at, pieceLength(piece)));
+        if (!trackId) {
+          if (c.tracks.length >= MAX_TRACKS) {
+            problem = `An edit can have at most ${MAX_TRACKS} rows.`;
+            return false;
+          }
+          trackId = newId("t");
+          const track = makeTrack(c, trackId);
+          track.name = (rows.length ? `${name} ${rows.length + 1}` : name).slice(0, 60);
+          c.tracks.splice(below + 1 + rows.length, 0, track);
+          rows.push(trackId);
+        }
+        const copy = { ...structuredClone(piece), id: newId("p"), trackId, at: round(piece.at), start: round(piece.start), end: round(piece.end) };
+        delete copy.layout;
+        c.pieces.push(copy);
+        ids.push(copy.id);
+      }
+    });
+    if (!ok) {
+      if (problem) toast(problem, "error");
+      return false;
+    }
+    for (const piece of pieces) vodLength(piece.vodId);
+    this.select(ids);
+    this.renderHeads();
+    return true;
+  }
+
+  // Slide the footage under pieces (what they show moves, their place and length stay): for lining up a synced point of view
+  // a few seconds off. + = later in the VOD. Capped at the VOD's start and (when known) its end.
+  slideSelected(delta, pieces = this.selectedPieces()) {
+    if (!this.store.canEdit) return false;
+    const movable = pieces.filter((p) => !this.isLocked(p.trackId));
+    if (!movable.length) return false;
+    let capped = false;
+    const ok = this.store.edit((c) => {
+      for (const piece of movable) {
+        const p = c.pieces.find((x) => x.id === piece.id);
+        if (!p) continue;
+        const length = vodLengths.get(String(p.vodId)) ?? null;
+        let d = Math.max(delta, -p.start);
+        if (length != null) d = Math.min(d, length - p.end);
+        if (Math.abs(d - delta) > 0.001) capped = true;
+        p.start = round(p.start + d);
+        p.end = round(p.end + d);
+        if (p.layout?.keys) for (const key of p.layout.keys) key.time = round(key.time + d);
+      }
+    });
+    if (capped) toast("It can't slide past the start or end of its VOD.");
+    return ok;
+  }
+
+  async askSlide(pieces) {
+    const text = await askText({
+      heading: "Slide the footage",
+      label: "Seconds (+ later in the VOD, − earlier)",
+      value: "0",
+      confirm: "Slide",
+      maxLength: 12,
+    });
+    if (text == null) return;
+    const seconds = Number(String(text).replace(",", ".").replace("−", "-").trim());
+    if (!Number.isFinite(seconds) || seconds === 0) return;
+    this.slideSelected(seconds, pieces);
   }
 
   // "Load in Player 2" and new items from Player 1: at the playhead on the picked row (or the end of the top row if that's taken)
