@@ -77,6 +77,7 @@ const KEYBINDS = [
   { id: "handDrag", scope: "timeline-mouse", keys: ["Hand tool drag", "Middle drag"], description: "Scroll the timeline (Player 2 also has a scroll bar at the bottom). Both timelines use the same tools, cursors and wheel" },
 
   { id: "cardLoad", scope: "library", keys: ["Enter", "Double-click"], description: "Load the card: a VOD in Player 1, a clip, segment or video into Player 2's project, a project in Player 2 (export list: show its settings)" },
+  { id: "rowMove", scope: "library", keys: ["ArrowUp", "ArrowDown"], description: "Rows view of the left panel: select the row above / below (its card shows at the bottom of the panel)" },
   { id: "cardMenu", scope: "library", keys: ["ContextMenu", "Shift+F10", "Right click"], description: "The card's menu: load, export, rename, delete" },
   { id: "cardDrag", scope: "library", keys: ["Drag"], description: "Drop a card on a player, a timeline row or the export list" },
   { id: "exportRemove", scope: "library", keys: ["Delete"], description: "Take the focused row off the export list" },

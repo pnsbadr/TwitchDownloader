@@ -90,6 +90,7 @@
         <div class="side-tools" data-tip-placement="bottom">
           <div class="chan-bar" id="side-channels" role="group" aria-label="Channels" hidden></div>
           <span class="side-count faint" id="side-count"></span>
+          <sl-tooltip content="Show as cards" hoist><sl-icon-button library="ph" name="cards" label="Show as cards" id="side-view"></sl-icon-button></sl-tooltip>
           <sl-dropdown id="filter-menu" placement="bottom-end" distance="4" hoist stay-open-on-select>
             <sl-icon-button slot="trigger" library="ph" name="funnel-simple" label="Search, sort and filter" id="side-filter"></sl-icon-button>
             <div class="filter-panel" id="filter-panel">
@@ -135,7 +136,13 @@
             </div>
           </sl-dropdown>
         </div>
-        <div class="side-list" id="side-list" role="list"></div>
+        <div class="side-listwrap">
+          <div class="side-list" id="side-list" role="list"></div>
+          <!-- Months of the list: click or drag to jump -->
+          <div class="side-scrub" id="side-scrub" aria-hidden="true" hidden></div>
+        </div>
+        <!-- Rows view: the card of the row under the mouse, else the selected one -->
+        <div class="side-peek" id="side-peek" hidden></div>
       </aside>
 
       <main class="views">

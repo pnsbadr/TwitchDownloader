@@ -356,9 +356,16 @@ namespace TwitchDownloaderWeb.Endpoints
         /// <param name="madeBy">Only clips this member added.</param>
         /// <param name="editedBy">Only clips this member made an edit of (Player 2).</param>
         /// <param name="channels">Only clips of these team channels (logins, comma separated; the library's channel bar).</param>
+        /// <param name="paged">true: answer <c>{ items, nextCursor, total }</c> instead of a plain list (the library pages through thousands).</param>
+        /// <param name="cursor">A page's <c>nextCursor</c>: the clips after it in the same sort (<see cref="PageCursor"/>).</param>
         private static async Task<IResult> ListEntries(LibraryDbContext db, string? search, string? sort, string? order, int? limit,
-            string? from, string? to, string? dateField, long? vodId, int? madeBy, int? editedBy, string? channels, TeamContext team, CancellationToken cancellationToken)
+            string? from, string? to, string? dateField, long? vodId, int? madeBy, int? editedBy, string? channels, bool? paged, string? cursor,
+            TeamContext team, CancellationToken cancellationToken)
         {
+            PageCursor? after = null;
+            if (!string.IsNullOrEmpty(cursor) && !PageCursor.TryParse(cursor, out after))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["cursor"] = ["Use the nextCursor of the page before."] });
+
             if (!TryParseInstant(from, out var fromUtc))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["from"] = ["Use an ISO 8601 date-time with an offset, e.g. 2026-10-09T07:00:00Z."] });
 
@@ -414,6 +421,21 @@ namespace TwitchDownloaderWeb.Endpoints
             }
 
             var ascending = string.Equals(order, "asc", StringComparison.OrdinalIgnoreCase);
+            var byStreamDate = string.Equals(sort, "streamDate", StringComparison.OrdinalIgnoreCase);
+            var total = paged == true ? await query.CountAsync(cancellationToken) : 0;
+            if (after is { } a)
+            {
+                // Keyset paging: the rows after the cursor in the same order (date, then ID), so new clips don't shift pages
+                var at = a.AtUtc;
+                var id = a.Id;
+                query = (byStreamDate, ascending) switch
+                {
+                    (true, true) => query.Where(x => x.StreamDateUtc > at || (x.StreamDateUtc == at && x.Id > id)),
+                    (true, false) => query.Where(x => x.StreamDateUtc < at || (x.StreamDateUtc == at && x.Id < id)),
+                    (false, true) => query.Where(x => x.AddedAtUtc > at || (x.AddedAtUtc == at && x.Id > id)),
+                    (false, false) => query.Where(x => x.AddedAtUtc < at || (x.AddedAtUtc == at && x.Id < id)),
+                };
+            }
             query = sort?.ToLowerInvariant() switch
             {
                 "streamdate" => ascending ? query.OrderBy(x => x.StreamDateUtc).ThenBy(x => x.Id) : query.OrderByDescending(x => x.StreamDateUtc).ThenByDescending(x => x.Id),
@@ -424,9 +446,18 @@ namespace TwitchDownloaderWeb.Endpoints
             if (query is null)
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["sort"] = ["Sort must be streamDate or dateAdded."] });
 
-            var entries = await query.Take(Math.Clamp(limit ?? 200, 1, 1000)).ToListAsync(cancellationToken);
+            var take = Math.Clamp(limit ?? 200, 1, 1000);
+            var entries = await query.Take(paged == true ? take + 1 : take).ToListAsync(cancellationToken);
+            string? next = null;
+            if (paged == true && entries.Count > take)
+            {
+                entries.RemoveAt(take);
+                var last = entries[^1];
+                next = new PageCursor(byStreamDate ? last.StreamDateUtc : last.AddedAtUtc, last.Id).ToString();
+            }
             var names = await UsernamesAsync(db, entries.Select(x => x.AddedByUserId), cancellationToken);
-            return Results.Ok(entries.Select(x => EntryDto.From(x) with { AddedBy = x.AddedByUserId is { } u ? names.GetValueOrDefault(u) : null }));
+            var dtos = entries.Select(x => EntryDto.From(x) with { AddedBy = x.AddedByUserId is { } u ? names.GetValueOrDefault(u) : null }).ToList();
+            return paged == true ? Results.Ok(new Page<EntryDto>(dtos, next, total)) : Results.Ok(dtos);
         }
 
         /// <summary>Usernames by user ID text (AddedByUserId). Unknown IDs are left out.</summary>
