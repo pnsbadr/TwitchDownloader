@@ -19,6 +19,7 @@ const KEYBIND_SCOPES = [
   { id: "vertical", title: "Vertical editor", description: "While a vertical (9:16) edit is open. The editor's keys above still work there." },
   { id: "vertical-box", title: "Vertical editor: selected box", description: "After clicking a crop box." },
   { id: "form", title: "Titles and dialogs", description: "In the tools bar's title box and in pop-ups." },
+  { id: "search", title: "Library search box", description: "In the search box at the top of the left panel. Type by:name, vod:title, @channel, a day (nov 14, today) or >1m / <30s to filter; other words search titles and labels." },
 ];
 
 const KEYBINDS = [
@@ -54,6 +55,7 @@ const KEYBINDS = [
   { id: "toggleWaves", scope: "player", keys: ["W"], description: "Sound waves on/off: Player 2 on the pieces, Player 1 on synced rows (theirs above, this VOD's below). They load once you zoom in to 20 minutes or less; a laugh or shout lines two streams up by eye" },
   { id: "slideFwd", scope: "player", keys: [">"], description: "Player 2: slide the selected pieces' footage 0.1 s later in their VOD. Player 1: move a synced row 0.1 s later" },
   { id: "verticalToggle", scope: "player", keys: ["E"], description: "Player 2: a new vertical (9:16) edit of what's loaded, with its own timeline; in the vertical editor: back to Player 2" },
+  { id: "librarySearch", scope: "player", keys: ["Ctrl+K", "/"], description: "Go to the library's search box" },
   { id: "shortcutsHelp", scope: "player", keys: ["?"], description: "Show this list of shortcuts" },
   { id: "escape", scope: "player", keys: ["Escape"], description: "Stop a row playing on its own (a row's play button), cancel marking, linking or a drag, back to the pointer tool, or unselect" },
 
@@ -77,6 +79,10 @@ const KEYBINDS = [
   { id: "handDrag", scope: "timeline-mouse", keys: ["Hand tool drag", "Middle drag"], description: "Scroll the timeline (Player 2 also has a scroll bar at the bottom). Both timelines use the same tools, cursors and wheel" },
 
   { id: "cardLoad", scope: "library", keys: ["Enter", "Double-click"], description: "Load the card: a VOD in Player 1, a clip, segment or video into Player 2's project, a project in Player 2 (export list: show its settings)" },
+  { id: "searchMove", scope: "search", keys: ["ArrowDown", "ArrowUp"], description: "Move through the suggestions" },
+  { id: "searchPick", scope: "search", keys: ["Enter", "Tab"], description: "Take the suggestion (Enter with none picked: search, and turn typed shortcuts into chips)" },
+  { id: "searchClose", scope: "search", keys: ["Escape"], description: "Close the suggestions, then clear the box, then leave it" },
+  { id: "searchChipBack", scope: "search", keys: ["Backspace"], description: "In an empty box: take off the last chip" },
   { id: "rowMove", scope: "library", keys: ["ArrowUp", "ArrowDown"], description: "Rows view of the left panel: select the row above / below (its card shows at the bottom of the panel)" },
   { id: "cardMenu", scope: "library", keys: ["ContextMenu", "Shift+F10", "Right click"], description: "The card's menu: load, export, rename, delete" },
   { id: "cardDrag", scope: "library", keys: ["Drag"], description: "Drop a card on a player, a timeline row or the export list" },
