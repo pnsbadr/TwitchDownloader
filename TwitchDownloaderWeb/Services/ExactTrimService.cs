@@ -91,10 +91,34 @@ namespace TwitchDownloaderWeb.Services
             var settings = _settings.Value;
             var ffmpegPath = _configuration["Ffmpeg:Path"] is { Length: > 0 } configured ? configured : "ffmpeg";
             return TrimAsync(ffmpegPath, inputFile, startSeconds, lengthSeconds, outputFile, workDirectory,
-                settings.ExactTrimPreset, settings.ExactTrimCrf, logger, cancellationToken);
+                settings.ExactTrimPreset, settings.ExactTrimCrf, logger, cancellationToken, settings.SmartCut);
         }
 
-        public static Task TrimAsync(string ffmpegPath, string inputFile, double startSeconds, double lengthSeconds, string outputFile,
+        /// <param name="smartCut">
+        /// Re-encode only the cut's edges and copy the rest (<see cref="SmartCut"/>; <c>Downloads:SmartCut</c>, on by default). Falls back to
+        /// re-encoding the whole cut when the file isn't suited or the smart cut fails.
+        /// </param>
+        public static async Task TrimAsync(string ffmpegPath, string inputFile, double startSeconds, double lengthSeconds, string outputFile,
+            string workDirectory, string preset, int crf, ILogger logger, CancellationToken cancellationToken, bool smartCut = true)
+        {
+            if (smartCut)
+            {
+                try
+                {
+                    if (await SmartCut.TryCutAsync(ffmpegPath, inputFile, startSeconds, lengthSeconds, outputFile, workDirectory, preset, crf, logger,
+                            cancellationToken))
+                        return;
+                }
+                catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+                {
+                    logger.LogWarning("Smart cut failed ({Message}); re-encoding the whole cut.", ex.Message);
+                }
+            }
+            await ReencodeAsync(ffmpegPath, inputFile, startSeconds, lengthSeconds, outputFile, workDirectory, preset, crf, logger, cancellationToken);
+        }
+
+        /// <summary>The whole cut re-encoded (what every Exact cut did before smart cuts).</summary>
+        public static Task ReencodeAsync(string ffmpegPath, string inputFile, double startSeconds, double lengthSeconds, string outputFile,
             string workDirectory, string preset, int crf, ILogger logger, CancellationToken cancellationToken)
         {
             var invariant = CultureInfo.InvariantCulture;
