@@ -744,6 +744,10 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   opens into its days (a year into its months), the others slide down, a day shows "Tue, Oct 27 · 3 clips", click or drag jumps; "…" loads
   older pages. The **card** of the row under the mouse, else the selected one, is at the bottom (`#side-peek`). ↑/↓ move the selection.
   The cards view is the button next to the count, remembered per member in `localStorage` `clipco.library.view.{userId}`.
+  **VODs open to their work** (step 3, `toggleVod` / `loadKids` in library.js): a VOD with clips or videos gets an arrow (rows; cards: a
+  caret button and a menu item); opened (click, → / ←), its videos then clips, in VOD order, are slim indented rows under it (kind icon in
+  the item's color; drag, double-click, menu and the peek card work as on their own tabs), up to 50 of each (`/api/videos?vodIds=` /
+  `/api/entries?vodId=`, paged), then "All n clips" filters CLIPS by the VOD. Opened VODs re-read theirs when clips or videos change.
 - **Library search box** (badrfly 2026-11-20, step 2 of Large libraries; "the search box" in `ui/library.js`): always in sight over the three
   lists (`#search-input`, Ctrl+K or `/`, keys in keybinds.js scope `search`). Plain words search every list: clips by title, videos by title
   and their segments' labels (`/api/videos?search=`), VODs by loaded title plus every VOD whose clips, segments, moments or videos match

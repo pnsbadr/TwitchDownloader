@@ -68,6 +68,9 @@ const state = {
   who: { vodId: "", memberId: "", mode: "made" },
   members: new Map(),   // userId → name, from what's been loaded
   workedVods: [],       // GET /api/vods/work, for the VOD filter
+  // VODs opened to show their videos and clips under them (step 3 of Large libraries): vodId → { clips, videos, clipsTotal, videosTotal, loading, error }
+  open: new Set(),
+  kids: new Map(),
   // "Sync with" (Player 2's piece menu) waiting for a channel to be picked: { onPick, onCancel, shade }
   picking: null,
 };
@@ -594,6 +597,7 @@ async function loadClips() {
   state.clipsLoaded = true;
   if (state.list === "clips") render();
   schedulePoll();
+  reloadKids();
 }
 
 async function loadMoreClips() {
@@ -674,6 +678,7 @@ async function loadVideos() {
   state.videosMore = false;
   state.videosLoaded = true;
   if (state.list === "videos") render();
+  reloadKids();
 }
 
 async function loadMoreVideos() {
@@ -760,6 +765,7 @@ function render() {
   list.classList.toggle("rows", state.view === "rows");
   if (!items.length) {
     rowsModel = null;
+    state.cardLines = null;
     list.replaceChildren(el("p", { class: "side-empty" }, EMPTY[state.list]()));
     renderScrub(null);
     renderPeek();
@@ -768,11 +774,15 @@ function render() {
   const lines = linesFor(items);
   if (state.view === "rows") {
     renderRows(lines);
+    state.cardLines = null;
   } else {
     rowsModel = null;
+    state.cardLines = lines;
     const nodes = lines.map((line, index) => (line.head
       ? el("div", { class: `side-sep${index ? "" : " first"}`, "data-line": String(index), title: sepTitle(line) }, el("i"))
-      : card(specFor(line.item))));
+      : line.note ? kidNote(line)
+      : line.kid ? listRow(line)
+      : card(specFor(line.item, line.type))));
     if (listLoadingMore()) nodes.push(el("p", { class: "side-empty" }, "Loading more…"));
     list.replaceChildren(...nodes);
   }
@@ -827,9 +837,131 @@ function linesFor(items) {
       lines.push(head);
     }
     head.count++;
-    lines.push({ key: itemKey(item), item, at: p });
+    const type = listType();
+    lines.push({ key: itemKey(item, type), item, type, at: p });
+    if (type === "vod" && state.open.has(String(item.vodId))) lines.push(...kidLines(item, p));
   }
   return lines;
+}
+
+// What the list shows: "vod", "clip" or "video" (a VOD's opened lines are clips and videos on the VODs list)
+function listType() {
+  return state.list === "vods" ? "vod" : state.list === "clips" ? "clip" : "video";
+}
+
+// ---------- VODs open to their videos and clips (badrfly 2026-11-20, step 3 of Large libraries) ----------
+// A VOD with clips or videos on it gets an arrow; opened, its videos then clips (in VOD order) are slim rows right under it.
+// Up to KIDS_MAX of each are read (GET /api/videos?vodIds= / /api/entries?vodId=); a longer list ends in "All n clips", which filters CLIPS.
+
+const KIDS_MAX = 50;
+
+function hasKids(vod) {
+  const work = state.work.get(String(vod.vodId));
+  return Boolean(work && (work.clips || work.videos));
+}
+
+function kidLines(vod, at) {
+  const id = String(vod.vodId);
+  const kids = state.kids.get(id);
+  const note = (key, text, run) => ({ key: `kid:${id}:${key}`, note: text, run, vodId: id, kid: true, at });
+  if (!kids || (kids.loading && !kids.clips)) return [note("loading", "Loading…")];
+  if (kids.error) return [note("error", kids.error)];
+  const lines = [];
+  for (const video of kids.videos) lines.push({ key: `kid:${id}:video:${video.id}`, item: video, type: "video", kid: true, vodId: id, at });
+  if (kids.videosTotal > kids.videos.length) lines.push(note("videos", `All ${kids.videosTotal} videos`, () => showVodWork(id, "videos")));
+  for (const clip of kids.clips) lines.push({ key: `kid:${id}:clip:${clip.id}`, item: clip, type: "clip", kid: true, vodId: id, at });
+  if (kids.clipsTotal > kids.clips.length) lines.push(note("clips", `All ${kids.clipsTotal} clips`, () => showVodWork(id, "clips")));
+  if (!lines.length) return [note("none", "Nothing here any more.")];
+  return lines;
+}
+
+function toggleVod(vod, open = !state.open.has(String(vod.vodId))) {
+  const id = String(vod.vodId);
+  if (open === state.open.has(id)) return;
+  if (open) {
+    state.open.add(id);
+    if (!state.kids.has(id)) loadKids(id);
+  } else {
+    state.open.delete(id);
+    // A selected row inside it goes back to the VOD
+    if (state.selected.vods.startsWith(`kid:${id}:`)) state.selected.vods = `vod:${id}`;
+  }
+  if (state.list === "vods") render();
+}
+
+// Where a part of the VOD starts: clips by their start, videos by their first segment on this VOD
+function kidStart(item, id) {
+  if (item.segments) return Math.min(...item.segments.filter((s) => String(s.vodId ?? item.vodId) === id).map((s) => s.startSeconds), Infinity);
+  return item.startSeconds ?? item.startTime ?? 0;
+}
+
+async function loadKids(id) {
+  const kids = state.kids.get(id) ?? { clips: null, videos: null, clipsTotal: 0, videosTotal: 0 };
+  kids.loading = true;
+  state.kids.set(id, kids);
+  const byStart = (a, b) => kidStart(a, id) - kidStart(b, id);
+  try {
+    if (state.demo) {
+      Object.assign(kids, { clips: state.clips.filter((c) => String(c.vodId) === id), videos: state.videos.filter((v) => videoStreamIds(v).has(id)) });
+      kids.clipsTotal = kids.clips.length;
+      kids.videosTotal = kids.videos.length;
+    } else {
+      const limit = String(KIDS_MAX);
+      const [clips, videos] = await Promise.all([
+        api("GET", `/api/entries?${new URLSearchParams({ paged: "true", limit, vodId: id })}`),
+        api("GET", `/api/videos?${new URLSearchParams({ paged: "true", limit, vodIds: id })}`),
+      ]);
+      Object.assign(kids, { clips: clips.items, videos: videos.items, clipsTotal: clips.total, videosTotal: videos.total });
+      rememberMembers([...clips.items.map((c) => [c.addedByUserId, c.addedBy]), ...videos.items.map((v) => [v.userId, v.createdBy])]);
+    }
+    kids.clips.sort(byStart);
+    kids.videos.sort(byStart);
+    kids.error = "";
+  } catch (error) {
+    kids.error = error.message;
+  }
+  kids.loading = false;
+  if (state.list === "vods" && state.open.has(id)) render();
+}
+
+// Clips or videos changed: opened VODs read theirs again, closed ones forget them
+let kidsTimer = 0;
+function reloadKids() {
+  clearTimeout(kidsTimer);
+  kidsTimer = setTimeout(reloadKidsNow, 300);
+}
+
+function reloadKidsNow() {
+  for (const id of [...state.kids.keys()]) {
+    if (state.open.has(id)) loadKids(id);
+    else state.kids.delete(id);
+  }
+}
+
+function videoStreamIds(video) {
+  return new Set((video.segments ?? []).map((s) => String(s.vodId ?? video.vodId)).concat(video.segments?.length ? [] : [String(video.vodId)]));
+}
+
+// The arrow at the start of a VOD's row (an empty space of the same width on VODs with nothing to open)
+function vodCaret(vod) {
+  if (!hasKids(vod)) return el("span", { class: "lcaret empty" });
+  const open = state.open.has(String(vod.vodId));
+  const caret = el("button", { class: `lcaret${open ? " open" : ""}`, type: "button", tabindex: "-1", "aria-label": open ? "Close" : "Show its videos and clips", title: open ? "Close" : "Show its videos and clips (→)" },
+    el("sl-icon", { library: "ph", name: "caret-right" }));
+  caret.addEventListener("pointerdown", (event) => event.stopPropagation());
+  caret.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleVod(vod);
+  });
+  caret.addEventListener("dblclick", (event) => event.stopPropagation());
+  return caret;
+}
+
+// A line under an opened VOD that isn't an item: loading, "All 120 clips", a problem
+function kidNote(line) {
+  const node = el(line.run ? "button" : "div", { class: `lrow kid lrow-kidnote${line.run ? " link" : ""}`, ...(line.run ? { type: "button" } : {}) }, line.note);
+  if (line.run) node.addEventListener("click", line.run);
+  return node;
 }
 
 // ---------- the month bar on the list's right edge (badrfly 2026-11-20) ----------
@@ -1030,12 +1162,12 @@ function setUpScrub() {
   scrub.addEventListener("pointerleave", () => { if (!scrub.classList.contains("dragging")) close(); });
 }
 
-function itemKey(item) {
-  return state.list === "vods" ? `vod:${item.vodId}` : state.list === "clips" ? `clip:${item.id}` : `video:${item.id}`;
+function itemKey(item, type = listType()) {
+  return type === "vod" ? `vod:${item.vodId}` : `${type}:${item.id}`;
 }
 
-function specFor(item) {
-  return state.list === "vods" ? vodSpec(item) : state.list === "clips" ? clipSpec(item) : videoSpec(item);
+function specFor(item, type = listType()) {
+  return type === "vod" ? vodSpec(item) : type === "clip" ? clipSpec(item) : videoSpec(item);
 }
 
 let rowsModel = null;  // { lines, nodes: Map key → { item, node } } of the rows view on screen
@@ -1048,7 +1180,7 @@ function renderRows(lines) {
   // Rows of items that didn't change keep their node (focus and hover stay put)
   for (const line of lines) {
     const kept = old.get(line.key);
-    if (kept && kept.item === line.item && kept.count === line.count && (line.head || kept.sig === rowSig(line.item))) rowsModel.nodes.set(line.key, kept);
+    if (kept && kept.item === line.item && kept.count === line.count && (line.head || line.note || kept.sig === rowSig(line.item, line.type))) rowsModel.nodes.set(line.key, kept);
   }
   // Where each line starts: rows are ROW_H, the lines between days SEP_H
   const ys = new Array(lines.length + 1);
@@ -1087,11 +1219,12 @@ function drawWindow() {
     const line = lines[i];
     let entry = nodes.get(line.key);
     if (!entry) {
-      entry = { item: line.item, count: line.count, sig: line.head ? "" : rowSig(line.item), node: line.head ? dayRow(line) : listRow(line) };
+      entry = { item: line.item, count: line.count, sig: line.head || line.note ? "" : rowSig(line.item, line.type),
+        node: line.head ? dayRow(line) : line.note ? kidNote(line) : listRow(line) };
       nodes.set(line.key, entry);
     }
     entry.node.style.top = `${rowsModel.ys[i]}px`;
-    entry.node.classList.toggle("sel", !line.head && state.selected[state.list] === line.key);
+    entry.node.classList.toggle("sel", !line.head && !line.note && state.selected[state.list] === line.key);
     wanted.push(entry.node);
   }
   if (listLoadingMore()) {
@@ -1102,7 +1235,10 @@ function drawWindow() {
   // Keep the focused row in the page even when it scrolled out of view (keyboard focus isn't lost)
   const focused = document.activeElement?.closest?.(".lrow");
   if (focused && inner.contains(focused) && !wanted.includes(focused)) wanted.push(focused);
-  inner.replaceChildren(...wanted);
+  // Only rows that come or go are moved (rows are placed by top, so order doesn't matter): taking a focused row out and back loses its focus
+  const keep = new Set(wanted);
+  for (const child of [...inner.children]) if (!keep.has(child)) child.remove();
+  for (const node of wanted) if (node.parentNode !== inner) inner.append(node);
 }
 
 // The line before a day's rows (badrfly 2026-11-20: a thin line instead of a heading; the date is on the month bar and in the tooltip)
@@ -1147,19 +1283,22 @@ function hashText(text) {
 }
 
 // What a row shows that can change on the same item (VOD work loads later, clip downloads finish)
-function rowSig(item) {
-  if (state.list === "vods") {
+function rowSig(item, type = listType()) {
+  if (type === "vod") {
     const work = state.work.get(String(item.vodId));
-    return `${item.isLive}|${work ? workCount(work) : ""}|${shownChannels().length > 1}|${state.cards.get(item.channel)?.profileImageUrl ?? ""}`;
+    return `${item.isLive}|${work ? workCount(work) : ""}|${hasKids(item)}|${state.open.has(String(item.vodId))}|${shownChannels().length > 1}|${state.cards.get(item.channel)?.profileImageUrl ?? ""}`;
   }
   return `${item.title}|${item.status}|${item.generationStatus}|${item.color}|${item.clipLengthSeconds ?? item.lengthSeconds}`;
 }
 
 function listRow(line) {
-  const spec = specFor(line.item);
+  const spec = specFor(line.item, line.type);
   const r = spec.row;
-  const node = el("div", { class: "lrow item", role: "listitem", tabindex: "0", "aria-label": spec.title, "data-key": line.key },
-    r.lead ?? el("span", { class: "ldot", style: `background:${r.color ?? CLIP_COLOR}` }),
+  const node = el("div", { class: `lrow item${line.kid ? " kid" : ""}`, role: "listitem", tabindex: "0", "aria-label": spec.title, "data-key": line.key },
+    line.type === "vod" ? vodCaret(line.item) : null,
+    // Under an opened VOD: the kind's icon in the item's color instead of the dot
+    line.kid ? el("sl-icon", { library: "ph", name: line.type === "video" ? "film-strip" : "scissors", class: "lkind", style: `color:${r.color ?? CLIP_COLOR}` })
+      : r.lead ?? el("span", { class: "ldot", style: `background:${r.color ?? CLIP_COLOR}` }),
     el("span", { class: "ltitle", title: spec.title }, spec.title),
     ...(r.tags ?? []).filter(Boolean),
     el("span", { class: "llen" }, r.length ?? ""),
@@ -1174,12 +1313,29 @@ function listRow(line) {
       event.preventDefault();
       moveSelection(event.key === "ArrowDown" ? 1 : -1);
     }
+    // → opens a VOD, ← closes it (from one of its rows: back to the VOD)
+    if ((event.key === "ArrowRight" || event.key === "ArrowLeft") && (line.type === "vod" || line.kid) && state.list === "vods") {
+      event.preventDefault();
+      const open = event.key === "ArrowRight";
+      // The VOD's row is drawn again (its arrow turned): keep the keyboard on it
+      if (line.type === "vod" && hasKids(line.item)) {
+        toggleVod(line.item, open);
+        focusRow(line.key);
+      } else if (line.kid && !open) {
+        const vod = mergedVods().find((v) => String(v.vodId) === line.vodId);
+        if (vod) {
+          toggleVod(vod, false);
+          select(`vod:${line.vodId}`, { focus: false });
+          focusRow(`vod:${line.vodId}`);
+        }
+      }
+    }
   });
   return node;
 }
 
 function itemLines() {
-  return rowsModel ? rowsModel.lines.filter((line) => !line.head) : [];
+  return (rowsModel?.lines ?? state.cardLines ?? []).filter((line) => !line.head && !line.note);
 }
 
 function select(key, { focus = true } = {}) {
@@ -1193,7 +1349,7 @@ function select(key, { focus = true } = {}) {
 function moveSelection(step) {
   const lines = rowsModel?.lines ?? [];
   let index = lines.findIndex((line) => line.key === state.selected[state.list]);
-  do index += step; while (index >= 0 && index < lines.length && lines[index].head);
+  do index += step; while (index >= 0 && index < lines.length && (lines[index].head || lines[index].note));
   if (index < 0 || index >= lines.length) return;
   const list = $("side-list");
   const y = rowsModel.ys[index];
@@ -1218,18 +1374,19 @@ function setHovered(key) {
 let peekKey = null;
 function renderPeek() {
   const peek = $("side-peek");
-  const lines = state.view === "rows" ? itemLines() : [];
-  const line = lines.find((l) => l.key === state.hovered) ?? lines.find((l) => l.key === state.selected[state.list]);
+  // Rows view: the row under the mouse, else the selected one. Cards view: only a row of an opened VOD under the mouse
+  const lines = itemLines().filter((l) => state.view === "rows" || l.kid);
+  const line = lines.find((l) => l.key === state.hovered) ?? (state.view === "rows" ? lines.find((l) => l.key === state.selected[state.list]) : null);
   peek.hidden = !line;
   if (!line) {
     peekKey = null;
     peek.replaceChildren();
     return;
   }
-  if (peekKey === line.key && peek.firstChild?._item === line.item && peek.firstChild?._sig === rowSig(line.item)) return;
+  if (peekKey === line.key && peek.firstChild?._item === line.item && peek.firstChild?._sig === rowSig(line.item, line.type)) return;
   peekKey = line.key;
-  const node = card(specFor(line.item));
-  node._sig = rowSig(line.item);
+  const node = card(specFor(line.item, line.type));
+  node._sig = rowSig(line.item, line.type);
   node._item = line.item;
   peek.replaceChildren(node);
 }
@@ -1324,6 +1481,10 @@ function vodSpec(vod) {
     actions.push(withTooltip(icon, vod.rescuePaused ? "Audio saving paused" : RESCUE_TEXT[vod.rescueStatus]));
   }
   actions.push(exportButton({ kind: "vod", data: vod }));
+  if (hasKids(vod)) {
+    const open = state.open.has(String(vod.vodId));
+    actions.push(iconButton({ icon: open ? "caret-up" : "caret-down", label: open ? "Hide its videos and clips" : "Show its videos and clips", onClick: () => toggleVod(vod) }));
+  }
   const item = { ...vod, kind: "vod" };
   const work = state.work.get(String(vod.vodId));
   const channel = channelByLogin(vod.channel);
@@ -1347,6 +1508,7 @@ function vodSpec(vod) {
     menu: () => [
       { label: "Load in Player 1", icon: "broadcast", run: () => handlers.onLoad({ kind: "vod", data: item }) },
       { label: "Export", icon: "download-simple", run: () => handlers.onExport({ kind: "vod", data: item }) },
+      hasKids(vod) && { label: state.open.has(String(vod.vodId)) ? "Hide its videos and clips" : "Show its videos and clips here", icon: "caret-down", run: () => toggleVod(vod) },
       work?.clips && { label: "Show its clips", icon: "scissors", run: () => showVodWork(vod.vodId, "clips") },
       work?.videos && { label: "Show its videos", icon: "film-strip", run: () => showVodWork(vod.vodId, "videos") },
     ].filter(Boolean),
