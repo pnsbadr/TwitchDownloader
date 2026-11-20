@@ -101,6 +101,10 @@ namespace TwitchDownloaderWeb.Data
         /// <summary>A video joined into one file (the team's "render as one" setting) instead of a .zip of its segments.</summary>
         public bool Joined { get; set; }
 
+        /// <summary>A project (edit) as separate files, one per piece it plays (gaps left out), served as a .zip (badrfly 2026-11-20),
+        /// instead of one file. The file path is then a folder.</summary>
+        public bool Separate { get; set; }
+
         public ExportStatus Status { get; set; }
         public string? Error { get; set; }
 

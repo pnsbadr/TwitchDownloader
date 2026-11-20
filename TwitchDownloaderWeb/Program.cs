@@ -36,6 +36,8 @@ builder.Services.AddSingleton<IVodLookup>(sp => sp.GetRequiredService<VodInfoSer
 builder.Services.AddSingleton<ChannelService>();
 builder.Services.AddSingleton<IChannelLookup>(sp => sp.GetRequiredService<ChannelService>());
 builder.Services.AddSingleton<IChannelVodSource>(sp => sp.GetRequiredService<ChannelService>());
+builder.Services.AddSingleton<TwitchDownloaderWeb.Services.Sync.IVodLoudness, TwitchDownloaderWeb.Services.Sync.VodLoudness>();
+builder.Services.AddHttpClient(TwitchDownloaderWeb.Services.Sync.VodLoudness.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(30));
 builder.Services.AddScoped<TeamChannelAccess>();
 builder.Services.AddHttpClient(nameof(AudioRescueService), client => client.Timeout = TimeSpan.FromSeconds(60));
 builder.Services.AddHttpClient(nameof(AudioRestoreService), client => client.Timeout = TimeSpan.FromSeconds(60));
@@ -50,6 +52,7 @@ builder.Services.AddSingleton<IVodPlaybackSource, TwitchVodPlaybackSource>();
 builder.Services.AddSingleton<VodPlaybackService>();
 builder.Services.AddSingleton<PlaybackAudioSwap>();
 builder.Services.AddSingleton<CardThumbnailService>();
+builder.Services.AddSingleton<TwitchDownloaderWeb.Services.Sync.VodWaveService>();
 builder.Services.AddSingleton<VodDownloadRunner>();
 builder.Services.AddSingleton<ExactTrimService>();
 builder.Services.AddSingleton<IVodCutter, VodCutService>();

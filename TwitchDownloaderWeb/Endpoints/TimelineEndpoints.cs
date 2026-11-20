@@ -11,6 +11,9 @@ namespace TwitchDownloaderWeb.Endpoints
     public sealed record TimelineClipDto(int Id, string Title, string Kind, double Start, double? End,
         bool ReferenceOnly = false, bool FollowsMarkers = false, bool CanEdit = false)
     {
+        /// <summary>The clip's color (null = the default violet).</summary>
+        public string? Color { get; init; }
+
         /// <summary>The clip row it sits on; null for clips without a known adder (made before accounts).</summary>
         public int? RowId { get; init; }
 
@@ -144,7 +147,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 .Where(x => x.VodId == vodId)
                 .OrderBy(x => x.AddedAtUtc)
                 .Select(x => new { x.Id, x.Title, x.Kind, x.StartTime, x.EndTime, x.Status, x.FollowsMarkers, x.AddedByUserId, x.RowId, x.CopiedFromEntryId, x.Cuts,
-                    x.ClipLengthSeconds, x.VodLengthSeconds, x.FileCuts, x.FilePath, x.GeneratedFilePath })
+                    x.ClipLengthSeconds, x.VodLengthSeconds, x.FileCuts, x.FilePath, x.GeneratedFilePath, x.Color })
                 .ToListAsync(cancellationToken);
 
             var markers = await db.Markers.AsNoTracking().Where(x => x.VodId == vodId).ToListAsync(cancellationToken);
@@ -161,6 +164,7 @@ namespace TwitchDownloaderWeb.Endpoints
                         && team.CanOnOwnOrAny(x.AddedByUserId, TeamPermission.EditOwnEntries, TeamPermission.EditAnyEntries))
                 {
                     RowId = x.RowId,
+                    Color = x.Color,
                     AddedByUserId = x.AddedByUserId,
                     CreatedBy = int.TryParse(x.AddedByUserId, out var u) ? names.GetValueOrDefault(u) : null,
                     CopiedFromEntryId = x.CopiedFromEntryId,

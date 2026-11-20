@@ -11,7 +11,7 @@
 import { timelineWheel } from "./timeline-input.js";
 import { $, el, api, me, can, toast, formatDuration, withTooltip } from "./core.js";
 import { askText, confirmAction } from "./dialogs.js";
-import { MARKER_COLORS } from "./colors.js";
+import { MARKER_COLORS, clipColor } from "./colors.js";
 import { formatClock } from "./media.js";
 import { editing } from "./timeline-edit.js";
 import { isDragging } from "./drag.js";
@@ -23,7 +23,6 @@ const FOCUS_ROW_HEIGHT = 64;    // the row that plays alone (row focus, editor.j
 const FOLDED_ROW_HEIGHT = 16;   // the other rows meanwhile
 const MIN_SPAN = 10;
 const REFRESH_MS = 5000;
-const CLIP_COLOR = "#8b7cf6";
 const MUTED_COLOR = "rgb(240 82 82 / 0.5)";
 const CLEAN_COLOR = "rgb(60 207 122 / 0.5)";
 const TICK_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400];
@@ -544,7 +543,7 @@ export class Timeline {
         // clips (badrfly 2026-11-18), but they look like any clip
         const long = Boolean(c.referenceOnly) && end - start > this.maxStoredClipSeconds + 0.01;
         return moved("clip", {
-          kind: "clip", id: c.id, start, end, title: c.title, by: c.createdBy, reference: c.referenceOnly, long, cuts: c.cuts ?? [], row, data: c,
+          kind: "clip", id: c.id, start, end, title: c.title, color: c.color ?? "violet", by: c.createdBy, reference: c.referenceOnly, long, cuts: c.cuts ?? [], row, data: c,
         });
       });
     }
@@ -731,7 +730,7 @@ export class Timeline {
           const x1 = this.timeToX(item.start, width);
           const x2 = item.end == null ? x1 + 2 : this.timeToX(item.end, width);
           if (x2 < 0 || x1 > width) continue;
-          ctx.fillStyle = item.kind === "clip" ? CLIP_COLOR : MARKER_COLORS[item.color] ?? MARKER_COLORS.yellow;
+          ctx.fillStyle = item.kind === "clip" ? clipColor(item.color) : MARKER_COLORS[item.color] ?? MARKER_COLORS.yellow;
           roundRect(ctx, x1, y + 5, Math.max(2, x2 - x1), h - 10, 3);
           ctx.fill();
         }
@@ -848,13 +847,14 @@ export class Timeline {
     ctx.restore();
   }
 
-  // A segment or clip being marked (S / X pressed once: start to playhead) and the item the title editor is naming
+  // A segment being marked (S pressed once: start to playhead), a clip being dragged with the clip tool, and the item the title
+  // editor is naming
   drawPending(ctx, width, now) {
     let pending = null;
     if (this.draft) pending = this.draft;
+    else if (this.clipDrag) pending = this.clipDrag;
     else if (this.marking && now != null) {
-      let end = now;
-      if (this.marking.kind === "clip") end = Math.min(Math.max(end, this.marking.start - this.maxStoredClipSeconds), this.marking.start + this.maxStoredClipSeconds);
+      const end = now;
       pending = { kind: this.marking.kind, start: Math.min(this.marking.start, end), end: Math.max(this.marking.start, end), color: this.lastColor };
     }
     if (!pending) return;
@@ -862,7 +862,7 @@ export class Timeline {
     const index = row ? this.rows.indexOf(row) : -1;
     if (index < 0 || this.stateOf(row).hidden) return; // no own row yet: the server makes one when it's saved
     const y = index * ROW_HEIGHT;
-    const color = pending.kind === "clip" ? CLIP_COLOR : MARKER_COLORS[pending.color] ?? MARKER_COLORS.yellow;
+    const color = pending.kind === "clip" ? clipColor(pending.color) : MARKER_COLORS[pending.color] ?? MARKER_COLORS.yellow;
     const x1 = this.timeToX(pending.start, width);
     ctx.save();
     ctx.strokeStyle = color;
@@ -906,11 +906,14 @@ export class Timeline {
     const top = y + 6;
     const h = rowH - 12;
     if (item.kind === "clip") {
-      ctx.fillStyle = item.long ? "rgb(139 124 246 / 0.35)" : CLIP_COLOR;
+      const color = clipColor(item.color);
+      ctx.fillStyle = color;
       roundRect(ctx, left, top, Math.max(2, right - left), h, 4);
+      ctx.globalAlpha = item.long ? 0.35 : 1;
       ctx.fill();
+      ctx.globalAlpha = 1;
       if (item.long) {
-        ctx.strokeStyle = CLIP_COLOR;
+        ctx.strokeStyle = color;
         ctx.lineWidth = 1;
         ctx.stroke();
       }

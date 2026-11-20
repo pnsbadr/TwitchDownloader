@@ -69,6 +69,9 @@ namespace TwitchDownloaderWeb.Data
 
         public string? ThumbnailUrl { get; set; }
 
+        /// <summary>The clip's color on the timeline (one of <see cref="VodMarker.Colors"/>); null = the default violet (badrfly 2026-11-20).</summary>
+        public string? Color { get; set; }
+
         public EntryStatus Status { get; set; }
 
         /// <summary>Last failure message, if any.</summary>

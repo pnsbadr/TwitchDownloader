@@ -425,6 +425,9 @@ button.team-pill:hover { background: var(--bg-4); }
 
 .item-editor { display: flex; align-items: center; gap: 12px; animation: slide-in 0.18s ease-out; }
 .item-editor sl-input { width: 260px; }
+.item-editor .item-apply { margin-left: -8px; }
+.item-editor .item-apply::part(base) { color: #fff; background: var(--accent); border-radius: 6px; padding: 4px; font-size: 16px; }
+.item-editor .item-apply::part(base):hover { background: var(--accent-strong, var(--accent)); }
 @keyframes slide-in { from { opacity: 0; transform: translateX(24px); } }
 
 .swatches { display: flex; gap: 5px; }
@@ -641,6 +644,18 @@ button.team-pill:hover { background: var(--bg-4); }
 
 /* the VOD range pop-up */
 .vod-dialog::part(panel) { width: min(860px, 92vw); }
+/* Line up side by side (ui/sync-view.js) */
+.sync-dialog::part(panel) { width: min(1280px, 96vw); }
+.sv-screens { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.sv-side { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.sv-screen { aspect-ratio: 16 / 9; flex: none; border-radius: var(--radius-small); overflow: hidden; }
+.sv-caption { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.sv-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.sv-clock { opacity: 0.75; }
+.sv-waves { display: block; width: 100%; height: 96px; margin-top: 8px; background: rgb(0 0 0 / 0.35); border-radius: var(--radius-small); }
+.sv-controls { padding: 4px 0; flex-wrap: wrap; }
+.sv-moved { min-width: 64px; text-align: center; font-weight: 600; }
+@media (max-width: 700px) { .sv-screens { grid-template-columns: 1fr; } }
 .vd-screen { aspect-ratio: 16 / 9; flex: none; border-radius: var(--radius-small); overflow: hidden; }
 .vd-controls { padding: 4px 0; }
 .vd-clock { color: var(--text-dim); font-size: 13px; }
@@ -775,6 +790,8 @@ button.team-pill:hover { background: var(--bg-4); }
   position: fixed;
   z-index: 1800;
   min-width: 190px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   box-shadow: 0 10px 30px rgb(0 0 0 / 0.5);
 }
 .context-menu sl-menu-item.danger::part(base) { color: #ff8585; }

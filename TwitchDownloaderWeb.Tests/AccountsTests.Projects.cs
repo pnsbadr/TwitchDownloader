@@ -202,6 +202,23 @@ namespace TwitchDownloaderWeb.Tests
             var landscape = done.GetProperty("items")[0];
             Assert.Equal(4, landscape.GetProperty("partsTotal").GetInt32()); // gap, under, top, under again
 
+            // Separate files (badrfly 2026-11-20): one per piece it plays, gaps left out, served as a .zip
+            response = await owner.PostAsJsonAsync("/api/exports",
+                new { items = new[] { new { kind = "project", projectId = id, separate = true, quality = "480p30" } } }, ct);
+            Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+            var separate = await WaitForExportAsync(owner, (await response.Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("id").GetInt32());
+            Assert.Equal("Ready", separate.GetProperty("status").GetString());
+            Assert.True(separate.GetProperty("items")[0].GetProperty("separate").GetBoolean());
+            Assert.Equal(3, separate.GetProperty("items")[0].GetProperty("partsTotal").GetInt32());
+            var zipped = await owner.GetAsync(separate.GetProperty("items")[0].GetProperty("fileUrl").GetString(), ct);
+            Assert.Equal(HttpStatusCode.OK, zipped.StatusCode);
+            using (var zip = new System.IO.Compression.ZipArchive(new MemoryStream(await zipped.Content.ReadAsByteArrayAsync(ct))))
+            {
+                Assert.Equal(3, zip.Entries.Count);
+                Assert.All(zip.Entries, x => Assert.EndsWith(".mp4", x.Name));
+                Assert.StartsWith("01 ", zip.Entries[0].Name);
+            }
+
             // ... and a vertical one 9:16
             using (var scope = _factory.Services.CreateScope())
             {

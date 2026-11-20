@@ -11,9 +11,10 @@
 import { timelineCursor, rulerCursor, timelineWheel } from "./timeline-input.js";
 import { $, el, api, toast, formatDuration, withTooltip, loadSetting, saveSetting } from "./core.js";
 import { askText, confirmAction } from "./dialogs.js";
-import { MARKER_COLORS } from "./colors.js";
+import { MARKER_COLORS, clipColor } from "./colors.js";
 import { openMenu } from "./menu.js";
 import { dropTarget } from "./drag.js";
+import { drawWave, onWaves } from "./waves.js";
 import {
   MAX_TRACKS, MAX_PIECES, MIN_PIECE, MAX_END, PROJECT_KINDS, round, pieceEnd, pieceLength, newId, trackName, piecesOn, fits,
   nearestFit, flatten, piecesFromItem, splitLayout, projectLength, makeTrack,
@@ -28,6 +29,7 @@ const EDGE_PX = 7;
 const DRAG_PX = 4;
 const SNAP_PX = 8;
 const SNAP_KEY = "clipLibrary.snap"; // shared with Player 1's timeline and the vertical editor
+const WAVES_KEY = "clipco.p2.waves";  // sound waves on the pieces (W)
 const TICK_STEPS = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
 
 let clipboard = null;           // copied pieces (Ctrl+C), relative to the first one's time: [{ piece, trackOffset }]
@@ -89,6 +91,8 @@ export class ProjectTimeline {
     this.active = false;
     this.tool = "pointer";
     this.snap = loadSetting(SNAP_KEY, true) !== false;
+    this.waves = loadSetting(WAVES_KEY, true) !== false;
+    onWaves(() => { this.dirty = true; });
     this.view = { start: 0, end: 60 };
     this.follow = true;
     this.selected = new Set();
@@ -487,10 +491,20 @@ export class ProjectTimeline {
   // ---------- tools ----------
 
   setTool(tool) {
+    // The clip tool (badrfly 2026-11-20): drag across a piece to clip its VOD (the clip goes on the member's rows of that VOD)
+    if (tool === "clip" && !this.hooks.canClip?.()) return;
     this.tool = tool;
     this.razorAt = null;
     this.updateCursor();
     this.changed();
+  }
+
+  // Sound waves on the pieces on/off (W): for lining a synced stream up by eye
+  toggleWaves() {
+    this.waves = !this.waves;
+    saveSetting(WAVES_KEY, this.waves);
+    this.dirty = true;
+    toast(this.waves ? "Sound waves on (they show once you zoom in to 20 minutes or less)." : "Sound waves off.");
   }
 
   toggleSnap() {
@@ -718,6 +732,20 @@ export class ProjectTimeline {
       if (hit?.piece) this.splitAt(hit.piece, this.razorAt ?? t);
       return;
     }
+    if (this.tool === "clip") {
+      if (this.clipDraft) return;
+      if (!hit?.piece) {
+        toast("Drag across a piece to clip its VOD.");
+        return;
+      }
+      const piece = hit.piece;
+      const snapped = this.snapDelta([t], p.width, new Set());
+      const from = round(Math.max(piece.at, Math.min(snapped ? snapped.at : t, pieceEnd(piece))));
+      this.snapAt = null;
+      this.track.setPointerCapture(event.pointerId);
+      this.press = { kind: "clip", piece, from, row: this.trackIndex(piece.trackId), startX: event.clientX, startY: event.clientY, moved: false, rect: p.rect };
+      return;
+    }
     // pointer
     this.track.setPointerCapture(event.pointerId);
     if (hit?.track) this.trackSel = hit.track.id;
@@ -732,8 +760,11 @@ export class ProjectTimeline {
         this.select([piece.id]);
       }
       const locked = this.isLocked(piece.trackId) || !this.store.canEdit;
+      // Alt+drag inside a piece slides its footage (it stays in place): for lining up a synced stream
+      const slip = event.altKey && !hit.edge;
+      if (slip) vodLength(piece.vodId);
       this.press = {
-        kind: hit.edge ? "edge" : "move", piece, edge: hit.edge, startX: event.clientX, startY: event.clientY, t0: t,
+        kind: slip ? "slip" : hit.edge ? "edge" : "move", piece, edge: hit.edge, startX: event.clientX, startY: event.clientY, t0: t,
         row0: this.rowAt(p.y), moved: false, locked, clickSeek: t, rect: p.rect,
       };
       this.renderHeads();
@@ -791,6 +822,10 @@ export class ProjectTimeline {
       return;
     }
     if (press.kind === "hand") return;
+    if (press.kind === "clip") {
+      this.dragClip(press, p, event);
+      return;
+    }
     if (!press.moved && Math.hypot(event.clientX - press.startX, event.clientY - press.startY) < DRAG_PX) return;
     if (!press.moved) {
       press.moved = true;
@@ -814,7 +849,68 @@ export class ProjectTimeline {
     if (press.locked) return;
     const t = this.xToTime(p.x, p.width);
     if (press.kind === "edge") this.dragEdge(press, t, p.width);
+    else if (press.kind === "slip") this.dragSlip(press, event, p.width);
     else this.dragMove(press, t, p, event.shiftKey);
+  }
+
+  // Clip tool: the range on the piece pressed, at most the longest clip
+  dragClip(press, p, event) {
+    if (!press.moved && Math.abs(event.clientX - press.startX) < DRAG_PX) return;
+    press.moved = true;
+    const piece = press.piece;
+    const max = this.hooks.maxClipSeconds?.() ?? 180;
+    const raw = this.xToTime(p.x, p.width);
+    const snapped = this.snapDelta([raw], p.width, new Set());
+    const t = round(Math.max(piece.at, press.from - max, Math.min(snapped ? snapped.at : raw, pieceEnd(piece), press.from + max)));
+    const at1 = Math.min(press.from, t);
+    const at2 = Math.max(press.from, t);
+    this.clipDraft = { row: press.row, at1, at2, color: this.hooks.clipColor?.() ?? "violet" };
+    this.tip.replaceChildren(
+      el("div", { class: "num" }, `Clip ${formatDuration(at2 - at1, { short: false })}`),
+      el("div", {}, `VOD ${piece.vodId}, ${formatDuration(piece.start + at1 - piece.at, { short: false })} – ${formatDuration(piece.start + at2 - piece.at, { short: false })}`));
+    this.tip.hidden = false;
+    this.tip.style.left = `${event.clientX + 12}px`;
+    this.tip.style.top = `${event.clientY + 16}px`;
+    this.dirty = true;
+  }
+
+  // The dragged clip stays drawn while it's named; the editor clears it
+  clearClipDraft() {
+    this.clipDraft = null;
+    this.dirty = true;
+  }
+
+  endClipDrag(press) {
+    this.tip.hidden = true;
+    const draft = this.clipDraft;
+    if (!press.moved || !draft) {
+      this.clipDraft = null;
+      toast("Drag across a piece to mark a clip.");
+      return;
+    }
+    if (draft.at2 - draft.at1 < MIN_PIECE) {
+      this.clipDraft = null;
+      toast("Too short: drag at least half a second.");
+      return;
+    }
+    const piece = press.piece;
+    const vod = (at) => Math.round((piece.start + at - piece.at) * 100) / 100;
+    this.hooks.onClipRange?.({ vodId: String(piece.vodId), start: vod(draft.at1), end: vod(draft.at2) });
+  }
+
+  // Dragging right shows earlier footage (like an editor's slip tool); capped at the VOD's start and end
+  dragSlip(press, event, width) {
+    const piece = press.piece;
+    const length = vodLengths.get(String(piece.vodId)) ?? null;
+    let delta = -((event.clientX - press.startX) / width) * this.span();
+    delta = Math.max(delta, -piece.start);
+    if (length != null) delta = Math.min(delta, length - piece.end);
+    delta = round(delta);
+    press.slip = delta;
+    this.preview = new Map([[piece.id, { trackId: piece.trackId, at: piece.at, start: round(piece.start + delta), end: round(piece.end + delta) }]]);
+    const sign = delta > 0 ? "+" : delta < 0 ? "−" : "";
+    this.edgeTip = { piece, text: `Footage ${sign}${Math.abs(delta).toFixed(2)} s (starts at ${formatDuration(piece.start + delta, { short: false })} in the VOD)` };
+    this.dirty = true;
   }
 
   dragEdge(press, t, width) {
@@ -909,6 +1005,12 @@ export class ProjectTimeline {
     if (!press || press.kind === "hand") return;
     this.press = null;
     this.updateCursor();
+    if (press.kind === "clip") {
+      this.snapAt = null;
+      this.dirty = true;
+      this.endClipDrag(press);
+      return;
+    }
     const preview = this.preview;
     const invalid = this.invalid;
     const newRow = this.newRowPreview;
@@ -936,6 +1038,10 @@ export class ProjectTimeline {
       return;
     }
     if (!preview || press.locked) return;
+    if (press.kind === "slip") {
+      if (press.slip) this.slideSelected(press.slip, [press.piece]);
+      return;
+    }
     if (invalid) {
       toast("Pieces on one row can't overlap, and locked rows can't change.");
       return;
@@ -961,6 +1067,10 @@ export class ProjectTimeline {
   }
 
   cancelPress() {
+    if (this.press?.kind === "clip") {
+      this.clipDraft = null;
+      this.tip.hidden = true;
+    }
     this.press = null;
     this.preview = null;
     this.marquee = null;
@@ -1167,7 +1277,6 @@ export class ProjectTimeline {
       const pieces = this.selectedPieces();
       if (canEdit) {
         items.push({ icon: "pencil-simple", label: "Name and color", run: () => this.editPieceTitle(piece) });
-        items.push({ icon: "scissors", label: "Split at the playhead", run: () => this.splitAtPlayhead() });
       }
       items.push({ icon: "copy", label: pieces.length > 1 ? `Copy ${pieces.length} pieces` : "Copy", run: () => this.copySelected() });
       // Layouts belong to vertical edits only (Player 2's horizontal edits have none)
@@ -1184,13 +1293,16 @@ export class ProjectTimeline {
       if (vertical && canEdit && this.content.pieces.length > 1) {
         items.push({ icon: "stack", label: "Use this layout on every piece", run: () => this.layoutEverywhere(piece) });
       }
-      items.push({ icon: "crosshair", label: "Show in Player 1", run: () => this.hooks.onShowInPlayer1?.(piece) });
       // "Sync with" (badrfly 2026-11-20): the same moment from another streamer's VOD, on a new row under this one
       if (this.store.canEdit && this.hooks.onSyncWith) {
         items.push({ icon: "users-three", label: pieces.length > 1 ? `Sync ${pieces.length} pieces with…` : "Sync with…", run: () => this.hooks.onSyncWith(pieces) });
       }
       if (canEdit) {
         items.push({ icon: "arrows-left-right", label: "Slide the footage…", run: () => this.askSlide(pieces) });
+      }
+      // Side by side (badrfly 2026-11-20): this piece and the other stream over it, playing together, nudged until they match
+      if (canEdit && pieces.length === 1 && this.hooks.partnerOf?.(piece)) {
+        items.push({ icon: "columns", label: "Line up side by side…", run: () => this.hooks.onSideBySide?.(piece) });
       }
       if (piece.source && (piece.source.kind === "clip" || piece.source.kind === "segment") && this.hooks.onApplyToOriginal) {
         items.push({ icon: "arrow-fat-line-up", label: "Apply this trim to the original", run: () => this.hooks.onApplyToOriginal(piece) });
@@ -1424,6 +1536,7 @@ export class ProjectTimeline {
       }
     });
     if (capped) toast("It can't slide past the start or end of its VOD.");
+    if (ok) this.hooks.onSlid?.(movable.map((p) => p.id));
     return ok;
   }
 
@@ -1666,6 +1779,21 @@ export class ProjectTimeline {
       ctx.strokeRect(Math.min(x1, x2) + 0.5, Math.min(y1, y2) + 0.5, Math.abs(x2 - x1), Math.abs(y2 - y1));
       ctx.restore();
     }
+    if (this.clipDraft) {
+      const { row, at1, at2, color } = this.clipDraft;
+      const x1 = this.timeToX(at1, width);
+      const x2 = this.timeToX(at2, width);
+      ctx.save();
+      ctx.strokeStyle = clipColor(color);
+      ctx.fillStyle = clipColor(color);
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 4]);
+      ctx.globalAlpha = 0.3;
+      ctx.fillRect(x1, row * ROW_HEIGHT + 3, Math.max(2, x2 - x1), ROW_HEIGHT - 6);
+      ctx.globalAlpha = 1;
+      ctx.strokeRect(x1, row * ROW_HEIGHT + 3, Math.max(2, x2 - x1), ROW_HEIGHT - 6);
+      ctx.restore();
+    }
     if (this.snapAt != null) this.drawLine(ctx, this.snapAt, width, height, [3, 3], "#fff");
     if (this.razorAt != null && this.tool === "cut") {
       const x = Math.round(this.timeToX(this.razorAt, width)) + 0.5;
@@ -1751,6 +1879,18 @@ export class ProjectTimeline {
       }
       ctx.restore();
     }
+    // sound wave (W), drawn darker on the piece: a laugh or a shout is a spike on both streams
+    if (this.waves && !faint && w > 8) {
+      ctx.save();
+      roundRect(ctx, x1, y + 4, w, h - 8, 4);
+      ctx.clip();
+      const top = h > ROW_HEIGHT ? y + 24 : y + 21;
+      drawWave(ctx, {
+        vodId: piece.vodId, start: piece.start, end: piece.end, x1, x2: x1 + w, clipX1: 0, clipX2: width,
+        midY: (top + y + h - 4) / 2, halfHeight: (y + h - 4 - top) / 2, color: "rgb(0 0 0 / 0.45)",
+      });
+      ctx.restore();
+    }
     // label
     if (w > 24) {
       ctx.save();
@@ -1763,7 +1903,11 @@ export class ProjectTimeline {
       ctx.fillText(text, Math.max(x1, 0) + 6, y + 8);
       ctx.font = "11px Barlow, system-ui, sans-serif";
       ctx.globalAlpha *= 0.75;
-      ctx.fillText(formatDuration(pieceLength(piece), { short: false }), Math.max(x1, 0) + 6, y + 22);
+      // with sound waves the length goes next to the name, leaving the wave room below
+      const beside = this.waves && h <= ROW_HEIGHT;
+      ctx.font = beside ? "11px Barlow, system-ui, sans-serif" : ctx.font;
+      const lengthX = beside ? Math.max(x1, 0) + 6 + this.measureLabel(ctx, text) + 8 : Math.max(x1, 0) + 6;
+      ctx.fillText(formatDuration(pieceLength(piece), { short: false }), lengthX, beside ? y + 9 : y + 22);
       ctx.restore();
     }
     // moving-box keyframes: diamonds along the bottom (vertical edits only)
@@ -1798,6 +1942,14 @@ export class ProjectTimeline {
       ctx.fillRect(x1 + w - 4, y + 12, 3, h - 24);
     }
     ctx.restore();
+  }
+
+  measureLabel(ctx, text) {
+    ctx.save();
+    ctx.font = "600 12px Barlow, system-ui, sans-serif";
+    const width = ctx.measureText(text).width;
+    ctx.restore();
+    return width;
   }
 
   drawPlayhead(ctx, width, height, now, withHandle) {

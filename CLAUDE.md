@@ -71,6 +71,9 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   (string, no FK yet — link to users in phase 3).
 - `LibraryEntries.Kind` (`Vod`/`Clip`, migration default `Vod`) + `ClipSlug`: see Twitch clips. For clips `VodId` is the source
   VOD (0 if Twitch didn't say) and `StartTime`/`EndTime` the clip's place in it (whole seconds).
+- `LibraryEntries.Color` (badrfly 2026-11-20, migration `ClipColors`): a clip's color, one of `VodMarker.Colors`; null = the clip violet
+  ("violet" is stored as null). `POST /api/entries` and `PATCH /api/entries/{id}` take `color` (PATCH: a blank title with a color keeps the
+  title; unknown color → 400); entry and timeline clip JSON carry it; copies keep it. Drawn by `clipColor` in `ui/colors.js`.
 - `Channels` (`SavedChannel`): the team's **assigned channels** (see Team channels): login (unique per team, lower-case), display name,
   Twitch user ID, `WatchMutedAudio` (= automatic audio saving for this channel) and `AllowSaveAudio` (= Save audio now allowed), both set
   **only by the app Owner** (badrfly 2026-11-18; off for new channels; migration `ChannelAudioAndStoredClips` copied the old team setting),
@@ -193,7 +196,8 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   layout via `ShortformLayout.BuildFilterGraph`, keyframe times moved to the stretch's start, no layout = a centered 9:16 box; landscape =
   the quality's height (1080 for best), letterboxed; fps from the quality, 60 for best; AAC 48 kHz stereo; muted track = silence), makes gaps
   black with silence, and joins them with `SegmentJoiner` (stream copy). Exports take `kind: "project"` (`projectId`, `horizontal`/`vertical`,
-  `quality`): items `Project` / `ProjectVertical` (`ExportItems.ProjectId`, content copied into `Parts`), progress = stretches done.
+  `quality`, `separate`: one file per piece it plays, gaps left out, in `downloads/exports/{id}/{position}/` and served as a .zip named
+  "01 label.mp4"…, `ExportItems.Separate`, migration `ExportSeparate`, badrfly 2026-11-20; the Export tab's "Separate files"): items `Project` / `ProjectVertical` (`ExportItems.ProjectId`, content copied into `Parts`), progress = stretches done.
 - `ExportBatches` + `ExportItems` (cascade): **exports** (badrfly, 2026-11-15, the Export tab's list; `ExportEndpoints`, `ExportWorker`). One
   `POST /api/exports` (`GenerateFiles`) with items of kind `vod` (a VOD range dropped on the list: **a one-off, never an entry**), `clip`
   (horizontal and/or vertical: two items), `video` (a `.zip` of one file per segment, or `joined` into one file, which needs the team's
@@ -479,7 +483,9 @@ only tries to unmute VODs <= 24 h old, silently keeping muted audio on 403). We 
 | `GET /api/vods/{id}/timeline` / `POST /api/vods/{id}/markers` `{ seconds, endSeconds?, label?, color?, rowId? }` / `PUT /api/markers/{id}` (same body, whole marker) / `DELETE /api/markers/{id}` / `GET /api/markers?vodIds=1,2` | Player timeline: `{ clips: [{ id, title, kind, start, end, referenceOnly, followsMarkers, canEdit, rowId, addedByUserId, createdBy }], maxStoredClipSeconds, markers: [{ id, vodId, seconds, endSeconds, label, color, createdBy, createdAtUtc, canDelete, canEdit, rowId }], rows: [{ id, userId, username, kind, position, name, canEdit }] }` (rows: the caller's first, then by member) (team's own); `/api/markers` lists markers of up to 200 VODs (library and VOD cards). Entries carry `startSeconds`/`endSeconds` for placing them (and `followsMarkers`). Add 201 (`AddEntries`; `liveEntry: { entryId, created }` when it made or moved the live markers entry, else null); `restore: true` (the page's undo of a delete) lets a member with `DeleteAnyEntries` name a teammate's video row: the marker is made again as theirs; change own (`AddEntries`) or anyone's (`EditAnyEntries`); delete own (`AddEntries`) or anyone's (`DeleteAnyEntries`), else 403 |
 | `GET /api/edits?entryId=\|markerId=\|videoId=` / `GET /api/edits/{id}` / `POST /api/edits` `{ entryId \| markerId \| videoId, title?, cuts? \| parts?, layout? }` / `PUT /api/edits/{id}` (same, null keeps; `layout: {}` removes it) / `DELETE /api/edits/{id}` / `POST /api/edits/{id}/copy` `{ title? }` | Saved edits (see `ItemEdits`). List = `{ edits (newest first), applies: [{ id, editId, editTitle, userId, username, appliedAtUtc }], canApply, applyMakesCopy, canRevert }`; edit = `{ id, kind: clip\|segment\|video, entryId, markerId, videoId, vodId, title, createdByUserId, createdBy, createdAtUtc, updatedAtUtc, cuts, parts, layout, keptSeconds, sourceStart, sourceEnd, sourceParts: [{ markerId, label, start, end, cuts }], canEdit, canDelete }` |
 | `POST /api/edits/{id}/apply` `{ rowId? }` / `POST /api/entries\|markers\|videos/{id}/revert` `{ to: previous\|original }` | Apply → `{ kind, item, copied, edit }` (`item` as its own endpoints return it; the copy when `copied`). Revert → 200 with the item; nothing to undo → 409 `code: "nothing-to-undo"`; an edit or revert that would leave nothing of the item as it is now → 409 |
-| `GET /api/vods/{id}/sync?channel=&start=&end=` | Sync with: the team channel's past broadcasts recording during that range of the VOD (by stream time): `{ login, displayName, rangeStartUtc, rangeEndUtc, coveredSeconds, matches: [{ vodId, title, createdAtUtc, lengthSeconds, isLive, restricted, start, end, offset }], before, after }`. 400 `same-channel`, 403 not assigned, 404 `vod-gone`, 502 Twitch unreachable |
+| `GET /api/vods/{id}/sync?channel=&start=&end=` | Sync with: the team channel's past broadcasts recording during that range of the VOD (by stream time): `{ login, displayName, rangeStartUtc, rangeEndUtc, coveredSeconds, matches: [{ vodId, title, createdAtUtc, lengthSeconds, isLive, restricted, start, end, offset, lined }], before, after }` (a pair's saved line-up applied). 400 `same-channel`, 403 not assigned, 404 `vod-gone`, 502 Twitch unreachable |
+| `GET /api/vods/{id}/waves?block=` | Sound waves: `{ block, start, rate, levels }` (60 s from `block` × 60; levels = base64 bytes 0–255, `rate` a second; empty past the end). 404 `no-audio` when the audio can't be read |
+| `POST /api/vods/{id}/sync/{otherVodId}/audio` `{ at, otherAt, seconds? }` / `PUT /api/vods/{id}/sync/{otherVodId}` `{ at, otherAt }` | Line two VODs up by sound (→ `{ trusted, shift, otherAt, correlation, confidence, reason }`, saved when trusted) / by hand; `AddEntries` |
 | `GET /api/vods/work?vodIds=&limit=` | The team's work per VOD: `[{ vodId, clips, videos, segments, moments, edits, channelName, streamDateUtc, thumbnailUrl, lastWorkUtc }]`, newest work first; VODs with nothing on their timeline are left out |
 | `GET /api/projects?userId=&vodId=&vodIds=&entryId=&videoId=&limit=` / `GET /api/projects/{id}` / `POST /api/projects` `{ title?, content?, entryId?, videoId?, vodId? }` / `PUT /api/projects/{id}` `{ title?, content?, revision? }` / `DELETE /api/projects/{id}` / `POST /api/projects/{id}/copy` `{ title? }` | Projects (see `Projects`): `{ id, userId, createdBy, title, revision, lengthSeconds, pieceCount, vodId, entryId, videoId, vodIds, copiedFromProjectId, createdAtUtc, updatedAtUtc, canEdit, canDelete, content }` (`content` null in lists) |
 | `POST /api/vods/{id}/segment-downloads` `{ markerIds, combined?, quality?, entryId? }` | Segment download (202; `GenerateFiles`). `combined` without the team feature → 403 `code: "combine-not-enabled"`. Markers must be the team's segments on that VOD (400) |
@@ -571,8 +577,9 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   Player 2's timeline; leaving the timeline section and Player 2's screen, or dropping anywhere else, goes back to Player 1's; if Player 2's
   timeline was already showing nothing changes. A drop on Player 2's timeline moves its playhead to the dropped pieces.
 - `ui/timebox.js`: `timeBox({ seconds, fraction })` with a fixed `hh:mm:ss(.ff)` mask; `.seconds` reads/writes.
-- Tools bar title/color editor (`openItemEditor` in `ui/editor.js`): tools slide left, title + the 9 marker colors on the right; applies on a
-  click anywhere else or Enter (linking a video needs the ✓ button), Esc cancels.
+- Tools bar title/color editor (`openItemEditor` in `ui/editor.js`): tools slide left, title, a ✓ button beside it (always shown, badrfly
+  2026-11-20) and the 9 colors (clips too) on the right; also applies on a click anywhere else or Enter (in the box or on a swatch; linking a
+  video needs the ✓ button), Esc cancels.
 - **Left panel** (`ui/library.js`, step 2): VODS = the team's assigned channels' VODs (`GET /api/channels`, then `/api/channels/{login}/vods`,
   20 per page, more on scroll). **Channel bar** (badrfly 2026-11-19, mockup C "pick several"): the team's channels as Twitch pictures (`/api/channels/cards`; a live one has a blinking red ring, the live state from the live events first). Each click turns one on or off, the others go dark (a live dark one keeps a faint ring); with none on every channel shows. It starts with the team's primary channel on every time the editor loads (not remembered); a one-channel team can't toggle. It filters all three lists: VODs of several channels are merged newest first, cut off at the oldest loaded VOD of any channel that still has more pages (scrolling loads the channel whose oldest is newest; live VODs always on top); CLIPS and VIDEOS send `channels=`. Cards show a small channel picture when several channels are shown. GQL lists have no live flag, so the
   newest VOD (if under 2 days old) is checked with `/api/vods/info` (`isLive` → LIVE badge). VOD cards show only Twitch's info plus the
@@ -595,7 +602,7 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   (`timelineCursor` / `rulerCursor`: arrow, grab over a draggable item/piece, ew-resize on edges, the Premiere-like razor (red-crossed
   where it can't cut), zoom-in, grab/grabbing hand, col-resize on the ruler) and the wheel (`timelineWheel`: wheel scrolls, Ctrl+wheel
   zooms around the mouse, Shift+wheel scrolls rows; middle drag pans) from it. Change them there, never in one timeline.
-- **Timeline editing** (`ui/timeline-edit.js`, mixed into `Timeline`, steps 3b and 4): tools bar tools Pointer / Cut / Zoom / Hand (V/C/Z/H), snapping (N,
+- **Timeline editing** (`ui/timeline-edit.js`, mixed into `Timeline`, steps 3b and 4): tools bar tools Pointer / Cut / Clip / Zoom / Hand (V/C/X/Z/H), snapping (N,
   `clipLibrary.snap`, 8 px; **new kinds of timeline items must add their times to `snapPoints()`**), undo/redo (last 10 per VOD, this tab:
   marker add/delete/change/split and clip re-trims; steps name items through refs shared per VOD (`ref` / `moveRef`), because undoing a
   delete makes the marker again with a new ID and older steps must follow it; presses queue while a step is sent; a stored clip's re-trim
@@ -603,11 +610,13 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   (segments, and VOD clips via `PUT /trim`; a **stored** clip's re-trim is saved 3 s after the last change (`scheduleTrim`, "saving…" next to
   Player 1's title, flushed on `pagehide` with a keepalive fetch: it downloads again), capped at the stored-clip limit over its whole range);
   I/O set them at the playhead; Space plays the
-  selection, Shift+Space its last 3 s; Del deletes; double-click or right-click → title/color. S / X mark a segment / clip (start, then end,
-  dashed preview; clips capped at `maxStoredClipSeconds`), M a moment; the tools bar's title/color editor names it and it's saved on the
+  selection, Shift+Space its last 3 s; Del deletes; double-click or right-click → title/color. S marks a segment (start, then end,
+  dashed preview), M a moment; the **clip tool** (X or the film strip, badrfly 2026-11-20: a tool, not two presses) has its own cursor
+  (`timeline-input.js`) and makes a clip by dragging across the timeline (dashed preview in the clip's color, capped at
+  `maxStoredClipSeconds`), named with a color when the mouse is let go (`lastClipColor`); the tools bar's title/color editor names it and it's saved on the
   member's own row clicked last (else their first; locked rows are skipped). Others' items: view only; with `EditAnyEntries` every change asks
   **Edit original / Make a copy** (`chooseEditTarget`, Enter = copy); right-click → "Make a copy on my row" (`POST .../copy`). Locked rows
-  (page only) can't be edited. Hooks to `editor.js`: `openItemEditor` (`colors: false` for clips, `onColor` live preview), `onChange`
+  (page only) can't be edited. Hooks to `editor.js`: `openItemEditor` (`onColor` live preview), `onChange`
   (`renderTools`), `onClipsChanged` (library refresh), `onCreated` (Player 2, step 4). The right-click menu is `ui/menu.js` (shared with cards).
 - **Player 2 = the project editor** (badrfly 2026-11-16, multi-track rework; plan: Claude Doc "Vertical editor: multi-track timeline plan").
   Player 1 is the overview for marking; Player 2 works like any video editor (Premiere-like) on **projects** (see `Projects`), whose media
@@ -621,9 +630,9 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   Add to the export list, Rename, Duplicate / Make my own copy, Delete, Close); the open project is remembered in `localStorage`
   `clipco.p2.project`. Loading a clip, segment or video in Player 2 (drop on its screen or timeline, card menu, dragging off Player 1) adds
   it to the open project at the playhead, or starts a new one. A segment or clip made on Player 1 is added by itself only while an editable
-  project is open. **M / X on Player 2** make a moment / clip on the VOD under the playhead (its VOD second; a clip starts and ends on
-  the same VOD, ≤ 3 min) on the member's own rows of that VOD, like Player 1 (`p2AddMoment` / `p2MarkClip` in `ui/editor.js`); in a gap nothing
-  is made. They aren't added to the project (the piece already plays that part). Others' projects: view only (copy to edit). The left panel has a PROJECTS tab (`library.js` `projectCard`).
+  project is open. **M on Player 2** makes a moment on the VOD under the playhead (its VOD second), the **clip tool** a clip by dragging across
+  a piece (that piece's VOD, ≤ 3 min, drawn dashed on the piece while it's named: `ProjectTimeline.dragClip` → hook `onClipRange` →
+  `p2SaveClip` in `ui/editor.js`), on the member's own rows of that VOD, like Player 1; in a gap nothing is made. They aren't added to the project (the piece already plays that part). Others' projects: view only (copy to edit). The left panel has a PROJECTS tab (`library.js` `projectCard`).
   **Timeline**: ruler from 0:00 to past the end; opening a project or loading an item into it starts fitted (badrfly 2026-11-16) (scroll and zoom freely: wheel scrolls, Ctrl+wheel zooms, Shift+wheel scrolls rows, middle
   button pans, scrollbar under the rows); rows top to bottom (unnamed rows are named "V1, V2…" once and keep their name), row heads with grip
   (drag to reorder), name (double-click), hide / mute / lock, right-click insert above/below, rename, paste, delete (asks when it holds
@@ -631,9 +640,11 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   Shift keeps the time; below the last row makes a new row; red where it can't go; a single piece slides to the nearest free place), drag
   edges to trim (up to its neighbors and the VOD's length), I / O trim at the playhead, razor (C, white line) or S splits, Delete / Shift+Delete
   (ripple) deletes, Ctrl+C / Ctrl+V copy and paste (at the playhead, on the selected row), right-click on a gap = Close gap. Piece menu: Name and
-  color, Split at the playhead, Copy, Copy / Paste layout, Use this layout on every piece, Show in Player 1, **Apply this trim to the original**
-  (clips and segments: the source's range and cut-out parts from every piece copied from it; `applyToOriginal` in `ui/editor.js`), Delete,
-  Delete and close the gap. Covered parts of lower rows are drawn darker; the ruler's bottom band shows what plays and hatches gaps. Snapping
+  color, Copy, Copy / Paste layout, Use this layout on every piece, **Apply this trim to the original**
+  (clips and segments: the source's range and cut-out parts from every piece copied from it on the same VOD; `applyToOriginal` in `ui/editor.js`;
+  a teammate's item asks Edit original / Make a copy with `EditAnyEntries`, else offers a copy on the caller's row, badrfly 2026-11-20; a copy
+  becomes the pieces' source), Delete,
+  Delete and close the gap (badrfly 2026-11-20: no Split at the playhead or Show in Player 1 there; the menu (`ui/menu.js`) opens upward when there's no room below). **Show in Player 1** = the crosshair in Player 2's controls: the piece at Player 2's playhead (else the selected one), Player 1 goes to the same VOD moment and zooms to the whole clip/segment it came from. Covered parts of lower rows are drawn darker; the ruler's bottom band shows what plays and hatches gaps. Snapping
   uses `clipLibrary.snap`. New pieces take the layout of the piece before them on their row.
   **Nothing is deleted from Player 2** except pieces of the project (badrfly 2026-11-16): unloading only closes the project; real deletes of
   clips/segments are on Player 1's timeline and the cards.
@@ -645,8 +656,22 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   restricted }]` (offset = seconds into the asked range), `coveredSeconds`, and `before` / `after` neighbors when nothing matched; its own
   channel → 400 `same-channel`. The page puts the matches on a new row named after the channel right under the piece's row
   (`ProjectTimeline.addSyncedRows`; more rows if they'd overlap), source `{ kind: "vod" }`, no layout. Lower = covered and silent until the
-  row above is cut away; parts the other stream didn't record are gaps. **Slide the footage** (`<` / `>` 0.1 s, or the piece menu): moves
-  a piece's VOD range without moving it on the clock, for streams a few seconds apart. Synced pieces don't follow Player 1 trims.
+  row above is cut away; parts the other stream didn't record are gaps. **Slide the footage** (`<` / `>` 0.1 s, Alt+drag inside a piece,
+  or the piece menu): moves a piece's VOD range without moving it on the clock. Synced pieces don't follow Player 1 trims.
+  **Lining up** (badrfly 2026-11-20): start times are a few seconds off between streamers, so after a sync the page asks
+  `POST /api/vods/{id}/sync/{otherVodId}/audio { at, otherAt, seconds? }`: `IVodLoudness` (`VodLoudness`: the audio-only rendition's segments
+  for the range, joined, ffmpeg to 8 kHz mono) → `AudioAligner` (log-loudness envelope at 100/s minus its 1 s average, so mics and volumes
+  don't matter; Pearson correlation over ±20 s; trusted at r ≥ 0.25 and the peak ≥ 1.15× the best lag 0.5 s away). Collab streams share
+  the voice call, so the talking pattern lines up. A trusted match moves the synced pieces and is saved for the pair: `VodSyncOffsets`
+  (team, VodA < VodB, `Seconds`: bSec = aSec + (A.createdAt − B.createdAt) + Seconds, `Source` audio/manual); a slide saves it too
+  (`PUT /api/vods/{id}/sync/{otherVodId} { at, otherAt }`, debounced, against the closest row above with another VOD's piece at that time).
+  `GET .../sync` applies a saved pair (`lined`: start / audio / manual), so a pair is lined up once per collab.
+  **Side by side** (piece menu "Line up side by side…", `ui/sync-view.js`, shown on a piece with another VOD's piece playing at the same time on
+  another row, `partnerOf` in `ui/editor.js`): two players next to each other, the partner leads and the piece follows (re-seeked past
+  0.2 s drift), both sound waves ±8 s around the playhead, `<` / `>` (Shift 1 s) or "Match by sound" move it; Save = one slide (undoable,
+  saves the pair). **Sound waves** (`ui/waves.js`, W on/off, `clipco.p2.waves`): drawn on Player 2's pieces once 20 min or less is in view,
+  from `GET /api/vods/{id}/waves?block=n` (`VodWaveService`: 60 s blocks of 20 levels/s from `IVodLoudness.GetLevelsAsync`, full blocks
+  kept in `downloads/waves/{vodId}/{n}.bin`, deleted by the cleanup service 7 days after last shown; short ones kept a minute in memory).
 - **Player 2's picker = the VOD tree** (`ui/p2-tree.js`, badrfly 2026-11-17, "the VOD is the project"; supersedes the project picker and the
   PROJECTS tab, which are gone; the page never says "project"): VODs with work (`GET /api/vods/work`, Player 1's first) › Videos › video › its
   segments (+ the video's edits) / Clips › clip › its edits / Other edits (lone segments, VOD ranges, deleted parents). Opening a line closes its

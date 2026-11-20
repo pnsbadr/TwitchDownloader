@@ -81,7 +81,7 @@ namespace TwitchDownloaderWeb.Endpoints
         /// <param name="login">One of the team's channels.</param>
         /// <param name="type">"archive" (past broadcasts, default), "highlight", "upload" or "all".</param>
         /// <param name="cursor">nextCursor from the previous page.</param>
-        private static async Task<IResult> ListChannelVods(string login, string? type, string? cursor, int? limit, ChannelService channelService,
+        private static async Task<IResult> ListChannelVods(string login, string? type, string? cursor, int? limit, IChannelVodSource channelService,
             LibraryDbContext db, TeamChannelAccess access, IOptions<AudioRescueSettings> rescueSettings, CancellationToken cancellationToken)
         {
             if (ChannelService.NormalizeLogin(login) is not { } normalizedLogin)

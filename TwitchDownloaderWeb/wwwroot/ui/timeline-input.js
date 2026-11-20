@@ -13,6 +13,16 @@ const razorSvg = (blocked) => `<svg xmlns="http://www.w3.org/2000/svg" width="28
   + `</svg>`;
 const razorCursor = (blocked) => `url("data:image/svg+xml,${encodeURIComponent(razorSvg(blocked))}") 5 14, ${blocked ? "not-allowed" : "col-resize"}`;
 
+// The clip tool's cursor: a film strip beside a line through the hotspot (where the clip starts when dragged from there)
+const clipSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 28 28">`
+  + `<line x1="5.5" y1="1" x2="5.5" y2="27" stroke="#000" stroke-width="3"/>`
+  + `<line x1="5.5" y1="1" x2="5.5" y2="27" stroke="#fff" stroke-width="1.5"/>`
+  + `<rect x="10" y="7" width="16" height="14" rx="2" fill="#8b7cf6" stroke="#000" stroke-width="1.5"/>`
+  + `<rect x="14" y="10" width="8" height="8" rx="1" fill="#fff" stroke="#000" stroke-width="1"/>`
+  + [9.5, 13.5, 17.5].map((y) => `<rect x="11.2" y="${y}" width="1.6" height="1.6" fill="#000"/><rect x="23.2" y="${y}" width="1.6" height="1.6" fill="#000"/>`).join("")
+  + `</svg>`;
+const clipCursor = `url("data:image/svg+xml,${encodeURIComponent(clipSvg)}") 5 14, crosshair`;
+
 export const CURSORS = {
   arrow: "default",        // pointer tool over nothing it can take hold of
   item: "grab",            // pointer tool over an item / piece that can be dragged
@@ -20,18 +30,20 @@ export const CURSORS = {
   edge: "ew-resize",       // over (or dragging) an edge that trims
   razor: razorCursor(false),
   razorBlocked: razorCursor(true),
+  clip: clipCursor,        // clip tool: drag across the timeline to mark a clip
   zoom: "zoom-in",         // zoom tool (click zooms in, right-click out)
   hand: "grab",
   ruler: "col-resize",     // the ruler scrubs the playhead (every tool but the hand, which pans)
 };
 
-// tool: pointer | cut | zoom | hand; over: null | "item" | "edge"; pressing: null | "drag" | "edge" | "pan";
+// tool: pointer | cut | clip | zoom | hand; over: null | "item" | "edge"; pressing: null | "drag" | "edge" | "pan";
 // canCut: the cut tool would cut here
 export function timelineCursor({ tool, over = null, pressing = null, canCut = false }) {
   if (pressing === "pan" || pressing === "drag") return CURSORS.dragging;
   if (pressing === "edge") return CURSORS.edge;
   switch (tool) {
     case "cut": return canCut ? CURSORS.razor : CURSORS.razorBlocked;
+    case "clip": return CURSORS.clip;
     case "zoom": return CURSORS.zoom;
     case "hand": return CURSORS.hand;
     default: return over === "edge" ? CURSORS.edge : over === "item" ? CURSORS.item : CURSORS.arrow;

@@ -13,12 +13,13 @@ import { MediaPlayer, formatClock } from "./media.js";
 import { Timeline } from "./timeline.js";
 import { trimValue } from "./timeline-edit.js";
 import { skipCut, keptSeconds } from "./cuts.js";
-import { askText, confirmAction } from "./dialogs.js";
+import { askText, confirmAction, chooseEditTarget } from "./dialogs.js";
 import { ProjectStore, piecesFromItem, flatten, stretchAt, emptyContent, withoutLayouts, trackName } from "./project.js";
 import { ProjectTimeline, forgetLiveVodLengths } from "./project-timeline.js";
 import { ProjectPlayback } from "./project-playback.js";
 import { setUpExport, addToExport, exportShown, pausePreview } from "./export.js";
 import { showShortcuts } from "./shortcuts.js";
+import { openSyncView } from "./sync-view.js";
 import { setUpProjectVertical, openProjectVertical, closeProjectVertical, projectVerticalOpen, refreshProjectVertical, handleProjectVerticalKey, pauseProjectVertical } from "./project-vertical.js";
 
 // Phosphor icons, bold weight, as <sl-icon library="ph" name="…">
@@ -505,6 +506,7 @@ async function runSync(ids, login) {
   let covered = 0;
   let empty = null;
   const notes = new Set();
+  let firstMatch = null;
   for (const piece of pieces) {
     let answer;
     try {
@@ -518,6 +520,7 @@ async function runSync(ids, login) {
     covered += answer.coveredSeconds;
     if (!answer.matches.length) empty ??= answer;
     for (const match of answer.matches) {
+      firstMatch ??= { piece, match };
       if (match.restricted) notes.add(`${name}'s VOD is for subscribers only, so it may only play in Twitch's player.`);
       if (match.isLive) notes.add(`${name} is still live: the row ends where the stream is now.`);
       added.push({
@@ -536,13 +539,112 @@ async function runSync(ids, login) {
     toast(noSyncText(name, empty), "error");
     return;
   }
-  if (!timeline2.addSyncedRows(pieces, added, name)) return;
+  // Start times are a few seconds off between streamers: unless this pair was lined up before, listen to both and line them up by sound
+  const first = firstMatch;
+  let lined = first.match.lined !== "start" ? "saved" : null;
+  if (!lined) {
+    const listening = toast(`Listening to both streams to line ${name}'s up…`);
+    const len = first.match.end - first.match.start;
+    const into = Math.max(0, (len - AUDIO_MATCH_SECONDS) / 2);
+    try {
+      const result = await api("POST", `/api/vods/${first.piece.vodId}/sync/${first.match.vodId}/audio`, {
+        at: first.piece.start + first.match.offset + into, otherAt: first.match.start + into, seconds: Math.min(AUDIO_MATCH_SECONDS, Math.max(10, len)),
+      });
+      if (result.trusted) {
+        lined = "audio";
+        for (const piece of added) {
+          if (piece.vodId !== first.match.vodId) continue;
+          piece.start += result.shift;
+          piece.end += result.shift;
+          if (piece.start < 0) {
+            piece.at -= piece.start;
+            piece.start = 0;
+          }
+        }
+        notes.add(`Lined up by sound (${Math.round(result.confidence * 100)}% sure; moved ${result.shift > 0 ? "+" : ""}${result.shift.toFixed(2)} s from the start times).`);
+      } else {
+        notes.add(`Couldn't line up by sound: ${result.reason} It uses the stream start times; < / > or Alt+drag slide it.`);
+      }
+    } catch (error) {
+      notes.add(`Couldn't line up by sound (${error.message}). It uses the stream start times.`);
+    }
+    listening.remove();
+  } else {
+    notes.add(`Lined up like the last time these two were synced (${first.match.lined === "audio" ? "by sound" : "by hand"}).`);
+  }
+  const usable = added.filter((p) => p.end - p.start >= 0.5);
+  const still = (store.content?.pieces ?? []).filter((p) => ids.includes(p.id));
+  if (!usable.length || still.length !== pieces.length) return;
+  if (!timeline2.addSyncedRows(pieces, usable, name)) return;
   const missing = asked - covered;
   const parts = [missing > 0.5
     ? `Added ${name}'s view of ${formatDuration(covered)} (${name} wasn't streaming for ${formatDuration(missing)} of it, left as a gap).`
     : `Added ${name}'s view on a row under it.`];
-  parts.push("It plays once you cut away the row above. < / > slide it if it's a little off.");
+  parts.push("It plays once you cut away the row above.");
   toast([...parts, ...notes].join(" "));
+}
+
+// A slide (< / >, Alt+drag, Slide the footage) lines a piece up with the piece over it on another VOD: saved for the pair, so the next
+// "Sync with" between those two VODs lands lined up (debounced per pair)
+const AUDIO_MATCH_SECONDS = 45;
+const pairSaves = new Map();
+
+// The piece another one is lined up against: the closest row above (else below) with another VOD's piece playing at the same time
+function partnerOf(piece, content = store.content) {
+  if (!content || !piece) return null;
+  const rowOf = (p) => content.tracks.findIndex((t) => t.id === p.trackId);
+  const end = piece.at + (piece.end - piece.start);
+  const partners = content.pieces
+    .filter((p) => p.vodId !== piece.vodId && p.trackId !== piece.trackId && p.at < end - 0.5 && p.at + (p.end - p.start) > piece.at + 0.5)
+    .sort((a, b) => {
+      const da = rowOf(piece) - rowOf(a);
+      const db = rowOf(piece) - rowOf(b);
+      return (da > 0 ? da : 100 - da) - (db > 0 ? db : 100 - db);
+    });
+  return partners[0] ?? null;
+}
+
+function rememberSlide(ids) {
+  const content = store.content;
+  if (!content || !store.canEdit) return;
+  for (const id of ids) {
+    const piece = content.pieces.find((p) => p.id === id);
+    const partner = partnerOf(piece, content);
+    if (!partner) continue;
+    const end = piece.at + (piece.end - piece.start);
+    const t = (Math.max(piece.at, partner.at) + Math.min(end, partner.at + (partner.end - partner.start))) / 2;
+    const at = partner.start + (t - partner.at);
+    const otherAt = piece.start + (t - piece.at);
+    const key = `${partner.vodId}:${piece.vodId}`;
+    clearTimeout(pairSaves.get(key));
+    pairSaves.set(key, setTimeout(() => {
+      pairSaves.delete(key);
+      api("PUT", `/api/vods/${partner.vodId}/sync/${piece.vodId}`, { at, otherAt }).catch(() => {});
+    }, 800));
+  }
+}
+
+// "Line up side by side…" (piece menu): both streams playing next to each other, nudged until they match (ui/sync-view.js)
+async function sideBySide(piece) {
+  const top = partnerOf(piece);
+  if (!top || !store.canEdit) return;
+  if (rowFocus) endRowFocus();
+  playback?.pause();
+  if (player1?.playing()) player1.pause();
+  const rowName = (p) => store.content.tracks.find((t) => t.id === p.trackId)?.name || p.label || "Stream";
+  const id = piece.id;
+  await openSyncView({
+    top: structuredClone(top), below: structuredClone(piece), now: playback?.time(),
+    names: { top: rowName(top), below: rowName(piece) },
+    onSave: (delta) => {
+      const now = store.content?.pieces.find((p) => p.id === id);
+      if (!now) {
+        toast("That piece is gone, so nothing was moved.", "error");
+        return;
+      }
+      if (timeline2.slideSelected(delta, [now])) toast(`Moved ${delta > 0 ? "+" : ""}${delta.toFixed(2)} s. These two VODs stay lined up for the next Sync with.`);
+    },
+  });
 }
 
 function noSyncText(name, answer) {
@@ -989,6 +1091,13 @@ function setUpPlayer2() {
     onShowInPlayer1: showInPlayer1,
     onApplyToOriginal: applyToOriginal,
     onSyncWith: syncWith,
+    onSlid: rememberSlide,
+    partnerOf: (piece) => partnerOf(piece),
+    onSideBySide: sideBySide,
+    canClip: () => p2CanCreate(),
+    maxClipSeconds: () => timeline.maxStoredClipSeconds,
+    clipColor: () => timeline.lastClipColor,
+    onClipRange: p2SaveClip,
     onFocusRow: (trackId) => focusRow("p2", trackId),
   });
   wirePlayerButtons(2, "p2");
@@ -1002,9 +1111,12 @@ function setUpPlayer2() {
   });
   $("p2-vertical").addEventListener("click", () => toggleVertical());
   $("p2-show").addEventListener("click", () => {
+    // the piece playing at the playhead (the top one), else the selected one
     const now = playback.time();
-    const piece = timeline2.selectedPieces()[0] ?? store.content?.pieces.find((p) => now >= p.at && now < p.at + p.end - p.start);
+    const s = stretchAt(flatten(store.content), now);
+    const piece = s?.piece ?? timeline2.selectedPieces()[0];
     if (piece) showInPlayer1(piece);
+    else toast("Move Player 2's playhead onto a piece first.");
   });
   $("p2-rename").addEventListener("click", renameProject);
   $("p2-delete").addEventListener("click", closeProject);
@@ -1015,10 +1127,13 @@ function setUpPlayer2() {
   restoreLastLoaded();
 }
 
-// Player 2's crosshair (or a piece's right-click): Player 1 opens the piece's VOD, goes to it and shows its range; the clip or
-// segment it was copied from is selected when it's still there
+// Player 2's crosshair: Player 1 opens the piece's VOD at the moment under Player 2's playhead (the piece's start when the playhead
+// isn't on it) and zooms out to the whole clip or segment it was copied from (selected when it's still there), else the piece
 async function showInPlayer1(piece) {
   const vodId = String(piece.vodId);
+  const now = playback.time();
+  const on = now >= piece.at && now < piece.at + (piece.end - piece.start);
+  const seconds = on ? piece.start + (now - piece.at) : piece.start;
   playback.pause();
   if (!p1Vod || String(p1Vod.vodId) !== vodId) {
     let info;
@@ -1028,22 +1143,23 @@ async function showInPlayer1(piece) {
       toast(error.message, "error");
       return;
     }
-    await openVod({ vodId: info.vodId, title: info.title, lengthSeconds: info.lengthSeconds, isLive: info.isLive }, { start: piece.start, paused: true });
+    await openVod({ vodId: info.vodId, title: info.title, lengthSeconds: info.lengthSeconds, isLive: info.isLive }, { start: seconds, paused: true });
   } else {
     player1.pause();
-    player1.seek(piece.start);
+    player1.seek(seconds);
   }
   timelineTabs.pick("p1");
   const focus = piece.source?.kind === "clip" ? { type: "clip", id: piece.source.id } : piece.source?.kind === "segment" ? { type: "marker", id: piece.source.id } : { type: null, id: null };
-  timeline.reveal(focus, { start: piece.start, end: piece.end });
+  const item = timeline.reveal(focus, { start: piece.start, end: piece.end });
+  // the whole clip or segment, and the piece too if it reaches past it (a trim made in Player 2)
+  if (item?.end != null) timeline.reveal(focus, { start: Math.min(item.start, piece.start), end: Math.max(item.end, piece.end) });
 }
 
 // ---------- moments and clips made from Player 2 ----------
 //
-// M / X on Player 2 work like on Player 1, on the VOD under the playhead: the moment or clip goes on the member's own rows of that
-// VOD (Player 1's timeline shows it). In a gap there's no VOD, so nothing is made. A clip starts and ends on the same VOD.
-
-let p2Marking = null; // { vodId, start } while a clip waits for its end
+// M and the clip tool on Player 2 work like on Player 1, on the VOD under the playhead (M) or the piece dragged across (the clip
+// tool): the moment or clip goes on the member's own rows of that VOD (Player 1's timeline shows it). In a gap there's no VOD, so
+// nothing is made. A clip starts and ends on the same VOD.
 
 function p2CanCreate() {
   return Boolean(store?.open) && !DEMO && !me?.support && can("AddEntries");
@@ -1095,48 +1211,42 @@ function p2AddMoment() {
   });
 }
 
-function p2MarkClip() {
-  if (!p2CanCreate()) return;
-  const point = p2VodPoint();
-  if (!point) return p2NoVod();
-  if (!p2Marking) {
-    if (p1RowFor(point.vodId, "clip") === false) return toast("Your clip rows are locked.");
-    p2Marking = { vodId: point.vodId, start: point.seconds };
-    toast("Clip started: press X again where it ends.");
-    renderTools();
+// The clip tool dragged across a piece (ProjectTimeline): name it and give it a color, then it's saved on the VOD
+function p2SaveClip({ vodId, start, end }) {
+  if (!p2CanCreate()) {
+    timeline2.clearClipDraft();
     return;
   }
-  const marking = p2Marking;
-  p2Marking = null;
-  renderTools();
-  if (marking.vodId !== point.vodId) return toast("A clip starts and ends on the same VOD: the playhead is on another VOD now.", "error");
-  let start = Math.min(marking.start, point.seconds);
-  let end = Math.max(marking.start, point.seconds);
-  if (end - start < 0.5) return toast("Too short: move the playhead at least half a second away from the start.");
-  const max = timeline.maxStoredClipSeconds;
-  if (end - start > max) {
-    if (point.seconds < marking.start) start = end - max;
-    else end = start + max;
-    toast(`Clips are at most ${formatClock(max).replace(/^0:0?|\.00$/g, "")}; the clip was shortened.`);
+  if (p1RowFor(vodId, "clip") === false) {
+    timeline2.clearClipDraft();
+    toast("Your clip rows are locked.");
+    return;
   }
   playback.pause();
   openItemEditor({
     title: "",
-    color: timeline.lastColor,
-    colors: false,
+    color: timeline.lastClipColor,
     placeholder: "Clip title (blank = the VOD's title)",
-    onApply: async (title) => {
+    onColor: (color) => {
+      if (timeline2.clipDraft) timeline2.clipDraft.color = color;
+      timeline2.dirty = true;
+    },
+    onCancel: () => timeline2.clearClipDraft(),
+    onApply: async (title, color) => {
+      timeline2.clearClipDraft();
+      timeline.lastClipColor = color;
       try {
         await api("POST", "/api/entries", {
-          vodId: marking.vodId,
+          vodId,
           title: title || null,
+          color: color === "violet" ? null : color,
           trimMode: "Exact",
           startTime: trimValue(start),
           endTime: trimValue(end),
-          rowId: p1RowFor(marking.vodId, "clip") || undefined,
+          rowId: p1RowFor(vodId, "clip") || undefined,
         });
         refreshClips();
-        p1Reload(marking.vodId);
+        p1Reload(vodId);
         toast("Clip added to the VOD.");
       } catch (error) {
         toast(error.message, "error");
@@ -1164,27 +1274,71 @@ async function applyToOriginal(piece) {
     at = Math.max(at, p.end);
   }
   const what = source.kind === "clip" ? "clip" : "segment";
-  const ok = await confirmAction({
-    heading: `Change the original ${what}?`,
-    text: `It will run ${formatDuration(start, { short: false })} – ${formatDuration(end, { short: false })} in the VOD${cuts.length ? `, with ${cuts.length} part${cuts.length === 1 ? "" : "s"} cut out` : ""}, like the piece${from.length === 1 ? "" : "s"} made from it here. The project doesn't change.`,
-    confirm: "Change it",
-    danger: false,
-  });
-  if (!ok) return;
+  // Who it belongs to decides, like on Player 1: your own is changed; a teammate's is changed only with "Edit anyone's" and after
+  // asking "Edit original / Make a copy"; without it a copy on your row is offered (badrfly 2026-11-20)
+  let original;
   try {
+    const data = await api("GET", `/api/vods/${encodeURIComponent(piece.vodId)}/timeline`);
+    original = source.kind === "clip" ? data.clips?.find((c) => c.id === source.id) : data.markers?.find((m) => m.id === source.id);
+  } catch (error) {
+    toast(`Couldn't read the original ${what}: ${error.message}`, "error");
+    return;
+  }
+  if (!original) return toast(`The original ${what} isn't there any more.`, "error");
+  const ownerId = source.kind === "clip" ? original.addedByUserId : original.createdByUserId;
+  const own = ownerId != null && String(ownerId) === String(me?.id);
+  let copy = false;
+  const range = `${formatDuration(start, { short: false })} – ${formatDuration(end, { short: false })} in the VOD${cuts.length ? `, with ${cuts.length} part${cuts.length === 1 ? "" : "s"} cut out` : ""}`;
+  if (!own && original.canEdit) {
+    const choice = await chooseEditTarget({ what, owner: original.createdBy });
+    if (!choice) return;
+    copy = choice === "copy";
+  } else if (!own) {
+    if (!can("AddEntries") || (source.kind === "clip" && original.kind !== "Vod")) {
+      return toast(`This ${what} is ${original.createdBy ? `${original.createdBy}'s` : "someone else's"}, and you can't change it.`, "error");
+    }
+    const ok = await confirmAction({
+      heading: `Make your own copy of this ${what}?`,
+      text: `It's ${original.createdBy ? `${original.createdBy}'s` : "someone else's"} and you can't change it. A copy goes on your row, running ${range}, like the piece${from.length === 1 ? "" : "s"} made from it here. The pieces here then come from your copy.`,
+      confirm: "Make a copy",
+      danger: false,
+    });
+    if (!ok) return;
+    copy = true;
+  }
+  if (!copy && own) {
+    const ok = await confirmAction({
+      heading: `Change the original ${what}?`,
+      text: `It will run ${range}, like the piece${from.length === 1 ? "" : "s"} made from it here. The edit doesn't change.`,
+      confirm: "Change it",
+      danger: false,
+    });
+    if (!ok) return;
+  }
+  try {
+    let id = source.id;
+    let made = null;
+    if (copy) {
+      made = await api("POST", source.kind === "clip" ? `/api/entries/${id}/copy` : `/api/markers/${id}/copy`, {});
+      id = made.id;
+      // the pieces made from it now come from the copy, so the next apply (and Player 1's trims) go to the copy
+      if (store.canEdit) {
+        store.edit((c) => {
+          for (const p of c.pieces) if (from.some((f) => f.id === p.id)) p.source = { ...p.source, id };
+        });
+      }
+    }
     if (source.kind === "clip") {
-      await api("PUT", `/api/entries/${source.id}/trim`, { startTime: String(start), endTime: String(end), cuts });
+      await api("PUT", `/api/entries/${id}/trim`, { startTime: String(start), endTime: String(end), cuts });
       refreshClips();
     } else {
-      const data = await api("GET", `/api/vods/${encodeURIComponent(piece.vodId)}/timeline`);
-      const marker = data.markers?.find((m) => m.id === source.id);
-      if (!marker) throw new Error("The segment isn't there any more.");
-      await api("PUT", `/api/markers/${source.id}`, { seconds: start, endSeconds: end, label: marker.label, color: marker.color, rowId: marker.rowId, cuts });
+      const marker = made ?? original;
+      await api("PUT", `/api/markers/${id}`, { seconds: start, endSeconds: end, label: marker.label, color: marker.color, rowId: marker.rowId, cuts });
     }
     if (timeline.vodId === String(piece.vodId)) timeline.load();
-    toast(`The original ${what} was changed.`);
+    toast(copy ? `Your copy of the ${what} was made with this trim.` : `The original ${what} was changed.`);
   } catch (error) {
-    toast(`Couldn't change the original ${what}: ${error.message}`, "error");
+    toast(`Couldn't change the ${copy ? "copy of the" : "original"} ${what}: ${error.message}`, "error");
   }
 }
 
@@ -1329,8 +1483,10 @@ function renderTools() {
   // Player 2: moments and clips on the VOD under the playhead; S splits there and linking is Player 1's
   const p2Create = p2 && p2CanCreate();
   for (const button of document.querySelectorAll("#tools [data-tool]")) {
-    button.disabled = !on;
-    button.toggleAttribute("data-active", on && t.tool === button.dataset.tool);
+    // the clip tool makes clips: Player 1 on its VOD, Player 2 on the VOD of the piece dragged across
+    const enabled = on && (button.dataset.tool !== "clip" || (p2 ? p2Create : canCreate));
+    button.disabled = !enabled;
+    button.toggleAttribute("data-active", enabled && t.tool === button.dataset.tool);
   }
   const snap = document.querySelector('#tools [data-keybind="toggleSnap"]');
   snap.disabled = !on;
@@ -1338,9 +1494,8 @@ function renderTools() {
   for (const button of document.querySelectorAll("#tools [data-create]")) {
     const kind = button.dataset.create;
     if (p2) {
-      const enabled = p2Create && (kind === "marker" || kind === "clip");
-      button.disabled = !enabled;
-      button.toggleAttribute("data-active", enabled && kind === "clip" && Boolean(p2Marking));
+      button.disabled = !(p2Create && kind === "marker");
+      button.removeAttribute("data-active");
       continue;
     }
     button.disabled = !canCreate;
@@ -1384,7 +1539,6 @@ function setUpTools() {
   const create = {
     marker: () => (activePlayer === "p2" ? p2AddMoment() : timeline.addMoment()),
     segment: () => timeline.mark("segment"),
-    clip: () => (activePlayer === "p2" ? p2MarkClip() : timeline.mark("clip")),
     video: () => timeline.startLinking(),
   };
   for (const button of document.querySelectorAll("#tools [data-create]")) {
@@ -1581,7 +1735,7 @@ function setUpKeys() {
       toggleSnap: () => on && t.toggleSnap(),
       marker: () => (p2 ? p2AddMoment() : on && t.addMoment()),
       segment: () => (p2 ? on && t.splitAtPlayhead() : on && t.mark("segment")),
-      clip: () => (p2 ? p2MarkClip() : on && t.mark("clip")),
+      clip: () => on && t.setTool(t.tool === "clip" ? "pointer" : "clip"),
       setStart: () => on && t.setEdgeAtPlayhead("start"),
       setEnd: () => on && t.setEdgeAtPlayhead("end"),
       undo: () => screenUndo(false),
@@ -1593,14 +1747,10 @@ function setUpKeys() {
       addRow: () => p2 && on && t.addTrack(),
       slideBack: () => p2 && on && t.slideSelected(-SLIDE_STEP),
       slideFwd: () => p2 && on && t.slideSelected(SLIDE_STEP),
+      toggleWaves: () => p2 && on && t.toggleWaves?.(),
       escape: () => {
         if (rowFocus) {
           endRowFocus();
-          return;
-        }
-        if (p2 && p2Marking) {
-          p2Marking = null;
-          renderTools();
           return;
         }
         if (on) t.escape();
@@ -1623,7 +1773,7 @@ function setUpKeys() {
 // screen, or the row going away ends it; the playhead stays where it stopped.
 
 let rowFocus = null;        // { which: "p1" | "p2", rowId }
-const FOCUS_KEYS = new Set(["playPause", "back10", "fwd10", "back5", "fwd5", "frameBack", "frameFwd", "fullscreen", "zoomIn", "zoomOut", "fit", "escape",
+const FOCUS_KEYS = new Set(["playPause", "back10", "fwd10", "back5", "fwd5", "frameBack", "frameFwd", "fullscreen", "zoomIn", "zoomOut", "fit", "escape", "toggleWaves",
   "toolPointer", "toolZoom", "toolHand", "marker"]);
 let focusShade = null;
 let focusFrame = 0;
@@ -1814,9 +1964,9 @@ function setUpRowFocus() {
 
 // ---------- title and color editor in the tools bar ----------
 //
-// openItemEditor({ title, color, needsApply, onApply(title, color), onCancel }): the tools slide left and the editor
-// shows on the right. Segments, markers and clips apply as soon as the user clicks anywhere else (or presses Enter);
-// linking a video needs the apply button (needsApply). Esc cancels.
+// openItemEditor({ title, color, colors, needsApply, onColor, onApply(title, color), onCancel }): the tools slide left and the editor
+// shows on the right, with the ✓ button beside the title (badrfly 2026-11-20). Segments, markers and clips also apply on Enter or a
+// click anywhere else; linking a video needs the ✓ button (needsApply). Esc cancels.
 
 let itemEditor = null;
 
@@ -1825,7 +1975,7 @@ export function openItemEditor(options) {
   itemEditor = { ...options, color: options.color ?? "yellow" };
   $("item-title").value = options.title ?? "";
   $("item-title").placeholder = options.placeholder ?? "Title";
-  $("item-apply").hidden = !options.needsApply;
+  $("item-apply").hidden = false;
   $("item-colors").hidden = options.colors === false;
   renderSwatches();
   $("toolsbar").classList.add("editing");
@@ -1852,6 +2002,12 @@ function renderSwatches() {
       "aria-checked": String(itemEditor.color === name),
       "aria-label": name,
       style: `background:${hex}`,
+    });
+    // Enter on a swatch applies, like in the title box (a click on it only picks the color)
+    swatch.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || itemEditor?.needsApply) return;
+      event.preventDefault();
+      closeItemEditor(true);
     });
     swatch.addEventListener("click", () => {
       itemEditor.color = name;

@@ -98,7 +98,8 @@ export const editing = {
     this.snap = loadSnap();
     this.snapAt = null;
     this.selected = null;     // { type: "marker" | "clip", id }
-    this.marking = null;      // { kind: "segment" | "clip", start } between the two presses of S / X
+    this.marking = null;      // { kind: "segment", start } between the two presses of S
+    this.clipDrag = null;     // clip tool: { kind: "clip", start, end, color } while a clip is dragged across the timeline
     this.draft = null;        // { kind, start, end, color, rowId } while the title editor names a new item
     this.preview = null;      // { type, id, start, end } while an edge is dragged
     this.press = null;
@@ -135,6 +136,7 @@ export const editing = {
       });
     }
     this.lastColor = "yellow";
+    this.lastClipColor = "violet";
   },
 
   resetEditing() {
@@ -143,6 +145,7 @@ export const editing = {
     this.draft = null;
     this.linking = null;
     this.cutDrag = null;
+    this.clipDrag = null;
     this.preview = null;
     this.press = null;
     this.activeRowId = null;
@@ -242,7 +245,17 @@ export const editing = {
   // ---------- tools ----------
 
   setTool(tool) {
-    if (!["pointer", "cut", "zoom", "hand"].includes(tool)) return;
+    if (!["pointer", "cut", "clip", "zoom", "hand"].includes(tool)) return;
+    // The clip tool (badrfly 2026-11-20): drag across the timeline to mark a clip, named when the mouse is let go
+    if (tool === "clip" && this.mode === "vod") {
+      if (!this.canCreate()) return;
+      if (this.targetRow("clip") === false) {
+        toast("Your clip rows are locked.");
+        return;
+      }
+      this.marking = null;
+    }
+    if (tool === "clip" && this.mode !== "vod") return;
     this.tool = tool;
     this.updateCursor();
     this.changed();
@@ -403,6 +416,15 @@ export const editing = {
 
     const row = this.rows[Math.floor(y / this.rowHeight)];
     if (row && row.userId === me?.id) this.activeRowId = row.id;
+
+    if (this.tool === "clip") {
+      if (!this.canCreate() || this.draft) return;
+      const from = round(Math.max(0, Math.min(this.snapTime(t, rect.width), this.vodLength())));
+      this.snapAt = null;
+      this.press = { kind: "clip", from, startX: event.clientX, moved: false, rect };
+      canvas.setPointerCapture(event.pointerId);
+      return;
+    }
     const item = this.itemAt(x, y, rect.width);
 
     if (this.linking && this.tool === "pointer") {
@@ -487,6 +509,18 @@ export const editing = {
       this.renderTip();
       return;
     }
+    if (press.kind === "clip") {
+      if (!press.moved && Math.abs(event.clientX - press.startX) < DRAG_THRESHOLD_PX) return;
+      press.moved = true;
+      const raw = this.xToTime(event.clientX - press.rect.left, press.rect.width);
+      const max = this.maxStoredClipSeconds;
+      const t = round(Math.max(0, press.from - max, Math.min(this.snapTime(raw, press.rect.width), press.from + max, this.vodLength())));
+      this.clipDrag = { kind: "clip", start: Math.min(press.from, t), end: Math.max(press.from, t), color: this.lastClipColor };
+      this.edgeTip = { text: `Clip ${formatClock(this.clipDrag.start)} – ${formatClock(this.clipDrag.end)} (${formatClock(this.clipDrag.end - this.clipDrag.start)})`, clientX: event.clientX, clientY: event.clientY };
+      this.dirty = true;
+      this.renderTip();
+      return;
+    }
     if (press.kind === "scrub") {
       const t = this.xToTime(event.clientX - press.rect.left, press.rect.width);
       const extent = this.extent();
@@ -533,6 +567,13 @@ export const editing = {
       const { start, end } = this.preview;
       this.commitRange(press.item, start, end);
     }
+    if (press?.kind === "clip") {
+      const drag = this.clipDrag;
+      this.clipDrag = null;
+      if (!press.moved) toast("Drag across the timeline to mark a clip.");
+      else if (drag && drag.end - drag.start < MIN_LENGTH) toast("Too short: drag at least half a second.");
+      else if (drag) this.openDraft({ kind: "clip", start: drag.start, end: drag.end });
+    }
     if (press?.kind === "cutout") {
       const drag = this.cutDrag;
       this.cutDrag = null;
@@ -558,7 +599,7 @@ export const editing = {
     this.select(item);
     const entries = [];
     if (this.canEditItem(item)) {
-      entries.push({ icon: "pencil-simple", label: item.kind === "clip" ? "Rename" : "Edit title and color", run: () => this.editTitle(item) });
+      entries.push({ icon: "pencil-simple", label: "Edit title and color", run: () => this.editTitle(item) });
     }
     if (this.canCopyItem(item)) entries.push({ icon: "copy", label: "Make a copy on my row", run: () => this.copyItem(item) });
     if (this.mode === "vod" && (item.kind === "segment" || (item.kind === "clip" && item.data.kind === "Vod"))) {
@@ -695,6 +736,7 @@ export const editing = {
     const now = this.getPosition();
     if (now != null) points.push(now);
     if (this.marking) points.push(this.marking.start);
+    if (this.press?.kind === "clip") points.push(this.press.from);
     if (this.draft) points.push(this.draft.start, ...(this.draft.end != null ? [this.draft.end] : []));
     return points;
   },
@@ -715,9 +757,10 @@ export const editing = {
 
   // ---------- creating ----------
 
-  // S (segment) / X (clip): first press marks the start at the playhead, the second the end; then the title editor opens
-  mark(kind) {
-    if (!this.canCreate()) return;
+  // S (segment): first press marks the start at the playhead, the second the end; then the title editor opens. Clips are
+  // made with the clip tool (X) instead.
+  mark(kind = "segment") {
+    if (!this.canCreate() || kind !== "segment") return;
     const position = this.getPosition();
     if (position == null) return;
     const now = round(position);
@@ -738,11 +781,6 @@ export const editing = {
       toast("Too short: move the playhead at least half a second away from the start.");
       return;
     }
-    if (kind === "clip" && end - start > this.maxStoredClipSeconds) {
-      if (now < start + 0.001) start = end - this.maxStoredClipSeconds;
-      else end = start + this.maxStoredClipSeconds;
-      toast(`Clips are at most ${formatClock(this.maxStoredClipSeconds).replace(/^0:0?|\.00$/g, "")}; the clip was shortened.`);
-    }
     this.openDraft({ kind, start, end });
   },
 
@@ -760,13 +798,13 @@ export const editing = {
 
   openDraft(draft) {
     const row = this.targetRow(draft.kind === "clip" ? "clip" : "video");
-    this.draft = { ...draft, color: this.lastColor, rowId: row ? row.id : null, vodId: this.vodId };
+    const color = draft.kind === "clip" ? this.lastClipColor : this.lastColor;
+    this.draft = { ...draft, color, rowId: row ? row.id : null, vodId: this.vodId };
     this.selected = null;
     this.changed();
     this.hooks.openItemEditor({
       title: "",
-      color: this.lastColor,
-      colors: draft.kind !== "clip",
+      color,
       placeholder: draft.kind === "clip" ? "Clip title (blank = the VOD's title)" : draft.kind === "moment" ? "Marker title" : "Segment title",
       onColor: (color) => {
         if (this.draft) this.draft.color = color;
@@ -787,9 +825,11 @@ export const editing = {
     const vodId = this.vodId;
     try {
       if (draft.kind === "clip") {
+        this.lastClipColor = color;
         const entry = await api("POST", "/api/entries", {
           vodId: vodId,
           title: title || null,
+          color: color === "violet" ? null : color,
           trimMode: "Exact",
           startTime: trimValue(draft.start),
           endTime: trimValue(draft.end),
@@ -934,8 +974,7 @@ export const editing = {
     this.select(item);
     this.hooks.openItemEditor({
       title: item.title ?? "",
-      color: item.color ?? "yellow",
-      colors: item.kind !== "clip",
+      color: item.color ?? (item.kind === "clip" ? "violet" : "yellow"),
       placeholder: item.kind === "clip" ? "Clip title" : "Title",
       onApply: (title, color) => this.saveTitle(item, title, color),
     });
@@ -943,7 +982,7 @@ export const editing = {
 
   async saveTitle(item, title, color) {
     if (item.kind === "clip") {
-      if (!title || title === item.title) return;
+      if ((!title || title === item.title) && color === item.color) return;
     } else if (title === (item.title ?? "") && color === item.color) {
       return;
     }
@@ -951,7 +990,7 @@ export const editing = {
     if (!target) return;
     try {
       if (item.kind === "clip") {
-        await api("PATCH", `/api/entries/${target.id}`, { title });
+        await api("PATCH", `/api/entries/${target.id}`, { title: title && title !== item.title ? title : null, color });
         this.hooks.onClipsChanged?.();
         this.edited();
       } else {
@@ -1113,6 +1152,10 @@ export const editing = {
     if (this.marking) {
       this.marking = null;
       this.changed();
+      return true;
+    }
+    if (this.tool === "clip") {
+      this.setTool("pointer");
       return true;
     }
     if (this.selected) {

@@ -46,6 +46,7 @@ namespace TwitchDownloaderWeb.Tests
                     services.AddSingleton<IVodCutter>(_cutter);
                     services.AddSingleton<IChannelCardSource>(new FakeCards());
                     services.AddSingleton<IChannelVodSource>(_channelVods);
+                    services.AddSingleton<TwitchDownloaderWeb.Services.Sync.IVodLoudness>(_loudness);
                 });
             });
 

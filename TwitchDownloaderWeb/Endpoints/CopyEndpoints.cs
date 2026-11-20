@@ -118,6 +118,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 RowId = rowId,
                 CopiedFromEntryId = source.Id,
                 Cuts = source.Cuts,
+                Color = source.Color,
             };
 
             await using (var transaction = await db.Database.BeginTransactionAsync(cancellationToken))

@@ -278,7 +278,9 @@ namespace TwitchDownloaderWeb.Services.Segments
                     foreach (var vodId in Projects.ProjectTimeline.Flatten(content).Where(x => !x.IsGap).Select(x => x.Piece!.VodId).Distinct())
                         if (await IsVodGoneAsync(vodId, vodGone))
                             throw new InvalidOperationException($"VOD {vodId} in the project is gone from Twitch.");
-                    (_, restore) = await _projects.RenderAsync(db, batch.TeamId, content, item.Kind == ExportItemKind.ProjectVertical, item.Quality, fullPath,
+                    var partsFolder = item.Separate ? LibraryStorage.ExportItemRelativeFolder(batch.Id, item.Position) : null;
+                    (_, restore) = await _projects.RenderAsync(db, batch.TeamId, content, item.Kind == ExportItemKind.ProjectVertical, item.Quality,
+                        partsFolder is null ? fullPath : _storage.Resolve(partsFolder),
                         $"export-{batch.Id}-{item.Position}", _logger,
                         error => db.Audit(AuditActions.AudioRestoreFailed, null, $"Export {batch.Id}, item {item.Position}: {error}", teamId: batch.TeamId),
                         async (done, total) =>
@@ -286,7 +288,15 @@ namespace TwitchDownloaderWeb.Services.Segments
                             item.PartsDone = done;
                             item.PartsTotal = total;
                             await saveProgress();
-                        }, token);
+                        }, token, separate: partsFolder is not null);
+                    if (partsFolder is not null)
+                    {
+                        // separate files: a folder, zipped when served (like a video's segments)
+                        item.FilePath = partsFolder;
+                        item.FileSizeBytes = new DirectoryInfo(_storage.Resolve(partsFolder)).EnumerateFiles().Sum(x => x.Length);
+                        SetRestore(item, restore);
+                        return;
+                    }
                     break;
                 }
 
