@@ -657,13 +657,18 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   pieces); "Add a row" and "Delete the selected row" in the footer. Pieces: click / Shift+click / marquee select, drag to move (between rows;
   Shift keeps the time; below the last row makes a new row; red where it can't go; a single piece slides to the nearest free place), drag
   edges to trim (up to its neighbors and the VOD's length), I / O trim at the playhead, razor (C, white line) or S splits, Delete / Shift+Delete
-  (ripple) deletes, Ctrl+C / Ctrl+V copy and paste (at the playhead, on the selected row), right-click on a gap = Close gap. Piece menu: Name and
-  color, Copy, Copy / Paste layout, Use this layout on every piece, **Apply this trim to the original**
-  (clips and segments: the source's range and cut-out parts from every piece copied from it on the same VOD; `applyToOriginal` in `ui/editor.js`;
-  a teammate's item asks Edit original / Make a copy with `EditAnyEntries`, else offers a copy on the caller's row, badrfly 2026-11-20; a copy
-  becomes the pieces' source), Delete,
+  (ripple) deletes (**ripple = sync lock**, badrfly 2026-11-20: the removed time is taken out of every unlocked row, `rippleCut` in
+  `ui/project.js`, so synced rows keep in step; pieces across it are split; locked rows stay; Close gap does the same), Ctrl+C / Ctrl+V copy and paste (at the playhead, on the selected row), right-click on a gap = Close gap. Piece menu: Name and
+  color, Copy, Copy / Paste layout, Use this layout on every piece, Delete,
   Delete and close the gap (badrfly 2026-11-20: no Split at the playhead or Show in Player 1 there; the menu (`ui/menu.js`) opens upward when there's no room below). **Show in Player 1** = the crosshair in Player 2's controls: the piece at Player 2's playhead (else the selected one), Player 1 goes to the same VOD moment and zooms to the whole clip/segment it came from. Covered parts of lower rows are drawn darker; the ruler's bottom band shows what plays and hatches gaps. Snapping
   uses `clipLibrary.snap`. New pieces take the layout of the piece before them on their row.
+  **Apply to the originals** (badrfly 2026-11-20: a button in Player 2's controls, `p2-apply`, replacing the piece menu's "Apply this trim
+  to the original"; `applyEditToOriginals` in `ui/editor.js`): for the whole timeline, every clip/segment the pieces came from gets the
+  range of all its pieces on its VOD with what's between them as cut-out parts (skipped when already so); VOD-range pieces (Sync with,
+  VOD ranges) become segments for the parts that **play** (not covered): this VOD's on the member's own row, another VOD's on their synced
+  row of it on this VOD (video + clip row made when missing); segments with the same times already there are skipped, so applying twice
+  adds nothing. Teammates' items: one Edit originals / Make copies question (`EditAnyEntries`), else copies (pieces then come from the
+  copy). One confirm lists what changes. Pieces from videos aren't applied.
   **Nothing is deleted from Player 2** except pieces of the project (badrfly 2026-11-16): unloading only closes the project; real deletes of
   clips/segments are on Player 1's timeline and the cards.
 - **Sync with** (badrfly 2026-11-20, `syncWith` / `runSync` in `ui/editor.js`, `GET /api/vods/{id}/sync?channel=&start=&end=` in

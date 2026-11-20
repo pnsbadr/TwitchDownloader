@@ -732,6 +732,7 @@ function renderPlayer2() {
   $("p2-vertical").disabled = !open || DEMO;
   $("p2-vertical").label = open && store.isVertical ? "Back to Player 2 (horizontal)" : "New vertical edit (9:16) of what's loaded";
   $("p2-show").disabled = !hasPieces;
+  $("p2-apply").disabled = !hasPieces || DEMO || !can("AddEntries");
   $("p2-rename").disabled = !open || !store.canEdit;
   $("p2-delete").disabled = !open;
   $("p2-export").disabled = !hasPieces || DEMO;
@@ -1114,7 +1115,6 @@ function setUpPlayer2() {
       if (projectVerticalOpen()) refreshProjectVertical();
     },
     onShowInPlayer1: showInPlayer1,
-    onApplyToOriginal: applyToOriginal,
     onSyncWith: syncWith,
     onSlid: rememberSlide,
     partnerOf: (piece) => partnerOf(piece),
@@ -1146,6 +1146,7 @@ function setUpPlayer2() {
   $("p2-rename").addEventListener("click", renameProject);
   $("p2-delete").addEventListener("click", closeProject);
   $("p2-export").addEventListener("click", exportProject);
+  $("p2-apply").addEventListener("click", () => applyEditToOriginals());
   setUpProjectPicker();
   renderPlayer2();
   // What was loaded last time
@@ -1420,87 +1421,188 @@ function p1Reload(vodId) {
   if (String(timeline?.vodId) === vodId) timeline.load().catch(() => {});
 }
 
-// "Apply this trim to the original": the clip or segment a piece was copied from gets the range of every piece made from it in
-// this project, and what's between them as its cut-out parts (can be undone with Ctrl+Z on Player 1 only for segments)
-async function applyToOriginal(piece) {
-  const source = piece.source;
-  const from = store.content.pieces.filter((p) => p.source?.kind === source.kind && p.source.id === source.id && String(p.vodId) === String(piece.vodId))
-    .sort((a, b) => a.start - b.start);
-  const start = Math.min(...from.map((p) => p.start));
-  const end = Math.max(...from.map((p) => p.end));
-  const cuts = [];
-  let at = start;
-  for (const p of from) {
-    if (p.start > at + 0.01) cuts.push({ start: at, end: p.start });
-    at = Math.max(at, p.end);
+// ---------- Apply to the originals (badrfly 2026-11-20: one button in Player 2's controls, for the whole timeline) ----------
+//
+// Every clip and segment the edit's pieces were copied from gets the range of all its pieces here (on its VOD), and what's between
+// them as cut-out parts, like "Apply this trim to the original" did for one piece. Footage that plays from a VOD range (Sync with,
+// a VOD range loaded) becomes segments on your rows: of this VOD on your own row, of another streamer's VOD on your synced row of it
+// on this VOD's Player 1, made when there's none. Teammates' clips and segments ask Edit originals / Make copies once (with "Edit
+// anyone's"), else copies go on your rows. Pieces from videos aren't applied.
+
+const sameTime = (a, b) => Math.abs(a - b) < 0.05;
+
+// The VOD-time parts a set of ranges covers, merged where they touch
+function mergeRanges(ranges) {
+  const merged = [];
+  for (const r of [...ranges].sort((a, b) => a.start - b.start)) {
+    const last = merged[merged.length - 1];
+    if (last && r.start <= last.end + 0.01) last.end = Math.max(last.end, r.end);
+    else merged.push({ start: r.start, end: r.end });
   }
-  const what = source.kind === "clip" ? "clip" : "segment";
-  // Who it belongs to decides, like on Player 1: your own is changed; a teammate's is changed only with "Edit anyone's" and after
-  // asking "Edit original / Make a copy"; without it a copy on your row is offered (badrfly 2026-11-20)
-  let original;
-  try {
-    const data = await api("GET", `/api/vods/${encodeURIComponent(piece.vodId)}/timeline`);
-    original = source.kind === "clip" ? data.clips?.find((c) => c.id === source.id) : data.markers?.find((m) => m.id === source.id);
-  } catch (error) {
-    toast(`Couldn't read the original ${what}: ${error.message}`, "error");
-    return;
-  }
-  if (!original) return toast(`The original ${what} isn't there any more.`, "error");
-  const ownerId = source.kind === "clip" ? original.addedByUserId : original.createdByUserId;
-  const own = ownerId != null && String(ownerId) === String(me?.id);
-  let copy = false;
-  const range = `${formatDuration(start, { short: false })} – ${formatDuration(end, { short: false })} in the VOD${cuts.length ? `, with ${cuts.length} part${cuts.length === 1 ? "" : "s"} cut out` : ""}`;
-  if (!own && original.canEdit) {
-    const choice = await chooseEditTarget({ what, owner: original.createdBy });
-    if (!choice) return;
-    copy = choice === "copy";
-  } else if (!own) {
-    if (!can("AddEntries") || (source.kind === "clip" && original.kind !== "Vod")) {
-      return toast(`This ${what} is ${original.createdBy ? `${original.createdBy}'s` : "someone else's"}, and you can't change it.`, "error");
+  return merged;
+}
+
+async function applyEditToOriginals() {
+  if (!store?.open || !store.content.pieces.length) return;
+  if (!can("AddEntries")) return toast("Your role can't change clips or segments.", "error");
+  const mainVod = String(store.vodId);
+  const sources = new Map(); // "clip:12" -> { kind, id, vodId, pieces }
+  const footage = new Map(); // vodId -> [{ start, end, label }] (VOD ranges that play)
+  let skippedVideos = 0;
+  for (const p of store.content.pieces) {
+    const kind = p.source?.kind;
+    if (kind === "clip" || kind === "segment") {
+      const key = `${kind}:${p.source.id}:${p.vodId}`;
+      if (!sources.has(key)) sources.set(key, { kind, id: p.source.id, vodId: String(p.vodId), pieces: [] });
+      sources.get(key).pieces.push(p);
+    } else if (kind !== "vod") {
+      skippedVideos++;
     }
-    const ok = await confirmAction({
-      heading: `Make your own copy of this ${what}?`,
-      text: `It's ${original.createdBy ? `${original.createdBy}'s` : "someone else's"} and you can't change it. A copy goes on your row, running ${range}, like the piece${from.length === 1 ? "" : "s"} made from it here. The pieces here then come from your copy.`,
-      confirm: "Make a copy",
-      danger: false,
-    });
-    if (!ok) return;
-    copy = true;
   }
-  if (!copy && own) {
-    const ok = await confirmAction({
-      heading: `Change the original ${what}?`,
-      text: `It will run ${range}, like the piece${from.length === 1 ? "" : "s"} made from it here. The edit doesn't change.`,
-      confirm: "Change it",
-      danger: false,
-    });
-    if (!ok) return;
+  // VOD ranges: only the parts that play (a synced row is mostly covered by the row above it)
+  for (const s of flatten(store.content)) {
+    if (s.piece?.source?.kind !== "vod" || s.vodEnd - s.vodStart < 0.5) continue;
+    const vodId = String(s.piece.vodId);
+    if (!footage.has(vodId)) footage.set(vodId, []);
+    footage.get(vodId).push({ start: s.vodStart, end: s.vodEnd, label: s.piece.label || store.project?.title || "" });
   }
+  if (!sources.size && !footage.size) {
+    return toast(skippedVideos ? "Pieces from videos can't be applied to their originals yet." : "Nothing here came from a clip, segment or VOD range.");
+  }
+
+  // Read each VOD's timeline once: who owns each original, which synced rows and segments already exist
+  const timelines = new Map();
+  const read = async (vodId) => {
+    if (!timelines.has(vodId)) timelines.set(vodId, await api("GET", `/api/vods/${encodeURIComponent(vodId)}/timeline`));
+    return timelines.get(vodId);
+  };
+  const jobs = [];
+  const notes = [];
+  const teammates = [];
   try {
-    let id = source.id;
-    let made = null;
-    if (copy) {
-      made = await api("POST", source.kind === "clip" ? `/api/entries/${id}/copy` : `/api/markers/${id}/copy`, {});
-      id = made.id;
-      // the pieces made from it now come from the copy, so the next apply (and Player 1's trims) go to the copy
-      if (store.canEdit) {
-        store.edit((c) => {
-          for (const p of c.pieces) if (from.some((f) => f.id === p.id)) p.source = { ...p.source, id };
-        });
+    for (const src of sources.values()) {
+      const data = await read(src.vodId);
+      const original = src.kind === "clip" ? data.clips?.find((c) => c.id === src.id) : data.markers?.find((m) => m.id === src.id);
+      const what = src.kind === "clip" ? "clip" : "segment";
+      if (!original) {
+        notes.push(`A ${what} some pieces came from isn't there any more.`);
+        continue;
+      }
+      const parts = mergeRanges(src.pieces.map((p) => ({ start: p.start, end: p.end })));
+      const start = parts[0].start;
+      const end = parts[parts.length - 1].end;
+      const cuts = parts.slice(1).map((p, i) => ({ start: parts[i].end, end: p.start }));
+      const ownerId = src.kind === "clip" ? original.addedByUserId : original.createdByUserId;
+      const own = ownerId != null && String(ownerId) === String(me?.id);
+      // Already like this (applied before): nothing to change
+      const was = src.kind === "clip" ? { start: original.start, end: original.end } : { start: original.seconds, end: original.endSeconds };
+      const wasCuts = original.cuts ?? [];
+      if (sameTime(was.start, start) && was.end != null && sameTime(was.end, end) && wasCuts.length === cuts.length
+        && wasCuts.every((c, i) => sameTime(c.start, cuts[i].start) && sameTime(c.end, cuts[i].end))) continue;
+      const job = { type: "source", src, original, what, start, end, cuts, own, copy: false };
+      if (!own && original.canEdit) teammates.push(job);
+      else if (!own) {
+        if (src.kind === "clip" && original.kind !== "Vod") {
+          notes.push(`"${original.title || "A Twitch clip"}" can't be copied.`);
+          continue;
+        }
+        job.copy = true;
+      }
+      jobs.push(job);
+    }
+    for (const [vodId, ranges] of footage) {
+      const parts = [];
+      for (const r of mergeRanges(ranges)) parts.push({ ...r, label: ranges.find((x) => x.start <= r.start + 0.01 && x.end >= r.start)?.label ?? "" });
+      if (vodId === mainVod) {
+        const data = await read(mainVod);
+        const mine = (data.markers ?? []).filter((m) => m.endSeconds != null && String(m.vodId ?? mainVod) === mainVod
+          && data.rows?.some((r) => r.id === m.rowId && String(r.userId) === String(me?.id) && r.shift == null));
+        const fresh = parts.filter((r) => !mine.some((m) => sameTime(m.seconds, r.start) && sameTime(m.endSeconds, r.end)));
+        if (fresh.length) jobs.push({ type: "footage", vodId, parts: fresh, row: null });
+      } else {
+        const data = await read(mainVod);
+        const row = data.rows?.find((r) => r.shift != null && String(r.vodId) === vodId && String(r.userId) === String(me?.id)
+          && String(r.kind).toLowerCase() === "video");
+        const there = row ? (data.markers ?? []).filter((m) => m.rowId === row.id) : [];
+        const fresh = parts.filter((r) => !there.some((m) => sameTime(m.seconds, r.start) && sameTime(m.endSeconds, r.end)));
+        if (fresh.length) jobs.push({ type: "footage", vodId, parts: fresh, row, synced: true, name: parts[0].label });
       }
     }
-    if (source.kind === "clip") {
-      await api("PUT", `/api/entries/${id}/trim`, { startTime: String(start), endTime: String(end), cuts });
-      refreshClips();
-    } else {
-      const marker = made ?? original;
-      await api("PUT", `/api/markers/${id}`, { seconds: start, endSeconds: end, label: marker.label, color: marker.color, rowId: marker.rowId, cuts });
-    }
-    if (timeline.vodId === String(piece.vodId)) timeline.load();
-    toast(copy ? `Your copy of the ${what} was made with this trim.` : `The original ${what} was changed.`);
   } catch (error) {
-    toast(`Couldn't change the ${copy ? "copy of the" : "original"} ${what}: ${error.message}`, "error");
+    return toast(`Couldn't read the originals: ${error.message}`, "error");
   }
+  if (!jobs.length) return toast(["Everything here is already on Player 1.", ...notes].join(" "));
+
+  if (teammates.length) {
+    const owners = [...new Set(teammates.map((j) => j.original.createdBy).filter(Boolean))];
+    const choice = await chooseEditTarget({ what: teammates.length === 1 ? teammates[0].what : "clips and segments", owner: owners.join(" and ") || null });
+    if (!choice) return;
+    for (const j of teammates) j.copy = choice === "copy";
+  }
+  const count = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const changed = jobs.filter((j) => j.type === "source" && !j.copy);
+  const copied = jobs.filter((j) => j.type === "source" && j.copy);
+  const lines = [];
+  if (changed.length) {
+    const clips = changed.filter((j) => j.what === "clip").length;
+    const segs = changed.length - clips;
+    lines.push(`${[clips && count(clips, "clip"), segs && count(segs, "segment")].filter(Boolean).join(" and ")} will match the pieces made from ${changed.length === 1 ? "it" : "them"} here (what's between them is cut out).`);
+  }
+  if (copied.length) lines.push(`Copies of ${count(copied.length, "teammate's item")} go on your rows, with these trims.`);
+  for (const j of jobs.filter((x) => x.type === "footage")) {
+    const go = j.parts.length === 1 ? "goes" : "go";
+    lines.push(j.synced
+      ? `${count(j.parts.length, "segment")} of ${j.name ? `"${j.name}"` : "the other stream"} that ${j.parts.length === 1 ? "plays" : "play"} here ${go} on ${j.row ? "your synced row of it" : "a new synced row of it on this VOD"}.`
+      : `${count(j.parts.length, "segment")} for the VOD ranges that play here ${go} on your row.`);
+  }
+  if (skippedVideos) lines.push("Pieces from videos aren't applied.");
+  const ok = await confirmAction({ heading: "Apply this edit to the originals on Player 1?", text: [...lines, ...notes].join(" "), confirm: "Apply", danger: false });
+  if (!ok) return;
+
+  const failed = [];
+  const rewrites = new Map(); // piece id -> new source (copies)
+  for (const job of jobs) {
+    try {
+      if (job.type === "source") {
+        const { src, original } = job;
+        let id = src.id;
+        let made = null;
+        if (job.copy) {
+          made = await api("POST", src.kind === "clip" ? `/api/entries/${id}/copy` : `/api/markers/${id}/copy`, {});
+          id = made.id;
+          for (const p of src.pieces) rewrites.set(p.id, { ...p.source, id });
+        }
+        if (src.kind === "clip") {
+          await api("PUT", `/api/entries/${id}/trim`, { startTime: String(job.start), endTime: String(job.end), cuts: job.cuts });
+        } else {
+          const marker = made ?? original;
+          await api("PUT", `/api/markers/${id}`, { seconds: job.start, endSeconds: job.end, label: marker.label, color: marker.color, rowId: marker.rowId, cuts: job.cuts });
+        }
+      } else {
+        let rowId = job.row?.id ?? null;
+        if (job.synced && !rowId) {
+          const row = await api("POST", `/api/vods/${encodeURIComponent(mainVod)}/rows`, { kind: "video", syncedVodId: Number(job.vodId) });
+          await api("POST", `/api/vods/${encodeURIComponent(mainVod)}/rows`, { kind: "clip", syncedVodId: Number(job.vodId) }).catch(() => {});
+          rowId = row.id;
+        }
+        for (const part of job.parts) {
+          await api("POST", `/api/vods/${encodeURIComponent(job.vodId)}/markers`, {
+            seconds: part.start, endSeconds: part.end, label: part.label.slice(0, 200), ...(rowId ? { rowId } : {}),
+          });
+        }
+      }
+    } catch (error) {
+      failed.push(error.message);
+    }
+  }
+  if (rewrites.size && store.canEdit) {
+    store.edit((c) => {
+      for (const p of c.pieces) if (rewrites.has(p.id)) p.source = rewrites.get(p.id);
+    });
+  }
+  refreshClips();
+  if (timeline?.vodId) timeline.load().catch(() => {});
+  toast(failed.length ? `Applied, but ${count(failed.length, "change")} failed: ${failed[0]}` : "Applied to the originals on Player 1.", failed.length ? "error" : undefined);
 }
 
 // ---------- the vertical editor (ui/project-vertical.js) ----------
