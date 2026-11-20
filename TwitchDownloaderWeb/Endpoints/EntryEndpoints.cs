@@ -367,13 +367,17 @@ namespace TwitchDownloaderWeb.Endpoints
         /// <param name="cursor">A page's <c>nextCursor</c>: the clips after it in the same sort (<see cref="PageCursor"/>).</param>
         /// <param name="minSeconds">Only clips at least this long (what's kept, <see cref="LibraryEntry.ClipLengthSeconds"/>; the search box's "&gt;1m").</param>
         /// <param name="maxSeconds">Only clips at most this long ("&lt;30s").</param>
+        /// <param name="mark">"starred" or "recent": the caller's own stars / recently opened clips (<see cref="MarkEndpoints.Filter"/>).</param>
         private static async Task<IResult> ListEntries(LibraryDbContext db, string? search, string? sort, string? order, int? limit,
             string? from, string? to, string? dateField, long? vodId, int? madeBy, int? editedBy, string? channels, bool? paged, string? cursor,
-            double? minSeconds, double? maxSeconds, string? status, string? tag, TeamContext team, CancellationToken cancellationToken)
+            double? minSeconds, double? maxSeconds, string? status, string? tag, string? mark, TeamContext team, CancellationToken cancellationToken)
         {
             var (statusId, noStatus, tagName, filterProblem) = StatusEndpoints.ParseFilters(status, tag);
             if (filterProblem is not null)
                 return filterProblem;
+            var (marked, markProblem) = MarkEndpoints.Filter(db, mark, MarkKind.Clip, team.UserId);
+            if (markProblem is not null)
+                return markProblem;
 
             PageCursor? after = null;
             if (!string.IsNullOrEmpty(cursor) && !PageCursor.TryParse(cursor, out after))
@@ -435,6 +439,10 @@ namespace TwitchDownloaderWeb.Endpoints
                 query = query.Where(x => x.TeamStatus == null || !x.TeamStatus.HideFromLists);
             if (tagName is not null)
                 query = query.Where(x => db.EntryTags.Any(t => t.EntryId == x.Id && t.Tag!.Name == tagName));
+
+            // The caller's own stars / recently opened (badrfly 2026-11-20)
+            if (marked is not null)
+                query = query.Where(x => marked.Contains(x.Id));
 
             if (minSeconds is { } shortest)
                 query = query.Where(x => x.ClipLengthSeconds >= shortest);

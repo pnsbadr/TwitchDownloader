@@ -174,12 +174,16 @@ namespace TwitchDownloaderWeb.Endpoints
         /// <param name="paged">true: answer <c>{ items, nextCursor, total }</c>, newest first, <paramref name="cursor"/> = a page's nextCursor.</param>
         /// <param name="from">Only videos made at or after this instant (ISO 8601 with an offset).</param>
         /// <param name="to">Only videos made before this instant.</param>
+        /// <param name="mark">"starred" or "recent": the caller's own stars / recently opened videos.</param>
         private static async Task<IResult> List(string? vodIds, int? userId, int? editedBy, string? channels, int? limit, string? search, bool? paged,
-            string? cursor, string? from, string? to, string? status, string? tag, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
+            string? cursor, string? from, string? to, string? status, string? tag, string? mark, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
         {
             var (statusId, noStatus, tagName, filterProblem) = StatusEndpoints.ParseFilters(status, tag);
             if (filterProblem is not null)
                 return filterProblem;
+            var (marked, markProblem) = MarkEndpoints.Filter(db, mark, MarkKind.Video, team.UserId);
+            if (markProblem is not null)
+                return markProblem;
             if (!EntryEndpoints.TryParseInstant(from, out var fromUtc))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["from"] = ["Use an ISO 8601 date-time with an offset, e.g. 2026-10-09T07:00:00Z."] });
             if (!EntryEndpoints.TryParseInstant(to, out var toUtc))
@@ -197,6 +201,8 @@ namespace TwitchDownloaderWeb.Endpoints
             // A video counts for every VOD it plays from (one video may span several streams)
             if (ids.Count > 0)
                 query = query.Where(x => ids.Contains(x.VodId) || x.Segments.Any(s => ids.Contains(s.Marker!.VodId)));
+            if (marked is not null)
+                query = query.Where(x => marked.Contains(x.Id));
             if (userId is { } user)
                 query = query.Where(x => x.UserId == user);
             if (await ChannelEndpoints.ChannelNamesAsync(db, channels, cancellationToken) is { } channelNames)

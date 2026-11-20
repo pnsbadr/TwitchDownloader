@@ -783,6 +783,42 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.ToTable("LibraryEntries", (string)null);
                 });
 
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.MemberMark", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("ItemId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("OpenedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("StarredAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("TeamId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId");
+
+                    b.HasIndex("TeamId", "UserId", "Kind", "ItemId")
+                        .IsUnique();
+
+                    b.ToTable("MemberMarks");
+                });
+
             modelBuilder.Entity("TwitchDownloaderWeb.Data.MemberVod", b =>
                 {
                     b.Property<int>("Id")
@@ -1847,6 +1883,21 @@ namespace TwitchDownloaderWeb.Data.Migrations
                     b.Navigation("Row");
 
                     b.Navigation("TeamStatus");
+                });
+
+            modelBuilder.Entity("TwitchDownloaderWeb.Data.MemberMark", b =>
+                {
+                    b.HasOne("TwitchDownloaderWeb.Data.Team", null)
+                        .WithMany()
+                        .HasForeignKey("TeamId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("TwitchDownloaderWeb.Data.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("TwitchDownloaderWeb.Data.MemberVod", b =>

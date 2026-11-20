@@ -154,6 +154,7 @@ app.MapItemEditEndpoints();
 app.MapProjectEndpoints();
 app.MapVodWorkEndpoints();
 app.MapStatusEndpoints();
+app.MapMarkEndpoints();
 app.MapVodSyncEndpoints();
 app.MapLiveEndpoints();
 
