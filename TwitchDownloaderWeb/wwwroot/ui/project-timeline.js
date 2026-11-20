@@ -11,7 +11,7 @@
 import { timelineCursor, rulerCursor, timelineWheel } from "./timeline-input.js";
 import { $, el, api, toast, formatDuration, withTooltip, loadSetting, saveSetting } from "./core.js";
 import { askText, confirmAction } from "./dialogs.js";
-import { MARKER_COLORS } from "./colors.js";
+import { MARKER_COLORS, clipColor } from "./colors.js";
 import { openMenu } from "./menu.js";
 import { dropTarget } from "./drag.js";
 import { drawWave, onWaves } from "./waves.js";
@@ -491,6 +491,8 @@ export class ProjectTimeline {
   // ---------- tools ----------
 
   setTool(tool) {
+    // The clip tool (badrfly 2026-11-20): drag across a piece to clip its VOD (the clip goes on the member's rows of that VOD)
+    if (tool === "clip" && !this.hooks.canClip?.()) return;
     this.tool = tool;
     this.razorAt = null;
     this.updateCursor();
@@ -730,6 +732,20 @@ export class ProjectTimeline {
       if (hit?.piece) this.splitAt(hit.piece, this.razorAt ?? t);
       return;
     }
+    if (this.tool === "clip") {
+      if (this.clipDraft) return;
+      if (!hit?.piece) {
+        toast("Drag across a piece to clip its VOD.");
+        return;
+      }
+      const piece = hit.piece;
+      const snapped = this.snapDelta([t], p.width, new Set());
+      const from = round(Math.max(piece.at, Math.min(snapped ? snapped.at : t, pieceEnd(piece))));
+      this.snapAt = null;
+      this.track.setPointerCapture(event.pointerId);
+      this.press = { kind: "clip", piece, from, row: this.trackIndex(piece.trackId), startX: event.clientX, startY: event.clientY, moved: false, rect: p.rect };
+      return;
+    }
     // pointer
     this.track.setPointerCapture(event.pointerId);
     if (hit?.track) this.trackSel = hit.track.id;
@@ -806,6 +822,10 @@ export class ProjectTimeline {
       return;
     }
     if (press.kind === "hand") return;
+    if (press.kind === "clip") {
+      this.dragClip(press, p, event);
+      return;
+    }
     if (!press.moved && Math.hypot(event.clientX - press.startX, event.clientY - press.startY) < DRAG_PX) return;
     if (!press.moved) {
       press.moved = true;
@@ -831,6 +851,51 @@ export class ProjectTimeline {
     if (press.kind === "edge") this.dragEdge(press, t, p.width);
     else if (press.kind === "slip") this.dragSlip(press, event, p.width);
     else this.dragMove(press, t, p, event.shiftKey);
+  }
+
+  // Clip tool: the range on the piece pressed, at most the longest clip
+  dragClip(press, p, event) {
+    if (!press.moved && Math.abs(event.clientX - press.startX) < DRAG_PX) return;
+    press.moved = true;
+    const piece = press.piece;
+    const max = this.hooks.maxClipSeconds?.() ?? 180;
+    const raw = this.xToTime(p.x, p.width);
+    const snapped = this.snapDelta([raw], p.width, new Set());
+    const t = round(Math.max(piece.at, press.from - max, Math.min(snapped ? snapped.at : raw, pieceEnd(piece), press.from + max)));
+    const at1 = Math.min(press.from, t);
+    const at2 = Math.max(press.from, t);
+    this.clipDraft = { row: press.row, at1, at2, color: this.hooks.clipColor?.() ?? "violet" };
+    this.tip.replaceChildren(
+      el("div", { class: "num" }, `Clip ${formatDuration(at2 - at1, { short: false })}`),
+      el("div", {}, `VOD ${piece.vodId}, ${formatDuration(piece.start + at1 - piece.at, { short: false })} – ${formatDuration(piece.start + at2 - piece.at, { short: false })}`));
+    this.tip.hidden = false;
+    this.tip.style.left = `${event.clientX + 12}px`;
+    this.tip.style.top = `${event.clientY + 16}px`;
+    this.dirty = true;
+  }
+
+  // The dragged clip stays drawn while it's named; the editor clears it
+  clearClipDraft() {
+    this.clipDraft = null;
+    this.dirty = true;
+  }
+
+  endClipDrag(press) {
+    this.tip.hidden = true;
+    const draft = this.clipDraft;
+    if (!press.moved || !draft) {
+      this.clipDraft = null;
+      toast("Drag across a piece to mark a clip.");
+      return;
+    }
+    if (draft.at2 - draft.at1 < MIN_PIECE) {
+      this.clipDraft = null;
+      toast("Too short: drag at least half a second.");
+      return;
+    }
+    const piece = press.piece;
+    const vod = (at) => Math.round((piece.start + at - piece.at) * 100) / 100;
+    this.hooks.onClipRange?.({ vodId: String(piece.vodId), start: vod(draft.at1), end: vod(draft.at2) });
   }
 
   // Dragging right shows earlier footage (like an editor's slip tool); capped at the VOD's start and end
@@ -940,6 +1005,12 @@ export class ProjectTimeline {
     if (!press || press.kind === "hand") return;
     this.press = null;
     this.updateCursor();
+    if (press.kind === "clip") {
+      this.snapAt = null;
+      this.dirty = true;
+      this.endClipDrag(press);
+      return;
+    }
     const preview = this.preview;
     const invalid = this.invalid;
     const newRow = this.newRowPreview;
@@ -996,6 +1067,10 @@ export class ProjectTimeline {
   }
 
   cancelPress() {
+    if (this.press?.kind === "clip") {
+      this.clipDraft = null;
+      this.tip.hidden = true;
+    }
     this.press = null;
     this.preview = null;
     this.marquee = null;
@@ -1702,6 +1777,21 @@ export class ProjectTimeline {
       ctx.strokeStyle = css.getPropertyValue("--accent").trim() || "#8b7cf6";
       ctx.fillRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
       ctx.strokeRect(Math.min(x1, x2) + 0.5, Math.min(y1, y2) + 0.5, Math.abs(x2 - x1), Math.abs(y2 - y1));
+      ctx.restore();
+    }
+    if (this.clipDraft) {
+      const { row, at1, at2, color } = this.clipDraft;
+      const x1 = this.timeToX(at1, width);
+      const x2 = this.timeToX(at2, width);
+      ctx.save();
+      ctx.strokeStyle = clipColor(color);
+      ctx.fillStyle = clipColor(color);
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 4]);
+      ctx.globalAlpha = 0.3;
+      ctx.fillRect(x1, row * ROW_HEIGHT + 3, Math.max(2, x2 - x1), ROW_HEIGHT - 6);
+      ctx.globalAlpha = 1;
+      ctx.strokeRect(x1, row * ROW_HEIGHT + 3, Math.max(2, x2 - x1), ROW_HEIGHT - 6);
       ctx.restore();
     }
     if (this.snapAt != null) this.drawLine(ctx, this.snapAt, width, height, [3, 3], "#fff");

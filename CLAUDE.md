@@ -71,6 +71,9 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   (string, no FK yet — link to users in phase 3).
 - `LibraryEntries.Kind` (`Vod`/`Clip`, migration default `Vod`) + `ClipSlug`: see Twitch clips. For clips `VodId` is the source
   VOD (0 if Twitch didn't say) and `StartTime`/`EndTime` the clip's place in it (whole seconds).
+- `LibraryEntries.Color` (badrfly 2026-11-20, migration `ClipColors`): a clip's color, one of `VodMarker.Colors`; null = the clip violet
+  ("violet" is stored as null). `POST /api/entries` and `PATCH /api/entries/{id}` take `color` (PATCH: a blank title with a color keeps the
+  title; unknown color → 400); entry and timeline clip JSON carry it; copies keep it. Drawn by `clipColor` in `ui/colors.js`.
 - `Channels` (`SavedChannel`): the team's **assigned channels** (see Team channels): login (unique per team, lower-case), display name,
   Twitch user ID, `WatchMutedAudio` (= automatic audio saving for this channel) and `AllowSaveAudio` (= Save audio now allowed), both set
   **only by the app Owner** (badrfly 2026-11-18; off for new channels; migration `ChannelAudioAndStoredClips` copied the old team setting),
@@ -573,8 +576,9 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   Player 2's timeline; leaving the timeline section and Player 2's screen, or dropping anywhere else, goes back to Player 1's; if Player 2's
   timeline was already showing nothing changes. A drop on Player 2's timeline moves its playhead to the dropped pieces.
 - `ui/timebox.js`: `timeBox({ seconds, fraction })` with a fixed `hh:mm:ss(.ff)` mask; `.seconds` reads/writes.
-- Tools bar title/color editor (`openItemEditor` in `ui/editor.js`): tools slide left, title + the 9 marker colors on the right; applies on a
-  click anywhere else or Enter (linking a video needs the ✓ button), Esc cancels.
+- Tools bar title/color editor (`openItemEditor` in `ui/editor.js`): tools slide left, title, a ✓ button beside it (always shown, badrfly
+  2026-11-20) and the 9 colors (clips too) on the right; also applies on a click anywhere else or Enter (in the box or on a swatch; linking a
+  video needs the ✓ button), Esc cancels.
 - **Left panel** (`ui/library.js`, step 2): VODS = the team's assigned channels' VODs (`GET /api/channels`, then `/api/channels/{login}/vods`,
   20 per page, more on scroll). **Channel bar** (badrfly 2026-11-19, mockup C "pick several"): the team's channels as Twitch pictures (`/api/channels/cards`; a live one has a blinking red ring, the live state from the live events first). Each click turns one on or off, the others go dark (a live dark one keeps a faint ring); with none on every channel shows. It starts with the team's primary channel on every time the editor loads (not remembered); a one-channel team can't toggle. It filters all three lists: VODs of several channels are merged newest first, cut off at the oldest loaded VOD of any channel that still has more pages (scrolling loads the channel whose oldest is newest; live VODs always on top); CLIPS and VIDEOS send `channels=`. Cards show a small channel picture when several channels are shown. GQL lists have no live flag, so the
   newest VOD (if under 2 days old) is checked with `/api/vods/info` (`isLive` → LIVE badge). VOD cards show only Twitch's info plus the
@@ -597,7 +601,7 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   (`timelineCursor` / `rulerCursor`: arrow, grab over a draggable item/piece, ew-resize on edges, the Premiere-like razor (red-crossed
   where it can't cut), zoom-in, grab/grabbing hand, col-resize on the ruler) and the wheel (`timelineWheel`: wheel scrolls, Ctrl+wheel
   zooms around the mouse, Shift+wheel scrolls rows; middle drag pans) from it. Change them there, never in one timeline.
-- **Timeline editing** (`ui/timeline-edit.js`, mixed into `Timeline`, steps 3b and 4): tools bar tools Pointer / Cut / Zoom / Hand (V/C/Z/H), snapping (N,
+- **Timeline editing** (`ui/timeline-edit.js`, mixed into `Timeline`, steps 3b and 4): tools bar tools Pointer / Cut / Clip / Zoom / Hand (V/C/X/Z/H), snapping (N,
   `clipLibrary.snap`, 8 px; **new kinds of timeline items must add their times to `snapPoints()`**), undo/redo (last 10 per VOD, this tab:
   marker add/delete/change/split and clip re-trims; steps name items through refs shared per VOD (`ref` / `moveRef`), because undoing a
   delete makes the marker again with a new ID and older steps must follow it; presses queue while a step is sent; a stored clip's re-trim
@@ -605,11 +609,13 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   (segments, and VOD clips via `PUT /trim`; a **stored** clip's re-trim is saved 3 s after the last change (`scheduleTrim`, "saving…" next to
   Player 1's title, flushed on `pagehide` with a keepalive fetch: it downloads again), capped at the stored-clip limit over its whole range);
   I/O set them at the playhead; Space plays the
-  selection, Shift+Space its last 3 s; Del deletes; double-click or right-click → title/color. S / X mark a segment / clip (start, then end,
-  dashed preview; clips capped at `maxStoredClipSeconds`), M a moment; the tools bar's title/color editor names it and it's saved on the
+  selection, Shift+Space its last 3 s; Del deletes; double-click or right-click → title/color. S marks a segment (start, then end,
+  dashed preview), M a moment; the **clip tool** (X or the film strip, badrfly 2026-11-20: a tool, not two presses) has its own cursor
+  (`timeline-input.js`) and makes a clip by dragging across the timeline (dashed preview in the clip's color, capped at
+  `maxStoredClipSeconds`), named with a color when the mouse is let go (`lastClipColor`); the tools bar's title/color editor names it and it's saved on the
   member's own row clicked last (else their first; locked rows are skipped). Others' items: view only; with `EditAnyEntries` every change asks
   **Edit original / Make a copy** (`chooseEditTarget`, Enter = copy); right-click → "Make a copy on my row" (`POST .../copy`). Locked rows
-  (page only) can't be edited. Hooks to `editor.js`: `openItemEditor` (`colors: false` for clips, `onColor` live preview), `onChange`
+  (page only) can't be edited. Hooks to `editor.js`: `openItemEditor` (`onColor` live preview), `onChange`
   (`renderTools`), `onClipsChanged` (library refresh), `onCreated` (Player 2, step 4). The right-click menu is `ui/menu.js` (shared with cards).
 - **Player 2 = the project editor** (badrfly 2026-11-16, multi-track rework; plan: Claude Doc "Vertical editor: multi-track timeline plan").
   Player 1 is the overview for marking; Player 2 works like any video editor (Premiere-like) on **projects** (see `Projects`), whose media
@@ -623,9 +629,9 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   Add to the export list, Rename, Duplicate / Make my own copy, Delete, Close); the open project is remembered in `localStorage`
   `clipco.p2.project`. Loading a clip, segment or video in Player 2 (drop on its screen or timeline, card menu, dragging off Player 1) adds
   it to the open project at the playhead, or starts a new one. A segment or clip made on Player 1 is added by itself only while an editable
-  project is open. **M / X on Player 2** make a moment / clip on the VOD under the playhead (its VOD second; a clip starts and ends on
-  the same VOD, ≤ 3 min) on the member's own rows of that VOD, like Player 1 (`p2AddMoment` / `p2MarkClip` in `ui/editor.js`); in a gap nothing
-  is made. They aren't added to the project (the piece already plays that part). Others' projects: view only (copy to edit). The left panel has a PROJECTS tab (`library.js` `projectCard`).
+  project is open. **M on Player 2** makes a moment on the VOD under the playhead (its VOD second), the **clip tool** a clip by dragging across
+  a piece (that piece's VOD, ≤ 3 min, drawn dashed on the piece while it's named: `ProjectTimeline.dragClip` → hook `onClipRange` →
+  `p2SaveClip` in `ui/editor.js`), on the member's own rows of that VOD, like Player 1; in a gap nothing is made. They aren't added to the project (the piece already plays that part). Others' projects: view only (copy to edit). The left panel has a PROJECTS tab (`library.js` `projectCard`).
   **Timeline**: ruler from 0:00 to past the end; opening a project or loading an item into it starts fitted (badrfly 2026-11-16) (scroll and zoom freely: wheel scrolls, Ctrl+wheel zooms, Shift+wheel scrolls rows, middle
   button pans, scrollbar under the rows); rows top to bottom (unnamed rows are named "V1, V2…" once and keep their name), row heads with grip
   (drag to reorder), name (double-click), hide / mute / lock, right-click insert above/below, rename, paste, delete (asks when it holds

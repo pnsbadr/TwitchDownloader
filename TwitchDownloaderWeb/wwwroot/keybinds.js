@@ -34,7 +34,7 @@ const KEYBINDS = [
   { id: "frameFwd", scope: "player", keys: ["."], description: "One frame forward" },
   { id: "marker", scope: "player", keys: ["M"], description: "Add a moment marker at the playhead (Player 2: on the VOD under the playhead)" },
   { id: "segment", scope: "player", keys: ["S"], description: "Player 1: start a segment here, press again to end it. Player 2: split the piece under the playhead (the selected one if several)" },
-  { id: "clip", scope: "player", keys: ["X"], description: "Start a clip here, press again to end it (up to 3 min; Player 2: on the VOD under the playhead, start and end on the same VOD)" },
+  { id: "clip", scope: "player", keys: ["X"], description: "Clip tool on/off: drag across the timeline to mark a clip (up to 3 min), then name it and pick its color (Player 2: across a piece, the clip goes on that piece's VOD)" },
   { id: "fullscreen", scope: "player", keys: ["F"], description: "Fullscreen" },
   { id: "zoomIn", scope: "player", keys: ["+", "="], description: "Zoom the timeline in" },
   { id: "zoomOut", scope: "player", keys: ["-"], description: "Zoom the timeline out" },

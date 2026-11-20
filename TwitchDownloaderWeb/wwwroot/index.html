@@ -234,6 +234,7 @@
               <div class="tools" id="tools">
                 <sl-icon-button library="ph" name="cursor" label="Pointer" data-keybind="toolPointer" data-tool="pointer" data-active disabled></sl-icon-button>
                 <sl-icon-button library="ph" name="scissors" label="Cut" data-keybind="toolCut" data-tool="cut" disabled></sl-icon-button>
+                <sl-icon-button library="ph" name="film-strip" label="Clip tool: drag across the timeline" data-keybind="clip" data-tool="clip" disabled></sl-icon-button>
                 <sl-icon-button library="ph" name="magnifying-glass-plus" label="Zoom" data-keybind="toolZoom" data-tool="zoom" disabled></sl-icon-button>
                 <sl-icon-button library="ph" name="hand" label="Hand" data-keybind="toolHand" data-tool="hand" disabled></sl-icon-button>
                 <span class="tools-sep"></span>
@@ -241,7 +242,6 @@
                 <span class="tools-sep"></span>
                 <sl-icon-button library="ph" name="map-pin" label="Moment marker" data-keybind="marker" data-create="marker" disabled></sl-icon-button>
                 <sl-icon-button library="ph" name="brackets-square" label="Segment" data-keybind="segment" data-create="segment" disabled></sl-icon-button>
-                <sl-icon-button library="ph" name="film-strip" label="Clip" data-keybind="clip" data-create="clip" disabled></sl-icon-button>
                 <sl-icon-button library="ph" name="link-simple" label="Link segments into a video" data-create="video" disabled></sl-icon-button>
                 <span class="tools-sep"></span>
                 <sl-icon-button library="ph" name="arrow-u-up-left" label="Undo" data-keybind="undo" disabled></sl-icon-button>
@@ -249,8 +249,8 @@
               </div>
               <div class="item-editor" id="item-editor" hidden>
                 <sl-input id="item-title" size="small" placeholder="Title" maxlength="200" aria-label="Title"></sl-input>
+                <sl-icon-button library="ph" name="check" label="Apply (Enter)" id="item-apply" class="item-apply" hidden></sl-icon-button>
                 <div class="swatches" id="item-colors" role="radiogroup" aria-label="Color"></div>
-                <sl-icon-button library="ph" name="check" label="Apply" id="item-apply" hidden></sl-icon-button>
               </div>
             </div>
 

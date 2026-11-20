@@ -1094,6 +1094,10 @@ function setUpPlayer2() {
     onSlid: rememberSlide,
     partnerOf: (piece) => partnerOf(piece),
     onSideBySide: sideBySide,
+    canClip: () => p2CanCreate(),
+    maxClipSeconds: () => timeline.maxStoredClipSeconds,
+    clipColor: () => timeline.lastClipColor,
+    onClipRange: p2SaveClip,
     onFocusRow: (trackId) => focusRow("p2", trackId),
   });
   wirePlayerButtons(2, "p2");
@@ -1153,10 +1157,9 @@ async function showInPlayer1(piece) {
 
 // ---------- moments and clips made from Player 2 ----------
 //
-// M / X on Player 2 work like on Player 1, on the VOD under the playhead: the moment or clip goes on the member's own rows of that
-// VOD (Player 1's timeline shows it). In a gap there's no VOD, so nothing is made. A clip starts and ends on the same VOD.
-
-let p2Marking = null; // { vodId, start } while a clip waits for its end
+// M and the clip tool on Player 2 work like on Player 1, on the VOD under the playhead (M) or the piece dragged across (the clip
+// tool): the moment or clip goes on the member's own rows of that VOD (Player 1's timeline shows it). In a gap there's no VOD, so
+// nothing is made. A clip starts and ends on the same VOD.
 
 function p2CanCreate() {
   return Boolean(store?.open) && !DEMO && !me?.support && can("AddEntries");
@@ -1208,48 +1211,42 @@ function p2AddMoment() {
   });
 }
 
-function p2MarkClip() {
-  if (!p2CanCreate()) return;
-  const point = p2VodPoint();
-  if (!point) return p2NoVod();
-  if (!p2Marking) {
-    if (p1RowFor(point.vodId, "clip") === false) return toast("Your clip rows are locked.");
-    p2Marking = { vodId: point.vodId, start: point.seconds };
-    toast("Clip started: press X again where it ends.");
-    renderTools();
+// The clip tool dragged across a piece (ProjectTimeline): name it and give it a color, then it's saved on the VOD
+function p2SaveClip({ vodId, start, end }) {
+  if (!p2CanCreate()) {
+    timeline2.clearClipDraft();
     return;
   }
-  const marking = p2Marking;
-  p2Marking = null;
-  renderTools();
-  if (marking.vodId !== point.vodId) return toast("A clip starts and ends on the same VOD: the playhead is on another VOD now.", "error");
-  let start = Math.min(marking.start, point.seconds);
-  let end = Math.max(marking.start, point.seconds);
-  if (end - start < 0.5) return toast("Too short: move the playhead at least half a second away from the start.");
-  const max = timeline.maxStoredClipSeconds;
-  if (end - start > max) {
-    if (point.seconds < marking.start) start = end - max;
-    else end = start + max;
-    toast(`Clips are at most ${formatClock(max).replace(/^0:0?|\.00$/g, "")}; the clip was shortened.`);
+  if (p1RowFor(vodId, "clip") === false) {
+    timeline2.clearClipDraft();
+    toast("Your clip rows are locked.");
+    return;
   }
   playback.pause();
   openItemEditor({
     title: "",
-    color: timeline.lastColor,
-    colors: false,
+    color: timeline.lastClipColor,
     placeholder: "Clip title (blank = the VOD's title)",
-    onApply: async (title) => {
+    onColor: (color) => {
+      if (timeline2.clipDraft) timeline2.clipDraft.color = color;
+      timeline2.dirty = true;
+    },
+    onCancel: () => timeline2.clearClipDraft(),
+    onApply: async (title, color) => {
+      timeline2.clearClipDraft();
+      timeline.lastClipColor = color;
       try {
         await api("POST", "/api/entries", {
-          vodId: marking.vodId,
+          vodId,
           title: title || null,
+          color: color === "violet" ? null : color,
           trimMode: "Exact",
           startTime: trimValue(start),
           endTime: trimValue(end),
-          rowId: p1RowFor(marking.vodId, "clip") || undefined,
+          rowId: p1RowFor(vodId, "clip") || undefined,
         });
         refreshClips();
-        p1Reload(marking.vodId);
+        p1Reload(vodId);
         toast("Clip added to the VOD.");
       } catch (error) {
         toast(error.message, "error");
@@ -1442,8 +1439,10 @@ function renderTools() {
   // Player 2: moments and clips on the VOD under the playhead; S splits there and linking is Player 1's
   const p2Create = p2 && p2CanCreate();
   for (const button of document.querySelectorAll("#tools [data-tool]")) {
-    button.disabled = !on;
-    button.toggleAttribute("data-active", on && t.tool === button.dataset.tool);
+    // the clip tool makes clips: Player 1 on its VOD, Player 2 on the VOD of the piece dragged across
+    const enabled = on && (button.dataset.tool !== "clip" || (p2 ? p2Create : canCreate));
+    button.disabled = !enabled;
+    button.toggleAttribute("data-active", enabled && t.tool === button.dataset.tool);
   }
   const snap = document.querySelector('#tools [data-keybind="toggleSnap"]');
   snap.disabled = !on;
@@ -1451,9 +1450,8 @@ function renderTools() {
   for (const button of document.querySelectorAll("#tools [data-create]")) {
     const kind = button.dataset.create;
     if (p2) {
-      const enabled = p2Create && (kind === "marker" || kind === "clip");
-      button.disabled = !enabled;
-      button.toggleAttribute("data-active", enabled && kind === "clip" && Boolean(p2Marking));
+      button.disabled = !(p2Create && kind === "marker");
+      button.removeAttribute("data-active");
       continue;
     }
     button.disabled = !canCreate;
@@ -1497,7 +1495,6 @@ function setUpTools() {
   const create = {
     marker: () => (activePlayer === "p2" ? p2AddMoment() : timeline.addMoment()),
     segment: () => timeline.mark("segment"),
-    clip: () => (activePlayer === "p2" ? p2MarkClip() : timeline.mark("clip")),
     video: () => timeline.startLinking(),
   };
   for (const button of document.querySelectorAll("#tools [data-create]")) {
@@ -1694,7 +1691,7 @@ function setUpKeys() {
       toggleSnap: () => on && t.toggleSnap(),
       marker: () => (p2 ? p2AddMoment() : on && t.addMoment()),
       segment: () => (p2 ? on && t.splitAtPlayhead() : on && t.mark("segment")),
-      clip: () => (p2 ? p2MarkClip() : on && t.mark("clip")),
+      clip: () => on && t.setTool(t.tool === "clip" ? "pointer" : "clip"),
       setStart: () => on && t.setEdgeAtPlayhead("start"),
       setEnd: () => on && t.setEdgeAtPlayhead("end"),
       undo: () => screenUndo(false),
@@ -1710,11 +1707,6 @@ function setUpKeys() {
       escape: () => {
         if (rowFocus) {
           endRowFocus();
-          return;
-        }
-        if (p2 && p2Marking) {
-          p2Marking = null;
-          renderTools();
           return;
         }
         if (on) t.escape();
@@ -1928,9 +1920,9 @@ function setUpRowFocus() {
 
 // ---------- title and color editor in the tools bar ----------
 //
-// openItemEditor({ title, color, needsApply, onApply(title, color), onCancel }): the tools slide left and the editor
-// shows on the right. Segments, markers and clips apply as soon as the user clicks anywhere else (or presses Enter);
-// linking a video needs the apply button (needsApply). Esc cancels.
+// openItemEditor({ title, color, colors, needsApply, onColor, onApply(title, color), onCancel }): the tools slide left and the editor
+// shows on the right, with the ✓ button beside the title (badrfly 2026-11-20). Segments, markers and clips also apply on Enter or a
+// click anywhere else; linking a video needs the ✓ button (needsApply). Esc cancels.
 
 let itemEditor = null;
 
@@ -1939,7 +1931,7 @@ export function openItemEditor(options) {
   itemEditor = { ...options, color: options.color ?? "yellow" };
   $("item-title").value = options.title ?? "";
   $("item-title").placeholder = options.placeholder ?? "Title";
-  $("item-apply").hidden = !options.needsApply;
+  $("item-apply").hidden = false;
   $("item-colors").hidden = options.colors === false;
   renderSwatches();
   $("toolsbar").classList.add("editing");
@@ -1966,6 +1958,12 @@ function renderSwatches() {
       "aria-checked": String(itemEditor.color === name),
       "aria-label": name,
       style: `background:${hex}`,
+    });
+    // Enter on a swatch applies, like in the title box (a click on it only picks the color)
+    swatch.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || itemEditor?.needsApply) return;
+      event.preventDefault();
+      closeItemEditor(true);
     });
     swatch.addEventListener("click", () => {
       itemEditor.color = name;

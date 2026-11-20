@@ -425,6 +425,9 @@ button.team-pill:hover { background: var(--bg-4); }
 
 .item-editor { display: flex; align-items: center; gap: 12px; animation: slide-in 0.18s ease-out; }
 .item-editor sl-input { width: 260px; }
+.item-editor .item-apply { margin-left: -8px; }
+.item-editor .item-apply::part(base) { color: #fff; background: var(--accent); border-radius: 6px; padding: 4px; font-size: 16px; }
+.item-editor .item-apply::part(base):hover { background: var(--accent-strong, var(--accent)); }
 @keyframes slide-in { from { opacity: 0; transform: translateX(24px); } }
 
 .swatches { display: flex; gap: 5px; }
