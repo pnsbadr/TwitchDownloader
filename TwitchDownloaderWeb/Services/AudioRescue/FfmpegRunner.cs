@@ -13,8 +13,9 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
         /// end) and becomes the current step of the ambient <see cref="JobProgress"/>, so a long run is never silent.
         /// </param>
         /// <param name="expectedSeconds">How long the output will be; null reads the first input's "Duration:" from ffmpeg.</param>
+        /// <param name="onErrorLine">Receives each stderr line (ffmpeg's input description, warnings).</param>
         public static async Task RunAsync(string ffmpegPath, IReadOnlyList<string> args, string workingDirectory, ILogger logger, CancellationToken cancellationToken,
-            Action<string>? onOutputLine = null, string? step = null, double? expectedSeconds = null)
+            Action<string>? onOutputLine = null, string? step = null, double? expectedSeconds = null, Action<string>? onErrorLine = null)
         {
             var progress = step is null ? null : new FfmpegProgress(step, expectedSeconds, logger, JobProgress.Current);
             using var process = new Process
@@ -40,6 +41,7 @@ namespace TwitchDownloaderWeb.Services.AudioRescue
             {
                 if (e.Data is null) return;
                 progress?.OnLine(e.Data);
+                onErrorLine?.Invoke(e.Data);
                 lock (tail)
                 {
                     tail.Enqueue(e.Data);

@@ -402,7 +402,7 @@ namespace TwitchDownloaderWeb.Services.Segments
                 if (parts.Count == 1)
                 {
                     await ExactTrimService.TrimAsync(ffmpegPath, source, parts[0].Start, parts[0].End - parts[0].Start, outputPath, work,
-                        settings.ExactTrimPreset, settings.ExactTrimCrf, _logger, token);
+                        settings.ExactTrimPreset, settings.ExactTrimCrf, _logger, token, settings.SmartCut);
                     return;
                 }
 
@@ -411,7 +411,7 @@ namespace TwitchDownloaderWeb.Services.Segments
                 {
                     var file = Path.Combine(work, $"{i + 1}.mp4");
                     await ExactTrimService.TrimAsync(ffmpegPath, source, parts[i].Start, parts[i].End - parts[i].Start, file, work,
-                        settings.ExactTrimPreset, settings.ExactTrimCrf, _logger, token);
+                        settings.ExactTrimPreset, settings.ExactTrimCrf, _logger, token, settings.SmartCut);
                     files.Add(file);
                 }
                 await SegmentJoiner.JoinAsync(ffmpegPath, files, outputPath, work, settings.ExactTrimPreset, settings.ExactTrimCrf, _logger, token);

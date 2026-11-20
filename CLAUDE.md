@@ -61,7 +61,7 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   (`me.maxStoredClipSeconds`), and clips stay capped at the limit on the timeline.
 - `Downloads:GeneratedFileHours` (default 72) — on-demand files for reference-only entries are deleted after this.
 - `ErrorReports:KeepDays` (default 90) / `ErrorReports:MaxReports` (default 20 000) — how long and how many error reports are kept (see `ErrorReports`).
-- `Downloads:ExactTrimPreset` (default `veryfast`) / `Downloads:ExactTrimCrf` (default 18) — libx264 settings for Exact trims (see Jobs and files).
+- `Downloads:ExactTrimPreset` (default `veryfast`) / `Downloads:ExactTrimCrf` (default 18) — libx264 settings for Exact trims (see Jobs and files). `Downloads:SmartCut` (default true): re-encode only the edges of Exact cuts (see Smart cuts).
 
 ### Data (EF Core 10 + SQLite, `Data/`)
 - `LibraryEntries`: title, VOD ID, channel, quality (resolved name, null = best), trim mode, start/end
@@ -370,6 +370,15 @@ Plan and badrfly's decisions: Claude Doc "Logins, teams and permissions plan". B
   `ExactTrimService` has Core download in Safe mode, then re-encodes the cut (libx264 + AAC 192k, `+faststart`), finding the
   cut inside the Safe file from the playlist's segment offsets. If the playlist can't be read it falls back to Core's Exact.
   Safe entries are still plain stream copy. (The phase 1 dev endpoint still uses Core's Exact.)
+- **Smart cuts** (badrfly 2026-11-20, app-wide: `Services/SmartCut.cs`, `Downloads:SmartCut`, default true): every Exact cut goes through
+  `ExactTrimService.TrimAsync`, which re-encodes only the **edges**: from the cut's first frame to the first keyframe (head) and from the
+  last keyframe to the end (tail), libx264 with the Exact preset/CRF; the middle is **copied** (segment muxer split at the two keyframes).
+  Keyframes and frame times come from a stream-copy `framecrc` probe of ±12 s around each edge (no ffprobe). Parts are MPEG-TS (settings
+  in every keyframe, so copied and re-encoded video can sit in one mp4) joined by the concat demuxer with `duration` lines; audio is
+  re-encoded once from the first frame (so sync never depends on the parts). The cut starts on the first frame at or after the start.
+  Cuts under 20 s, non-H.264 video (e.g. HEVC renditions), a middle under 8 s or a middle of the wrong length re-encode the whole cut
+  (`ReencodeAsync`, the old path); a failure logs a warning and does the same. Files joined later by `SegmentJoiner` still stream-copy.
+  Tests: `SmartCutTests` (flashes + beeps in head, middle and tail; every frame vs the source by PSNR; joins). Checked to play in Chromium.
 - `VodInfoService` (Twitch lookups + shared validation), `VodDownloadRunner` (builds `VideoDownloadOptions`),
   `LoggerTaskProgress` (Core `ITaskProgress` → `ILogger`), `TrimTime` (parses `h:mm:ss`/`m:ss`/seconds with
   unbounded hours; TimeSpan's own format caps hours at 23).

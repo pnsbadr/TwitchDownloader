@@ -32,6 +32,12 @@ namespace TwitchDownloaderWeb
         /// <summary>libx264 CRF for Exact trims (lower is better quality and bigger files).</summary>
         public int ExactTrimCrf { get; set; } = 18;
 
+        /// <summary>
+        /// Exact cuts re-encode only their edges (from the cut to the first keyframe, from the last keyframe to the end) and copy the
+        /// rest (<see cref="Services.SmartCut"/>). Off = every Exact cut is re-encoded whole, as before.
+        /// </summary>
+        public bool SmartCut { get; set; } = true;
+
         /// <summary>Most segments one segment download may have.</summary>
         public int MaxSegmentsPerDownload { get; set; } = 50;
 
