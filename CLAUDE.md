@@ -594,7 +594,10 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
 - Libraries from jsDelivr, pinned: Shoelace 2.20.1 (web components, dark theme), Phosphor icons 2.1.1 **bold** (registered as the Shoelace icon
   library `ph`: `<sl-icon library="ph" name="scissors">`), Split.js 1.6.5 (resizable panels, sizes in `localStorage` `clipco.layout.*`),
   IMask 7.6.1 (time boxes), SortableJS 1.15.6. Fonts: Barlow Condensed (headings, `.display`) and Barlow (Google Fonts).
-- `ui/theme.css`: gray theme, all text white, one accent (`--accent`, violet) for selection, focus and drop targets. `ui/editor.css`: layout.
+- `ui/theme.css`: gray theme, all text white, one accent (`--accent`, violet) for selection, focus and drop targets; **green (`--ok`) for
+  confirm ✓ buttons** (badrfly 2026-11-20, "Polish the whole app's look"). Design tokens there: spacing `--space-1..6` (4/8/12/16/24/32 px),
+  radius `--radius-xs` 3 (timeline items) / `--radius-small` 4 (controls) / `--radius` 6 (cards) / `--radius-large` 8 (panels, bars),
+  `--control-h` 28 px (tool buttons, bar inputs), `--icon-size` 18 px. Use them in new CSS instead of raw numbers. `ui/editor.css`: layout.
 - `ui/core.js`: `api`, `el`, `me`/`can`, settings, date/length formatting, toasts, and **icon buttons**: every button is icon-only (except the
   EDITOR/EXPORT, VODS/VIDEOS/CLIPS, Player 1/Player 2 tabs and the Export button) with a screen-reader `label` and a tooltip showing the
   shortcut from keybinds.js (`data-keybind="toolCut"` in HTML, `iconButton({ keybind })` in JS). New shortcuts still go in keybinds.js first.
@@ -606,8 +609,8 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   Player 2's timeline; leaving the timeline section and Player 2's screen, or dropping anywhere else, goes back to Player 1's; if Player 2's
   timeline was already showing nothing changes. A drop on Player 2's timeline moves its playhead to the dropped pieces.
 - `ui/timebox.js`: `timeBox({ seconds, fraction })` with a fixed `hh:mm:ss(.ff)` mask; `.seconds` reads/writes.
-- Tools bar title/color editor (`openItemEditor` in `ui/editor.js`): tools slide left, title, a ✓ button beside it (always shown, badrfly
-  2026-11-20) and the 9 colors (clips too) on the right; also applies on a click anywhere else or Enter (in the box or on a swatch; linking a
+- Tools bar title/color editor (`openItemEditor` in `ui/editor.js`): tools slide left, title, the 9 colors (clips too) and a green ✓ button
+  last (always shown, badrfly 2026-11-20); the tool in use is a filled violet square; also applies on a click anywhere else or Enter (in the box or on a swatch; linking a
   video needs the ✓ button), Esc cancels.
 - **Left panel** (`ui/library.js`, step 2): VODS = the team's assigned channels' VODs (`GET /api/channels`, then `/api/channels/{login}/vods`,
   20 per page, more on scroll). **Channel bar** (badrfly 2026-11-19, mockup C "pick several"): the team's channels as Twitch pictures (`/api/channels/cards`; a live one has a blinking red ring, the live state from the live events first). Each click turns one on or off, the others go dark (a live dark one keeps a faint ring); with none on every channel shows. It starts with the team's primary channel on every time the editor loads (not remembered); a one-channel team can't toggle. It filters all three lists: VODs of several channels are merged newest first, cut off at the oldest loaded VOD of any channel that still has more pages (scrolling loads the channel whose oldest is newest; live VODs always on top); CLIPS and VIDEOS send `channels=`. Cards show a small channel picture when several channels are shown. GQL lists have no live flag, so the
@@ -623,8 +626,8 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   the `player` scope of keybinds.js, anywhere on the editor screen except while typing (and arrows/Enter/Space on tabs, sliders, menus).
 - **Timeline** (`ui/timeline.js`, step 3): Player 1 tab = every member's rows on the VOD (`GET /api/vods/{id}/timeline`, re-read every 5 s),
   the caller's first and tinted. Canvases for the ruler (ticks; muted red / saved audio green along the bottom, from hls.js fragments) and the
-  rows; row headers are DOM (delete checkbox when allowed, kind icon, name (double-click renames own, `PUT /api/rows/{id}`), owner, hide / solo /
-  lock (page only)). Footer: add video row / clip row (`POST /api/vods/{id}/rows`), delete checked rows, zoom slider (log scale, min 10 s), Fit.
+  rows; row headers are DOM (delete checkbox when allowed, kind icon tile, name (unnamed: "Segments" / "Clips"; double-click renames own,
+  `PUT /api/rows/{id}`), owner, hide / solo / lock (page only; shown on hover or while on, so the name has room)). Rows are 40 px. Footer: add video row / clip row (`POST /api/vods/{id}/rows`), delete checked rows, zoom slider (log scale, min 10 s), Fit.
   Click seeks (on an item: to its start); wheel, middle drag and cursors as in **Timeline input** below; the view follows the playhead until panned. Segments hatched with
   brackets, moments a line + triangle, clips solid violet bars (reference ones translucent), cut-out parts darker.
 - **Timeline input** (`ui/timeline-input.js`, badrfly 2026-11-16: "universal throughout the app"): both timelines take their cursors
@@ -740,7 +743,8 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
 - **Videos** (step 6): the tools bar's **link** tool (Player 1, `startLinking` / `toggleLink` / `saveLink` in `ui/timeline-edit.js`): click
   segments on any of your own rows in play order (synced rows too: segments of another VOD; numbered badges; clicking again takes one out), type a title, press ✓ →
   `POST /api/vods/{id}/videos` (the VOD of its first part). **The picks survive opening other VODs** (badrfly 2026-11-20, `ui/link-tray.js`):
-  chips under the tools bar (drag to reorder, × out, click = go to it, "Sort by stream time"), kept in `sessionStorage` `clipco.p1.linking`;
+  chips **in the tools bar** between the title and ✓ (numbered, the number colored by stream (`STREAM_COLORS`), drag to reorder, × out,
+  click = go to it), with a one-line strip under the bar (what's happening, "Sort by stream time", Cancel), kept in `sessionStorage` `clipco.p1.linking`;
   Player 1's `<` / `>` arrows open the channel's previous / next stream (`adjacentVod` in `ui/library.js`). **"Add segments…"** on a video's
   card or tree line starts the link tool with its segments in the tray; ✓ then `PUT`s the video. Player 1 draws pills "→ 3 · 20 Nov" /
   "1 · 19 Nov ←" to a video's parts on other streams (click opens them, `drawStreamLinks` in `ui/timeline.js`); Player 2's ruler marks where

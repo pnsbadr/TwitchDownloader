@@ -19,7 +19,7 @@ import { rowPlayButton } from "./project-timeline.js";
 import { keptParts } from "./cuts.js";
 import { drawWave, onWaves } from "./waves.js";
 
-const ROW_HEIGHT = 36;
+const ROW_HEIGHT = 40;
 const WAVES_KEY = "clipco.p1.waves";      // sound waves on synced rows (W on Player 1)
 const WAVES_MAX_SPAN = 20 * 60;           // they show once 20 min or less is in view
 const FOCUS_ROW_HEIGHT = 64;    // the row that plays alone (row focus, editor.js focusRow)
@@ -290,7 +290,7 @@ export class Timeline {
   }
 
   rowTitle(row) {
-    const name = row.name || (row.kind === "Clip" || row.kind === "clip" ? "Clips" : "Video");
+    const name = row.name || (row.kind === "Clip" || row.kind === "clip" ? "Clips" : "Segments");
     const sameKind = this.rows.filter((r) => r.userId === row.userId && r.kind === row.kind);
     const number = row.name || sameKind.length < 2 ? "" : ` ${sameKind.indexOf(row) + 1}`;
     return `${name}${number}`;
@@ -982,7 +982,8 @@ export class Timeline {
       return;
     }
     const x2 = this.timeToX(item.end, width);
-    ctx.strokeRect(x1, y + 4, Math.max(2, x2 - x1), ROW_HEIGHT - 8);
+    roundRect(ctx, x1 - 2, y + 5, Math.max(2, x2 - x1) + 4, ROW_HEIGHT - 10, 4);
+    ctx.stroke();
     if (this.canMoveEdges(item)) {
       ctx.fillStyle = "#fff";
       for (const x of [x1, x2]) {
@@ -1063,13 +1064,13 @@ export class Timeline {
     if (x2 < 0 || x1 > width) return;
     const left = Math.max(x1, -2);
     const right = Math.min(x2, width + 2);
-    const top = y + 6;
-    const h = rowH - 12;
+    const top = y + 7;
+    const h = rowH - 14;
     if (item.kind === "clip") {
       const color = clipColor(item.color);
       ctx.fillStyle = color;
-      roundRect(ctx, left, top, Math.max(2, right - left), h, 4);
-      ctx.globalAlpha = item.long ? 0.35 : 1;
+      roundRect(ctx, left, top, Math.max(2, right - left), h, 3);
+      ctx.globalAlpha = item.long ? 0.35 : 0.92;
       ctx.fill();
       ctx.globalAlpha = 1;
       if (item.long) {
@@ -1078,21 +1079,17 @@ export class Timeline {
         ctx.stroke();
       }
     } else {
+      // segments: soft diagonal bands with a solid bar at each end (the "brackets")
       const color = MARKER_COLORS[item.color] ?? MARKER_COLORS.yellow;
+      ctx.save();
+      roundRect(ctx, left, top, Math.max(2, right - left), h, 3);
+      ctx.clip();
       ctx.fillStyle = hatch(ctx, color);
       ctx.fillRect(left, top, Math.max(2, right - left), h);
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 2;
-      // brackets at both ends
-      for (const [x, dir] of [[x1, 1], [x2, -1]]) {
-        if (x < -4 || x > width + 4) continue;
-        ctx.beginPath();
-        ctx.moveTo(x + 5 * dir, top);
-        ctx.lineTo(x, top);
-        ctx.lineTo(x, top + h);
-        ctx.lineTo(x + 5 * dir, top + h);
-        ctx.stroke();
-      }
+      ctx.fillStyle = color;
+      if (x1 >= -4) ctx.fillRect(x1, top, Math.min(3, x2 - x1), h);
+      if (x2 <= width + 4) ctx.fillRect(x2 - Math.min(3, x2 - x1), top, Math.min(3, x2 - x1), h);
+      ctx.restore();
     }
     // cut-out parts: darker (they're left out of files)
     for (const cut of item.cuts ?? []) {
@@ -1102,42 +1099,51 @@ export class Timeline {
       ctx.fillStyle = "rgb(16 17 20 / 0.7)";
       ctx.fillRect(c1, top, c2 - c1, h);
     }
+    // A number in a pill before the title: the part's place in the video (Player 2), its place in a video (Player 1), or the
+    // order the link tool picked it in (white, like the link tray's chips)
+    const linkIndex = this.linking ? this.linking.ids.indexOf(item.id) : -1;
+    const number = linkIndex >= 0 ? linkIndex + 1 : item.videoIndex ?? item.videos?.[0]?.position ?? null;
+    let textLeft = Math.max(left, 0) + 7;
+    if (number != null && right - left > 22) {
+      const strong = linkIndex >= 0;
+      const text = String(number);
+      ctx.save();
+      ctx.font = "700 11px Barlow, system-ui, sans-serif";
+      const w = Math.max(16, ctx.measureText(text).width + 8);
+      const bh = Math.min(16, h - 4);
+      const bx = textLeft - 1;
+      const by = top + (h - bh) / 2;
+      roundRect(ctx, bx, by, w, bh, bh / 2);
+      ctx.fillStyle = strong ? "#fff" : "rgb(255 255 255 / 0.82)";
+      ctx.shadowColor = "rgb(0 0 0 / 0.5)";
+      ctx.shadowBlur = 2;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      if (strong) {
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "#8b7cf6";
+        ctx.stroke();
+      }
+      ctx.fillStyle = "#141518";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(text, bx + w / 2, by + bh / 2 + 0.5);
+      ctx.restore();
+      textLeft = bx + w + 5;
+    }
     // title inside when there's room
-    const room = right - left - 12;
-    if (item.title && room > 30) {
+    const room = right - textLeft - 5;
+    if (item.title && room > 24) {
       ctx.font = "600 12px Barlow, system-ui, sans-serif";
       ctx.textBaseline = "middle";
       ctx.fillStyle = "#fff";
       ctx.save();
       ctx.beginPath();
-      ctx.rect(left + 6, top, room, h);
+      ctx.rect(textLeft, top, room, h);
       ctx.clip();
-      ctx.shadowColor = "rgb(0 0 0 / 0.8)";
+      ctx.shadowColor = "rgb(0 0 0 / 0.85)";
       ctx.shadowBlur = 3;
-      ctx.fillText(item.title, Math.max(left, 0) + 6, top + h / 2);
-      ctx.restore();
-    }
-    // A number in a circle: the part's place in the video (Player 2), its place in a video (Player 1), or the order
-    // the link tool picked it in
-    const linkIndex = this.linking ? this.linking.ids.indexOf(item.id) : -1;
-    const number = linkIndex >= 0 ? linkIndex + 1 : item.videoIndex ?? item.videos?.[0]?.position ?? null;
-    if (number != null && x2 - x1 > 14) {
-      const strong = linkIndex >= 0;
-      const cx = Math.max(x1, -2) + 9;
-      const cy = top;
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(cx, cy, strong ? 8 : 6.5, 0, Math.PI * 2);
-      ctx.fillStyle = strong ? "#8b7cf6" : "rgb(16 17 20 / 0.9)";
-      ctx.fill();
-      ctx.lineWidth = 1.5;
-      ctx.strokeStyle = strong ? "#fff" : "#8b7cf6";
-      ctx.stroke();
-      ctx.fillStyle = "#fff";
-      ctx.font = `700 ${strong ? 11 : 9}px Barlow, system-ui, sans-serif`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(String(number), cx, cy + 0.5);
+      ctx.fillText(item.title, textLeft, top + h / 2 + 0.5);
       ctx.restore();
     }
   }
@@ -1191,22 +1197,21 @@ function roundRect(ctx, x, y, w, h, r) {
 const hatches = new Map();
 function hatch(ctx, color) {
   if (hatches.has(color)) return hatches.get(color);
+  // calm diagonal bands (light, then lighter) so the title on top stays readable
   const tile = document.createElement("canvas");
-  tile.width = tile.height = 8;
+  tile.width = tile.height = 12;
   const t = tile.getContext("2d");
   t.fillStyle = color;
-  t.globalAlpha = 0.22;
-  t.fillRect(0, 0, 8, 8);
-  t.globalAlpha = 0.75;
+  t.globalAlpha = 0.12;
+  t.fillRect(0, 0, 12, 12);
+  t.globalAlpha = 0.24;
   t.strokeStyle = color;
-  t.lineWidth = 1.5;
+  t.lineWidth = 4.2;
   t.beginPath();
-  t.moveTo(-2, 10);
-  t.lineTo(10, -2);
-  t.moveTo(-2, 2);
-  t.lineTo(2, -2);
-  t.moveTo(6, 10);
-  t.lineTo(10, 6);
+  for (const k of [-12, 0, 12]) {
+    t.moveTo(k - 2, 14);
+    t.lineTo(k + 14, -2);
+  }
   t.stroke();
   const pattern = ctx.createPattern(tile, "repeat");
   hatches.set(color, pattern);

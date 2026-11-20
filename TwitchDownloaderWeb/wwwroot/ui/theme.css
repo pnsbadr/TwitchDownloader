@@ -24,10 +24,37 @@
 
   --danger: #f05252;
   --live: #eb0400;
+  /* confirm / done (✓ buttons, "ready" states): green reads as "yes, save it" */
   --ok: #3ccf7a;
+  --ok-strong: #52e08d;
+  --ok-ink: #0b2516;    /* text and icons on a green button */
+  --ok-soft: rgb(60 207 122 / 0.18);
+  --danger-soft: rgb(240 82 82 / 0.18);
+  --danger-text: #ff8a8a;
 
-  --radius: 6px;
+  /* spacing scale: use these for padding, gaps and margins so panels line up */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* shapes: 3 px for things on the timeline, 4 px for controls, 6 px for cards, 8 px for panels and pop-ups */
+  --radius-xs: 3px;
   --radius-small: 4px;
+  --radius: 6px;
+  --radius-large: 8px;
+  --radius-pill: 999px;
+
+  /* controls: one height for tool buttons, small inputs and chips in bars */
+  --control-h: 28px;
+  --control-h-small: 24px;
+  --icon-size: 18px;
+
+  --shadow-pop: 0 10px 30px rgb(0 0 0 / 0.45);
+  --font-size-small: 12px;
+  --font-size-meta: 13px;
   --font-ui: "Barlow", system-ui, sans-serif;
   --font-display: "Barlow Condensed", "Barlow", system-ui, sans-serif;
 

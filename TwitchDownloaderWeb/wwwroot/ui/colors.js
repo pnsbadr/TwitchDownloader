@@ -8,3 +8,6 @@ export const MARKER_COLORS = {
 // A clip's color (badrfly 2026-11-20: clips have colors too; none / violet = the clip violet)
 export const CLIP_COLOR = "#8b7cf6";
 export const clipColor = (name) => (name && name !== "violet" && MARKER_COLORS[name]) || CLIP_COLOR;
+
+// Streams in a video that spans several VODs (link tray chips): first stream, second, …
+export const STREAM_COLORS = ["#f5c542", "#4fb3ff", "#ff5fa2", "#2ec4b6", "#ff8a3d", "#9be15d"];

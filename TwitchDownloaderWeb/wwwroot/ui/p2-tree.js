@@ -319,7 +319,7 @@ function videoRows(video, edits, parent, loaded) {
     ].filter(Boolean),
     menu: () => [
       { label: "Load in Player 2", icon: "film-strip", run: load },
-      video.canEdit && hooks.onAddSegments && { label: "Add segments…", icon: "link-simple", run: () => {
+      video.canEdit && hooks.onAddSegments && { label: "Add segments…", icon: "link", run: () => {
         hooks.close();
         hooks.onAddSegments(video);
       } },
