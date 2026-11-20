@@ -14,6 +14,9 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<DownloadSettings>(builder.Configuration.GetSection(DownloadSettings.SectionName));
 builder.Services.Configure<AudioRescueSettings>(builder.Configuration.GetSection(AudioRescueSettings.SectionName));
 builder.Services.AddProblemDetails();
+// A query value that doesn't fit its type (?minSeconds=abc) is a 400, also in Development (where it would otherwise throw: a 500 and an
+// error report for every typo in a URL)
+builder.Services.Configure<Microsoft.AspNetCore.Routing.RouteHandlerOptions>(options => options.ThrowOnBadRequest = false);
 // Bugs, errors and crashes for the Owner's Reports tab: every Error log line becomes a report (Services/ErrorReports)
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton<TwitchDownloaderWeb.Services.ErrorReports.ErrorReportSink>();

@@ -29,5 +29,16 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal(HttpStatusCode.BadRequest, (await owner.PostAsJsonAsync("/api/entries",
                 new { vodId = "4242", startTime = "60", endTime = "90", quality = "4k" }, ct)).StatusCode);
         }
+
+        [Fact]
+        public async Task QueryValuesOfTheWrongTypeAreBadRequests()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            var (owner, _, _, _) = await TeamWithMemberAsync("ac2");
+
+            // A typo in a URL is the caller's mistake: 400, not a crash (and an error report) as before in Development
+            Assert.Equal(HttpStatusCode.BadRequest, (await owner.GetAsync("/api/entries?minSeconds=abc", ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, (await owner.GetAsync("/api/vods/4242/waves?block=99999999999", ct)).StatusCode);
+        }
     }
 }
