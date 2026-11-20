@@ -1385,7 +1385,8 @@ body:not(.linking) .link-chips { display: none; }
   touch-action: none;
 }
 .side-scrub:hover, .side-scrub.dragging { background: var(--bg-2); border-radius: var(--radius-small); }
-.scrub-month { flex: 1 1 0; min-height: 14px; display: flex; flex-direction: column; align-items: flex-end; overflow: hidden; }
+/* Marks stack from the top at their own height (badrfly 2026-11-20: stretched marks left big gaps and moved under the mouse, so months flickered open and shut) */
+.scrub-month { flex: none; display: flex; flex-direction: column; align-items: flex-end; overflow: hidden; }
 .scrub-month.open { flex: 0 1 auto; min-height: 0; }
 .scrub-month.more { flex: none; }
 .scrub-mark {

@@ -1104,7 +1104,9 @@ function setUpScrub() {
     const blocks = [...scrub.querySelectorAll(".scrub-month")];
     if (!blocks.length) return null;
     let block = blocks.find((b) => { const r = b.getBoundingClientRect(); return y >= r.top && y < r.bottom; });
-    if (!block) block = y < blocks[0].getBoundingClientRect().top ? blocks[0] : blocks[blocks.length - 1];
+    // Past the marks: the month that's open stays open (dragging off the end keeps its last day)
+    if (!block) block = y < blocks[0].getBoundingClientRect().top ? blocks[0]
+      : scrub.querySelector(".scrub-month.open") ?? blocks[blocks.length - 1];
     let day = null;
     let best = Infinity;
     for (const node of block.querySelectorAll(".scrub-days .scrub-day")) {
@@ -1120,7 +1122,13 @@ function setUpScrub() {
   const openAt = (event) => {
     const found = hit(event);
     const index = found?.block.dataset.index == null ? -1 : Number(found.block.dataset.index);
-    if (index >= 0 && index !== scrubOpen) {
+    // Opening a month moves the others, and a mark that slid under the pointer by itself would open in turn and flicker back and
+    // forth. So a month opens only under the pointer, and after one opens the pointer has to move before another can
+    const r = found?.block.getBoundingClientRect();
+    const under = r && event.clientY >= r.top && event.clientY < r.bottom;
+    const moved = switchedAtY == null || Math.abs(event.clientY - switchedAtY) > 3;
+    if (index >= 0 && index !== scrubOpen && under && moved) {
+      switchedAtY = event.clientY;
       scrubOpen = index;
       drawScrub();
     }
@@ -1146,7 +1154,9 @@ function setUpScrub() {
     } else if (found.day) jumpToLine(Number(found.day.dataset.line));
     else jumpToLine(scrubMarks[Number(found.block.dataset.index)]?.line ?? 0);
   };
+  let switchedAtY = null;
   const close = () => {
+    switchedAtY = null;
     if (scrubOpen < 0) return;
     scrubOpen = -1;
     drawScrub();
