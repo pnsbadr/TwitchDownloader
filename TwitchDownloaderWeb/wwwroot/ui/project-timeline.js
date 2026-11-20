@@ -16,7 +16,7 @@ import { openMenu } from "./menu.js";
 import { dropTarget } from "./drag.js";
 import { drawWave, onWaves } from "./waves.js";
 import {
-  MAX_TRACKS, MAX_PIECES, MIN_PIECE, MAX_END, PROJECT_KINDS, round, pieceEnd, pieceLength, newId, trackName, piecesOn, fits,
+  MAX_TRACKS, MAX_PIECES, MIN_PIECE, MAX_END, PROJECT_KINDS, round, pieceEnd, pieceLength, newId, trackName, piecesOn, fits, rippleCut,
   nearestFit, flatten, piecesFromItem, splitLayout, projectLength, makeTrack,
 } from "./project.js";
 
@@ -74,7 +74,7 @@ const colorOf = (piece) => MARKER_COLORS[piece.color] ?? MARKER_COLORS.violet ??
 export class ProjectTimeline {
   // hooks: getPosition() → project seconds or null, onSeek(t), openItemEditor/closeItemEditor (tools bar title editor),
   // loadItem(item) → loads a dropped item when nothing is loaded, onChange() (selection, tool, history), onShowInPlayer1(piece),
-  // onApplyToOriginal(pieces), onPieceDoubleClick?(piece)
+  // onPieceDoubleClick?(piece)
   constructor(store, hooks) {
     this.store = store;
     this.hooks = hooks;
@@ -1117,21 +1117,25 @@ export class ProjectTimeline {
     for (const piece of (target.length ? target : under.slice(0, 1))) this.splitAt(piece, now);
   }
 
-  // Delete: the selected pieces go and leave a gap. ripple (Shift+Delete): later pieces on their rows slide left to close it.
+  // Delete: the selected pieces go and leave a gap. ripple (Shift+Delete): the time they took is taken out of every unlocked row, so
+  // later pieces slide left and rows synced with this one stay in sync (badrfly 2026-11-20; lock a row to keep it where it is).
   deleteSelected(ripple = false) {
     const pieces = this.selectedPieces().filter((p) => !this.isLocked(p.trackId));
     if (!pieces.length || !this.store.canEdit) return false;
     const ids = new Set(pieces.map((p) => p.id));
     this.store.edit((c) => {
-      if (ripple) {
-        for (const removed of pieces) {
-          const length = pieceLength(removed);
-          for (const p of c.pieces) {
-            if (p.trackId === removed.trackId && !ids.has(p.id) && p.at >= pieceEnd(removed) - 0.01) p.at = round(p.at - length);
-          }
-        }
-      }
       c.pieces = c.pieces.filter((p) => !ids.has(p.id));
+      if (ripple) {
+        // The time the removed pieces took, merged, cut from the latest back so earlier cuts don't move later ranges
+        const ranges = [];
+        for (const r of pieces.map((p) => ({ start: p.at, end: pieceEnd(p) })).sort((a, b) => a.start - b.start)) {
+          const last = ranges[ranges.length - 1];
+          if (last && r.start <= last.end + 0.001) last.end = Math.max(last.end, r.end);
+          else ranges.push({ ...r });
+        }
+        const locked = new Set(c.tracks.filter((t) => t.locked).map((t) => t.id));
+        for (const r of ranges.reverse()) rippleCut(c, r.start, r.end, locked);
+      }
     });
     this.selected.clear();
     this.changed();
@@ -1147,10 +1151,11 @@ export class ProjectTimeline {
     return next.at - before > 0.01 ? { start: before, end: next.at } : null;
   }
 
+  // Closes a gap on a row: that time is taken out of every unlocked row, like a ripple delete, so synced rows keep in step
   closeGap(trackId, gap) {
-    const length = gap.end - gap.start;
     this.store.edit((c) => {
-      for (const p of c.pieces) if (p.trackId === trackId && p.at >= gap.end - 0.01) p.at = round(p.at - length);
+      const locked = new Set(c.tracks.filter((t) => t.locked && t.id !== trackId).map((t) => t.id));
+      rippleCut(c, gap.start, gap.end, locked);
     });
   }
 
@@ -1305,9 +1310,6 @@ export class ProjectTimeline {
       // Side by side (badrfly 2026-11-20): this piece and the other stream over it, playing together, nudged until they match
       if (canEdit && pieces.length === 1 && this.hooks.partnerOf?.(piece)) {
         items.push({ icon: "columns", label: "Line up side by side…", run: () => this.hooks.onSideBySide?.(piece) });
-      }
-      if (piece.source && (piece.source.kind === "clip" || piece.source.kind === "segment") && this.hooks.onApplyToOriginal) {
-        items.push({ icon: "arrow-fat-line-up", label: "Apply this trim to the original", run: () => this.hooks.onApplyToOriginal(piece) });
       }
       if (canEdit) {
         items.push({ icon: "trash", label: "Delete (leave a gap)", danger: true, run: () => this.deleteSelected(false) });

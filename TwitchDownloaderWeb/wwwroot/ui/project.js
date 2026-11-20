@@ -70,6 +70,36 @@ export function piecesOn(content, trackId) {
   return content.pieces.filter((p) => p.trackId === trackId).sort((a, b) => a.at - b.at);
 }
 
+// Ripple: takes the time [start, end) out of every row except `skip` (a Set of track ids), so what comes after slides left by its length
+// and rows stay in sync (badrfly 2026-11-20: deleting and closing a gap on one row must move the synced rows under it too). A piece
+// across the range loses that part: what's left before it stays, what's after it moves to `start` (its footage is unchanged). Bits
+// shorter than MIN_PIECE are dropped. Mutates content.
+export function rippleCut(content, start, end, skip = new Set()) {
+  const length = end - start;
+  if (length <= 0.001) return;
+  const result = [];
+  for (const p of content.pieces) {
+    const pEnd = pieceEnd(p);
+    if (skip.has(p.trackId) || pEnd <= start + 0.001) {
+      result.push(p);
+      continue;
+    }
+    if (p.at >= end - 0.001) {
+      p.at = round(Math.max(start, p.at - length));
+      result.push(p);
+      continue;
+    }
+    // Overlaps the range: keep what's before it and what's after it (moved to start)
+    if (start - p.at >= MIN_PIECE) result.push({ ...structuredClone(p), end: round(p.start + (start - p.at)) });
+    if (pEnd - end >= MIN_PIECE) {
+      const after = { ...structuredClone(p), at: round(start), start: round(p.start + (end - p.at)) };
+      if (start - p.at >= MIN_PIECE) after.id = newId("p");
+      result.push(after);
+    }
+  }
+  content.pieces = result;
+}
+
 // A place for a piece on a track that overlaps nothing there (ignoring the pieces in `except`)
 export function fits(content, trackId, at, length, except = new Set()) {
   if (at < -0.0005 || at + length > MAX_END + 0.0005) return false;
