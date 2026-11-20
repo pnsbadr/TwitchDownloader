@@ -29,7 +29,7 @@ namespace TwitchDownloaderWeb.Endpoints
     /// <paramref name="ProjectId"/>, a clip's vertical is the caller's newest vertical edit of it, else their own newest render.</param>
     public sealed record ExportItemRequest(string? Kind, string? FileName = null, string? Quality = null, long? VodId = null, double? Start = null,
         double? End = null, int? EntryId = null, bool Horizontal = true, bool Vertical = false, string? RenderId = null, int? VideoId = null,
-        bool Joined = false, int? MarkerId = null, int? EditId = null, int? ProjectId = null);
+        bool Joined = false, int? MarkerId = null, int? EditId = null, int? ProjectId = null, bool Separate = false);
 
     /// <param name="Kind">VodRange, Clip, ClipVertical, Video or Segment.</param>
     /// <param name="LengthSeconds">What it plays (cut-out parts left out).</param>
@@ -44,6 +44,9 @@ namespace TwitchDownloaderWeb.Endpoints
 
         /// <summary>The project it's made from (kind Project or ProjectVertical).</summary>
         public int? ProjectId { get; init; }
+
+        /// <summary>A project as separate files, one per piece it plays (served as a .zip).</summary>
+        public bool Separate { get; init; }
 
         /// <summary>While it's being made: the step it's on, with that step's percent and time left when known.</summary>
         public JobProgressSnapshot? Progress { get; init; }
@@ -406,7 +409,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 return ([], Invalid(index, "Your role doesn't let you export teammates' vertical edits."));
 
             var name = string.IsNullOrEmpty(fileName) ? (project.Title.Length > 0 ? project.Title : "Untitled project") : fileName;
-            return await ProjectItemsAsync(index, project, request.Quality, name, cache, cancellationToken);
+            return await ProjectItemsAsync(index, project, request.Quality, name, cache, cancellationToken, request.Separate);
         }
 
         /// <summary>
@@ -436,7 +439,7 @@ namespace TwitchDownloaderWeb.Endpoints
 
         /// <summary>A project's file: what it plays now is copied (landscape for a horizontal edit, 9:16 for a vertical one).</summary>
         private static async Task<(List<ExportItem> Items, IResult? Problem)> ProjectItemsAsync(int index, EditProject project, string? requestedQuality,
-            string name, VodInfoCache cache, CancellationToken cancellationToken)
+            string name, VodInfoCache cache, CancellationToken cancellationToken, bool separate = false)
         {
             var content = ProjectContent.Read(project.Content);
             var stretches = ProjectTimeline.Flatten(content);
@@ -464,6 +467,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 {
                     Kind = vertical ? ExportItemKind.ProjectVertical : ExportItemKind.Project, ProjectId = project.Id, VodId = first.Piece!.VodId,
                     StartSeconds = 0, EndSeconds = Math.Round(stretches.Sum(x => x.Duration), 2), Parts = json, Quality = quality, FileName = name,
+                    Separate = separate,
                 });
             return (made, null);
         }
@@ -535,6 +539,19 @@ namespace TwitchDownloaderWeb.Endpoints
             var fullPath = storage.Resolve(item.FilePath);
             var range = context.Request.Headers.Range.ToString();
             var firstRequest = string.IsNullOrEmpty(range) || range.StartsWith("bytes=0-", StringComparison.Ordinal);
+
+            if (item.Separate && item.Kind is ExportItemKind.Project or ExportItemKind.ProjectVertical)
+            {
+                if (!Directory.Exists(fullPath))
+                    return Results.Problem(detail: "The files are missing from storage.", statusCode: StatusCodes.Status410Gone);
+                db.Audit(AuditActions.FileServed, item.EntryId, $"export {batch.Id}, item {item.Position} (zip)");
+                await db.SaveChangesAsync(cancellationToken);
+                var pieces = ProjectTimeline.Flatten(ProjectContent.Read(item.Parts)).Where(x => !x.IsGap).ToList();
+                var suffix = item.Kind == ExportItemKind.ProjectVertical ? " (vertical)" : "";
+                await WriteZipAsync(context, $"{name}{suffix}.zip", pieces.Select((p, i) => (Path.Combine(fullPath, $"{i + 1}.mp4"),
+                    $"{i + 1:00} {(Safe(p.Piece!.Label ?? "") is { Length: > 0 } label ? label : $"VOD {p.Piece.VodId}")}{suffix}.mp4")), cancellationToken);
+                return Results.Empty;
+            }
 
             if (item.Kind == ExportItemKind.Video && !item.Joined)
             {
@@ -627,6 +644,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 {
                     EditId = i.EditId,
                     ProjectId = i.ProjectId,
+                    Separate = i.Separate,
                     Progress = i.Status == ExportStatus.Running ? queue.ProgressOf(x.Id, i.Position) : null,
                 }).ToList());
         }

@@ -460,6 +460,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("TEXT");
 
+                    b.Property<bool>("Separate")
+                        .HasColumnType("INTEGER");
+
                     b.Property<double>("StartSeconds")
                         .HasColumnType("REAL");
 

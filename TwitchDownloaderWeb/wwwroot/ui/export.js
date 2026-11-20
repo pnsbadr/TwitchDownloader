@@ -253,6 +253,7 @@ function secondsOf(item) {
 }
 
 function formatOf(item) {
+  if (item.kind === "project") return `${item.vertical ? "vertical" : "horizontal"}${item.separate ? ", separate files" : ""}`;
   if (twoFormats(item)) return [item.horizontal && "horizontal", item.vertical && "vertical"].filter(Boolean).join(" + ") || "nothing picked";
   if (item.kind === "video") return item.joined ? "one file" : `.zip of ${item.parts?.length ?? 0} file${item.parts?.length === 1 ? "" : "s"}`;
   return null;
@@ -501,11 +502,20 @@ function setRange(item, start, end) {
   changed(item, { preview: true });
 }
 
-// An edit: one landscape file (a horizontal edit) or one 9:16 file with each piece's boxes (a vertical edit)
+// An edit: landscape (a horizontal edit) or 9:16 with each piece's boxes (a vertical edit), as one file or separate files (one per
+// piece it plays, in a .zip: badrfly 2026-11-20, e.g. the synced parts on their own)
 function projectFormat(item) {
+  const files = el("sl-radio-group", { size: "small", value: item.separate ? "separate" : "joined" },
+    el("sl-radio", { value: "joined" }, "One file"),
+    el("sl-radio", { value: "separate" }, `Separate files (.zip, one per piece${item.pieceCount ? `: ${item.pieceCount}` : ""})`));
+  files.addEventListener("sl-change", () => {
+    item.separate = files.value === "separate";
+    changed(item);
+  });
   return el("div", { class: "xs-format" },
     el("div", { class: "xs-label" }, "Format"),
     el("div", { class: "xs-checks" }, item.vertical ? "Vertical (9:16)" : "Horizontal"),
+    files,
     el("p", { class: "faint xs-note" }, item.vertical
       ? "Made from what the vertical edit's timeline plays, top row first, with each piece's boxes (pieces without boxes get a centered crop); gaps are black."
       : "Made from what the edit's timeline plays, top row first; gaps are black. For a 9:16 version, make a vertical edit with the phone button on Player 2."));
@@ -912,7 +922,7 @@ function requestOf(item) {
     };
   }
   if (item.kind === "vod") return { ...common, vodId: Number(item.vodId), start: item.start, end: item.end };
-  if (item.kind === "project") return { ...common, projectId: item.id, horizontal: item.horizontal, vertical: item.vertical };
+  if (item.kind === "project") return { ...common, projectId: item.id, horizontal: item.horizontal, vertical: item.vertical, separate: Boolean(item.separate) };
   if (item.kind === "clip") {
     return {
       ...common, entryId: item.id, horizontal: item.horizontal, vertical: item.vertical,
@@ -1020,7 +1030,8 @@ function batchNode(batch) {
 }
 
 function batchItemNode(item) {
-  const name = item.kind === "Video" && !item.joined ? `${item.fileName}.zip` : item.kind === "ClipVertical" || item.kind === "ProjectVertical" ? `${item.fileName} (vertical).mp4` : `${item.fileName}.mp4`;
+  const name = item.kind === "Video" && !item.joined ? `${item.fileName}.zip`
+    : item.separate ? `${item.fileName}${item.kind === "ProjectVertical" ? " (vertical)" : ""}.zip` : item.kind === "ClipVertical" || item.kind === "ProjectVertical" ? `${item.fileName} (vertical).mp4` : `${item.fileName}.mp4`;
   const step = item.status === "Running" ? item.progress : null;
   // A video's bar counts its segments; one file's bar follows the step it's on (download, audio swap, re-encode...)
   const progress = item.status === "Running" && item.partsTotal > 1

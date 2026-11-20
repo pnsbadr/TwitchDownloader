@@ -196,7 +196,8 @@ no build step). Run with `dotnet run --project TwitchDownloaderWeb` → http://l
   layout via `ShortformLayout.BuildFilterGraph`, keyframe times moved to the stretch's start, no layout = a centered 9:16 box; landscape =
   the quality's height (1080 for best), letterboxed; fps from the quality, 60 for best; AAC 48 kHz stereo; muted track = silence), makes gaps
   black with silence, and joins them with `SegmentJoiner` (stream copy). Exports take `kind: "project"` (`projectId`, `horizontal`/`vertical`,
-  `quality`): items `Project` / `ProjectVertical` (`ExportItems.ProjectId`, content copied into `Parts`), progress = stretches done.
+  `quality`, `separate`: one file per piece it plays, gaps left out, in `downloads/exports/{id}/{position}/` and served as a .zip named
+  "01 label.mp4"…, `ExportItems.Separate`, migration `ExportSeparate`, badrfly 2026-11-20; the Export tab's "Separate files"): items `Project` / `ProjectVertical` (`ExportItems.ProjectId`, content copied into `Parts`), progress = stretches done.
 - `ExportBatches` + `ExportItems` (cascade): **exports** (badrfly, 2026-11-15, the Export tab's list; `ExportEndpoints`, `ExportWorker`). One
   `POST /api/exports` (`GenerateFiles`) with items of kind `vod` (a VOD range dropped on the list: **a one-off, never an entry**), `clip`
   (horizontal and/or vertical: two items), `video` (a `.zip` of one file per segment, or `joined` into one file, which needs the team's
@@ -640,7 +641,9 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   edges to trim (up to its neighbors and the VOD's length), I / O trim at the playhead, razor (C, white line) or S splits, Delete / Shift+Delete
   (ripple) deletes, Ctrl+C / Ctrl+V copy and paste (at the playhead, on the selected row), right-click on a gap = Close gap. Piece menu: Name and
   color, Copy, Copy / Paste layout, Use this layout on every piece, **Apply this trim to the original**
-  (clips and segments: the source's range and cut-out parts from every piece copied from it; `applyToOriginal` in `ui/editor.js`), Delete,
+  (clips and segments: the source's range and cut-out parts from every piece copied from it on the same VOD; `applyToOriginal` in `ui/editor.js`;
+  a teammate's item asks Edit original / Make a copy with `EditAnyEntries`, else offers a copy on the caller's row, badrfly 2026-11-20; a copy
+  becomes the pieces' source), Delete,
   Delete and close the gap (badrfly 2026-11-20: no Split at the playhead or Show in Player 1 there; the menu (`ui/menu.js`) opens upward when there's no room below). **Show in Player 1** = the crosshair in Player 2's controls: the piece at Player 2's playhead (else the selected one), Player 1 goes to the same VOD moment and zooms to the whole clip/segment it came from. Covered parts of lower rows are drawn darker; the ruler's bottom band shows what plays and hatches gaps. Snapping
   uses `clipLibrary.snap`. New pieces take the layout of the piece before them on their row.
   **Nothing is deleted from Player 2** except pieces of the project (badrfly 2026-11-16): unloading only closes the project; real deletes of

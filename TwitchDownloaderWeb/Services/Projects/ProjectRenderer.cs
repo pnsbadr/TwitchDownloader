@@ -51,12 +51,16 @@ namespace TwitchDownloaderWeb.Services.Projects
 
         /// <param name="quality">Requested for every VOD; a VOD without it gives its best (the output is scaled to one size anyway).</param>
         /// <param name="onStretchDone">Called with the number of stretches done.</param>
+        /// <param name="separate">Separate files instead of one: <paramref name="outputPath"/> is a folder that gets 1.mp4, 2.mp4… one per
+        /// stretch with a piece (gaps left out), in play order.</param>
         /// <returns>How many stretches there were, and the saved-audio results added up (null when no VOD had saved audio).</returns>
         public async Task<(int Stretches, AudioRestoreResult? Restore)> RenderAsync(LibraryDbContext db, int teamId, ProjectContent content, bool vertical,
             string? quality, string outputPath, string workName, ILogger logger, Action<string> onRestoreFailed, Func<int, int, Task> onStretchDone,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken, bool separate = false)
         {
             var stretches = ProjectTimeline.Flatten(content);
+            if (separate)
+                stretches = [.. stretches.Where(x => !x.IsGap)];
             if (stretches.Count == 0)
                 throw new InvalidOperationException("The project has nothing on its visible rows.");
 
@@ -104,7 +108,13 @@ namespace TwitchDownloaderWeb.Services.Projects
                     await onStretchDone(i + 1, stretches.Count);
                 }
 
-                if (files.Count == 1)
+                if (separate)
+                {
+                    Directory.CreateDirectory(outputPath);
+                    for (var i = 0; i < files.Count; i++)
+                        File.Move(files[i], Path.Combine(outputPath, $"{i + 1}.mp4"), overwrite: true);
+                }
+                else if (files.Count == 1)
                     File.Move(files[0], outputPath, overwrite: true);
                 else
                     await SegmentJoiner.JoinAsync(ffmpegPath, files, outputPath, work, settings.ExactTrimPreset, settings.ExactTrimCrf, logger, cancellationToken);

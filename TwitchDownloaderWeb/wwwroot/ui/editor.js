@@ -13,7 +13,7 @@ import { MediaPlayer, formatClock } from "./media.js";
 import { Timeline } from "./timeline.js";
 import { trimValue } from "./timeline-edit.js";
 import { skipCut, keptSeconds } from "./cuts.js";
-import { askText, confirmAction } from "./dialogs.js";
+import { askText, confirmAction, chooseEditTarget } from "./dialogs.js";
 import { ProjectStore, piecesFromItem, flatten, stretchAt, emptyContent, withoutLayouts, trackName } from "./project.js";
 import { ProjectTimeline, forgetLiveVodLengths } from "./project-timeline.js";
 import { ProjectPlayback } from "./project-playback.js";
@@ -1274,27 +1274,71 @@ async function applyToOriginal(piece) {
     at = Math.max(at, p.end);
   }
   const what = source.kind === "clip" ? "clip" : "segment";
-  const ok = await confirmAction({
-    heading: `Change the original ${what}?`,
-    text: `It will run ${formatDuration(start, { short: false })} – ${formatDuration(end, { short: false })} in the VOD${cuts.length ? `, with ${cuts.length} part${cuts.length === 1 ? "" : "s"} cut out` : ""}, like the piece${from.length === 1 ? "" : "s"} made from it here. The project doesn't change.`,
-    confirm: "Change it",
-    danger: false,
-  });
-  if (!ok) return;
+  // Who it belongs to decides, like on Player 1: your own is changed; a teammate's is changed only with "Edit anyone's" and after
+  // asking "Edit original / Make a copy"; without it a copy on your row is offered (badrfly 2026-11-20)
+  let original;
   try {
+    const data = await api("GET", `/api/vods/${encodeURIComponent(piece.vodId)}/timeline`);
+    original = source.kind === "clip" ? data.clips?.find((c) => c.id === source.id) : data.markers?.find((m) => m.id === source.id);
+  } catch (error) {
+    toast(`Couldn't read the original ${what}: ${error.message}`, "error");
+    return;
+  }
+  if (!original) return toast(`The original ${what} isn't there any more.`, "error");
+  const ownerId = source.kind === "clip" ? original.addedByUserId : original.createdByUserId;
+  const own = ownerId != null && String(ownerId) === String(me?.id);
+  let copy = false;
+  const range = `${formatDuration(start, { short: false })} – ${formatDuration(end, { short: false })} in the VOD${cuts.length ? `, with ${cuts.length} part${cuts.length === 1 ? "" : "s"} cut out` : ""}`;
+  if (!own && original.canEdit) {
+    const choice = await chooseEditTarget({ what, owner: original.createdBy });
+    if (!choice) return;
+    copy = choice === "copy";
+  } else if (!own) {
+    if (!can("AddEntries") || (source.kind === "clip" && original.kind !== "Vod")) {
+      return toast(`This ${what} is ${original.createdBy ? `${original.createdBy}'s` : "someone else's"}, and you can't change it.`, "error");
+    }
+    const ok = await confirmAction({
+      heading: `Make your own copy of this ${what}?`,
+      text: `It's ${original.createdBy ? `${original.createdBy}'s` : "someone else's"} and you can't change it. A copy goes on your row, running ${range}, like the piece${from.length === 1 ? "" : "s"} made from it here. The pieces here then come from your copy.`,
+      confirm: "Make a copy",
+      danger: false,
+    });
+    if (!ok) return;
+    copy = true;
+  }
+  if (!copy && own) {
+    const ok = await confirmAction({
+      heading: `Change the original ${what}?`,
+      text: `It will run ${range}, like the piece${from.length === 1 ? "" : "s"} made from it here. The edit doesn't change.`,
+      confirm: "Change it",
+      danger: false,
+    });
+    if (!ok) return;
+  }
+  try {
+    let id = source.id;
+    let made = null;
+    if (copy) {
+      made = await api("POST", source.kind === "clip" ? `/api/entries/${id}/copy` : `/api/markers/${id}/copy`, {});
+      id = made.id;
+      // the pieces made from it now come from the copy, so the next apply (and Player 1's trims) go to the copy
+      if (store.canEdit) {
+        store.edit((c) => {
+          for (const p of c.pieces) if (from.some((f) => f.id === p.id)) p.source = { ...p.source, id };
+        });
+      }
+    }
     if (source.kind === "clip") {
-      await api("PUT", `/api/entries/${source.id}/trim`, { startTime: String(start), endTime: String(end), cuts });
+      await api("PUT", `/api/entries/${id}/trim`, { startTime: String(start), endTime: String(end), cuts });
       refreshClips();
     } else {
-      const data = await api("GET", `/api/vods/${encodeURIComponent(piece.vodId)}/timeline`);
-      const marker = data.markers?.find((m) => m.id === source.id);
-      if (!marker) throw new Error("The segment isn't there any more.");
-      await api("PUT", `/api/markers/${source.id}`, { seconds: start, endSeconds: end, label: marker.label, color: marker.color, rowId: marker.rowId, cuts });
+      const marker = made ?? original;
+      await api("PUT", `/api/markers/${id}`, { seconds: start, endSeconds: end, label: marker.label, color: marker.color, rowId: marker.rowId, cuts });
     }
     if (timeline.vodId === String(piece.vodId)) timeline.load();
-    toast(`The original ${what} was changed.`);
+    toast(copy ? `Your copy of the ${what} was made with this trim.` : `The original ${what} was changed.`);
   } catch (error) {
-    toast(`Couldn't change the original ${what}: ${error.message}`, "error");
+    toast(`Couldn't change the ${copy ? "copy of the" : "original"} ${what}: ${error.message}`, "error");
   }
 }
 
