@@ -194,6 +194,7 @@ namespace TwitchDownloaderWeb.Data
                 entity.Property(x => x.Kind).HasConversion<string>().HasMaxLength(16);
                 entity.Property(x => x.Name).HasMaxLength(TimelineRow.MaxNameLength);
                 entity.HasIndex(x => new { x.TeamId, x.VodId, x.UserId });
+                entity.HasIndex(x => new { x.TeamId, x.ShownOnVodId });
                 entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
                 entity.HasQueryFilter(x => !ScopedToTeam || (x.TeamId == ScopeTeamId && !HiddenVods.Any(h => h.TeamId == ScopeTeamId && h.VodId == x.VodId)));
             });
@@ -204,7 +205,7 @@ namespace TwitchDownloaderWeb.Data
                 entity.Property(x => x.ChannelName).HasMaxLength(100);
                 entity.HasIndex(x => new { x.TeamId, x.VodId });
                 entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
-                entity.HasOne<TimelineRow>().WithMany().HasForeignKey(x => x.RowId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne<TimelineRow>().WithMany().HasForeignKey(x => x.RowId).OnDelete(DeleteBehavior.SetNull);
                 entity.HasMany(x => x.Segments).WithOne().HasForeignKey(x => x.VideoId).OnDelete(DeleteBehavior.Cascade);
                 entity.HasQueryFilter(x => !ScopedToTeam || (x.TeamId == ScopeTeamId && !HiddenVods.Any(h => h.TeamId == ScopeTeamId && h.VodId == x.VodId)));
             });
@@ -500,15 +501,16 @@ namespace TwitchDownloaderWeb.Data
         /// </summary>
         private async Task<TimelineRow> DefaultRowAsync(int teamId, long vodId, int userId, TimelineRowKind kind, CancellationToken cancellationToken)
         {
+            // Plain rows first: a synced row (shown on another VOD) is used only when it's the member's only row of that kind
             bool Matches(TimelineRow r) => r.TeamId == teamId && r.VodId == vodId && r.UserId == userId && r.Kind == kind;
 
-            var local = TimelineRows.Local.Where(Matches).OrderBy(x => x.Position).ThenBy(x => x.Id).FirstOrDefault();
+            var local = TimelineRows.Local.Where(Matches).OrderBy(x => x.ShownOnVodId != null).ThenBy(x => x.Position).ThenBy(x => x.Id).FirstOrDefault();
             if (local is not null)
                 return local;
 
             var existing = await TimelineRows.IgnoreQueryFilters()
                 .Where(x => x.TeamId == teamId && x.VodId == vodId && x.UserId == userId && x.Kind == kind)
-                .OrderBy(x => x.Position).ThenBy(x => x.Id)
+                .OrderBy(x => x.ShownOnVodId != null).ThenBy(x => x.Position).ThenBy(x => x.Id)
                 .FirstOrDefaultAsync(cancellationToken);
             if (existing is not null)
                 return existing;

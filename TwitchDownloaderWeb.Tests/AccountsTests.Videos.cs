@@ -4,7 +4,7 @@ using System.Text.Json;
 
 namespace TwitchDownloaderWeb.Tests
 {
-    /// <summary>Videos: linked segments from one row that follow their segments (badrfly, 2026-11-15, frontend rework).</summary>
+    /// <summary>Videos: linked segments that follow their segments (badrfly, 2026-11-15, frontend rework; any rows since 2026-11-20).</summary>
     public sealed partial class AccountsTests
     {
         private static async Task<int> SegmentIdAsync(HttpClient client, long vodId, double start, double? end, int? rowId = null)
@@ -30,13 +30,12 @@ namespace TwitchDownloaderWeb.Tests
             var elsewhere = await SegmentIdAsync(member, 430, 200, 210, otherRow);
             var ownersSegment = await SegmentIdAsync(owner, 430, 300, 310);
 
-            // Segments only, one row, one member, a title
+            // Segments only, one member, a title (any of their rows since 2026-11-20)
             foreach (var bad in new object[]
                      {
                          new { title = "", markerIds = new[] { a } },
                          new { title = "V", markerIds = Array.Empty<int>() },
                          new { title = "V", markerIds = new[] { a, moment } },
-                         new { title = "V", markerIds = new[] { a, elsewhere } },
                          new { title = "V", markerIds = new[] { a, ownersSegment } },
                          new { title = "V", markerIds = new[] { a, a } },
                      })
@@ -61,12 +60,18 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal(HttpStatusCode.OK, (await member.PutAsJsonAsync($"/api/markers/{b}", new { seconds = 10, endSeconds = 20 }, ct)).StatusCode);
             Assert.Equal(20, (await GetJsonAsync(member, $"/api/videos/{videoId}")).GetProperty("lengthSeconds").GetDouble());
 
-            // A linked segment can't become a moment or move to another row
+            // A linked segment can't become a moment; it may move to another of its owner's rows
             var refused = await member.PutAsJsonAsync($"/api/markers/{b}", new { seconds = 10 }, ct);
             Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
             Assert.Equal("segment-in-video", await CodeOf(refused));
-            Assert.Equal(HttpStatusCode.Conflict,
+            Assert.Equal(HttpStatusCode.OK,
                 (await member.PutAsJsonAsync($"/api/markers/{b}", new { seconds = 10, endSeconds = 20, rowId = otherRow }, ct)).StatusCode);
+            Assert.Equal(2, (await GetJsonAsync(member, $"/api/videos/{videoId}")).GetProperty("segments").GetArrayLength());
+
+            // Segments from two rows link into one video
+            var twoRows = await member.PostAsJsonAsync("/api/vods/430/videos", new { title = "Two rows", markerIds = new[] { elsewhere, a } }, ct);
+            Assert.Equal(HttpStatusCode.Created, twoRows.StatusCode);
+            Assert.Equal(HttpStatusCode.NoContent, (await member.DeleteAsync($"/api/videos/{(await twoRows.Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("id").GetInt32()}", ct)).StatusCode);
 
             // Reorder, retitle
             var changed = await member.PutAsJsonAsync($"/api/videos/{videoId}", new { title = "Renamed", markerIds = new[] { b, a } }, ct);

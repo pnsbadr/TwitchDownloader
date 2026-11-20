@@ -470,7 +470,7 @@ namespace TwitchDownloaderWeb.Services.Segments
                 JobProgress.SetPrefix($"Segment {i + 1} of {parts.Count}");
                 _logger.LogInformation("Export {BatchId}, item {Position}: segment {Number} of {Count} ({Start}-{End}).", batch.Id, item.Position, i + 1,
                     parts.Count, JobProgress.FormatTime(parts[i].Start), JobProgress.FormatTime(parts[i].End));
-                if (await CutAsync(db, batch, item, parts[i].Start, parts[i].End, parts[i].Cuts, file, token) is { } restore)
+                if (await CutAsync(db, batch, item, parts[i].Start, parts[i].End, parts[i].Cuts, file, token, parts[i].VodId) is { } restore)
                     restores.Add(restore);
                 files.Add(file);
                 item.PartsDone = i + 1;
@@ -501,13 +501,13 @@ namespace TwitchDownloaderWeb.Services.Segments
         }
 
         private Task<AudioRestoreResult?> CutAsync(LibraryDbContext db, ExportBatch batch, ExportItem item, double start, double end,
-            IReadOnlyList<CutRange> cuts, string outputPath, CancellationToken token)
+            IReadOnlyList<CutRange> cuts, string outputPath, CancellationToken token, long? vodId = null)
         {
             // A transient entry: the cut code works on entries, but an export never becomes one
             var cut = new LibraryEntry
             {
                 Title = item.FileName,
-                VodId = item.VodId,
+                VodId = vodId ?? item.VodId,
                 Quality = item.Quality,
                 TrimMode = item.TrimMode,
                 StartTime = TimeSpan.FromSeconds(start),

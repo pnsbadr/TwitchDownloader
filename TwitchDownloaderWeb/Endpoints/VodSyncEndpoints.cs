@@ -161,7 +161,7 @@ namespace TwitchDownloaderWeb.Endpoints
         }
 
         /// <summary>Seconds the same moment is later in the other VOD of <paramref name="pair"/> than stream start times say, seen from <paramref name="fromVod"/>.</summary>
-        private static double CorrectionFrom(VodSyncOffset pair, long fromVod) => pair.VodA == fromVod ? pair.Seconds : -pair.Seconds;
+        internal static double CorrectionFrom(VodSyncOffset pair, long fromVod) => pair.VodA == fromVod ? pair.Seconds : -pair.Seconds;
 
         /// <summary>Checks both VODs and reads their start times.</summary>
         private static async Task<(VodDetails A, VodDetails B, IResult? Problem)> PairAsync(long vodId, long otherVodId, TeamContext team, IVodDetailsSource vods,

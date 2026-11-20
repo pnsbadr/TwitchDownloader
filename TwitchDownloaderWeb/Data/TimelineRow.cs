@@ -33,6 +33,16 @@ namespace TwitchDownloaderWeb.Data
 
         public DateTime CreatedAtUtc { get; set; }
 
+        /// <summary>
+        /// A synced row (badrfly 2026-11-20): a row of this VOD (another streamer's) that also shows on <see cref="ShownOnVodId"/>'s timeline,
+        /// lined up on that VOD's clock. Its items are this VOD's, so they show when this VOD is opened too. Null = a plain row.
+        /// </summary>
+        public long? ShownOnVodId { get; set; }
+
+        /// <summary>A synced row: <c>ShownOnVod.createdAt - VodId.createdAt</c> in seconds (Twitch start times, read once when it was made).
+        /// This VOD's second = the other's + this + the pair's saved line-up (<see cref="VodSyncOffset"/>).</summary>
+        public double? SyncBaseSeconds { get; set; }
+
         public const int MaxNameLength = 60;
 
         /// <summary>At most this many rows per member per VOD.</summary>

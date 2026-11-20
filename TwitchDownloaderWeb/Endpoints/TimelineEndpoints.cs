@@ -14,6 +14,9 @@ namespace TwitchDownloaderWeb.Endpoints
         /// <summary>The clip's color (null = the default violet).</summary>
         public string? Color { get; init; }
 
+        /// <summary>Its VOD (another streamer's on a synced row).</summary>
+        public long VodId { get; init; }
+
         /// <summary>The clip row it sits on; null for clips without a known adder (made before accounts).</summary>
         public int? RowId { get; init; }
 
@@ -40,13 +43,28 @@ namespace TwitchDownloaderWeb.Endpoints
     /// <param name="CanEdit">The caller may put items on it, rename, move and delete it (their own row).</param>
     public sealed record TimelineRowDto(int Id, int UserId, string? Username, string Kind, int Position, string? Name, bool CanEdit)
     {
-        public static TimelineRowDto From(TimelineRow row, IReadOnlyDictionary<int, string> names, TeamContext team) =>
+        /// <summary>The VOD its items are on: the timeline's own, or another streamer's for a synced row.</summary>
+        public long VodId { get; init; }
+
+        /// <summary>A synced row: the VOD whose timeline it also shows on.</summary>
+        public long? ShownOnVodId { get; init; }
+
+        /// <summary>A synced row on the timeline asked for: its VOD's second = the timeline's second + this (start times plus the pair's
+        /// saved line-up). Null on its own VOD's timeline.</summary>
+        public double? Shift { get; init; }
+
+        public static TimelineRowDto From(TimelineRow row, IReadOnlyDictionary<int, string> names, TeamContext team, double? shift = null) =>
             new(row.Id, row.UserId, names.GetValueOrDefault(row.UserId), row.Kind.ToString(), row.Position, row.Name,
-                !team.IsSupport && row.UserId == team.UserId && team.Can(TeamPermission.AddEntries));
+                !team.IsSupport && row.UserId == team.UserId && team.Can(TeamPermission.AddEntries))
+            {
+                VodId = row.VodId, ShownOnVodId = row.ShownOnVodId, Shift = shift is { } s ? Math.Round(s, 3) : null,
+            };
     }
 
     /// <param name="Kind">"video" or "clip".</param>
-    public sealed record AddRowRequest(string? Kind, string? Name);
+    /// <param name="SyncedVodId">A synced row (badrfly 2026-11-20): another streamer's VOD (one the team can open) shown on this VOD's
+    /// timeline, lined up by stream start times and the pair's saved line-up. Its items are that VOD's.</param>
+    public sealed record AddRowRequest(string? Kind, string? Name, long? SyncedVodId = null);
 
     /// <param name="Name">New name (blank clears it); null leaves it.</param>
     /// <param name="Position">New place among the owner's rows on the VOD (0 first); null leaves it.</param>
@@ -147,13 +165,27 @@ namespace TwitchDownloaderWeb.Endpoints
                 .Where(x => x.VodId == vodId)
                 .OrderBy(x => x.AddedAtUtc)
                 .Select(x => new { x.Id, x.Title, x.Kind, x.StartTime, x.EndTime, x.Status, x.FollowsMarkers, x.AddedByUserId, x.RowId, x.CopiedFromEntryId, x.Cuts,
-                    x.ClipLengthSeconds, x.VodLengthSeconds, x.FileCuts, x.FilePath, x.GeneratedFilePath, x.Color })
+                    x.ClipLengthSeconds, x.VodLengthSeconds, x.FileCuts, x.FilePath, x.GeneratedFilePath, x.Color, x.VodId })
                 .ToListAsync(cancellationToken);
 
-            var markers = await db.Markers.AsNoTracking().Where(x => x.VodId == vodId).ToListAsync(cancellationToken);
+            // Synced rows shown here (other streamers' VODs) bring their items along
+            var synced = await db.TimelineRows.AsNoTracking().Where(x => x.ShownOnVodId == vodId && x.VodId != vodId).ToListAsync(cancellationToken);
+            var syncedIds = synced.Select(x => x.Id).ToList();
+            if (syncedIds.Count > 0)
+                clips.AddRange(await db.Entries.AsNoTracking()
+                    .Where(x => x.RowId != null && syncedIds.Contains(x.RowId.Value))
+                    .OrderBy(x => x.AddedAtUtc)
+                    .Select(x => new { x.Id, x.Title, x.Kind, x.StartTime, x.EndTime, x.Status, x.FollowsMarkers, x.AddedByUserId, x.RowId, x.CopiedFromEntryId, x.Cuts,
+                        x.ClipLengthSeconds, x.VodLengthSeconds, x.FileCuts, x.FilePath, x.GeneratedFilePath, x.Color, x.VodId })
+                    .ToListAsync(cancellationToken));
+            var markers = await db.Markers.AsNoTracking()
+                .Where(x => x.VodId == vodId || (x.RowId != null && syncedIds.Contains(x.RowId.Value))).ToListAsync(cancellationToken);
             var rows = await db.TimelineRows.AsNoTracking().Where(x => x.VodId == vodId).ToListAsync(cancellationToken);
+            var shifts = await SyncShiftsAsync(db, vodId, synced, cancellationToken);
+            rows.AddRange(synced);
+            var markerIds = markers.Select(x => x.Id).ToList();
             var videos = await db.Videos.AsNoTracking().Include(x => x.Segments).ThenInclude(x => x.Marker)
-                .Where(x => x.VodId == vodId).OrderBy(x => x.CreatedAtUtc).ToListAsync(cancellationToken);
+                .Where(x => x.VodId == vodId || x.Segments.Any(s => markerIds.Contains(s.MarkerId))).OrderBy(x => x.CreatedAtUtc).ToListAsync(cancellationToken);
             var names = await UserNamesAsync(db, markers.Select(x => x.CreatedByUserId).Concat(rows.Select(x => x.UserId))
                 .Concat(clips.Select(x => int.TryParse(x.AddedByUserId, out var u) ? u : 0)), cancellationToken);
 
@@ -165,6 +197,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 {
                     RowId = x.RowId,
                     Color = x.Color,
+                    VodId = x.VodId,
                     AddedByUserId = x.AddedByUserId,
                     CreatedBy = int.TryParse(x.AddedByUserId, out var u) ? names.GetValueOrDefault(u) : null,
                     CopiedFromEntryId = x.CopiedFromEntryId,
@@ -176,10 +209,28 @@ namespace TwitchDownloaderWeb.Endpoints
                 settings.Value.MaxStoredClipSeconds,
                 // The caller's rows first, then the others' by name
                 rows.OrderBy(x => x.UserId != team.UserId).ThenBy(x => names.GetValueOrDefault(x.UserId), StringComparer.OrdinalIgnoreCase)
-                    .ThenBy(x => x.UserId).ThenBy(x => x.Position).ThenBy(x => x.Id)
-                    .Select(x => TimelineRowDto.From(x, names, team)).ToList())
+                    .ThenBy(x => x.UserId).ThenBy(x => x.ShownOnVodId == vodId) // a member's synced rows after their own
+                    .ThenBy(x => x.Position).ThenBy(x => x.Id)
+                    .Select(x => TimelineRowDto.From(x, names, team, x.ShownOnVodId == vodId ? shifts.GetValueOrDefault(x.Id) : null)).ToList())
             {
                 Videos = await VideoEndpoints.ToDtosAsync(db, videos, team, cancellationToken),
+            });
+        }
+
+        /// <summary>Each synced row's shift on <paramref name="vodId"/>'s timeline: its VOD's second = this VOD's + shift.</summary>
+        internal static async Task<Dictionary<int, double>> SyncShiftsAsync(LibraryDbContext db, long vodId, IReadOnlyList<TimelineRow> synced,
+            CancellationToken cancellationToken)
+        {
+            if (synced.Count == 0)
+                return [];
+            var others = synced.Select(x => x.VodId).Distinct().ToList();
+            var pairs = await db.VodSyncOffsets.AsNoTracking()
+                .Where(x => (x.VodA == vodId && others.Contains(x.VodB)) || (x.VodB == vodId && others.Contains(x.VodA)))
+                .ToListAsync(cancellationToken);
+            return synced.ToDictionary(x => x.Id, x =>
+            {
+                var pair = pairs.FirstOrDefault(p => p.VodA == x.VodId || p.VodB == x.VodId);
+                return (x.SyncBaseSeconds ?? 0) + (pair is null ? 0 : VodSyncEndpoints.CorrectionFrom(pair, vodId));
             });
         }
 
@@ -189,7 +240,7 @@ namespace TwitchDownloaderWeb.Endpoints
             if (await db.MemberVods.AnyAsync(x => x.UserId == team.UserId && x.VodId == vodId, cancellationToken))
                 return;
 
-            var kinds = await db.TimelineRows.Where(x => x.VodId == vodId && x.UserId == team.UserId).Select(x => x.Kind).Distinct()
+            var kinds = await db.TimelineRows.Where(x => x.VodId == vodId && x.UserId == team.UserId && x.ShownOnVodId == null).Select(x => x.Kind).Distinct()
                 .ToListAsync(cancellationToken);
             var next = await db.TimelineRows.Where(x => x.VodId == vodId && x.UserId == team.UserId).Select(x => (int?)x.Position)
                 .MaxAsync(cancellationToken) ?? -1;
@@ -242,26 +293,55 @@ namespace TwitchDownloaderWeb.Endpoints
             return (kind, name, errors);
         }
 
-        private static async Task<IResult> AddRow(long vodId, AddRowRequest request, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
+        private static async Task<IResult> AddRow(long vodId, AddRowRequest request, TeamContext team, LibraryDbContext db, IVodDetailsSource vods,
+            TeamChannelAccess access, CancellationToken cancellationToken)
         {
             var (kind, name, errors) = ValidateRow(request.Kind, request.Name, kindRequired: true);
             if (errors.Count > 0)
                 return Results.ValidationProblem(errors);
 
-            var mine = await db.TimelineRows.Where(x => x.VodId == vodId && x.UserId == team.UserId).Select(x => x.Position).ToListAsync(cancellationToken);
+            // A synced row is a row of the other VOD, shown on this one's timeline
+            double? syncBase = null;
+            var rowVod = vodId;
+            if (request.SyncedVodId is { } other)
+            {
+                if (other == vodId || other <= 0)
+                    return Results.ValidationProblem(new Dictionary<string, string[]> { ["syncedVodId"] = ["Pick another streamer's VOD."] });
+                if (TeamChannelAccess.Refusal(await access.CheckVodAsync(team.TeamId, other, cancellationToken), other) is { } refused)
+                    return refused;
+                VodDetails? here, there;
+                try
+                {
+                    here = await vods.GetVodAsync(vodId);
+                    there = await vods.GetVodAsync(other);
+                }
+                catch (HttpRequestException)
+                {
+                    return ChannelEndpoints.TwitchUnreachable();
+                }
+                if (here is null || there is null)
+                    return Results.Problem(detail: "Twitch no longer has one of these VODs, so their stream times aren't known.",
+                        statusCode: StatusCodes.Status404NotFound, extensions: new Dictionary<string, object?> { ["code"] = "vod-gone" });
+                syncBase = (here.StreamDateUtc - there.StreamDateUtc).TotalSeconds;
+                rowVod = other;
+                name ??= there.ChannelName is { Length: > 0 } channel ? channel[..Math.Min(channel.Length, TimelineRow.MaxNameLength)] : null;
+            }
+
+            var mine = await db.TimelineRows.Where(x => x.VodId == rowVod && x.UserId == team.UserId).Select(x => x.Position).ToListAsync(cancellationToken);
             if (mine.Count >= TimelineRow.MaxRowsPerMember)
                 return Results.Problem(detail: $"You can have at most {TimelineRow.MaxRowsPerMember} rows on a VOD.", statusCode: StatusCodes.Status409Conflict);
 
             var row = new TimelineRow
             {
-                VodId = vodId, UserId = team.UserId, Kind = kind!.Value, Name = name, Position = mine.Count == 0 ? 0 : mine.Max() + 1,
-                CreatedAtUtc = DateTime.UtcNow,
+                VodId = rowVod, UserId = team.UserId, Kind = kind!.Value, Name = name, Position = mine.Count == 0 ? 0 : mine.Max() + 1,
+                CreatedAtUtc = DateTime.UtcNow, ShownOnVodId = syncBase is null ? null : vodId, SyncBaseSeconds = syncBase,
             };
             db.TimelineRows.Add(row);
             await db.SaveChangesAsync(cancellationToken);
 
             var names = await UserNamesAsync(db, [team.UserId], cancellationToken);
-            return Results.Created($"/api/rows/{row.Id}", TimelineRowDto.From(row, names, team));
+            var shift = syncBase is null ? (double?)null : (await SyncShiftsAsync(db, vodId, [row], cancellationToken))[row.Id];
+            return Results.Created($"/api/rows/{row.Id}", TimelineRowDto.From(row, names, team, shift));
         }
 
         /// <summary>Renames the caller's row or moves it among their rows on the VOD.</summary>
@@ -497,7 +577,8 @@ namespace TwitchDownloaderWeb.Endpoints
             if (errors.Count > 0)
                 return Results.ValidationProblem(errors);
 
-            var breaksVideo = (request.EndSeconds is null && marker.EndSeconds is not null) || (request.RowId is { } newRow && newRow != marker.RowId);
+            // A linked segment can't become a moment (videos link segments from any of the owner's rows since 2026-11-20, so moving rows is fine)
+            var breaksVideo = request.EndSeconds is null && marker.EndSeconds is not null;
             if (breaksVideo && await VideoEndpoints.TitlesLinkingAsync(db, marker.Id, cancellationToken) is { Count: > 0 } linked)
                 return Results.Problem(detail: $"This segment is in the video \"{linked[0]}\". Unlink it there first.", statusCode: StatusCodes.Status409Conflict,
                     extensions: new Dictionary<string, object?> { ["code"] = "segment-in-video" });

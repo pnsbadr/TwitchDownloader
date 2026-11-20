@@ -248,21 +248,30 @@ namespace TwitchDownloaderWeb.Endpoints
                     var links = video.Segments.Where(x => x.Marker is { EndSeconds: not null }).OrderBy(x => x.Position).ToList();
                     if (links.Count == 0)
                         return ([], Invalid(index, "That video has no segments."));
-                    var (vod, problem) = await VodForCutAsync(index, video.VodId, links.Max(x => x.Marker!.EndSeconds!.Value), request.Quality, cache,
-                        cancellationToken);
-                    if (problem is not null)
-                        return ([], problem);
+                    // Its segments may be on several VODs (synced rows): each one must be cuttable; the item is on the first segment's VOD
+                    var home = links[0].Marker!.VodId;
+                    (VodDetails Details, string? Quality) vod = default;
+                    foreach (var group in links.GroupBy(x => x.Marker!.VodId))
+                    {
+                        var (checkedVod, problem) = await VodForCutAsync(index, group.Key, group.Max(x => x.Marker!.EndSeconds!.Value), request.Quality, cache,
+                            cancellationToken);
+                        if (problem is not null)
+                            return ([], problem);
+                        if (group.Key == home)
+                            vod = checkedVod;
+                    }
                     var parts = links.Select((x, i) =>
                     {
                         var (start, end) = (x.Marker!.Seconds, x.Marker.EndSeconds!.Value);
                         return new ExportVideoPart(x.Marker.Label.Length > 0 ? x.Marker.Label : $"Segment {i + 1}", start, end,
-                            CutOuts.Normalize(CutOuts.Read(x.Marker.Cuts).Concat(CutOuts.Read(x.Cuts)), start, end));
+                            CutOuts.Normalize(CutOuts.Read(x.Marker.Cuts).Concat(CutOuts.Read(x.Cuts)), start, end))
+                        { VodId = x.Marker.VodId == home ? null : x.Marker.VodId };
                     }).Where(x => x.KeptSeconds >= CutOuts.MinKeptPartSeconds).ToList(); // an applied edit may take a segment out whole
                     if (parts.Count == 0)
                         return ([], Invalid(index, "Everything in that video is cut out."));
                     return ([new ExportItem
                     {
-                        Kind = ExportItemKind.Video, VodId = video.VodId, VideoId = video.Id, StartSeconds = parts.Min(x => x.Start),
+                        Kind = ExportItemKind.Video, VodId = home, VideoId = video.Id, StartSeconds = parts.Min(x => x.Start),
                         EndSeconds = parts.Max(x => x.End), Parts = ExportVideoPart.Write(parts), Joined = request.Joined, Quality = vod.Quality,
                         FileName = string.IsNullOrEmpty(fileName) ? video.Title : fileName,
                     }], null);

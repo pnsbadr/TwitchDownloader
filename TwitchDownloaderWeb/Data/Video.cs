@@ -1,8 +1,9 @@
 namespace TwitchDownloaderWeb.Data
 {
     /// <summary>
-    /// A "video" (badrfly, 2026-11-15, frontend rework): one or more segments from the same video row of one VOD, linked in order with the
-    /// link tool, with a title. It follows its segments: trimming one changes the video, deleting one removes it from the video, and a video
+    /// A "video" (badrfly, 2026-11-15, frontend rework): one or more segments of one member, linked in order with the link tool, with a
+    /// title. Since 2026-11-20 they may come from any of the member's video rows, synced rows (other streamers' VODs) included; <see cref="VodId"/>
+    /// is the VOD it was made on. It follows its segments: trimming one changes the video, deleting one removes it from the video, and a video
     /// with no segments left is deleted. Shared with the team; editable by its owner (AddEntries) or with EditAnyEntries.
     /// </summary>
     public class Video
@@ -11,8 +12,9 @@ namespace TwitchDownloaderWeb.Data
         public int TeamId { get; set; }
         public long VodId { get; set; }
 
-        /// <summary>The video row its segments are on.</summary>
-        public int RowId { get; set; }
+        /// <summary>The row its first segment was on when it was made (segments may be on any of the owner's rows and VODs since
+        /// 2026-11-20); null once that row is deleted.</summary>
+        public int? RowId { get; set; }
 
         /// <summary>Owner: the member whose row it is (also when someone with EditAnyEntries edits it).</summary>
         public int UserId { get; set; }
