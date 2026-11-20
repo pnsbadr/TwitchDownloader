@@ -162,9 +162,15 @@ namespace TwitchDownloaderWeb.Endpoints
         /// <param name="userId">Only videos this member made.</param>
         /// <param name="editedBy">Only videos this member made an edit of (Player 2).</param>
         /// <param name="channels">Only videos of these team channels (logins, comma separated; the library's channel bar).</param>
-        private static async Task<IResult> List(string? vodIds, int? userId, int? editedBy, string? channels, int? limit, TeamContext team, LibraryDbContext db,
-            CancellationToken cancellationToken)
+        /// <param name="search">Title substring (LIKE, case-insensitive for ASCII).</param>
+        /// <param name="paged">true: answer <c>{ items, nextCursor, total }</c>, newest first, <paramref name="cursor"/> = a page's nextCursor.</param>
+        private static async Task<IResult> List(string? vodIds, int? userId, int? editedBy, string? channels, int? limit, string? search, bool? paged,
+            string? cursor, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
         {
+            PageCursor? after = null;
+            if (!string.IsNullOrEmpty(cursor) && !PageCursor.TryParse(cursor, out after))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["cursor"] = ["Use the nextCursor of the page before."] });
+
             var (ids, problem) = TimelineEndpoints.ParseVodIds(vodIds);
             if (problem is not null)
                 return problem;
@@ -186,8 +192,34 @@ namespace TwitchDownloaderWeb.Endpoints
                     query = query.Where(x => db.Projects.Any(p => p.VideoId == x.Id && p.UserId == editor));
             }
 
-            var videos = await query.OrderByDescending(x => x.CreatedAtUtc).Take(Math.Clamp(limit ?? 200, 1, 1000)).ToListAsync(cancellationToken);
-            return Results.Ok(await ToDtosAsync(db, videos, team, cancellationToken));
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var pattern = "%" + search.Trim().Replace(@"\", @"\\").Replace("%", @"\%").Replace("_", @"\_") + "%";
+                query = query.Where(x => EF.Functions.Like(x.Title, pattern, @"\"));
+            }
+
+            var take = Math.Clamp(limit ?? 200, 1, 1000);
+            if (paged != true)
+            {
+                var all = await query.OrderByDescending(x => x.CreatedAtUtc).ThenByDescending(x => x.Id).Take(take).ToListAsync(cancellationToken);
+                return Results.Ok(await ToDtosAsync(db, all, team, cancellationToken));
+            }
+
+            var total = await query.CountAsync(cancellationToken);
+            if (after is { } a)
+            {
+                var at = a.AtUtc;
+                var id = a.Id;
+                query = query.Where(x => x.CreatedAtUtc < at || (x.CreatedAtUtc == at && x.Id < id));
+            }
+            var videos = await query.OrderByDescending(x => x.CreatedAtUtc).ThenByDescending(x => x.Id).Take(take + 1).ToListAsync(cancellationToken);
+            string? next = null;
+            if (videos.Count > take)
+            {
+                videos.RemoveAt(take);
+                next = new PageCursor(videos[^1].CreatedAtUtc, videos[^1].Id).ToString();
+            }
+            return Results.Ok(new Page<VideoDto>(await ToDtosAsync(db, videos, team, cancellationToken), next, total));
         }
 
         private static async Task<IResult> Get(int id, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
