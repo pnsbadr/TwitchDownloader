@@ -9,6 +9,10 @@ namespace TwitchDownloaderWeb.Services.Sync
         /// <returns>The envelope (<see cref="AudioAligner.Rate"/> per second) from <paramref name="start"/>, or null when the VOD's audio
         /// can't be read (gone, sub-only).</returns>
         Task<float[]?> GetAsync(long vodId, double start, double seconds, CancellationToken cancellationToken);
+
+        /// <summary>How loud it is for drawing sound waves: <see cref="AudioAligner.WaveRate"/> levels per second (0 = silent … 255 = full),
+        /// from <paramref name="start"/>; shorter when the VOD ends sooner. Null when the audio can't be read.</summary>
+        Task<byte[]?> GetLevelsAsync(long vodId, double start, double seconds, CancellationToken cancellationToken);
     }
 
     /// <summary>
@@ -21,7 +25,13 @@ namespace TwitchDownloaderWeb.Services.Sync
         public const string HttpClientName = nameof(VodLoudness);
         private const int SampleRate = 8000;
 
-        public async Task<float[]?> GetAsync(long vodId, double start, double seconds, CancellationToken cancellationToken)
+        public async Task<float[]?> GetAsync(long vodId, double start, double seconds, CancellationToken cancellationToken) =>
+            await GetSamplesAsync(vodId, start, seconds, cancellationToken) is { } samples ? AudioAligner.Envelope(samples, SampleRate) : null;
+
+        public async Task<byte[]?> GetLevelsAsync(long vodId, double start, double seconds, CancellationToken cancellationToken) =>
+            await GetSamplesAsync(vodId, start, seconds, cancellationToken) is { } samples ? AudioAligner.Levels(samples, SampleRate) : null;
+
+        private async Task<short[]?> GetSamplesAsync(long vodId, double start, double seconds, CancellationToken cancellationToken)
         {
             var http = httpClientFactory.CreateClient(HttpClientName);
             var rendition = await playlists.GetAudioRenditionAsync(http, vodId, cancellationToken);
@@ -61,8 +71,7 @@ namespace TwitchDownloaderWeb.Services.Sync
                 ], folder, logger, cancellationToken);
 
                 var bytes = await File.ReadAllBytesAsync(raw, cancellationToken);
-                var samples = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, short>(bytes.AsSpan(0, bytes.Length & ~1));
-                return AudioAligner.Envelope(samples, SampleRate);
+                return System.Runtime.InteropServices.MemoryMarshal.Cast<byte, short>(bytes.AsSpan(0, bytes.Length & ~1)).ToArray();
             }
             finally
             {

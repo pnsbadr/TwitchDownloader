@@ -16,6 +16,26 @@ namespace TwitchDownloaderWeb.Services.Sync
         /// <summary>The best lag must stand out this much over the best one at least half a second away.</summary>
         public const double MinPeakRatio = 1.15;
 
+        /// <summary>Sound wave levels per second (<see cref="Levels"/>).</summary>
+        public const int WaveRate = 20;
+
+        /// <summary>For drawing: the peak of each 1/<see cref="WaveRate"/> s, in dB from −54 (0) to 0 (255), so speech reads at any volume.</summary>
+        public static byte[] Levels(ReadOnlySpan<short> samples, int sampleRate)
+        {
+            var frame = Math.Max(1, sampleRate / WaveRate);
+            var count = samples.Length / frame;
+            var result = new byte[count];
+            for (var i = 0; i < count; i++)
+            {
+                var peak = 0;
+                foreach (var s in samples.Slice(i * frame, frame))
+                    peak = Math.Max(peak, Math.Abs((int)s));
+                var db = 20 * Math.Log10(Math.Max(peak, 1) / 32768.0);
+                result[i] = (byte)Math.Clamp(Math.Round((db + 54) / 54 * 255), 0, 255);
+            }
+            return result;
+        }
+
         /// <summary>The loudness envelope of mono 16-bit samples: log RMS per 1/<see cref="Rate"/> s, minus a 1 s moving average.</summary>
         public static float[] Envelope(ReadOnlySpan<short> samples, int sampleRate)
         {

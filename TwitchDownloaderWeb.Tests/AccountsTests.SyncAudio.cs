@@ -52,6 +52,21 @@ namespace TwitchDownloaderWeb.Tests
                 }
                 return Task.FromResult<float[]?>(result);
             }
+
+            public int LevelReads;
+
+            public Task<byte[]?> GetLevelsAsync(long vodId, double start, double seconds, CancellationToken cancellationToken)
+            {
+                if (!Streams.TryGetValue(vodId, out _))
+                    return Task.FromResult<byte[]?>(null);
+                Interlocked.Increment(ref LevelReads);
+                // A VOD of 3600 s: the last block is cut short at its end
+                var frames = (int)(Math.Max(0, Math.Min(seconds, 3600 - start)) * AudioAligner.WaveRate);
+                var result = new byte[frames];
+                for (var i = 0; i < frames; i++)
+                    result[i] = (byte)(Call((long)((start + (double)i / AudioAligner.WaveRate) * AudioAligner.Rate)) * 80);
+                return Task.FromResult<byte[]?>(result);
+            }
         }
 
         [Fact]
@@ -137,6 +152,31 @@ namespace TwitchDownloaderWeb.Tests
             _vods.Vods[713] = new VodDetails(713, "Elsewhere", "Qsmp", 3600, arkyStart, null, ChannelLogin: "qsmp");
             Assert.Equal(HttpStatusCode.Forbidden, (await owner.PostAsJsonAsync("/api/vods/710/sync/713/audio", new { at = 0, otherAt = 0 }, ct)).StatusCode);
             Assert.Equal(HttpStatusCode.BadRequest, (await owner.PutAsJsonAsync("/api/vods/710/sync/710", new { at = 0, otherAt = 0 }, ct)).StatusCode);
+        }
+    
+        [Fact]
+        public async Task WavesComeInBlocksAndAreKept()
+        {
+            var ct = TestContext.Current.CancellationToken;
+            var (owner, _, teamId, _) = await TeamWithMemberAsync("sy3");
+            var staff = await StaffClientAsync();
+            Assert.Equal(HttpStatusCode.Created, (await staff.PostAsJsonAsync($"/api/admin/teams/{teamId}/channels", new { login = "bonnie" }, ct)).StatusCode);
+            _vods.Vods[710] = new VodDetails(710, "Arky collab", "Arky", 3600, new DateTime(2026, 11, 2, 18, 0, 0, DateTimeKind.Utc), null);
+            _loudness.Streams[710] = (new DateTime(2026, 11, 2, 18, 0, 0, DateTimeKind.Utc), 0, 1);
+
+            var wave = await GetJsonAsync(owner, "/api/vods/710/waves?block=2");
+            Assert.Equal(120, wave.GetProperty("start").GetInt32());
+            Assert.Equal(AudioAligner.WaveRate, wave.GetProperty("rate").GetInt32());
+            Assert.Equal(60 * AudioAligner.WaveRate, Convert.FromBase64String(wave.GetProperty("levels").GetString()!).Length);
+            var reads = _loudness.LevelReads;
+            await GetJsonAsync(owner, "/api/vods/710/waves?block=2");
+            Assert.Equal(reads, _loudness.LevelReads); // kept on disk
+
+            // Past the end: empty; no audio: 404; no block: 400
+            Assert.Empty(Convert.FromBase64String((await GetJsonAsync(owner, "/api/vods/710/waves?block=70")).GetProperty("levels").GetString()!));
+            _vods.Vods[812] = new VodDetails(812, "Bonnie solo", "Bonnie", 3600, DateTime.UtcNow.AddDays(-1), null, ChannelLogin: "bonnie");
+            Assert.Equal(HttpStatusCode.NotFound, (await owner.GetAsync("/api/vods/812/waves?block=0", ct)).StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, (await owner.GetAsync("/api/vods/710/waves", ct)).StatusCode);
         }
     }
 }

@@ -49,6 +49,7 @@ namespace TwitchDownloaderWeb.Endpoints
             app.MapGet("/api/vods/{vodId}/sync", Find).RequireTeam(TeamPermission.ViewLibrary).RequireChannelVod();
             app.MapPut("/api/vods/{vodId}/sync/{otherVodId}", SavePair).RequireTeam(TeamPermission.AddEntries).RequireChannelVod();
             app.MapPost("/api/vods/{vodId}/sync/{otherVodId}/audio", MatchAudio).RequireTeam(TeamPermission.AddEntries).RequireChannelVod();
+            app.MapGet("/api/vods/{vodId}/waves", Waves).RequireTeam(TeamPermission.ViewLibrary).RequireChannelVod();
             return app;
         }
 
@@ -267,6 +268,31 @@ namespace TwitchDownloaderWeb.Endpoints
 
             await StoreAsync(db, team, a, at, b, matchedAt, VodSyncOffset.FromAudio, Math.Round(found.Confidence, 2), cancellationToken);
             return Results.Ok(new VodSyncAudioDto(true, shift, matchedAt, Math.Round(found.Correlation, 3), Math.Round(found.Confidence, 2), null));
+        }
+
+        /// <summary>
+        /// Sound waves (badrfly 2026-11-20): one block of <see cref="VodWaveService.BlockSeconds"/> from <c>block × 60</c> s, as
+        /// <c>{ block, start, rate, levels }</c> (levels = base64 bytes, 0 silent … 255 loud, <c>rate</c> a second; empty past the VOD's end).
+        /// </summary>
+        private static async Task<IResult> Waves(long vodId, int? block, VodWaveService waves, HttpContext http, CancellationToken cancellationToken)
+        {
+            if (block is not { } n || n < 0 || n > 48 * 3600 / VodWaveService.BlockSeconds)
+                return Invalid("block", "Give the block number (60 seconds each, from 0).");
+            byte[]? levels;
+            try
+            {
+                levels = await waves.GetBlockAsync(vodId, n, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return Results.StatusCode(499);
+            }
+            if (levels is null)
+                return Results.NotFound(new { code = "no-audio", message = "This VOD's sound can't be read." });
+            // A whole block never changes; a short one (live, or just read) may still grow
+            http.Response.Headers.CacheControl = levels.Length >= VodWaveService.BlockSeconds * AudioAligner.WaveRate - AudioAligner.WaveRate / 2
+                ? "private, max-age=86400" : "no-store";
+            return Results.Ok(new { block = n, start = n * VodWaveService.BlockSeconds, rate = AudioAligner.WaveRate, levels = Convert.ToBase64String(levels) });
         }
 
         private static IResult Invalid(string field, string message) =>
