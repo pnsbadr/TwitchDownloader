@@ -950,6 +950,8 @@ function reloadKids() {
 }
 
 function reloadKidsNow() {
+  // The VOD rows' counts and arrows change with the clips and videos too (a VOD's first clip gives it an arrow)
+  if (!state.demo) loadWorkFor(loadedVods().map((v) => v.vodId));
   for (const id of [...state.kids.keys()]) {
     if (state.open.has(id)) loadKids(id);
     else state.kids.delete(id);

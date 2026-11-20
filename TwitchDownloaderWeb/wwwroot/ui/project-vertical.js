@@ -15,6 +15,7 @@
 import { el, api, toast, formatDate, formatDuration, iconButton, withTooltip, loadSetting, saveSetting, stepText } from "./core.js";
 import { askText, confirmAction } from "./dialogs.js";
 import { flatten, stretchAt, pieceEnd, round } from "./project.js";
+import { refreshLibraryFilters } from "./library.js";
 // "1:05.20"
 function shortClock(seconds) {
   const hundredths = Math.max(0, Math.floor(seconds * 100));
@@ -821,6 +822,7 @@ async function startRender() {
   vx.dom.message.classList.remove("error");
   try {
     await api("POST", "/api/exports", { items: [{ kind: "project", projectId: store().project.id, vertical: true, horizontal: false }] });
+    refreshLibraryFilters(); // a render is an export: it can move the clip's status on
     vx.dom.message.textContent = "Rendering… you can keep working; it's also on the Export tab.";
     vx.rendering = true;
     await loadRenders();
