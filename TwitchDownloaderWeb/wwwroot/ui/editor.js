@@ -505,6 +505,7 @@ async function runSync(ids, login) {
   let covered = 0;
   let empty = null;
   const notes = new Set();
+  let firstMatch = null;
   for (const piece of pieces) {
     let answer;
     try {
@@ -518,6 +519,7 @@ async function runSync(ids, login) {
     covered += answer.coveredSeconds;
     if (!answer.matches.length) empty ??= answer;
     for (const match of answer.matches) {
+      firstMatch ??= { piece, match };
       if (match.restricted) notes.add(`${name}'s VOD is for subscribers only, so it may only play in Twitch's player.`);
       if (match.isLive) notes.add(`${name} is still live: the row ends where the stream is now.`);
       added.push({
@@ -536,13 +538,84 @@ async function runSync(ids, login) {
     toast(noSyncText(name, empty), "error");
     return;
   }
-  if (!timeline2.addSyncedRows(pieces, added, name)) return;
+  // Start times are a few seconds off between streamers: unless this pair was lined up before, listen to both and line them up by sound
+  const first = firstMatch;
+  let lined = first.match.lined !== "start" ? "saved" : null;
+  if (!lined) {
+    const listening = toast(`Listening to both streams to line ${name}'s up…`);
+    const len = first.match.end - first.match.start;
+    const into = Math.max(0, (len - AUDIO_MATCH_SECONDS) / 2);
+    try {
+      const result = await api("POST", `/api/vods/${first.piece.vodId}/sync/${first.match.vodId}/audio`, {
+        at: first.piece.start + first.match.offset + into, otherAt: first.match.start + into, seconds: Math.min(AUDIO_MATCH_SECONDS, Math.max(10, len)),
+      });
+      if (result.trusted) {
+        lined = "audio";
+        for (const piece of added) {
+          if (piece.vodId !== first.match.vodId) continue;
+          piece.start += result.shift;
+          piece.end += result.shift;
+          if (piece.start < 0) {
+            piece.at -= piece.start;
+            piece.start = 0;
+          }
+        }
+        notes.add(`Lined up by sound (${Math.round(result.confidence * 100)}% sure; moved ${result.shift > 0 ? "+" : ""}${result.shift.toFixed(2)} s from the start times).`);
+      } else {
+        notes.add(`Couldn't line up by sound: ${result.reason} It uses the stream start times; < / > or Alt+drag slide it.`);
+      }
+    } catch (error) {
+      notes.add(`Couldn't line up by sound (${error.message}). It uses the stream start times.`);
+    }
+    listening.remove();
+  } else {
+    notes.add(`Lined up like the last time these two were synced (${first.match.lined === "audio" ? "by sound" : "by hand"}).`);
+  }
+  const usable = added.filter((p) => p.end - p.start >= 0.5);
+  const still = (store.content?.pieces ?? []).filter((p) => ids.includes(p.id));
+  if (!usable.length || still.length !== pieces.length) return;
+  if (!timeline2.addSyncedRows(pieces, usable, name)) return;
   const missing = asked - covered;
   const parts = [missing > 0.5
     ? `Added ${name}'s view of ${formatDuration(covered)} (${name} wasn't streaming for ${formatDuration(missing)} of it, left as a gap).`
     : `Added ${name}'s view on a row under it.`];
-  parts.push("It plays once you cut away the row above. < / > slide it if it's a little off.");
+  parts.push("It plays once you cut away the row above.");
   toast([...parts, ...notes].join(" "));
+}
+
+// A slide (< / >, Alt+drag, Slide the footage) lines a piece up with the piece over it on another VOD: saved for the pair, so the next
+// "Sync with" between those two VODs lands lined up (debounced per pair)
+const AUDIO_MATCH_SECONDS = 45;
+const pairSaves = new Map();
+
+function rememberSlide(ids) {
+  const content = store.content;
+  if (!content || !store.canEdit) return;
+  const rowOf = (piece) => content.tracks.findIndex((t) => t.id === piece.trackId);
+  for (const id of ids) {
+    const piece = content.pieces.find((p) => p.id === id);
+    if (!piece) continue;
+    const end = piece.at + (piece.end - piece.start);
+    // The closest row above (else below) with another VOD's piece playing at the same time
+    const partners = content.pieces
+      .filter((p) => p.vodId !== piece.vodId && p.trackId !== piece.trackId && p.at < end && p.at + (p.end - p.start) > piece.at)
+      .sort((a, b) => {
+        const da = rowOf(piece) - rowOf(a);
+        const db = rowOf(piece) - rowOf(b);
+        return (da > 0 ? da : 100 - da) - (db > 0 ? db : 100 - db);
+      });
+    const partner = partners[0];
+    if (!partner) continue;
+    const t = (Math.max(piece.at, partner.at) + Math.min(end, partner.at + (partner.end - partner.start))) / 2;
+    const at = partner.start + (t - partner.at);
+    const otherAt = piece.start + (t - piece.at);
+    const key = `${partner.vodId}:${piece.vodId}`;
+    clearTimeout(pairSaves.get(key));
+    pairSaves.set(key, setTimeout(() => {
+      pairSaves.delete(key);
+      api("PUT", `/api/vods/${partner.vodId}/sync/${piece.vodId}`, { at, otherAt }).catch(() => {});
+    }, 800));
+  }
 }
 
 function noSyncText(name, answer) {
@@ -989,6 +1062,7 @@ function setUpPlayer2() {
     onShowInPlayer1: showInPlayer1,
     onApplyToOriginal: applyToOriginal,
     onSyncWith: syncWith,
+    onSlid: rememberSlide,
     onFocusRow: (trackId) => focusRow("p2", trackId),
   });
   wirePlayerButtons(2, "p2");

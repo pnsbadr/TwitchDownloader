@@ -200,7 +200,9 @@ export function toast(text, kind = "") {
   }
   const item = el("div", { class: `toast ${kind}` }, text);
   box.append(item);
-  setTimeout(() => item.remove(), kind === "error" ? 6000 : 3500);
+  // Long messages stay up long enough to read
+  setTimeout(() => item.remove(), Math.max(kind === "error" ? 6000 : 3500, String(text).length * 55));
+  return item;
 }
 
 /** "Re-encoding for the exact cut · 42% · about 38 min left" */

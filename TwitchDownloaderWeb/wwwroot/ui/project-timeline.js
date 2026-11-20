@@ -732,8 +732,11 @@ export class ProjectTimeline {
         this.select([piece.id]);
       }
       const locked = this.isLocked(piece.trackId) || !this.store.canEdit;
+      // Alt+drag inside a piece slides its footage (it stays in place): for lining up a synced stream
+      const slip = event.altKey && !hit.edge;
+      if (slip) vodLength(piece.vodId);
       this.press = {
-        kind: hit.edge ? "edge" : "move", piece, edge: hit.edge, startX: event.clientX, startY: event.clientY, t0: t,
+        kind: slip ? "slip" : hit.edge ? "edge" : "move", piece, edge: hit.edge, startX: event.clientX, startY: event.clientY, t0: t,
         row0: this.rowAt(p.y), moved: false, locked, clickSeek: t, rect: p.rect,
       };
       this.renderHeads();
@@ -814,7 +817,23 @@ export class ProjectTimeline {
     if (press.locked) return;
     const t = this.xToTime(p.x, p.width);
     if (press.kind === "edge") this.dragEdge(press, t, p.width);
+    else if (press.kind === "slip") this.dragSlip(press, event, p.width);
     else this.dragMove(press, t, p, event.shiftKey);
+  }
+
+  // Dragging right shows earlier footage (like an editor's slip tool); capped at the VOD's start and end
+  dragSlip(press, event, width) {
+    const piece = press.piece;
+    const length = vodLengths.get(String(piece.vodId)) ?? null;
+    let delta = -((event.clientX - press.startX) / width) * this.span();
+    delta = Math.max(delta, -piece.start);
+    if (length != null) delta = Math.min(delta, length - piece.end);
+    delta = round(delta);
+    press.slip = delta;
+    this.preview = new Map([[piece.id, { trackId: piece.trackId, at: piece.at, start: round(piece.start + delta), end: round(piece.end + delta) }]]);
+    const sign = delta > 0 ? "+" : delta < 0 ? "−" : "";
+    this.edgeTip = { piece, text: `Footage ${sign}${Math.abs(delta).toFixed(2)} s (starts at ${formatDuration(piece.start + delta, { short: false })} in the VOD)` };
+    this.dirty = true;
   }
 
   dragEdge(press, t, width) {
@@ -936,6 +955,10 @@ export class ProjectTimeline {
       return;
     }
     if (!preview || press.locked) return;
+    if (press.kind === "slip") {
+      if (press.slip) this.slideSelected(press.slip, [press.piece]);
+      return;
+    }
     if (invalid) {
       toast("Pieces on one row can't overlap, and locked rows can't change.");
       return;
@@ -1424,6 +1447,7 @@ export class ProjectTimeline {
       }
     });
     if (capped) toast("It can't slide past the start or end of its VOD.");
+    if (ok) this.hooks.onSlid?.(movable.map((p) => p.id));
     return ok;
   }
 
