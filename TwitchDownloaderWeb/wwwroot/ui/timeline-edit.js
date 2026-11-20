@@ -24,7 +24,7 @@
 // Every time a new kind of item gets drawn here, add its times to snapPoints().
 
 import { api, me, can, toast } from "./core.js";
-import { confirmAction, chooseEditTarget } from "./dialogs.js";
+import { confirmAction, chooseEditTarget, chooseSegmentDelete } from "./dialogs.js";
 import { openMenu } from "./menu.js";
 
 import { timelineCursor, rulerCursor } from "./timeline-input.js";
@@ -120,7 +120,10 @@ export const editing = {
     this.histories = HISTORIES;
     this.pendingTrim = null;  // { id, start, end, before, timer }: a stored clip's new range, saved after a pause
     this.dropRowId = null;    // the row a dragged item would land on (drawn highlighted)
-    this.linking = null;      // link tool: { rowId, ids } (segments picked in order) while the title editor is open
+    // link tool: { ids, items, ownerId, videoId } while the title editor is open: segments picked in order (items: id → { id, vodId,
+    // label, color, seconds, removed }), kept while other VODs are opened (badrfly 2026-11-20: a video may span several streams);
+    // videoId = "Add segments…" on an existing video (✓ saves it instead of making a new one)
+    this.linking = null;
     this.cutDrag = null;      // Player 2's cut tool: { start, end } being dragged
     if (this.mode === "vod") {
       dropTarget(this.track, {
@@ -151,18 +154,20 @@ export const editing = {
     this.lastClipColor = "violet";
   },
 
-  resetEditing() {
+  // keepLinking: another VOD opens while a video is being linked; the picks and the title editor stay
+  resetEditing({ keepLinking = false } = {}) {
+    const linking = keepLinking ? this.linking : null;
     this.selected = null;
     this.marking = null;
     this.draft = null;
-    this.linking = null;
+    this.linking = linking;
     this.cutDrag = null;
     this.clipDrag = null;
     this.preview = null;
     this.press = null;
     this.activeRowId = null;
     this.tool = "pointer";
-    if (this.active) this.hooks.closeItemEditor?.();
+    if (this.active && !linking) this.hooks.closeItemEditor?.();
     this.changed();
   },
 
@@ -504,6 +509,12 @@ export const editing = {
       this.snapAt = null;
       this.press = { kind: "clip", from, startX: event.clientX, moved: false, rect };
       canvas.setPointerCapture(event.pointerId);
+      return;
+    }
+    // "→ 3 · 20 Nov": the video goes on in another stream; open it there
+    const pill = this.mode === "vod" && this.tool === "pointer" ? this.streamPillAt?.(x, y) : null;
+    if (pill) {
+      this.hooks.onOpenVodAt?.(pill.vodId, pill.seconds);
       return;
     }
     const item = this.itemAt(x, y, rect.width);
@@ -1188,7 +1199,13 @@ export const editing = {
       }
       return;
     }
-    if (!this.isOwn(item)) {
+    // A segment in videos (badrfly 2026-11-20): delete and unlink it from them, or delete it and keep the videos as they are
+    let videos = "unlink";
+    if (item.kind === "segment" && item.videos?.length) {
+      const choice = await chooseSegmentDelete({ titles: item.videos.map((v) => v.title) });
+      if (!choice) return;
+      videos = choice;
+    } else if (!this.isOwn(item)) {
       const ok = await confirmAction({
         heading: `Delete ${item.by ? `${item.by}'s` : "this"} ${this.whatIs(item)}?`,
         text: "It's deleted for the whole team. Undo (Ctrl+Z) brings it back where it was.",
@@ -1197,11 +1214,11 @@ export const editing = {
       if (!ok) return;
     }
     try {
-      await this.deleteMarker(item.id);
+      await this.deleteMarker(item.id, videos);
       const ref = this.ref("marker", item.id);
-      this.forgetRef(ref);
-      // Undo puts it back on the row it was on, a teammate's too (as theirs)
-      this.remember({ type: "delete", ref, data: { ...markerBody(item.data), rowId: item.data.rowId ?? undefined } });
+      // Kept in its videos: undo puts the same segment back. Otherwise undo makes it again, on the row it was on (a teammate's too, as theirs)
+      if (videos !== "keep") this.forgetRef(ref);
+      this.remember({ type: "delete", ref, keep: videos === "keep", data: { ...markerBody(item.data), rowId: item.data.rowId ?? undefined } });
       this.select(null);
     } catch (error) {
       toast(error.message, "error");
@@ -1267,18 +1284,42 @@ export const editing = {
 
   // ---------- videos (step 6) ----------
 
-  // Link tool: the title editor opens with an apply button; segments clicked on one of the member's rows are linked in
-  // the order they're clicked (click one again to take it out)
-  startLinking() {
+  // Link tool: the title editor opens with an apply button; segments clicked on the video owner's rows are linked in the order
+  // they're clicked (click one again to take it out). The picks stay while other VODs are opened in Player 1 (badrfly 2026-11-20: a
+  // story started in yesterday's stream and finished in today's), shown as chips in the link tray (editor.js). video = "Add segments…":
+  // the video's segments start in the tray and ✓ saves the video.
+  startLinking(video = null) {
     if (!this.canCreate()) return;
     if (this.linking) {
-      this.escape();
-      return;
+      if (!video) {
+        this.escape();
+        return;
+      }
+      this.hooks.closeItemEditor?.();
     }
     this.marking = null;
-    this.linking = { ids: [] };
+    this.linking = { ids: [], items: new Map(), ownerId: video?.userId ?? me?.id, videoId: video?.id ?? null, owner: video?.createdBy ?? null };
+    for (const s of [...(video?.segments ?? [])].sort((a, b) => a.position - b.position)) {
+      this.linking.ids.push(s.markerId);
+      this.linking.items.set(s.markerId, {
+        id: s.markerId, vodId: String(s.vodId ?? video.vodId), label: s.label, color: s.color, seconds: s.startSeconds, removed: Boolean(s.removed),
+      });
+    }
     this.select(null);
-    this.openLinkEditor("");
+    this.openLinkEditor(video?.title ?? "");
+  },
+
+  // Linking saved in this tab (sessionStorage) goes on after a reload
+  resumeLinking(saved) {
+    if (!saved || this.linking || !this.canCreate()) return;
+    this.linking = {
+      ids: saved.ids ?? [],
+      items: new Map((saved.items ?? []).map((item) => [item.id, item])),
+      ownerId: saved.ownerId ?? me?.id,
+      videoId: saved.videoId ?? null,
+      owner: saved.owner ?? null,
+    };
+    this.openLinkEditor(saved.title ?? "");
   },
 
   openLinkEditor(title) {
@@ -1287,13 +1328,20 @@ export const editing = {
       title,
       colors: false,
       needsApply: true,
-      placeholder: "Video title, then click its segments in order",
+      placeholder: this.linking?.videoId ? "Video title" : "Video title, then click its segments in order",
       onApply: (text) => this.saveLink(text),
       onCancel: () => {
         this.linking = null;
         this.changed();
+        this.linkingChanged();
       },
     });
+    this.linkingChanged();
+  },
+
+  linkingChanged() {
+    this.dirty = true;
+    this.hooks.onLinkingChanged?.(this.linking);
   },
 
   toggleLink(item) {
@@ -1302,15 +1350,56 @@ export const editing = {
       toast(item.kind === "clip" ? "Only segments can be linked into a video." : "Only segments can be linked, not moments.");
       return;
     }
-    if (item.row.userId !== me?.id) {
-      toast("Link segments on your own rows.");
+    if (item.row.userId !== link.ownerId) {
+      toast(link.ownerId === me?.id ? "Link segments on your own rows." : `This video is ${link.owner ?? "a teammate"}'s: link segments on their rows.`);
       return;
     }
-    // Since 2026-11-20 (badrfly) a video links segments from any of the member's rows, synced rows (other VODs) included
+    // Any of the owner's rows: synced rows (other VODs) too, and segments of other VODs opened while linking
     const at = link.ids.indexOf(item.id);
-    if (at >= 0) link.ids.splice(at, 1);
-    else link.ids.push(item.id);
+    if (at >= 0) {
+      link.ids.splice(at, 1);
+      link.items.delete(item.id);
+    } else {
+      const raw = item.data?.raw ?? item.data ?? {};
+      link.ids.push(item.id);
+      link.items.set(item.id, {
+        id: item.id, vodId: String(this.rowVod(item.row.id)), label: item.title || "", color: item.color, seconds: raw.seconds ?? item.start, removed: false,
+      });
+    }
     this.changed();
+    this.linkingChanged();
+  },
+
+  // The tray's ×, drag to reorder and "Sort by stream time"
+  unlinkPick(id) {
+    const link = this.linking;
+    if (!link) return;
+    link.ids = link.ids.filter((x) => x !== id);
+    link.items.delete(id);
+    this.changed();
+    this.linkingChanged();
+  },
+
+  reorderPicks(ids) {
+    const link = this.linking;
+    if (!link) return;
+    link.ids = ids.filter((id) => link.items.has(id));
+    this.changed();
+    this.linkingChanged();
+  },
+
+  // Stream time: an older VOD's parts first (Twitch VOD IDs grow with time), then by time in the VOD
+  sortPicksByStreamTime() {
+    const link = this.linking;
+    if (!link) return;
+    const key = (id) => link.items.get(id);
+    link.ids = [...link.ids].sort((a, b) => {
+      const x = key(a);
+      const y = key(b);
+      return (BigInt(x.vodId) < BigInt(y.vodId) ? -1 : BigInt(x.vodId) > BigInt(y.vodId) ? 1 : 0) || (x.seconds ?? 0) - (y.seconds ?? 0);
+    });
+    this.changed();
+    this.linkingChanged();
   },
 
   async saveLink(title) {
@@ -1324,15 +1413,27 @@ export const editing = {
     }
     this.linking = null;
     this.changed();
+    this.linkingChanged();
     try {
-      const video = await api("POST", `/api/vods/${encodeURIComponent(this.vodId)}/videos`, { title, markerIds: link.ids });
+      let video;
+      if (link.videoId) {
+        video = await api("PUT", `/api/videos/${link.videoId}`, { title, markerIds: link.ids });
+        toast(`Saved the video "${video.title}".`);
+      } else {
+        // Made on the VOD its first part is from (its card's channel, date and thumbnail)
+        const home = link.items.get(link.ids[0])?.vodId ?? this.vodId;
+        video = await api("POST", `/api/vods/${encodeURIComponent(home)}/videos`, { title, markerIds: link.ids });
+        toast(`Made the video "${video.title}".`);
+      }
       this.hooks.onVideosChanged?.();
       await this.load();
       this.edited();
-      toast(`Made the video "${video.title}".`);
-      this.hooks.onCreated?.({ kind: "video", data: video });
+      if (!link.videoId) this.hooks.onCreated?.({ kind: "video", data: video });
     } catch (error) {
       toast(error.message, "error");
+      // Keep the picks: put them back and let the member fix it
+      this.linking = link;
+      this.openLinkEditor(title);
     }
   },
 
@@ -1473,8 +1574,9 @@ export const editing = {
     return marker;
   },
 
-  async deleteMarker(id) {
-    await api("DELETE", `/api/markers/${id}`);
+  // videos: "unlink" (default) takes a segment out of videos that link it, "keep" leaves them as they are
+  async deleteMarker(id, videos = "unlink") {
+    await api("DELETE", `/api/markers/${id}${videos === "keep" ? "?videos=keep" : ""}`);
     this.markers = this.markers.filter((m) => m.id !== id);
     this.dirty = true;
     this.edited();
@@ -1607,11 +1709,17 @@ export const editing = {
         }
         break;
       case "delete":
-        if (reverse) {
+        if (reverse && step.keep) {
+          // kept in its videos: the same segment comes back on its timeline
+          const marker = this.fromServer(await api("POST", `/api/markers/${step.ref.id}/restore`));
+          this.markers = [...this.markers.filter((m) => m.id !== marker.id), marker];
+          this.dirty = true;
+          this.edited();
+        } else if (reverse) {
           this.moveRef(step.ref, (await this.restoreMarker(step.data)).id);
         } else {
-          await this.deleteMarker(step.ref.id);
-          this.forgetRef(step.ref);
+          await this.deleteMarker(step.ref.id, step.keep ? "keep" : "unlink");
+          if (!step.keep) this.forgetRef(step.ref);
         }
         break;
       case "change":

@@ -146,6 +146,8 @@
                 <span class="player-name display">Player 1</span>
                 <span class="player-info" id="p1-info"></span>
                 <sl-icon-button library="ph" id="p1-synced-back" name="arrow-u-up-left" label="Back" hidden></sl-icon-button>
+                <sl-icon-button library="ph" id="p1-prev-stream" name="caret-left" label="Previous stream of this channel" hidden></sl-icon-button>
+                <sl-icon-button library="ph" id="p1-next-stream" name="caret-right" label="Next stream of this channel" hidden></sl-icon-button>
                 <span class="focus-badge" id="p1-focus" hidden></span>
                 <span class="player-clock num" id="p1-clock" hidden></span>
                 <sl-tooltip content="Go to the newest part" hoist>
@@ -254,6 +256,15 @@
                 <sl-icon-button library="ph" name="check" label="Apply (Enter)" id="item-apply" class="item-apply" hidden></sl-icon-button>
                 <div class="swatches" id="item-colors" role="radiogroup" aria-label="Color"></div>
               </div>
+            </div>
+
+            <!-- Link tray: the segments picked for a video, kept while other VODs are opened (videos across streams) -->
+            <div class="link-tray" id="link-tray" hidden data-tip-placement="top">
+              <sl-icon library="ph" name="link-simple" class="link-icon"></sl-icon>
+              <span class="link-text" id="link-text"></span>
+              <div class="link-chips" id="link-chips"></div>
+              <sl-button size="small" id="link-sort">Sort by stream time</sl-button>
+              <sl-button size="small" variant="text" id="link-cancel">Cancel</sl-button>
             </div>
 
             <section class="timeline" id="timeline" aria-label="Timeline">

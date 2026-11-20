@@ -6,7 +6,8 @@ import { registerIconLibrary } from "https://cdn.jsdelivr.net/npm/@shoelace-styl
 import { setUpStart, openStart, startIsOpen } from "./start.js";
 import { $, el, api, me, can, loadMe, startLiveEvents, sessionHandlers, TEAM_PAGE_PERMISSIONS, wireIconButtons, loadSetting, saveSetting, toast, formatDuration, formatDate } from "./core.js";
 import { dropTarget, watchDrags, shadePath } from "./drag.js";
-import { setUpLibrary, showList, refreshClips, refreshVideos, refreshLibraryFilters, knownVod, knownVodTitle, pickChannel, teamChannels } from "./library.js";
+import { setUpLibrary, showList, refreshClips, refreshVideos, refreshLibraryFilters, knownVod, knownVodTitle, pickChannel, teamChannels, adjacentVod } from "./library.js";
+import { setUpLinkTray, renderLinkTray, savedLinking, addSegmentsTo, vodDay, vodInfo } from "./link-tray.js";
 import { setUpTree, openTree, forgetTree, render as renderTree } from "./p2-tree.js";
 import { MARKER_COLORS } from "./colors.js";
 import { MediaPlayer, formatClock, isChannelRefusal, channelRefusalText, checkVodAccess } from "./media.js";
@@ -294,6 +295,64 @@ async function openVod(vod, { start = 0, paused = false, back = null } = {}) {
     showNote("p1", `Couldn't play this VOD: ${error.message}`);
   }
   await loaded;
+  if (p1Vod !== vod) return;
+  // A video being linked keeps its picks across VODs; one saved in this tab before a reload comes back with the first VOD
+  if (!linkingResumed) {
+    linkingResumed = true;
+    if (!timeline.linking) timeline.resumeLinking(savedLinking());
+  }
+  renderLinkTray(timeline.linking);
+  renderStreamArrows();
+}
+
+let linkingResumed = false;
+
+// Player 1 on a VOD at a moment: seeks when it's already open, else opens it (paused there)
+async function openVodAt(vodId, seconds = 0) {
+  const id = String(vodId);
+  timelineTabs.pick("p1");
+  if (p1Vod && String(p1Vod.vodId) === id) {
+    player1.pause();
+    player1.seek(seconds);
+    return;
+  }
+  const known = knownVod(id);
+  if (known) {
+    await openVod(known, { start: seconds, paused: true });
+    return;
+  }
+  const info = await vodInfo(id);
+  if (!info) {
+    toast("Couldn't open that VOD.", "error");
+    return;
+  }
+  await openVod({ vodId: String(info.vodId), title: info.title, lengthSeconds: info.lengthSeconds, isLive: info.isLive, createdAtUtc: info.streamDateUtc },
+    { start: seconds, paused: true });
+}
+
+// Player 1's arrows: the channel's previous / next broadcast (from the library's VOD lists), e.g. to go on linking a video in the
+// next day's stream
+async function renderStreamArrows() {
+  const vod = p1Vod;
+  const show = (id, target) => {
+    $(id).hidden = !target;
+    $(id).dataset.vodId = target ? String(target.vodId) : "";
+    if (target) $(id).label = `${id === "p1-prev-stream" ? "Previous" : "Next"} stream: ${target.title}`;
+  };
+  if (!vod || p1Back) {
+    show("p1-prev-stream", null);
+    show("p1-next-stream", null);
+    return;
+  }
+  const [older, newer] = await Promise.all([adjacentVod(vod.vodId, "older"), adjacentVod(vod.vodId, "newer")]);
+  if (p1Vod !== vod) return;
+  show("p1-prev-stream", older);
+  show("p1-next-stream", newer);
+}
+
+function stepStream(id) {
+  const target = knownVod($(id).dataset.vodId);
+  if (target) openVod(target);
 }
 
 // Player 1 back to empty (its drop hint), with a note why: a VOD the team may no longer open (badrfly 2026-11-20)
@@ -302,6 +361,7 @@ function unloadPlayer1(text) {
   if (rowFocus) endRowFocus();
   p1Vod = null;
   p1Back = null;
+  renderStreamArrows();
   if (pip) {
     pip.close();
     pip = null;
@@ -948,6 +1008,8 @@ function setUpProjectPicker() {
     onDeleteEdit: deleteEdit,
     onCopyEdit: (edit) => copyEdit(edit.id),
     onExportEdit: exportEdit,
+    onAddSegments: (video) => addSegmentsTo(video),
+    vodDay: (vodId) => vodDay(vodId, () => renderTree()),
     onChanged: (kind) => {
       if (kind === "clip") refreshClips();
       if (kind === "video" || kind === "segment") refreshVideos();
@@ -1063,11 +1125,27 @@ function setUpPlayer1() {
     },
     onEdited: () => {},
     onFocusRow: (rowId) => focusRow("p1", rowId),
+    onLinkingChanged: (linking) => renderLinkTray(linking),
+    vodDay: (vodId) => vodDay(vodId, () => { timeline.dirty = true; }),
+    onOpenVodAt: openVodAt,
     onAddSyncedRow: addSyncedRow,
     onPip: togglePip,
     pipShowing: (row) => Boolean(pip && String(pip.vodId) === String(row.vodId)),
   });
   $("p1-synced-back").addEventListener("click", backFromSynced);
+  $("p1-prev-stream").addEventListener("click", () => stepStream("p1-prev-stream"));
+  $("p1-next-stream").addEventListener("click", () => stepStream("p1-next-stream"));
+  setUpLinkTray({
+    timeline,
+    currentVodId: () => p1Vod?.vodId ?? null,
+    openVodAt,
+    seek: (seconds) => {
+      timelineTabs.pick("p1");
+      player1.pause();
+      player1.seek(seconds);
+    },
+    titleValue: () => $("item-title").value ?? "",
+  });
   wirePlayerButtons(1, "p1");
   $("p1-live").addEventListener("click", () => {
     player1.seek(player1.livePosition());
@@ -1155,6 +1233,7 @@ function setUpPlayer2() {
     }
   });
   timeline2 = new ProjectTimeline(store, {
+    vodDay: (vodId) => vodDay(vodId, () => { timeline2.dirty = true; }),
     getPosition: p2Position,
     onSeek: p2Seek,
     openItemEditor,
@@ -2490,7 +2569,7 @@ async function enterTeam() {
   $("workspace").hidden = false;
   setUpExport({ demo: DEMO, otherPlayers: () => [player1, player2], onPausePlayers: () => playback?.pause() });
   screenTabs = tabs(document.querySelector(".main-tabs"), "data-view", showScreen, "clipco.editor.screen");
-  setUpLibrary({ onLoad: load, onExport: openExport, onPickList: (list) => listTabs.pick(list), sample: DEMO ? demoSample() : null });
+  setUpLibrary({ onLoad: load, onExport: openExport, onPickList: (list) => listTabs.pick(list), onAddSegments: (video) => addSegmentsTo(video), sample: DEMO ? demoSample() : null });
   if (DEMO) wireDemoTools();
   listTabs = tabs(document.querySelector(".side-tabs"), "data-list", showList, "clipco.editor.list");
   setUpPlayers();

@@ -652,15 +652,14 @@ function setUpPreview() {
   });
 }
 
+// Each part names its VOD: a video can link segments of other VODs (synced rows, other streams), and the preview switches VODs
+// between them (badrfly 2026-11-20: it used to play only the video's own VOD's segments)
 function previewPartsOf(item) {
   if (item.kind === "project") return [];
-  // A video can link segments of other VODs (synced rows): the preview plays the ones of the video's own VOD
-  if (item.kind === "video") return otherVodParts(item, false).flatMap((p) => keptParts(p.start, p.end, p.cuts ?? []));
-  return keptParts(item.start, item.end, item.cuts ?? []);
-}
-
-function otherVodParts(item, other) {
-  return (item.parts ?? []).filter((p) => (p.vodId != null && String(p.vodId) !== String(item.vodId)) === other);
+  if (item.kind === "video") {
+    return (item.parts ?? []).flatMap((p) => keptParts(p.start, p.end, p.cuts ?? []).map((k) => ({ ...k, vodId: String(p.vodId ?? item.vodId) })));
+  }
+  return keptParts(item.start, item.end, item.cuts ?? []).map((k) => ({ ...k, vodId: String(item.vodId) }));
 }
 
 const totalOf = (parts) => parts.reduce((sum, p) => sum + p.end - p.start, 0);
@@ -674,18 +673,15 @@ async function showPreview(item) {
     closePreview();
     return;
   }
-  preview = { key: item.key, vodId: item.vodId, parts, index: 0, ended: false, settleUntil: 0 };
+  preview = { key: item.key, vodId: parts[0].vodId, parts, index: 0, ended: false, settleUntil: 0 };
   $("xp-hint").hidden = true;
   $("xp-media").hidden = false;
   note("Loading…");
   try {
-    await xp.open(item.vodId, parts[0].start);
+    await xp.open(parts[0].vodId, parts[0].start);
     xp.pause();
     if (preview?.key !== item.key) return;
-    const others = item.kind === "video" && otherVodParts(item, true).length
-      ? "The preview plays this VOD's segments; the file has the other streams' segments too."
-      : "";
-    note([xp.fallbackReason ? `Twitch player: our player couldn't play this VOD (${xp.fallbackReason}).` : "", others].filter(Boolean).join(" "));
+    note(xp.fallbackReason ? `Twitch player: our player couldn't play this VOD (${xp.fallbackReason}).` : "");
   } catch (error) {
     if (preview?.key === item.key) note(`Couldn't play this VOD: ${error.message}`);
   }
@@ -693,12 +689,12 @@ async function showPreview(item) {
 }
 
 function refreshPreviewParts(item) {
-  if (!preview || preview.vodId !== item.vodId) {
+  if (!preview || preview.key !== item.key) {
     showPreview(item);
     return;
   }
   preview.parts = previewPartsOf(item);
-  preview.index = Math.min(preview.index, preview.parts.length - 1);
+  preview.index = Math.max(0, Math.min(preview.index, preview.parts.length - 1));
 }
 
 function closePreview() {
@@ -719,15 +715,16 @@ function note(text) {
 // Plays the kept parts one after the other (cut-out parts and the gaps between a video's segments are skipped)
 function previewTick(position) {
   const p = preview;
-  if (!p || !p.parts.length) return;
+  if (!p || !p.parts.length || p.switching) return;
   if (performance.now() > p.settleUntil) {
     const part = p.parts[p.index];
-    if (!part || position < part.start - 0.3 || position > part.end + 0.3) {
-      const found = p.parts.findIndex((x) => position >= x.start - 0.05 && position < x.end);
+    const here = (x) => x.vodId === p.vodId;
+    if (!part || !here(part) || position < part.start - 0.3 || position > part.end + 0.3) {
+      const found = p.parts.findIndex((x) => here(x) && position >= x.start - 0.05 && position < x.end);
       if (found >= 0) p.index = found;
       else if (xp.playing()) {
         // Outside every part (seeked by the player itself): go to the next one, or stop
-        const next = p.parts.findIndex((x) => x.start > position);
+        const next = p.parts.findIndex((x, i) => i > p.index && (!here(x) || x.start > position));
         if (next >= 0) jumpTo(next);
         else finish();
       }
@@ -739,10 +736,34 @@ function previewTick(position) {
   renderPreviewProgress(position);
 }
 
-function jumpTo(index) {
-  preview.index = index;
-  preview.settleUntil = performance.now() + 400;
-  xp.seek(preview.parts[index].start);
+function jumpTo(index, offset = 0, play = xp.playing()) {
+  const p = preview;
+  const part = p.parts[index];
+  p.index = index;
+  p.settleUntil = performance.now() + 400;
+  if (part.vodId === p.vodId) {
+    xp.seek(part.start + offset);
+    return;
+  }
+  // The next part is in another stream: open that VOD there and go on playing
+  const playing = play;
+  p.vodId = part.vodId;
+  p.switching = true;
+  note("Loading the next stream…");
+  xp.open(part.vodId, part.start + offset)
+    .then(() => {
+      if (preview !== p) return;
+      p.switching = false;
+      p.settleUntil = performance.now() + 400;
+      note("");
+      if (playing) xp.play();
+      renderPreviewButtons();
+    })
+    .catch((error) => {
+      if (preview !== p) return;
+      p.switching = false;
+      note(`Couldn't play this VOD: ${error.message}`);
+    });
 }
 
 function finish() {
@@ -757,7 +778,7 @@ function elapsedAt(position) {
   return totalOf(p.parts.slice(0, p.index)) + Math.min(Math.max(position - part.start, 0), part.end - part.start);
 }
 
-function previewSeek(elapsed) {
+function previewSeek(elapsed, play = xp.playing()) {
   const p = preview;
   if (!p || !xp.ready) return;
   let left = Math.max(0, elapsed);
@@ -765,9 +786,7 @@ function previewSeek(elapsed) {
     const length = p.parts[i].end - p.parts[i].start;
     if (left < length || i === p.parts.length - 1) {
       p.ended = false;
-      p.index = i;
-      p.settleUntil = performance.now() + 400;
-      xp.seek(p.parts[i].start + Math.min(left, length));
+      jumpTo(i, Math.min(left, length), play);
       return;
     }
     left -= length;
@@ -781,9 +800,10 @@ function previewPlayPause() {
     return;
   }
   const position = xp.position();
-  if (preview.ended || position == null || !preview.parts.some((x) => position >= x.start - 0.05 && position < x.end - 0.05)) previewSeek(0);
+  if (preview.ended || position == null
+    || !preview.parts.some((x) => x.vodId === preview.vodId && position >= x.start - 0.05 && position < x.end - 0.05)) previewSeek(0, true);
   preview.ended = false;
-  xp.play();
+  if (!preview.switching) xp.play();
 }
 
 function renderPreviewProgress(position) {

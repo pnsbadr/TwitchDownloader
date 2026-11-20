@@ -123,6 +123,27 @@ export function knownVod(vodId) {
   return loadedVods().find((v) => Number(v.vodId) === Number(vodId)) ?? null;
 }
 
+// The same channel's VOD before ("older") or after ("newer") one in the loaded lists, or null (Player 1's stream arrows). The older
+// one may need the channel's next page.
+export async function adjacentVod(vodId, direction) {
+  const find = () => {
+    for (const source of state.sources.values()) {
+      const i = source.items.findIndex((v) => Number(v.vodId) === Number(vodId));
+      if (i >= 0) return { source, i };
+    }
+    return null;
+  };
+  let found = find();
+  if (!found) return null;
+  if (direction === "newer") return found.source.items[found.i - 1] ?? null;
+  if (found.i === found.source.items.length - 1 && found.source.cursor && !state.demo) {
+    await loadChannelPage(found.source.login);
+    found = find();
+    if (!found) return null;
+  }
+  return found.source.items[found.i + 1] ?? null;
+}
+
 export function knownVodTitle(vodId) {
   return knownVod(vodId)?.title ?? null;
 }
@@ -601,9 +622,9 @@ function render() {
 
 // A card: thumbnail with badges, title, meta lines, and icon actions. item.kind decides where it can be dropped.
 // thumb may be a list (first on top: see thumbStyle).
-function card({ kind, title, thumb, badges = [], meta = [], actions = [], dragData, menu, channel = null }) {
+function card({ kind, title, thumb, badges = [], meta = [], actions = [], dragData, menu, channel = null, stacked = false }) {
   const node = el("div", { class: "card", role: "listitem", tabindex: "0", "aria-label": title },
-    el("div", { class: "card-thumb", style: thumbStyle(thumb) }, ...badges, cardChannel(channel)),
+    el("div", { class: `card-thumb${stacked ? " stacked" : ""}`, style: thumbStyle(thumb) }, ...badges, cardChannel(channel)),
     el("div", { class: "card-body" },
       el("div", { class: "card-title", title }, title),
       ...meta.filter(Boolean).map((line) => (line instanceof Node ? line : el("div", { class: "card-meta" }, line))),
@@ -788,16 +809,25 @@ export async function deleteClip(entry) {
   }
 }
 
-// --- videos: segments linked on one row (length, the VOD's date, who made it) ---
+// --- videos: linked segments (length, the VOD's date, who made it); one video may span several streams ---
+
+export function videoStreams(video) {
+  return new Set((video.segments ?? []).map((s) => String(s.vodId ?? video.vodId))).size || 1;
+}
 
 function videoCard(video) {
   const item = video;
+  const streams = videoStreams(video);
   return card({
     kind: "video",
     title: video.title,
     thumb: [video.frameUrl, twitchThumb(video.thumbnailUrl)],
+    stacked: streams > 1,
     badges: [el("span", { class: "card-badge num" }, formatDuration(video.lengthSeconds ?? 0))],
-    meta: [video.streamDateUtc ? `VOD ${formatDate(video.streamDateUtc, false)}` : null, video.createdBy ? `by ${video.createdBy}` : null],
+    meta: [
+      video.streamDateUtc ? `VOD ${formatDate(video.streamDateUtc, false)}${streams > 1 ? ` · ${streams} streams` : ""}` : streams > 1 ? `${streams} streams` : null,
+      video.createdBy ? `by ${video.createdBy}` : null,
+    ],
     actions: [exportButton({ kind: "video", data: item })],
     dragData: item,
     channel: channelByName(video.channelName),
@@ -805,6 +835,7 @@ function videoCard(video) {
       { label: "Load in Player 2", icon: "film-strip", run: () => handlers.onLoad({ kind: "video", data: item }) },
       { label: "Export", icon: "download-simple", run: () => handlers.onExport({ kind: "video", data: item }) },
       String(video.vodId) !== state.who.vodId && { label: "Show this VOD's videos", icon: "funnel-simple", run: () => showVodWork(video.vodId, "videos") },
+      video.canEdit && handlers.onAddSegments && { label: "Add segments…", icon: "link-simple", run: () => handlers.onAddSegments(item) },
       video.canEdit && { label: "Rename", icon: "pencil-simple", run: () => renameVideo(item) },
       video.canDelete && { label: "Delete", icon: "trash", danger: true, run: () => deleteVideo(item) },
     ].filter(Boolean),

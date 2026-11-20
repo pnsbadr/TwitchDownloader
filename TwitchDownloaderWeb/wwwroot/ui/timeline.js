@@ -10,7 +10,7 @@
 
 import { timelineWheel } from "./timeline-input.js";
 import { $, el, api, me, can, toast, formatDuration, withTooltip, loadSetting, saveSetting } from "./core.js";
-import { askText, confirmAction } from "./dialogs.js";
+import { askText, confirmAction, chooseSegmentDelete } from "./dialogs.js";
 import { MARKER_COLORS, clipColor } from "./colors.js";
 import { formatClock } from "./media.js";
 import { editing, shiftTimes } from "./timeline-edit.js";
@@ -96,7 +96,7 @@ export class Timeline {
     this.videos = [];
     this.audio = [];
     this.rowState.clear();
-    this.resetEditing();
+    this.resetEditing({ keepLinking: true }); // a video being linked may take segments from this VOD too
     this.follow = true;
     this.view = { start: 0, end: Math.max(MIN_SPAN, this.length()) };
     this.renderHeads();
@@ -436,7 +436,8 @@ export class Timeline {
   async deleteToggledRows() {
     const rows = this.rows.filter((row) => this.stateOf(row).toggled && this.canDeleteRow(row));
     if (!rows.length) return;
-    const items = rows.reduce((n, row) => n + this.markers.filter((m) => m.rowId === row.id).length, 0);
+    const markers = this.markers.filter((m) => rows.some((row) => row.id === m.rowId));
+    const items = markers.length;
     const ok = await confirmAction({
       heading: rows.length === 1 ? "Delete this row?" : `Delete ${rows.length} rows?`,
       text: items
@@ -445,9 +446,18 @@ export class Timeline {
       confirm: "Delete",
     });
     if (!ok) return;
+    // Segments in videos (badrfly 2026-11-20): unlink them from the videos, or keep the videos as they are
+    let videos = "unlink";
+    const linked = markers.filter((m) => this.videosOf(m.id).length);
+    if (linked.length) {
+      const titles = [...new Set(linked.flatMap((m) => this.videosOf(m.id).map((v) => v.title)))];
+      const choice = await chooseSegmentDelete({ count: linked.length, titles });
+      if (!choice) return;
+      videos = choice;
+    }
     for (const row of rows) {
       try {
-        await api("DELETE", `/api/rows/${row.id}`);
+        await api("DELETE", `/api/rows/${row.id}${videos === "keep" ? "?videos=keep" : ""}`);
         this.rowState.delete(row.id);
       } catch (error) {
         toast(`${this.rowTitle(row)}: ${error.message}`, "error");
@@ -598,16 +608,71 @@ export class Timeline {
     }));
   }
 
-  // Player 1: the videos a segment is linked into, [{ title, position, count }]
+  // Player 1: the videos a segment is linked into, [{ title, position, count, prev, next }] (prev / next: the parts around it, which
+  // may be on another stream: a video can span several VODs)
   videosOf(markerId) {
     if (this.mode !== "vod") return [];
     const out = [];
     for (const video of this.videos) {
       const segments = [...(video.segments ?? [])].sort((a, b) => a.position - b.position);
       const index = segments.findIndex((s) => s.markerId === markerId);
-      if (index >= 0) out.push({ id: video.id, title: video.title, position: index + 1, count: segments.length });
+      if (index >= 0) {
+        const part = (s, i) => s && { markerId: s.markerId, vodId: String(s.vodId ?? video.vodId), seconds: s.startSeconds, position: i + 1 };
+        out.push({ id: video.id, title: video.title, position: index + 1, count: segments.length,
+          prev: part(segments[index - 1], index - 1), next: part(segments[index + 1], index + 1) });
+      }
     }
     return out;
+  }
+
+  // A neighboring part of a video that isn't on this timeline (another stream)
+  elsewhere(part) {
+    return part && part.vodId !== String(this.vodId) && !this.markers.some((m) => m.id === part.markerId) ? part : null;
+  }
+
+  // "→ 3 · 20 Nov" after a segment whose video goes on in another stream, "1 · 19 Nov ←" before one whose video started in another;
+  // a click opens that stream at that part (pointer tool)
+  drawStreamLinks(ctx, width) {
+    this.streamPills = [];
+    if (this.mode !== "vod") return;
+    ctx.save();
+    ctx.font = "600 11px Barlow, system-ui, sans-serif";
+    ctx.textBaseline = "middle";
+    this.rows.forEach((row, index) => {
+      if (this.stateOf(row).hidden) return;
+      for (const item of this.itemsOf(row)) {
+        if (item.kind !== "segment") continue;
+        const video = item.videos?.find((v) => this.elsewhere(v.prev) || this.elsewhere(v.next));
+        if (!video) continue;
+        const y = index * ROW_HEIGHT + ROW_HEIGHT / 2 - 9;
+        const pill = (part, after) => {
+          const day = this.hooks.vodDay?.(part.vodId) ?? "other stream";
+          const text = after ? `→ ${part.position} · ${day}` : `${part.position} · ${day} ←`;
+          const w = ctx.measureText(text).width + 14;
+          const x = after ? this.timeToX(item.end, width) + 4 : this.timeToX(item.start, width) - 4 - w;
+          if (x > width || x + w < 0) return;
+          ctx.fillStyle = "rgb(16 17 20 / 0.92)";
+          ctx.strokeStyle = "#8b7cf6";
+          ctx.lineWidth = 1;
+          ctx.setLineDash([3, 2]);
+          ctx.beginPath();
+          ctx.roundRect(x + 0.5, y + 0.5, w, 18, 9);
+          ctx.fill();
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = "#cfc7ff";
+          ctx.fillText(text, x + 7, y + 10);
+          this.streamPills.push({ x, y, w, h: 18, vodId: part.vodId, seconds: part.seconds, title: video.title, position: part.position });
+        };
+        if (this.elsewhere(video.next)) pill(video.next, true);
+        if (this.elsewhere(video.prev)) pill(video.prev, false);
+      }
+    });
+    ctx.restore();
+  }
+
+  streamPillAt(x, y) {
+    return (this.streamPills ?? []).find((p) => x >= p.x && x <= p.x + p.w && y >= p.y && y <= p.y + p.h) ?? null;
   }
 
   renderTip() {
@@ -636,7 +701,10 @@ export class Timeline {
       const cut = (item.cuts ?? []).find((c) => t >= c.start && t < c.end);
       if (cut) lines.push(`Cut out ${formatDuration(cut.start, { short: false })} – ${formatDuration(cut.end, { short: false })} · ${this.cutNote ?? "left out of files"}`);
       if (item.videoIndex) lines.push(`Part ${item.videoIndex} · VOD ${formatDuration(item.vodStart, { short: false })} – ${formatDuration(item.vodEnd, { short: false })}`);
-      for (const video of item.videos ?? []) lines.push(`In video "${video.title}" (${video.position} of ${video.count})`);
+      for (const video of item.videos ?? []) {
+        const on = [this.elsewhere(video.prev), this.elsewhere(video.next)].filter(Boolean).map((p) => this.hooks.vodDay?.(p.vodId) ?? "another stream");
+        lines.push(`In video "${video.title}" (${video.position} of ${video.count})${on.length ? ` · goes on in ${[...new Set(on)].join(", ")}` : ""}`);
+      }
       if (item.by) lines.push(`by ${item.by}${this.canEditItem(item) ? "" : " · view only"}`);
     }
     tip.replaceChildren(...lines.map((line, i) => el("div", { class: i ? "" : "num" }, line)));
@@ -869,6 +937,7 @@ export class Timeline {
       }
       ctx.globalAlpha = 1;
     });
+    this.drawStreamLinks(ctx, width);
     this.drawOverlay?.(ctx, width);
     this.drawPending(ctx, width, now);
     if (this.cutDrag) this.drawCutDrag(ctx, width);

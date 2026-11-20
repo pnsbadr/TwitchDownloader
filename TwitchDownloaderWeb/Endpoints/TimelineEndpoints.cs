@@ -137,6 +137,7 @@ namespace TwitchDownloaderWeb.Endpoints
             // Own markers need AddEntries (as when they were made); anyone's need EditAnyEntries / DeleteAnyEntries. Checked in the handler.
             app.MapPut("/api/markers/{id:int}", UpdateMarker).RequireTeam(TeamPermission.AddEntries | TeamPermission.EditAnyEntries);
             app.MapDelete("/api/markers/{id:int}", DeleteMarker).RequireTeam(TeamPermission.AddEntries | TeamPermission.DeleteAnyEntries);
+            app.MapPost("/api/markers/{id:int}/restore", RestoreMarker).RequireTeam(TeamPermission.AddEntries | TeamPermission.DeleteAnyEntries);
             // Rows (badrfly, 2026-11-15): members add, rename, reorder and delete their own; DeleteAnyEntries may delete anyone's
             app.MapPost("/api/vods/{vodId:long}/rows", AddRow).RequireTeam(TeamPermission.AddEntries).RequireChannelVod();
             app.MapPut("/api/rows/{id:int}", UpdateRow).RequireTeam(TeamPermission.AddEntries);
@@ -179,7 +180,7 @@ namespace TwitchDownloaderWeb.Endpoints
                         x.ClipLengthSeconds, x.VodLengthSeconds, x.FileCuts, x.FilePath, x.GeneratedFilePath, x.Color, x.VodId })
                     .ToListAsync(cancellationToken));
             var markers = await db.Markers.AsNoTracking()
-                .Where(x => x.VodId == vodId || (x.RowId != null && syncedIds.Contains(x.RowId.Value))).ToListAsync(cancellationToken);
+                .Where(x => x.RemovedAtUtc == null && (x.VodId == vodId || (x.RowId != null && syncedIds.Contains(x.RowId.Value)))).ToListAsync(cancellationToken);
             var rows = await db.TimelineRows.AsNoTracking().Where(x => x.VodId == vodId).ToListAsync(cancellationToken);
             var shifts = await SyncShiftsAsync(db, vodId, synced, cancellationToken);
             rows.AddRange(synced);
@@ -378,9 +379,12 @@ namespace TwitchDownloaderWeb.Endpoints
         /// Deletes a row with its segments and moments (own row, or anyone's with DeleteAnyEntries). A clip row that still holds clips is
         /// refused (409 <c>row-has-clips</c>): clips are library entries with files, deleted one by one.
         /// </summary>
-        private static async Task<IResult> DeleteRow(int id, TeamContext team, LibraryDbContext db, LiveMarkerEntryService liveEntries,
+        /// <param name="videos">As for deleting a segment: <c>keep</c> leaves the row's segments in the videos that link them.</param>
+        private static async Task<IResult> DeleteRow(int id, string? videos, TeamContext team, LibraryDbContext db, LiveMarkerEntryService liveEntries,
             CancellationToken cancellationToken)
         {
+            if (ParseVideosMode(videos) is not { } keep)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["videos"] = ["Use unlink or keep."] });
             var row = await db.TimelineRows.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
             if (row is null)
                 return Results.Problem(detail: "That row is gone.", statusCode: StatusCodes.Status404NotFound);
@@ -395,12 +399,27 @@ namespace TwitchDownloaderWeb.Endpoints
                     statusCode: StatusCodes.Status409Conflict, extensions: new Dictionary<string, object?> { ["code"] = "row-has-clips" });
 
             var markers = await db.Markers.Where(x => x.RowId == row.Id).ToListAsync(cancellationToken);
-            db.Markers.RemoveRange(markers);
+            var rowMarkerIds = markers.Select(x => x.Id).ToList();
+            var linkedIds = keep
+                ? (await db.VideoSegments.Where(x => rowMarkerIds.Contains(x.MarkerId)).Select(x => x.MarkerId).ToListAsync(cancellationToken)).ToHashSet()
+                : [];
+            var now = DateTime.UtcNow;
+            foreach (var marker in markers)
+            {
+                if (linkedIds.Contains(marker.Id))
+                {
+                    marker.RemovedAtUtc ??= now;
+                    marker.RowId = null; // the row goes; the segment stays in its videos only
+                }
+                else
+                    db.Markers.Remove(marker);
+            }
             db.TimelineRows.Remove(row);
             var names = await UserNamesAsync(db, [row.UserId], cancellationToken);
             db.Audit(AuditActions.RowDeleted, null,
                 $"VOD {row.VodId} {row.Kind.ToString().ToLowerInvariant()} row{(row.Name is null ? "" : $" \"{row.Name}\"")} of {names.GetValueOrDefault(row.UserId)}"
-                + (markers.Count > 0 ? $" with {markers.Count} segment{(markers.Count == 1 ? "" : "s")}/moment{(markers.Count == 1 ? "" : "s")}" : ""));
+                + (markers.Count > 0 ? $" with {markers.Count} segment{(markers.Count == 1 ? "" : "s")}/moment{(markers.Count == 1 ? "" : "s")}" : "")
+                + (linkedIds.Count > 0 ? $" ({linkedIds.Count} kept in videos)" : ""));
             await db.SaveChangesAsync(cancellationToken);
 
             await VideoEndpoints.DeleteEmptyAsync(db, row.VodId, cancellationToken);
@@ -480,7 +499,7 @@ namespace TwitchDownloaderWeb.Endpoints
             if (ids.Count == 0)
                 return Results.Ok(Array.Empty<MarkerDto>());
 
-            var markers = await db.Markers.AsNoTracking().Where(x => ids.Contains(x.VodId)).ToListAsync(cancellationToken);
+            var markers = await db.Markers.AsNoTracking().Where(x => ids.Contains(x.VodId) && x.RemovedAtUtc == null).ToListAsync(cancellationToken);
             var names = await UserNamesAsync(db, markers.Select(x => x.CreatedByUserId), cancellationToken);
             return Results.Ok(markers.OrderBy(x => x.VodId).ThenBy(x => x.Seconds).Select(x => ToDto(x, names, team)).ToList());
         }
@@ -566,7 +585,7 @@ namespace TwitchDownloaderWeb.Endpoints
         private static async Task<IResult> UpdateMarker(int id, AddMarkerRequest request, TeamContext team, LibraryDbContext db, LiveMarkerEntryService liveEntries,
             CancellationToken cancellationToken, bool makeLiveEntry = true)
         {
-            var marker = await db.Markers.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+            var marker = await db.Markers.FirstOrDefaultAsync(x => x.Id == id && x.RemovedAtUtc == null, cancellationToken);
             if (marker is null)
                 return Results.Problem(detail: "That marker is gone.", statusCode: StatusCodes.Status404NotFound);
 
@@ -614,23 +633,67 @@ namespace TwitchDownloaderWeb.Endpoints
             return Results.Ok(ToDto(marker, names, team) with { LiveEntry = liveEntry });
         }
 
-        private static async Task<IResult> DeleteMarker(int id, TeamContext team, LibraryDbContext db, LiveMarkerEntryService liveEntries,
+        /// <param name="videos">What happens to videos that link the segment (badrfly 2026-11-20, the page asks): <c>unlink</c> (default) takes
+        /// it out of them (a video left with none is deleted), <c>keep</c> leaves them as they are: the segment leaves its timeline but stays in
+        /// them (<see cref="VodMarker.RemovedAtUtc"/>).</param>
+        private static async Task<IResult> DeleteMarker(int id, string? videos, TeamContext team, LibraryDbContext db, LiveMarkerEntryService liveEntries,
             CancellationToken cancellationToken, bool makeLiveEntry = true)
         {
-            var marker = await db.Markers.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+            if (ParseVideosMode(videos) is not { } keep)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["videos"] = ["Use unlink or keep."] });
+            var marker = await db.Markers.FirstOrDefaultAsync(x => x.Id == id && x.RemovedAtUtc == null, cancellationToken);
             if (marker is null)
                 return Results.Problem(detail: "That marker is gone.", statusCode: StatusCodes.Status404NotFound);
 
             if (!CanDelete(team, marker))
                 return Results.Problem(detail: "Your role only lets you delete markers you added.", statusCode: StatusCodes.Status403Forbidden);
 
-            db.Markers.Remove(marker);
-            db.Audit(AuditActions.MarkerDeleted, null,
-                $"VOD {marker.VodId} {Describe(marker)}");
+            var linked = keep ? await VideoEndpoints.TitlesLinkingAsync(db, marker.Id, cancellationToken) : [];
+            if (linked.Count > 0)
+            {
+                marker.RemovedAtUtc = DateTime.UtcNow;
+                db.Audit(AuditActions.MarkerDeleted, null,
+                    $"VOD {marker.VodId} {Describe(marker)} (kept in {linked.Count} video{(linked.Count == 1 ? "" : "s")})");
+            }
+            else
+            {
+                db.Markers.Remove(marker);
+                db.Audit(AuditActions.MarkerDeleted, null, $"VOD {marker.VodId} {Describe(marker)}");
+            }
             await db.SaveChangesAsync(cancellationToken);
             await VideoEndpoints.DeleteEmptyAsync(db, marker.VodId, cancellationToken);
             await liveEntries.MarkersChangedAsync(db, marker.VodId, cancellationToken, makeLiveEntry);
             return Results.NoContent();
+        }
+
+        /// <returns>true = keep videos as they are, false = unlink, null = not a mode.</returns>
+        internal static bool? ParseVideosMode(string? videos) => videos?.Trim().ToLowerInvariant() switch
+        {
+            null or "" or "unlink" => false,
+            "keep" => true,
+            _ => null,
+        };
+
+        /// <summary>
+        /// Puts a segment deleted with "keep videos as they are" back on its timeline (the page's undo): same ID, still in its videos. Its row
+        /// if that's still there, else its creator's first video row on the VOD.
+        /// </summary>
+        private static async Task<IResult> RestoreMarker(int id, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
+        {
+            var marker = await db.Markers.FirstOrDefaultAsync(x => x.Id == id && x.RemovedAtUtc != null, cancellationToken);
+            if (marker is null)
+                return Results.Problem(detail: "That segment is gone.", statusCode: StatusCodes.Status404NotFound);
+            if (!CanDelete(team, marker))
+                return Results.Problem(detail: "Your role only lets you bring back markers you added.", statusCode: StatusCodes.Status403Forbidden);
+
+            marker.RemovedAtUtc = null;
+            if (marker.RowId is null || !await db.TimelineRows.AnyAsync(x => x.Id == marker.RowId, cancellationToken))
+                marker.Row = await db.DefaultRowAsync(marker.TeamId, marker.VodId, marker.CreatedByUserId, TimelineRowKind.Video, cancellationToken);
+            db.Audit(AuditActions.MarkerAdded, null, $"VOD {marker.VodId} {Describe(marker)} (put back on its timeline)");
+            await db.SaveChangesAsync(cancellationToken);
+
+            var names = await UserNamesAsync(db, [marker.CreatedByUserId], cancellationToken);
+            return Results.Ok(ToDto(marker, names, team));
         }
 
         /// <summary>The marker's cut-out parts as stored: none for a moment, otherwise clipped to its range and merged.</summary>

@@ -31,7 +31,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 return problem;
 
             var entries = db.Entries.AsNoTracking().Where(x => x.VodId > 0);
-            var markers = db.Markers.AsNoTracking();
+            var markers = db.Markers.AsNoTracking().Where(x => x.RemovedAtUtc == null); // segments kept only for videos aren't on a timeline
             var videos = db.Videos.AsNoTracking();
             var projects = db.Projects.AsNoTracking().Where(x => x.VodId > 0);
             // Edits: teammates' vertical ones only for members who may see them (VerticalAccess); horizontal ones are everyone's
@@ -44,7 +44,7 @@ namespace TwitchDownloaderWeb.Endpoints
             {
                 entries = entries.Where(x => ids.Contains(x.VodId));
                 markers = markers.Where(x => ids.Contains(x.VodId));
-                videos = videos.Where(x => ids.Contains(x.VodId));
+                videos = videos.Where(x => ids.Contains(x.VodId) || x.Segments.Any(s => ids.Contains(s.Marker!.VodId)));
                 projects = projects.Where(x => ids.Contains(x.VodId));
             }
 
@@ -55,8 +55,14 @@ namespace TwitchDownloaderWeb.Endpoints
             var markerRows = await markers.GroupBy(x => x.VodId)
                 .Select(g => new { VodId = g.Key, Segments = g.Count(x => x.EndSeconds != null), Moments = g.Count(x => x.EndSeconds == null), Last = g.Max(x => x.CreatedAtUtc) })
                 .ToListAsync(cancellationToken);
-            var videoRows = await videos.GroupBy(x => x.VodId)
-                .Select(g => new { VodId = g.Key, Count = g.Count(), Last = g.Max(x => x.UpdatedAtUtc) }).ToListAsync(cancellationToken);
+            // A video counts on every VOD it plays from (one video may span several streams)
+            var videoVods = await videos.Select(x => new { x.VodId, x.UpdatedAtUtc, SegmentVods = x.Segments.Select(s => s.Marker!.VodId).ToList() })
+                .ToListAsync(cancellationToken);
+            var videoRows = videoVods
+                .SelectMany(x => x.SegmentVods.Append(x.VodId).Distinct().Select(vod => new { VodId = vod, x.UpdatedAtUtc }))
+                .Where(x => ids.Count == 0 || ids.Contains(x.VodId))
+                .GroupBy(x => x.VodId)
+                .Select(g => new { VodId = g.Key, Count = g.Count(), Last = g.Max(x => x.UpdatedAtUtc) }).ToList();
             var videoInfo = await videos.OrderByDescending(x => x.Id)
                 .Select(x => new { x.VodId, x.ChannelName, x.StreamDateUtc, x.ThumbnailUrl }).ToListAsync(cancellationToken);
             var projectRows = await projects.GroupBy(x => x.VodId)

@@ -207,7 +207,10 @@ namespace TwitchDownloaderWeb.Data
                 entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
                 entity.HasOne<TimelineRow>().WithMany().HasForeignKey(x => x.RowId).OnDelete(DeleteBehavior.SetNull);
                 entity.HasMany(x => x.Segments).WithOne().HasForeignKey(x => x.VideoId).OnDelete(DeleteBehavior.Cascade);
-                entity.HasQueryFilter(x => !ScopedToTeam || (x.TeamId == ScopeTeamId && !HiddenVods.Any(h => h.TeamId == ScopeTeamId && h.VodId == x.VodId)));
+                // A video with a segment on any VOD hidden from the team is hidden whole (a video may span several VODs)
+                entity.HasQueryFilter(x => !ScopedToTeam || (x.TeamId == ScopeTeamId && !HiddenVods.Any(h => h.TeamId == ScopeTeamId && h.VodId == x.VodId)
+                    && !x.Segments.Any(s => Markers.IgnoreQueryFilters().Any(m => m.Id == s.MarkerId
+                        && HiddenVods.Any(h => h.TeamId == ScopeTeamId && h.VodId == m.VodId)))));
             });
 
             modelBuilder.Entity<VideoSegment>(entity =>
@@ -422,7 +425,7 @@ namespace TwitchDownloaderWeb.Data
                     case VodMarker marker:
                         if (marker.TeamId == 0 && _actor.TeamId is { } markerTeam) marker.TeamId = markerTeam;
                         if (marker.CreatedByUserId == 0 && _actor.UserId is { } markerUser) marker.CreatedByUserId = markerUser;
-                        if (marker.RowId is null && marker.Row is null && marker.CreatedByUserId > 0)
+                        if (marker.RowId is null && marker.Row is null && marker.CreatedByUserId > 0 && marker.RemovedAtUtc is null)
                             marker.Row = await DefaultRowAsync(marker.TeamId, marker.VodId, marker.CreatedByUserId, TimelineRowKind.Video, cancellationToken);
                         break;
                     case TimelineRow row:
@@ -499,7 +502,7 @@ namespace TwitchDownloaderWeb.Data
         /// The member's first row of <paramref name="kind"/> on the VOD (lowest position), made if they have none. Rows added in this
         /// same save count too, so several new items share one new row.
         /// </summary>
-        private async Task<TimelineRow> DefaultRowAsync(int teamId, long vodId, int userId, TimelineRowKind kind, CancellationToken cancellationToken)
+        internal async Task<TimelineRow> DefaultRowAsync(int teamId, long vodId, int userId, TimelineRowKind kind, CancellationToken cancellationToken)
         {
             // Plain rows first: a synced row (shown on another VOD) is used only when it's the member's only row of that kind
             bool Matches(TimelineRow r) => r.TeamId == teamId && r.VodId == vodId && r.UserId == userId && r.Kind == kind;

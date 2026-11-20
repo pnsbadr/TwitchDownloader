@@ -38,6 +38,8 @@ let hooks = {
   onCopyEdit: () => {},    // (edit)
   onExportEdit: () => {},  // (edit)
   onChanged: () => {},     // (kind) a clip / video / segment / edit was renamed
+  onAddSegments: null,     // (video): the link tool with the video's segments (videos across streams)
+  vodDay: () => null,      // (vodId) "19 Nov" once known
   close: () => {},
 };
 
@@ -304,9 +306,11 @@ function videoRows(video, edits, parent, loaded) {
     hooks.onLoadItem({ kind: "video", data: video });
     hooks.close();
   };
+  // A video may span several streams: it's listed under each VOD it plays from
+  const streams = new Set(video.segments.map((s) => String(s.vodId ?? video.vodId))).size;
   const rows = [row({
     key, parent, depth: 2, icon: "film-strip", label: video.title, expandable: true, current: isLoaded,
-    detail: formatDuration(Math.round(video.lengthSeconds ?? 0)),
+    detail: `${streams > 1 ? `${streams} streams · ` : ""}${formatDuration(Math.round(video.lengthSeconds ?? 0))}`,
     title: `${video.title}${video.createdBy ? ` · by ${video.createdBy}` : ""} (double-click to load)`,
     onDouble: load,
     actions: [
@@ -315,29 +319,43 @@ function videoRows(video, edits, parent, loaded) {
     ].filter(Boolean),
     menu: () => [
       { label: "Load in Player 2", icon: "film-strip", run: load },
+      video.canEdit && hooks.onAddSegments && { label: "Add segments…", icon: "link-simple", run: () => {
+        hooks.close();
+        hooks.onAddSegments(video);
+      } },
       video.canEdit && { label: "Rename", icon: "pencil-simple", run: () => renameVideo(video) },
     ].filter(Boolean),
   })];
   if (!state.expanded.has(key)) return rows;
   const segments = [...video.segments].sort((a, b) => a.position - b.position);
-  for (const segment of segments) rows.push(segmentRow(segment, video, loaded));
+  const home = String(parentVod(parent) ?? video.vodId);
+  for (const segment of segments) rows.push(segmentRow(segment, video, loaded, home));
   for (const edit of edits) rows.push(editRow(edit, 3, loaded));
   return rows;
 }
 
-function segmentRow(segment, video, loaded) {
-  const canRename = !me?.support && (can("EditAnyEntries") || (can("AddEntries") && video.userId === me?.id));
+// "v:123:videos" → "123"
+function parentVod(parent) {
+  return parent?.startsWith("v:") ? parent.split(":")[1] : null;
+}
+
+// home = the VOD this line is under: a segment of another stream says which
+function segmentRow(segment, video, loaded, home) {
+  const vodId = String(segment.vodId ?? video.vodId);
+  const canRename = !me?.support && !segment.removed && (can("EditAnyEntries") || (can("AddEntries") && video.userId === me?.id));
   const data = {
-    id: segment.markerId, vodId: video.vodId, seconds: segment.startSeconds, endSeconds: segment.endSeconds,
+    id: segment.markerId, vodId, seconds: segment.startSeconds, endSeconds: segment.endSeconds,
     label: segment.label, color: segment.color, cuts: [...(segment.cuts ?? [])],
   };
+  const other = vodId !== home ? (hooks.vodDay(vodId) ?? "other stream") : null;
   const load = () => {
     hooks.onLoadItem({ kind: "segment", data });
     hooks.close();
   };
-  const label = segment.label || `Segment ${segment.position + 1}`;
+  const label = `${segment.label || `Segment ${segment.position + 1}`}${other ? ` · ${other}` : ""}`;
   return row({
     depth: 3, icon: "brackets-square", label, current: Number(loaded?.segmentId) === segment.markerId && !loaded?.editId,
+    title: segment.removed ? "Deleted from its timeline, still in this video" : undefined,
     detail: formatDuration(Math.round(segment.keptSeconds ?? segment.endSeconds - segment.startSeconds)),
     onClick: load,
     actions: canRename ? [iconButton({ icon: "pencil-simple", label: "Rename", onClick: () => renameSegment(segment, video) })] : [],

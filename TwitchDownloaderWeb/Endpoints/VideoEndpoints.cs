@@ -25,6 +25,9 @@ namespace TwitchDownloaderWeb.Endpoints
 
         /// <summary>The row it sits on.</summary>
         public int? RowId { get; init; }
+
+        /// <summary>Deleted from its timeline but kept in its videos (<see cref="VodMarker.RemovedAtUtc"/>).</summary>
+        public bool Removed { get; init; }
     }
 
     /// <param name="LengthSeconds">All its segments together, without their cut-out parts.</param>
@@ -75,7 +78,7 @@ namespace TwitchDownloaderWeb.Endpoints
                         return new VideoSegmentDto(x.MarkerId, x.Position, start, end, x.Marker.Label, x.Marker.Color,
                             CutOuts.Normalize(CutOuts.Read(x.Marker.Cuts), start, end), CutOuts.Normalize(CutOuts.Read(x.Cuts), start, end),
                             Math.Round(KeptParts(x).Sum(p => p.End - p.Start), 2))
-                        { VodId = x.Marker.VodId, RowId = x.Marker.RowId };
+                        { VodId = x.Marker.VodId, RowId = x.Marker.RowId, Removed = x.Marker.RemovedAtUtc is not null };
                     })
                     .ToList();
                 return new VideoDto(video.Id, video.VodId, video.RowId, video.UserId, names.GetValueOrDefault(video.UserId), video.Title, video.ChannelName,
@@ -167,8 +170,9 @@ namespace TwitchDownloaderWeb.Endpoints
                 return problem;
 
             var query = WithSegments(db).AsNoTracking();
+            // A video counts for every VOD it plays from (one video may span several streams)
             if (ids.Count > 0)
-                query = query.Where(x => ids.Contains(x.VodId));
+                query = query.Where(x => ids.Contains(x.VodId) || x.Segments.Any(s => ids.Contains(s.Marker!.VodId)));
             if (userId is { } user)
                 query = query.Where(x => x.UserId == user);
             if (await ChannelEndpoints.ChannelNamesAsync(db, channels, cancellationToken) is { } channelNames)
@@ -192,9 +196,13 @@ namespace TwitchDownloaderWeb.Endpoints
             return video is null ? NotFound() : Results.Ok((await ToDtosAsync(db, [video], team, cancellationToken))[0]);
         }
 
-        /// <summary>Checks the title and segments. The segments must be <paramref name="ownerId"/>'s, on their rows, of VODs the team can open.</summary>
+        /// <summary>
+        /// Checks the title and segments. The segments must be <paramref name="ownerId"/>'s, on their rows, of VODs the team can open. A segment
+        /// deleted from its timeline but kept for videos may stay only in a video that already has it (<paramref name="current"/>).
+        /// </summary>
         private static async Task<(string? Title, List<VodMarker> Markers, IResult? Problem)> ValidateAsync(LibraryDbContext db, VideoRequest request,
-            TeamContext team, TeamChannelAccess access, int ownerId, bool titleRequired, CancellationToken cancellationToken)
+            TeamContext team, TeamChannelAccess access, int ownerId, bool titleRequired, CancellationToken cancellationToken,
+            IReadOnlyCollection<int>? current = null)
         {
             var title = request.Title?.Trim();
             if (string.IsNullOrEmpty(title))
@@ -225,7 +233,9 @@ namespace TwitchDownloaderWeb.Endpoints
                 error = "Only segments can be linked, not moments.";
             else if (markers.Any(x => x.CreatedByUserId != ownerId))
                 error = "A video links segments of one member.";
-            else if (markers.Any(x => x.RowId is null))
+            else if (markers.Any(x => x.RemovedAtUtc is not null && current?.Contains(x.Id) != true))
+                error = "Some of those segments were deleted.";
+            else if (markers.Any(x => x.RowId is null && x.RemovedAtUtc is null))
                 error = "Link segments that are on a row.";
             if (error is not null)
                 return (null, [], Results.ValidationProblem(new Dictionary<string, string[]> { ["markerIds"] = [error] }));
@@ -285,7 +295,8 @@ namespace TwitchDownloaderWeb.Endpoints
             if (!CanEdit(team, video))
                 return Results.Problem(detail: "Your role only lets you change your own videos. Make a copy instead.", statusCode: StatusCodes.Status403Forbidden);
 
-            var (title, markers, problem) = await ValidateAsync(db, request, team, access, video.UserId, titleRequired: false, cancellationToken);
+            var (title, markers, problem) = await ValidateAsync(db, request, team, access, video.UserId, titleRequired: false, cancellationToken,
+                video.Segments.Select(x => x.MarkerId).ToList());
             if (problem is not null)
                 return problem;
 
@@ -322,6 +333,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 await db.SaveChangesAsync(cancellationToken);
             }
             await transaction.CommitAsync(cancellationToken);
+            await DeleteEmptyAsync(db, video.VodId, cancellationToken); // a kept segment taken out of its last video goes
 
             var saved = await WithSegments(db).AsNoTracking().FirstAsync(x => x.Id == video.Id, cancellationToken);
             return Results.Ok((await ToDtosAsync(db, [saved], team, cancellationToken))[0]);
@@ -339,6 +351,7 @@ namespace TwitchDownloaderWeb.Endpoints
             db.Videos.Remove(video);
             db.Audit(AuditActions.VideoDeleted, null, $"VOD {video.VodId} video {video.Id} \"{video.Title}\"");
             await db.SaveChangesAsync(cancellationToken);
+            await DeleteEmptyAsync(db, video.VodId, cancellationToken); // segments kept only for it go with it
             return Results.NoContent();
         }
 
@@ -382,7 +395,10 @@ namespace TwitchDownloaderWeb.Endpoints
             var copies = source.Segments.Where(x => x.Marker is { EndSeconds: not null }).OrderBy(x => x.Position).Select(x => new VodMarker
             {
                 VodId = x.Marker!.VodId, Seconds = x.Marker.Seconds, EndSeconds = x.Marker.EndSeconds, Label = x.Marker.Label, Color = x.Marker.Color,
-                Cuts = x.Marker.Cuts, RowId = x.Marker.VodId == rowVod ? rowId : null, CopiedFromMarkerId = x.MarkerId, CreatedAtUtc = now,
+                Cuts = x.Marker.Cuts, RowId = x.Marker.RemovedAtUtc is null && x.Marker.VodId == rowVod ? rowId : null, CopiedFromMarkerId = x.MarkerId,
+                CreatedAtUtc = now,
+                // A segment kept only for the video is copied the same way: in the copy, not on the caller's row
+                RemovedAtUtc = x.Marker.RemovedAtUtc is null ? null : now,
             }).ToList();
             var linkCuts = source.Segments.Where(x => x.Marker is { EndSeconds: not null }).OrderBy(x => x.Position).Select(x => x.Cuts).ToList();
             if (copies.Count == 0)
@@ -407,19 +423,27 @@ namespace TwitchDownloaderWeb.Endpoints
         }
 
         /// <summary>
-        /// Deletes the team's videos on the VOD that have no segments left (after segments were deleted). Their links went with the segments
-        /// (cascade); a video can't exist empty.
+        /// Deletes the team's videos that have no segments left (after segments were deleted; their links went with the segments, cascade: a
+        /// video can't exist empty), then segments that were only kept for videos (<see cref="VodMarker.RemovedAtUtc"/>) and no video links now.
         /// </summary>
         internal static async Task DeleteEmptyAsync(LibraryDbContext db, long vodId, CancellationToken cancellationToken)
         {
-            // Any VOD of the team's: a video may link segments of other VODs (synced rows)
+            // Any VOD of the team's: a video may link segments of other VODs
             var empty = await db.Videos.Where(x => !db.VideoSegments.Any(s => s.VideoId == x.Id)).ToListAsync(cancellationToken);
-            if (empty.Count == 0)
-                return;
-            foreach (var video in empty)
-                db.Audit(AuditActions.VideoDeleted, null, $"VOD {video.VodId} video {video.Id} \"{video.Title}\" (no segments left)");
-            db.Videos.RemoveRange(empty);
-            await db.SaveChangesAsync(cancellationToken);
+            if (empty.Count > 0)
+            {
+                foreach (var video in empty)
+                    db.Audit(AuditActions.VideoDeleted, null, $"VOD {video.VodId} video {video.Id} \"{video.Title}\" (no segments left)");
+                db.Videos.RemoveRange(empty);
+                await db.SaveChangesAsync(cancellationToken);
+            }
+
+            var orphans = await db.Markers.Where(x => x.RemovedAtUtc != null && !db.VideoSegments.Any(s => s.MarkerId == x.Id)).ToListAsync(cancellationToken);
+            if (orphans.Count > 0)
+            {
+                db.Markers.RemoveRange(orphans);
+                await db.SaveChangesAsync(cancellationToken);
+            }
         }
 
         /// <summary>The videos a segment is linked in, for refusing changes that would break them.</summary>

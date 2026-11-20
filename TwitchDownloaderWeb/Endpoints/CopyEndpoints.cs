@@ -28,7 +28,7 @@ namespace TwitchDownloaderWeb.Endpoints
         private static async Task<IResult> CopyMarker(int id, CopyRequest request, TeamContext team, LibraryDbContext db, TeamChannelAccess access,
             LiveMarkerEntryService liveEntries, CancellationToken cancellationToken, bool makeLiveEntry = true)
         {
-            var source = await db.Markers.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+            var source = await db.Markers.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id && x.RemovedAtUtc == null, cancellationToken);
             if (source is null)
                 return Results.Problem(detail: "That marker is gone.", statusCode: StatusCodes.Status404NotFound);
 
