@@ -255,12 +255,16 @@ function load(item) {
   loadInPlayer2(item);
 }
 
-async function openVod(vod, { start = 0, paused = false } = {}) {
+// back = { vod, shift } when a synced row's VOD was opened from another one: the header's Back button returns there
+async function openVod(vod, { start = 0, paused = false, back = null } = {}) {
   if (DEMO) {
     toast("Playback isn't available in the demo.");
     return;
   }
   p1Vod = vod;
+  p1Back = back;
+  $("p1-synced-back").hidden = !back;
+  if (back) $("p1-synced-back").label = `Back to ${back.vod.title}`;
   $("p1-info").textContent = vod.title;
   $("p1-info").title = vod.title;
   $("p1-hint").hidden = true;
@@ -991,10 +995,19 @@ function setUpPlayer1() {
     onVideosChanged: refreshVideos,
     onExport: exportFromTimeline,
     // A new segment or clip goes into the edit open in Player 2 (at its playhead) when it's of the same VOD, without switching the tab
-    onCreated: (item) => addToProject({ kind: item.kind, data: { ...item.data, vodId: timeline.vodId, vodLengthSeconds: timeline.length() } }),
+    onCreated: (item) => {
+      // A segment marked on a synced row is the other VOD's
+      const synced = timeline.syncedRow(item.data.rowId);
+      addToProject(synced
+        ? { kind: item.kind, data: { ...(item.data.raw ?? item.data), vodId: String(synced.vodId) } }
+        : { kind: item.kind, data: { ...item.data, vodId: timeline.vodId, vodLengthSeconds: timeline.length() } });
+    },
     onEdited: () => {},
     onFocusRow: (rowId) => focusRow("p1", rowId),
+    onAddSyncedRow: addSyncedRow,
+    onOpenSynced: openSynced,
   });
+  $("p1-synced-back").addEventListener("click", backFromSynced);
   wirePlayerButtons(1, "p1");
   $("p1-live").addEventListener("click", () => {
     player1.seek(player1.livePosition());
@@ -1153,6 +1166,113 @@ async function showInPlayer1(piece) {
   const item = timeline.reveal(focus, { start: piece.start, end: piece.end });
   // the whole clip or segment, and the piece too if it reaches past it (a trim made in Player 2)
   if (item?.end != null) timeline.reveal(focus, { start: Math.min(item.start, piece.start), end: Math.max(item.end, piece.end) });
+}
+
+// ---------- synced rows on Player 1 (badrfly 2026-11-20) ----------
+//
+// "Add a synced row" (timeline footer): pick a streamer's picture, and a row of their VOD recording at the same time shows on this
+// VOD's timeline, on this VOD's clock (lined up by the pair's saved sync, else by sound, else by the start times). What's marked on
+// it is theirs: segments of their VOD, which a video can link with this VOD's. Player 1 keeps playing this VOD; the row's monitor
+// button opens theirs at the same moment, and Back returns.
+
+let p1Back = null;
+const SYNC_ROW_WINDOW = 90 * 60;
+
+function addSyncedRow(now) {
+  if (!p1Vod || DEMO || me?.support || !can("AddEntries")) return;
+  if (teamChannels().length < 2) {
+    toast("Your team has only one channel, so there's no one else to sync with. The app Owner can give it more.", "error");
+    return;
+  }
+  if (rowFocus) endRowFocus();
+  toast("Add a synced row: click a streamer's picture above the list. Esc cancels.");
+  pickChannel({ onPick: (login) => runSyncedRow(login, now) });
+}
+
+async function runSyncedRow(login, now) {
+  const vod = p1Vod;
+  if (!vod) return;
+  const name = teamChannels().find((c) => c.login === login)?.displayName ?? login;
+  const length = timeline.length() || vod.lengthSeconds || now + SYNC_ROW_WINDOW;
+  const start = Math.max(0, Math.min(now, length) - SYNC_ROW_WINDOW);
+  const end = Math.max(start + 1, Math.min(length, now + SYNC_ROW_WINDOW));
+  let answer;
+  try {
+    const query = new URLSearchParams({ channel: login, start: String(Math.floor(start)), end: String(Math.ceil(end)) });
+    answer = await api("GET", `/api/vods/${encodeURIComponent(vod.vodId)}/sync?${query}`);
+  } catch (error) {
+    toast(error.message, "error");
+    return;
+  }
+  if (!answer.matches.length) {
+    toast(noSyncText(name, answer), "error");
+    return;
+  }
+  // The broadcast recording at the playhead, else the one nearest to it
+  const into = now - start;
+  const distance = (m) => (into < m.offset ? m.offset - into : into > m.offset + (m.end - m.start) ? into - m.offset - (m.end - m.start) : 0);
+  const match = [...answer.matches].sort((a, b) => distance(a) - distance(b))[0];
+  if (timeline.rows.some((r) => r.userId === me?.id && String(r.vodId) === String(match.vodId) && r.shift != null)) {
+    toast(`You already have a synced row of ${name}'s VOD here.`);
+    return;
+  }
+  let row;
+  try {
+    row = await api("POST", `/api/vods/${encodeURIComponent(vod.vodId)}/rows`, { kind: "video", syncedVodId: Number(match.vodId) });
+  } catch (error) {
+    toast(error.message, "error");
+    return;
+  }
+  const notes = [];
+  if (match.restricted) notes.push(`${name}'s VOD is for subscribers only.`);
+  if (match.isLive) notes.push(`${name} is still live.`);
+  // Start times are a few seconds off between streamers: unless the pair was lined up before, listen to both
+  if (match.lined === "start") {
+    const listening = toast(`Listening to both streams to line ${name}'s up…`);
+    const len = match.end - match.start;
+    const at = Math.min(Math.max(now, start + match.offset), start + match.offset + Math.max(0, len - AUDIO_MATCH_SECONDS));
+    const otherAt = match.start + (at - start - match.offset);
+    try {
+      const result = await api("POST", `/api/vods/${encodeURIComponent(vod.vodId)}/sync/${match.vodId}/audio`, {
+        at, otherAt, seconds: Math.min(AUDIO_MATCH_SECONDS, Math.max(10, len)),
+      });
+      notes.push(result.trusted
+        ? `Lined up by sound (${Math.round(result.confidence * 100)}% sure).`
+        : `Couldn't line up by sound: ${result.reason} It uses the stream start times.`);
+    } catch (error) {
+      notes.push(`Couldn't line up by sound (${error.message}). It uses the stream start times.`);
+    }
+    listening.remove();
+  }
+  if (p1Vod !== vod) return;
+  timeline.activeRowId = row.id;
+  await timeline.load();
+  timeline.renderHeads();
+  timeline.renderFooter();
+  toast([`Added a row of ${name}'s VOD, lined up with this one. What you mark on it is theirs.`, ...notes].join(" "));
+}
+
+// A synced row's monitor button: Player 1 opens that row's VOD at the same moment
+async function openSynced(row, at) {
+  const from = p1Vod;
+  if (!from) return;
+  let info;
+  try {
+    info = await api("GET", `/api/vods/info?vod=${encodeURIComponent(row.vodId)}`);
+  } catch (error) {
+    toast(error.message, "error");
+    return;
+  }
+  const paused = !player1.playing();
+  await openVod({ vodId: info.vodId, title: info.title, lengthSeconds: info.lengthSeconds, isLive: info.isLive },
+    { start: Math.max(0, at), paused, back: { vod: from, shift: row.shift } });
+}
+
+async function backFromSynced() {
+  const back = p1Back;
+  if (!back) return;
+  const at = player1.ready ? player1.position() - back.shift : 0;
+  await openVod(back.vod, { start: Math.max(0, at), paused: true });
 }
 
 // ---------- moments and clips made from Player 2 ----------

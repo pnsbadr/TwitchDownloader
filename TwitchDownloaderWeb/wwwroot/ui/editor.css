@@ -1103,3 +1103,9 @@ body.row-focus #lower { height: var(--focus-lower-h, 40%) !important; flex: none
 .row-play::part(base) { padding: 3px; }
 /* Row focus: the row buttons in the timeline's footer go dark like the rest (the zoom controls stay lit) */
 body.row-focus .tl-foot-left sl-icon-button { opacity: .25; pointer-events: none; }
+
+/* Player 1's way back from a synced row's VOD (badrfly 2026-11-20) */
+#p1-synced-back {
+  font-size: 1.1rem;
+  margin: -8px 0;
+}

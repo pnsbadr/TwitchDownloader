@@ -71,6 +71,18 @@ function markerBody(marker) {
   };
 }
 
+// A copy of a marker / entry / body with its times moved by `by` seconds (synced rows: this VOD's clock <-> the row's VOD)
+export function shiftTimes(item, by) {
+  const out = { ...item };
+  for (const key of ["seconds", "endSeconds", "start", "end", "startSeconds"]) {
+    if (typeof out[key] === "number") out[key] = Math.round((out[key] + by) * 1000) / 1000;
+  }
+  const ms = (t) => Math.round((t + by) * 1000) / 1000;
+  if (Array.isArray(out.cuts)) out.cuts = out.cuts.map((c) => ({ start: ms(c.start), end: ms(c.end) }));
+  delete out.raw;
+  return out;
+}
+
 // Times are kept to hundredths, like the time boxes
 function round(seconds) {
   return Math.round(seconds * 100) / 100;
@@ -233,13 +245,45 @@ export const editing = {
 
   // The member's own row for a new item: the one clicked last, else their first unlocked one. undefined = none yet
   // (the server makes one), false = all locked.
-  targetRow(kind) {
-    const own = this.rows.filter((row) => row.userId === me?.id && isClipKind(row.kind) === (kind === "clip"));
+  // vodId = only rows of that VOD (a copy of an item on a synced row); without it the row clicked last may be a synced row,
+  // else one of this VOD's own rows
+  targetRow(kind, vodId = null) {
+    const own = this.rows.filter((row) => row.userId === me?.id && isClipKind(row.kind) === (kind === "clip")
+      && (vodId == null || String(this.rowVod(row.id)) === String(vodId)));
     const active = own.find((row) => row.id === this.activeRowId);
     if (active && !this.stateOf(active).locked) return active;
-    const open = own.find((row) => !this.stateOf(row).locked);
+    const open = own.find((row) => !this.stateOf(row).locked && (vodId != null || !this.syncedRow(row.id)));
     if (open) return open;
-    return own.length ? false : undefined;
+    const candidates = vodId != null ? own : own.filter((row) => !this.syncedRow(row.id));
+    return candidates.length ? false : undefined;
+  },
+
+  // ---------- synced rows (badrfly 2026-11-20) ----------
+  //
+  // A synced row is a row of another streamer's VOD shown on this VOD's clock (TimelineRow.ShownOnVodId). Its items are real
+  // items of that VOD; the timeline keeps them on this VOD's clock (their VOD's seconds - shift, see toLocal in timeline.js)
+  // and turns them back at every server call.
+
+  syncedRow(rowId) {
+    if (rowId == null) return null;
+    const row = this.rows.find((r) => r.id === rowId);
+    return row && row.shift != null && row.vodId != null && String(row.vodId) !== String(this.vodId) ? row : null;
+  },
+
+  rowVod(rowId) {
+    return this.syncedRow(rowId)?.vodId ?? this.vodId;
+  },
+
+  // A marker or entry body on this VOD's clock -> its own VOD's seconds
+  toServer(body, rowId) {
+    const row = this.syncedRow(rowId);
+    return row ? shiftTimes(body, row.shift) : body;
+  },
+
+  // A marker or entry from the server -> this VOD's clock (when it sits on a synced row)
+  fromServer(item) {
+    const row = this.syncedRow(item?.rowId);
+    return row ? { ...shiftTimes(item, -row.shift), raw: item } : item;
   },
 
   // ---------- tools ----------
@@ -474,6 +518,9 @@ export const editing = {
   // What a dragged timeline item carries (ui/drag.js): kind segment / moment / clip, data with its VOD
   dragItem(item) {
     const label = item.title || { clip: "Clip", segment: "Segment", moment: "Marker" }[item.kind];
+    // An item on a synced row is an item of the other VOD: it goes out with that VOD's own times
+    const synced = this.syncedRow(item.row?.id);
+    if (synced) return { kind: item.kind, label, data: { ...(item.data.raw ?? item.data), vodId: String(synced.vodId) } };
     return { kind: item.kind, label, data: { ...item.data, vodId: this.vodId, vodLengthSeconds: this.length() } };
   },
 
@@ -628,10 +675,12 @@ export const editing = {
   dropPlan(item, info) {
     if (this.mode !== "vod" || !this.vodId || !this.active || me?.support || this.track.hidden) return null;
     const data = item?.data;
-    if (!data || String(data.vodId) !== this.vodId) return null;
+    if (!data) return null;
     const rect = this.track.getBoundingClientRect();
     const row = this.rows[Math.floor((info.y - rect.top) / this.rowHeight)];
     if (!row || row.userId !== me?.id || this.stateOf(row).locked || this.stateOf(row).hidden) return null;
+    // Items only go on rows of their own VOD (a synced row is the other VOD's)
+    if (String(data.vodId) !== String(this.rowVod(row.id))) return null;
     const videoRow = !isClipKind(row.kind);
     if (item.kind === "segment" || item.kind === "moment") {
       if (!videoRow) return null;
@@ -690,7 +739,7 @@ export const editing = {
         case "copyMarker":
         case "clipToSegment": {
           const url = action === "copyMarker" ? `/api/markers/${source.id}/copy` : `/api/entries/${source.id}/copy-as-segment`;
-          const copy = await api("POST", url, { rowId: row.id });
+          const copy = this.fromServer(await api("POST", url, { rowId: row.id }));
           this.remember({ type: "add", ref: this.ref("marker", copy.id), data: { ...markerBody(copy), rowId: row.id } });
           this.selected = { type: "marker", id: copy.id };
           toast(action === "copyMarker" ? "Copied to your row." : "Made a segment from the clip.");
@@ -1034,7 +1083,7 @@ export const editing = {
       label: splitLabel(before.label, 2),
       cuts: cuts.filter((c) => c.end > t).map((c) => ({ start: Math.max(c.start, t), end: c.end })),
       // The second part goes on the same row; on someone else's original (or its copy) it goes on the caller's row
-      rowId: this.isOwn(item) ? item.data.rowId ?? undefined : target.copied ? this.targetRow("video")?.id : undefined,
+      rowId: this.isOwn(item) ? item.data.rowId ?? undefined : target.copied ? this.targetRow("video", this.rowVod(item.row?.id))?.id : undefined,
     };
     try {
       await this.putMarker(target.id, after);
@@ -1055,10 +1104,10 @@ export const editing = {
   },
 
   async copyItem(item, { quiet = false } = {}) {
-    const row = this.targetRow(item.kind === "clip" ? "clip" : "video");
+    const row = this.targetRow(item.kind === "clip" ? "clip" : "video", this.rowVod(item.row?.id));
     try {
       const url = item.kind === "clip" ? `/api/entries/${item.id}/copy` : `/api/markers/${item.id}/copy`;
-      const copy = await api("POST", url, row ? { rowId: row.id } : {});
+      const copy = this.fromServer(await api("POST", url, row ? { rowId: row.id } : {}));
       if (item.kind === "clip") {
         this.hooks.onClipsChanged?.();
       } else {
@@ -1188,7 +1237,7 @@ export const editing = {
       return;
     }
     this.marking = null;
-    this.linking = { rowId: null, ids: [] };
+    this.linking = { ids: [] };
     this.select(null);
     this.openLinkEditor("");
   },
@@ -1218,14 +1267,10 @@ export const editing = {
       toast("Link segments on your own rows.");
       return;
     }
-    if (link.ids.length && link.rowId !== item.row.id) {
-      toast("A video links segments from one row.");
-      return;
-    }
+    // Since 2026-11-20 (badrfly) a video links segments from any of the member's rows, synced rows (other VODs) included
     const at = link.ids.indexOf(item.id);
     if (at >= 0) link.ids.splice(at, 1);
     else link.ids.push(item.id);
-    link.rowId = link.ids.length ? item.row.id : null;
     this.changed();
   },
 
@@ -1367,7 +1412,8 @@ export const editing = {
   // ---------- server calls ----------
 
   async postMarker(body) {
-    const marker = await api("POST", `/api/vods/${encodeURIComponent(this.vodId)}/markers`, body);
+    const vodId = this.rowVod(body.rowId);
+    const marker = this.fromServer(await api("POST", `/api/vods/${encodeURIComponent(vodId)}/markers`, this.toServer(body, body.rowId)));
     this.markers = [...this.markers.filter((m) => m.id !== marker.id), marker];
     if (marker.liveEntry) {
       this.hooks.onClipsChanged?.();
@@ -1379,7 +1425,8 @@ export const editing = {
   },
 
   async putMarker(id, body) {
-    const marker = await api("PUT", `/api/markers/${id}`, body);
+    const rowId = body.rowId ?? this.markers.find((m) => m.id === id)?.rowId;
+    const marker = this.fromServer(await api("PUT", `/api/markers/${id}`, this.toServer(body, rowId)));
     this.markers = this.markers.map((m) => (m.id === id ? marker : m));
     if (marker.liveEntry) this.hooks.onClipsChanged?.();
     this.dirty = true;
@@ -1395,7 +1442,8 @@ export const editing = {
   },
 
   // cuts: undefined keeps the clip's cut-out parts, [] removes them
-  async trimClip(id, { start, end, cuts }) {
+  async trimClip(id, times) {
+    const { start, end, cuts } = this.toServer(times, this.clips.find((c) => c.id === id)?.rowId);
     await api("PUT", `/api/entries/${id}/trim`, {
       startTime: trimValue(start),
       endTime: end == null ? "" : trimValue(end),
