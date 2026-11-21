@@ -378,8 +378,12 @@ function unloadPlayer1(text) {
   $("p1-media").hidden = true;
   $("p1-hint").hidden = false;
   showNote("p1", text);
+  refusalShown.p1 = Boolean(text);
   renderTools();
 }
+
+// A player left empty with a note why its VOD was refused: the note goes once the team's channels change again (assigned again)
+const refusalShown = { p1: false, p2: false };
 
 function playerNotes(player) {
   const notes = [];
@@ -575,6 +579,7 @@ async function refusePlayer2(error) {
     $("p2-hint").hidden = false;
   }
   showNote("p2", channelRefusalText(error));
+  refusalShown.p2 = true;
 }
 
 async function closeProject() {
@@ -1028,6 +1033,11 @@ function setUpProjectPicker() {
     if (event.target !== $("p2-project-menu")) return;
     renderProjectMenu();
     openTree();
+  });
+  // The picker opens on its search box, so typing searches instead of reaching the editor's shortcuts (I, O, C…)
+  $("p2-project-menu").addEventListener("sl-after-show", (event) => {
+    if (event.target !== $("p2-project-menu")) return;
+    $("p2-project-menu").querySelector(".tree-search-input")?.focus({ preventScroll: true });
   });
   $("p2-project-items").addEventListener("sl-select", (event) => {
     const value = event.detail.item.value;
@@ -2620,6 +2630,11 @@ function setUpLiveUpdates() {
 }
 
 async function dropRefusedVods() {
+  for (const which of ["p1", "p2"]) {
+    const empty = which === "p1" ? !p1Vod : !store?.open;
+    if (refusalShown[which] && empty) showNote(which, "");
+    refusalShown[which] = false;
+  }
   const p1 = p1Vod;
   if (p1) {
     try {

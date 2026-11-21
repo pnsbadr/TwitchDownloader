@@ -38,7 +38,7 @@ namespace TwitchDownloaderWeb.Endpoints
         /// (<see cref="SavedChannel.AllowSaveAudio"/> or automatic saving; badrfly 2026-11-18), else 403 <c>audio-not-allowed</c>.
         /// A failed rescue is retried, one paused because automatic saving is off is resumed; others are returned as they are.
         /// </summary>
-        private static async Task<IResult> StartRescue(long vodId, LibraryDbContext db, VodInfoService vodInfo, AudioRescueService rescueService,
+        private static async Task<IResult> StartRescue(long vodId, LibraryDbContext db, IVodDetailsSource vodInfo, AudioRescueService rescueService,
             IOptions<AudioRescueSettings> settings, TeamChannelAccess access, CancellationToken cancellationToken)
         {
             SavedChannel? channel;
