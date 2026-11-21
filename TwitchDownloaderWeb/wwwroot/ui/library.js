@@ -74,6 +74,7 @@ const state = {
   kids: new Map(),
   subOpen: new Set(),  // "clip:5" / "video:3" / "other:{vodId}": rows opened to their edits and segments
   subs: new Map(),     // "clip:5" / "video:3" → { edits, loading, error }
+  segEdits: new Map(), // segment (marker) ID → its edits (edits made only from that segment: segmentId on /api/projects)
   // The team's statuses and tags (GET /api/team/statuses; badrfly 2026-11-20, step 4) and the status / tag picked as a filter
   statuses: [],
   tags: [],
@@ -805,7 +806,6 @@ function render() {
       if (!isMark(line) && !line.note && !line.kid && !line.sub && !line.first) nodes.push(el("div", { class: "side-sep thin" }, el("i")));
       const node = line.month ? monthRow(line, index)
         : line.head ? el("div", { class: "side-sep day" }, el("i"))
-        : line.group ? otherRow(line)
         : line.note ? kidNote(line)
         : line.sub ? subRow(line)
         : line.kid ? listRow(line)
@@ -953,7 +953,7 @@ function kidLines(vod, at) {
   if (kids.videosTotal > kids.videos.length) lines.push(note("videos", `All ${kids.videosTotal} videos`, () => showVodWork(id, "videos")));
   for (const clip of kids.clips) push({ key: `kid:${id}:clip:${clip.id}`, item: clip, type: "clip", kid: true, vodId: id, at });
   if (kids.clipsTotal > kids.clips.length) lines.push(note("clips", `All ${kids.clipsTotal} clips`, () => showVodWork(id, "clips")));
-  lines.push(...otherLines(id, at, kids.other));
+  lines.push(...otherLines(id, at, kids));
   if (!lines.length) return [note("none", "Nothing here any more.")];
   return lines;
 }
@@ -1001,8 +1001,20 @@ async function loadKids(id) {
       for (const video of videos.items) {
         if (String(video.vodId) === id) state.subs.set(`video:${video.id}`, { edits: oldest.filter((e) => e.videoId === video.id) });
       }
-      Object.assign(kids, { clips: clips.items, videos: videos.items, clipsTotal: clips.total, videosTotal: videos.total,
-        other: oldest.filter((e) => !e.entryId && !e.videoId && Number(e.vodId) === Number(id)) });
+      const loose = oldest.filter((e) => !e.entryId && !e.videoId && Number(e.vodId) === Number(id));
+      rememberSegmentEdits(loose);
+      // Segments with edits that aren't in a video listed here get their own line under the VOD
+      const inVideos = new Set(videos.items.flatMap((v) => (v.segments ?? []).map((x) => x.markerId)));
+      const lone = [...new Set(loose.filter((e) => e.segmentId && !inVideos.has(e.segmentId)).map((e) => e.segmentId))];
+      let segments = [];
+      if (lone.length) {
+        const markers = await api("GET", `/api/markers?vodIds=${id}`);
+        segments = markers.filter((m) => lone.includes(m.id) && m.endSeconds != null).sort((a, b) => a.seconds - b.seconds);
+      }
+      const shown = new Set([...inVideos, ...segments.map((m) => m.id)]);
+      Object.assign(kids, { clips: clips.items, videos: videos.items, clipsTotal: clips.total, videosTotal: videos.total, segments,
+        // Edits of a VOD range, or whose clip, video or segment is gone: right under the VOD
+        other: loose.filter((e) => !e.segmentId || !shown.has(e.segmentId)) });
       rememberMembers([...clips.items.map((c) => [c.addedByUserId, c.addedBy]), ...videos.items.map((v) => [v.userId, v.createdBy])]);
     }
     kids.clips.sort(byStart);
@@ -1076,7 +1088,7 @@ function toggleSub(type, item, open = !isSubOpen(type, item)) {
   if (open === state.subOpen.has(key)) return;
   if (open) {
     state.subOpen.add(key);
-    if (type !== "other" && !state.subs.has(key)) loadSub(type, item);
+    if ((type === "clip" || type === "video") && !state.subs.has(key)) loadSub(type, item);
   } else {
     state.subOpen.delete(key);
     // A selected line inside it goes back to its row
@@ -1097,6 +1109,12 @@ async function loadSub(type, item) {
     else {
       const edits = await api("GET", `/api/projects?${type === "clip" ? "entryId" : "videoId"}=${item.id}&limit=200`);
       sub.edits = [...edits].reverse();
+      // A video's segments: the edits made from each of them (edits belong to their segment's VOD)
+      if (type === "video" && item.segments?.length) {
+        const vods = [...new Set(item.segments.map((x) => String(x.vodId ?? item.vodId)))];
+        const onVods = await api("GET", `/api/projects?vodIds=${vods.join(",")}&limit=1000`);
+        rememberSegmentEdits([...onVods].reverse().filter((e) => !e.entryId && !e.videoId));
+      }
     }
     sub.error = "";
   } catch (error) {
@@ -1108,6 +1126,7 @@ async function loadSub(type, item) {
 
 // Edits changed (made, renamed, deleted): the opened lists are read again, the others forgotten
 export function refreshEdits() {
+  state.segEdits.clear();
   for (const key of [...state.subs.keys()]) if (!state.subOpen.has(key)) state.subs.delete(key);
   for (const key of state.subOpen) {
     const [type, id] = key.split(":");
@@ -1139,7 +1158,8 @@ function subLines(parent) {
   if (type === "video") {
     const home = String(parent.vodId ?? item.vodId);
     for (const segment of [...(item.segments ?? [])].sort((a, b) => a.position - b.position)) {
-      lines.push({ ...common, key: `${base}seg:${segment.markerId}`, type: "segment", item: segment, video: item, home });
+      const line = { ...common, key: `${base}seg:${segment.markerId}`, type: "segment", item: segment, video: item, home };
+      lines.push(line, ...segmentEditLines(line));
     }
   }
   const sub = state.subs.get(subKeyOf(type, item));
@@ -1152,26 +1172,55 @@ function subLines(parent) {
   return lines;
 }
 
-// "Other edits" at the end of an opened VOD's lines, and its edits when opened
-function otherLines(vodId, at, edits) {
-  if (!edits?.length) return [];
-  const group = { id: vodId, edits };
-  const lines = [{ key: `kid:${vodId}:other`, kid: true, vodId, at, group, note: "Other edits" }];
-  if (!isSubOpen("other", group)) return lines;
+function rememberSegmentEdits(edits) {
+  const bySegment = new Map();
+  for (const edit of edits) {
+    if (!edit.segmentId) continue;
+    if (!bySegment.has(edit.segmentId)) bySegment.set(edit.segmentId, []);
+    bySegment.get(edit.segmentId).push(edit);
+  }
+  for (const [id, list] of bySegment) state.segEdits.set(id, list);
+}
+
+function segmentEdits(markerId) {
+  return state.segEdits.get(markerId) ?? [];
+}
+
+// A segment's edits, when its line is opened (one step further in)
+function segmentEditLines(segmentLine) {
+  const id = segmentLine.item.markerId;
+  if (!segmentEdits(id).length || !isSubOpen("seg", { id })) return [];
+  return segmentEdits(id).map((edit) => ({ ...segmentLine, key: `${segmentLine.key}>seg:${id}>edit:${edit.id}`, type: "edit", item: edit, deep: !segmentLine.lone, lone: false,
+    parent: { item: segmentLine.item, type: "seg", key: segmentLine.key, segment: true } }));
+}
+
+// The end of an opened VOD's lines: segments with edits that aren't in a video listed here, then edits of a VOD range or of something deleted
+function otherLines(vodId, at, kids) {
+  const lines = [];
   const common = { sub: true, kid: true, vodId, at, parent: null };
-  for (const edit of edits) lines.push({ ...common, key: `kid:${vodId}:other>other:${vodId}>edit:${edit.id}`, type: "edit", item: edit });
+  for (const marker of kids.segments ?? []) {
+    const segment = { markerId: marker.id, position: 0, label: marker.label, color: marker.color, startSeconds: marker.seconds, endSeconds: marker.endSeconds,
+      keptSeconds: marker.keptSeconds, vodId: marker.vodId, cuts: marker.cuts };
+    // Its "video" for loading and renaming: the VOD and the segment's maker
+    const line = { ...common, key: `kid:${vodId}:seg:${marker.id}`, type: "segment", item: segment, video: { vodId: marker.vodId, userId: marker.createdByUserId }, home: String(vodId), lone: true };
+    lines.push(line, ...segmentEditLines(line));
+  }
+  for (const edit of kids.other ?? []) lines.push({ ...common, key: `kid:${vodId}:edit:${edit.id}`, type: "edit", item: edit, lone: true });
   return lines;
 }
 
-function otherRow(line) {
-  const open = isSubOpen("other", line.group);
-  const node = el("div", { class: "lrow kid lrow-group", role: "listitem", title: "Edits of a single segment, of a VOD range, or of a clip or video that was deleted" },
-    el("button", { class: `lcaret${open ? " open" : ""}`, type: "button", tabindex: "-1", "aria-label": open ? "Close" : "Show them" }, el("sl-icon", { library: "ph", name: "caret-right" })),
-    el("sl-icon", { library: "ph", name: "stack", class: "lkind" }),
-    el("span", { class: "ltitle" }, "Other edits"),
-    el("span", { class: "llen" }, String(line.group.edits.length)));
-  node.addEventListener("click", () => toggleSub("other", line.group));
-  return node;
+// The arrow on a segment line that has edits
+function segmentCaret(markerId) {
+  const open = isSubOpen("seg", { id: markerId });
+  const caret = el("button", { class: `lcaret${open ? " open" : ""}`, type: "button", tabindex: "-1", "aria-label": open ? "Close" : "Show its edits", title: open ? "Close" : "Show its edits (→)" },
+    el("sl-icon", { library: "ph", name: "caret-right" }));
+  caret.addEventListener("pointerdown", (event) => event.stopPropagation());
+  caret.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleSub("seg", { id: markerId });
+  });
+  caret.addEventListener("dblclick", (event) => event.stopPropagation());
+  return caret;
 }
 
 // The arrow on a clip or video row
@@ -1220,7 +1269,9 @@ function subRow(line) {
     tip = `${title}${thing.removed ? " (deleted from its timeline, still in this video)" : ""} · double-click to load`;
     current = Number(loaded?.segmentId) === thing.markerId && !loaded?.editId;
   }
-  const node = el("div", { class: `lrow item sub${line.kid ? " kid" : ""}${current ? " current" : ""}`, role: "listitem", tabindex: "0", "aria-label": title, "data-key": line.key, title: current ? `Loaded in Player 2 · ${tip}` : tip },
+  const segEdits = line.type === "segment" ? segmentEdits(thing.markerId) : [];
+  const node = el("div", { class: `lrow item sub${line.kid ? " kid" : ""}${line.deep ? " deep" : ""}${line.lone ? " lone" : ""}${current ? " current" : ""}`, role: "listitem", tabindex: "0", "aria-label": title, "data-key": line.key, title: current ? `Loaded in Player 2 · ${tip}` : tip },
+    segEdits.length ? segmentCaret(thing.markerId) : null,
     el("sl-icon", { library: "ph", name: icon, class: "lkind" }),
     el("span", { class: "ltitle" }, title),
     el("span", { class: "llen" }, detail));
@@ -1239,6 +1290,14 @@ function subRow(line) {
     else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       moveSelection(event.key === "ArrowDown" ? 1 : -1);
+    } else if (event.key === "ArrowRight" && segEdits.length) {
+      event.preventDefault();
+      toggleSub("seg", { id: thing.markerId }, true);
+      focusRow(line.key);
+    } else if (event.key === "ArrowLeft" && segEdits.length && isSubOpen("seg", { id: thing.markerId })) {
+      event.preventDefault();
+      toggleSub("seg", { id: thing.markerId }, false);
+      focusRow(line.key);
     } else if (event.key === "ArrowLeft") {
       // Back to its row, closed
       event.preventDefault();
@@ -1272,10 +1331,15 @@ export async function revealLoaded() {
     const kids = state.kids.get(vodId);
     if (loaded.entryId) parent = kids?.clips?.find((c) => c.id === Number(loaded.entryId)) && { type: "clip", item: kids.clips.find((c) => c.id === Number(loaded.entryId)) };
     else if (loaded.videoId) parent = kids?.videos?.find((v) => v.id === Number(loaded.videoId)) && { type: "video", item: kids.videos.find((v) => v.id === Number(loaded.videoId)) };
-    else if (loaded.segmentId) {
-      const video = kids?.videos?.find((v) => (v.segments ?? []).some((s) => s.markerId === Number(loaded.segmentId)));
+    else {
+      // A segment, or an edit of one: open its video (and the segment) when it's in one
+      const editId = Number(loaded.editId || 0);
+      const segmentId = loaded.segmentId ? Number(loaded.segmentId)
+        : [...state.segEdits].find(([, edits]) => edits.some((e) => e.id === editId))?.[0] ?? null;
+      const video = segmentId && kids?.videos?.find((v) => (v.segments ?? []).some((x) => x.markerId === segmentId));
       if (video) parent = { type: "video", item: video };
-    } else if (loaded.editId && kids?.other?.some((e) => e.id === Number(loaded.editId))) parent = { type: "other", item: { id: vodId } };
+      if (segmentId && editId) state.subOpen.add(subKeyOf("seg", { id: segmentId }));
+    }
   } else if (loaded.entryId && state.clips.some((c) => c.id === Number(loaded.entryId))) {
     list = "clips";
     parent = { type: "clip", item: state.clips.find((c) => c.id === Number(loaded.entryId)) };
@@ -1287,10 +1351,10 @@ export async function revealLoaded() {
     return;
   }
   if (state.list !== list) handlers.onPickList?.(list);
-  if (parent && (parent.type === "other" || loaded.editId || loaded.segmentId)) {
+  if (parent && (loaded.editId || loaded.segmentId)) {
     const key = subKeyOf(parent.type, parent.item);
     state.subOpen.add(key);
-    if (parent.type !== "other" && !state.subs.has(key)) await loadSub(parent.type, parent.item);
+    if (!state.subs.has(key)) await loadSub(parent.type, parent.item);
   }
   render();
   // The loaded line: an edit or segment line, else the clip / video / VOD row
@@ -1493,7 +1557,7 @@ function drawWindow() {
     let entry = nodes.get(line.key);
     if (!entry) {
       entry = { item: line.item, sig: lineSig(line, i === 0),
-        node: line.month ? monthRow(line, i) : line.head ? dayRow() : line.group ? otherRow(line) : line.note ? kidNote(line) : line.sub ? subRow(line) : listRow(line) };
+        node: line.month ? monthRow(line, i) : line.head ? dayRow() : line.note ? kidNote(line) : line.sub ? subRow(line) : listRow(line) };
       nodes.set(line.key, entry);
     }
     entry.node.style.top = `${rowsModel.ys[i]}px`;
@@ -1525,12 +1589,11 @@ function dayRow() {
 // What a line shows that can change: a row drawn with an older one is made again
 function lineSig(line, top) {
   if (line.month) return `${line.month}|${line.count}|${top}`;
-  if (line.group) return `${line.group.edits.length}|${isSubOpen("other", line.group)}`;
   if (line.head || line.note) return line.note ?? "";
   if (line.sub) {
     const loaded = p2Loaded();
     const t = line.item;
-    return `${t.title ?? t.label}|${t.lengthSeconds ?? t.keptSeconds}|${loaded?.editId}|${loaded?.segmentId}`;
+    return `${t.title ?? t.label}|${t.lengthSeconds ?? t.keptSeconds}|${loaded?.editId}|${loaded?.segmentId}|${line.type === "segment" ? `${segmentEdits(t.markerId).length}|${isSubOpen("seg", { id: t.markerId })}|${handlers.vodDay?.(String(t.vodId ?? line.video.vodId))}` : ""}`;
   }
   return `${rowSig(line.item, line.type)}|${line.type === "vod" ? "" : isSubOpen(line.type, line.item)}|${line.first}|${line.first ? `${line.day.number}|${line.day.count}|${line.day.label}` : ""}`;
 }
