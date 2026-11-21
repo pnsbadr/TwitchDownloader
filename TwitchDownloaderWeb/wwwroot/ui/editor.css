@@ -1444,7 +1444,12 @@ body:not(.linking) .link-chips { display: none; }
 .lrow.sub.kid.deep { padding-left: calc(var(--space-2) + 62px); }
 .lrow.sub.kid.lone { padding-left: calc(var(--space-2) + 22px); }
 .lrow.sub.kid.lone::before { left: calc(var(--space-2) + 3px); }
-/* An opened VOD's "Segments" line, opening to every segment on it */
+/* Inside an opened VOD's "Videos" / "Clips" line (badrfly 2026-11-21): one step further in, like the segments under "Segments" */
+.lrow.kid.ing:not(.sub) { padding-left: calc(var(--space-2) + 24px); }
+.lrow.sub.kid.ing { padding-left: calc(var(--space-2) + 62px); }
+.lrow.sub.kid.ing::before { left: calc(var(--space-2) + 46px); }
+.lrow.sub.kid.ing.deep { padding-left: calc(var(--space-2) + 82px); }
+/* An opened VOD's "Segments" / "Videos" / "Clips" line, opening to every segment on it */
 .lrow.sub.group .ltitle, .lrow.sub.group .lkind { color: var(--text); }
 .lrow.sub > .lcaret { margin-left: -18px; }
 .lrow.sub .lkind { color: var(--text-dim); }
@@ -1638,7 +1643,7 @@ body:not(.linking) .link-chips { display: none; }
 }
 
 /* The member's own stars, Recent and Mine (badrfly 2026-11-20, "Redesign the library for large teams" step 5) */
-.sbar-chip.quick sl-icon { font-size: 13px; }
+.sbar-chip.quick sl-icon, .sort-chip sl-icon { font-size: 13px; }
 .sbar-chip.quick:first-child { padding: 0 var(--space-2) 0 7px; }
 .sbar-chip.quick.on sl-icon[name="star-fill"] { color: var(--warn, #f5c542); }
 .sbar-gap { flex: none; width: 1px; margin: 3px 2px; background: var(--line-strong); }
