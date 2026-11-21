@@ -717,7 +717,7 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   under an opened VOD) have an arrow (→ / ←) that opens them to their **edits** (a video first to its **segments**, each opening to the
   edits made from it). An edit of no clip or video names its segment when every piece came from one (`segmentId` on project DTOs,
   `ProjectEndpoints.SegmentOf`); an opened VOD ends with **every segment on it** (`kids.segments`, from `/api/markers`; badrfly 2026-11-21:
-  a vertical edit mustn't be found only through a video), each opening to its edits (`lseg:` keys; inside a video `seg:`), then the edits
+  a vertical edit mustn't be found only through a video) inside one **Segments (n)** line (closed at first, `segs:{vodId}`), each opening to its edits (`lseg:` keys; inside a video `seg:`), then the edits
   left (a VOD range, or a deleted clip/video/segment: `kids.other`). Double-click / Enter loads a segment
   or opens an edit; right-click = `editMenu` / `segmentMenu` from `ui/p2-tree.js`; the loaded line is marked (`player2Changed`). An opened
   VOD reads its edits once (`/api/projects?vodId=`) and fills its rows' lists; rows on the CLIPS/VIDEOS tabs read theirs when opened
@@ -754,8 +754,12 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   library.js = `.lrow` / `.lrow.lsep` / `.lmonth` in editor.css). **Date column** (badrfly 2026-11-21, his sketch; replaced the month bar): a
   thin line between items, a slightly thicker line between days, a month's line across the whole width with its name in the date column on
   the right, and each day's number in that column in front of its first row or card (both views; `linesFor` / `renderRail` in library.js).
-  While a day's first item is above the top, `#side-stamp` keeps its month and day at the top of the column (pushed up by the next day);
-  a click on a month, a day or the stamp opens the loaded months to jump to, plus "Load older". The **card** of the row under the mouse, else the selected one, is at the bottom (`#side-peek`). ↑/↓ move the selection.
+  While a day's first item is above the top, `#side-stamp` keeps its month and day at the top of the column (pushed up by the next day).
+  **Folding** (badrfly 2026-11-21, replaces opening the calendar from the column): a click on a month's name hides that month's items (one
+  line: "42 clips hidden" and the month as a gray pill, no arrows); on CLIPS and VIDEOS a day's number does the same for the day (VODs: days
+  don't fold); the stamp folds what it names; Alt+click on a month folds every month (again: opens all). What's opened inside stays as it was.
+  `state.folds` per list (`allMonths`, `months`, `days`), kept while the page is open, not across reloads. Below a folded last month the list
+  doesn't load more by itself: a "Load older" line does. The calendar's jump opens a folded month/day. The **card** of the row under the mouse, else the selected one, is at the bottom (`#side-peek`), always the same height and kept (with a hint) while empty in rows/Details, so the list never resizes; the list is a whole number of rows high (`fitListHeight`) and scrolling stops on a line's start (`snapScroll`, on `scrollend`). `#side-listwrap` clips the date stamp so it never covers the buttons above. ↑/↓ move the selection.
   The cards view is the button next to the count, remembered per member in `localStorage` `clipco.library.view.{userId}`.
   **VODs open to their work** (step 3, `toggleVod` / `loadKids` in library.js): a VOD with clips or videos gets an arrow (rows; cards: a
   caret button and a menu item); opened (click, → / ←), its videos then clips, in VOD order, are slim indented rows under it (kind icon in
@@ -777,8 +781,7 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
 - **Library header** (badrfly 2026-11-21, mockup "D · Your version" in artifact VJ5Zpn1oFck29DUF2eGYXB): **no filter button**. The quick
   chips row: ★ / Recent / Mine / **With work** (VODs only) / **Last 24 h**, then the statuses (not on VODs), then a sticky **×** that clears
   every filter (`clearFilters`). Next to the count: **Rows / Cards / Details** (`#side-views`, remembered in `clipco.library.view.{userId}`)
-  and the **calendar** (`#side-calendar`, `ui/calendar.js`; month names, day numbers and the stamp open it too, replacing the month jump
-  menu and the per-month counts): each day's count (clips/videos: `days=` on the list endpoint with the filters on minus the day ones;
+  and the **calendar** (`#side-calendar`, `ui/calendar.js`; only this button opens it; it replaced the month jump menu and the per-month counts): each day's count (clips/videos: `days=` on the list endpoint with the filters on minus the day ones;
   VODs: the loaded ones), the month's total, a strip of months; click = go to the day (older pages load until it's there,
   `jumpToDay`), Shift+click two days = only those days (`clipFilter.range`, a chip). **Highlights** sit under the broadcast they came from
   (opened VOD rows, sparkle icon; `loadHighlightsTo` reads highlight pages back past the oldest loaded broadcast; `highlightParent`:

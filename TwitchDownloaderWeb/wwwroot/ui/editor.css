@@ -1313,7 +1313,17 @@ body:not(.linking) .link-chips { display: none; }
 }
 .lmonth-label { right: 4px; top: 8px; color: var(--text); text-transform: uppercase; letter-spacing: 0.04em; }
 .lday { right: -36px; width: 30px; top: 50%; transform: translateY(-50%); font-size: 12px; color: var(--text-dim); }
-.lmonth-label:hover, .lday:hover { color: var(--text); background: var(--bg-3); }
+.lmonth-label:hover, .lday:not(.static):hover { color: var(--text); background: var(--bg-3); box-shadow: inset 0 0 0 1px var(--line-strong); border-radius: 10px; }
+.lday.static { cursor: default; }
+/* Folded months and days (badrfly 2026-11-21): the date as a gray pill, "42 clips hidden" in words beside it, no arrows */
+.lmonth-label.datepill, .lday.datepill { background: var(--bg-4); color: var(--text); border-radius: 10px; padding: 3px 7px; }
+.lmonth.folded { height: 30px; background: var(--bg-2); cursor: pointer; }
+.lmonth.folded .lmonth-label { top: 50%; transform: translateY(-50%); }
+.lfold-sum { color: var(--text-faint); font-size: var(--font-size-small); white-space: nowrap; }
+.lmonth.folded .lfold-sum { position: absolute; left: var(--space-2); top: 50%; transform: translateY(-50%); }
+.lrow.lfold { cursor: pointer; background: var(--bg-2); }
+.lrow.lfold .lday { width: auto; right: -36px; }
+.lrow.lfold:hover .lfold-sum, .lmonth.folded:hover .lfold-sum { color: var(--text-dim); }
 .lrow.item.sel .lday { color: var(--text); }
 /* The stamp at the top of the date column: the month and day while that day's first item is above the top */
 .side-stamp {
@@ -1411,6 +1421,8 @@ body:not(.linking) .link-chips { display: none; }
 .lrow.sub.kid.deep { padding-left: calc(var(--space-2) + 62px); }
 .lrow.sub.kid.lone { padding-left: calc(var(--space-2) + 22px); }
 .lrow.sub.kid.lone::before { left: calc(var(--space-2) + 3px); }
+/* An opened VOD's "Segments" line, opening to every segment on it */
+.lrow.sub.group .ltitle, .lrow.sub.group .lkind { color: var(--text); }
 .lrow.sub > .lcaret { margin-left: -18px; }
 .lrow.sub .lkind { color: var(--text-dim); }
 .lrow.sub .ltitle { color: var(--text-dim); }
@@ -1419,15 +1431,39 @@ body:not(.linking) .link-chips { display: none; }
 .lrow.sub.current .ltitle { font-weight: 700; }
 /* In the cards view an opened VOD's rows follow its card */
 .side-list:not(.rows) > .lrow { position: relative; left: auto; right: auto; flex: none; }
+/* The card at the bottom (badrfly 2026-11-21): always the same height, kept even while empty, so the list never changes size */
 .side-peek {
+  --peek-card-h: 92px;
   flex: none;
+  box-sizing: content-box;
+  height: var(--peek-card-h);
   padding: var(--space-2);
   border-top: 1px solid var(--line);
   background: var(--bg-1);
+  overflow: hidden;
 }
-.side-peek .card { background: var(--bg-2); }
+.side-peek[hidden] { display: none; }
+.side-peek .card { background: var(--bg-2); box-sizing: border-box; height: var(--peek-card-h); overflow: hidden; position: relative; }
+/* One title line, the meta lines that fit, and the buttons in a column on the right */
+.side-peek .card-title { -webkit-line-clamp: 1; }
+.side-peek .card-body { overflow: hidden; padding-right: 26px; }
+.side-peek .card-meta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.side-peek .card-status { flex-wrap: nowrap; overflow: hidden; }
+.side-peek .card-actions { position: absolute; top: 2px; right: 2px; bottom: 2px; margin: 0; flex-direction: column; justify-content: flex-start; gap: 0; }
+.side-peek .card-actions sl-icon-button { font-size: 15px; }
+.side-peek .card-actions sl-icon-button::part(base) { padding: 4px; }
+.peek-empty {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  font-size: var(--font-size-small);
+}
 
-.side-listwrap { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
+/* overflow: the date stamp, pushed up by the next day, never shows over the buttons above the list */
+.side-listwrap { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; overflow: hidden; }
 
 /* The library's search box (badrfly 2026-11-20): always in sight over the lists; shortcuts become chips under it */
 .side-search { position: relative; padding: var(--space-2) var(--space-2) 0; }
@@ -1756,3 +1792,4 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .side-list.details .lmonth-label { right: auto; left: var(--space-3); }
 .member-list sl-checkbox::part(base) { width: 100%; }
 .member-list sl-checkbox::part(label) { flex: 1; }
+.side-list.details .lmonth.folded .lfold-sum { left: auto; right: var(--space-3); }

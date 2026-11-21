@@ -90,7 +90,9 @@ const KEYBINDS = [
   { id: "cardDrag", scope: "library", keys: ["Drag"], description: "Drop a card on a player, a timeline row or the export list" },
   { id: "detailsWheel", scope: "library", keys: ["Wheel"], description: "Details view, over the column headings: scroll the columns left and right (there's no scrollbar sideways)" },
   { id: "detailsSort", scope: "library", keys: ["Click"], description: "Details view: a column heading sorts the list by it (again = the other way); rows and cards use the same sort. Drag a heading's edge to resize it, right-click the headings to show or hide columns" },
-  { id: "calendarRange", scope: "library", keys: ["Shift+Click"], description: "Calendar (next to the view buttons): Shift+click two days to show only those days; a plain click goes to the day in the list" },
+  { id: "foldDates", scope: "library", keys: ["Click date"], description: "Date column: a month's name hides or shows that month's items; on Clips and Videos a day's number does the same for the day; the date at the top folds what it names" },
+  { id: "foldAllMonths", scope: "library", keys: ["Alt+Click month"], description: "Date column: a month's name folds every month (again: opens them all)" },
+  { id: "calendarRange", scope: "library", keys: ["Shift+Click"], description: "Calendar (only the button next to the view buttons opens it): Shift+click two days to show only those days; a plain click goes to the day in the list" },
   { id: "exportRemove", scope: "library", keys: ["Delete"], description: "Take the focused row off the export list" },
   { id: "dragCancel", scope: "library", keys: ["Escape"], description: "Cancel a drag" },
 

@@ -92,6 +92,9 @@ const state = {
   mark: "",
   // "Sync with" (Player 2's piece menu) waiting for a channel to be picked: { onPick, onCancel, shade }
   picking: null,
+  // Folded months and days per list (badrfly 2026-11-21: a click on a month's name or a day's number in the date column hides its items;
+  // days fold on CLIPS and VIDEOS only). Kept while the page is open. allMonths = Alt+click folded every month: months then lists the open ones.
+  folds: { vods: { allMonths: false, months: new Set(), days: new Set() }, clips: { allMonths: false, months: new Set(), days: new Set() }, videos: { allMonths: false, months: new Set(), days: new Set() } },
 };
 
 let handlers = { onLoad: () => {}, onExport: () => {} };
@@ -113,13 +116,20 @@ export function setUpLibrary(options) {
   $("side-list").addEventListener("mouseleave", (event) => { if (!$("side-peek").contains(event.relatedTarget)) setHovered(""); });
   $("side-peek").addEventListener("mouseleave", (event) => { if (!$("side-list").contains(event.relatedTarget)) setHovered(""); });
   for (const button of document.querySelectorAll("#side-views [data-view]")) button.addEventListener("click", () => setView(button.dataset.view));
-  $("side-stamp").addEventListener("click", (event) => openCalendarAt(event.currentTarget, stampDay()));
+  // The stamp folds what it names: its day on CLIPS / VIDEOS, its month on VODs
+  $("side-stamp").addEventListener("click", (event) => {
+    const fold = event.currentTarget._fold;
+    if (fold) toggleFold(fold.kind, fold.key, { keepInView: true });
+  });
   $("side-calendar").addEventListener("click", (event) => openCalendarAt(event.currentTarget));
   new ResizeObserver(() => {
     if (state.view === "cards") return;
     scheduleWindow();
     if (state.view === "details") applyColumnLayout();
   }).observe($("side-list"));
+  new ResizeObserver(() => fitListHeight()).observe($("side-listwrap"));
+  // Scrolling stops on a line's start, so the top row is never cut in half (rows and Details)
+  $("side-list").addEventListener("scrollend", () => snapScroll());
   setUpDetails();
   renderViewButton();
   setUpFilter();
@@ -796,6 +806,12 @@ async function loadMoreVideos() {
 function loadMoreIfNear() {
   const list = $("side-list");
   if (list.scrollTop + list.clientHeight <= list.scrollHeight - NEAR_BOTTOM_PX) return;
+  // Below a folded month the list doesn't load on by itself (folding every month would load the whole library): "Load older" does
+  if (railLines()?.at(-1)?.key === "load-older") return;
+  loadMore();
+}
+
+function loadMore() {
   if (state.list === "vods") loadMoreVods();
   else if (state.list === "clips") loadMoreClips();
   else loadMoreVideos();
@@ -894,6 +910,8 @@ function render() {
       const node = line.month ? monthRow(line, index)
         : line.head ? el("div", { class: "side-sep day" }, el("i"))
         : line.note ? kidNote(line)
+        : line.fold ? foldRow(line)
+        : line.group ? groupRow(line)
         : line.sub ? subRow(line)
         : line.kid ? listRow(line)
         : card(specFor(line.item, line.type));
@@ -1027,6 +1045,7 @@ function renderDetailsHead() {
   head.hidden = !show;
   $("side-list").classList.toggle("details", show);
   applyColumnLayout();
+  fitListHeight();
   if (!show) return;
   const list = state.list;
   const sort = state.sorts[list];
@@ -1300,6 +1319,7 @@ function linesFor(items) {
   let dayKey = null;
   let month = null;
   let day = null;
+  let fold = null;
   for (const item of items) {
     const at = itemDate(item, type);
     const ms = at ? new Date(at).getTime() : NaN;
@@ -1311,28 +1331,116 @@ function linesFor(items) {
     if (mKey !== monthKey) {
       monthKey = mKey;
       dayKey = null;
-      month = { month: monthName(p, thisYear), key: `month:${mKey}:${lines.length}`, at: p, count: 0 };
+      month = { month: monthName(p, thisYear), key: `month:${mKey}:${lines.length}`, at: p, count: 0, foldKey: mKey, folded: isFolded("month", mKey) };
       lines.push(month);
+    }
+    // A folded month: only its line (with how many it hides)
+    if (month.folded) {
+      month.count++;
+      continue;
     }
     if (dKey !== dayKey) {
       if (dayKey !== null) lines.push({ head: true, key: `day:${dKey}:${lines.length}` });
       dayKey = dKey;
       day = { label: p ? dayLabel(ms, zone) : "No date", number: p ? String(p.day) : "–", count: 0 };
       first = true;
+      // A folded day: one line in place of its items
+      fold = type !== "vod" && isFolded("day", dKey) ? { fold: true, key: `fold:${dKey}:${lines.length}`, foldKey: dKey, at: p, day, count: 0 } : null;
+      if (fold) lines.push(fold);
     }
     day.count++;
     month.count++;
+    if (fold) {
+      fold.count++;
+      continue;
+    }
     const line = { key: itemKey(item, type), item, type, at: p, day, first };
     lines.push(line);
     if (type === "vod" && state.open.has(String(item.vodId))) lines.push(...kidLines(item, p));
     if (type !== "vod" && isSubOpen(type, item)) lines.push(...subLines(line));
   }
+  if (month?.folded && listHasMore()) lines.push({ note: "Load older", run: () => loadMore(), key: "load-older" });
   return lines;
 }
 
-// A line that isn't an item or a note: a month or the line between days
+// A line that isn't an item or a note: a month, the line between days or a folded day
 function isMark(line) {
-  return Boolean(line.month || line.head);
+  return Boolean(line.month || line.head || line.fold);
+}
+
+// ---------- folding months and days (badrfly 2026-11-21) ----------
+// A click on a month's name in the date column hides that month's items (one line with a pill and "42 clips hidden" stays); again shows
+// them. On CLIPS and VIDEOS a day's number does the same for the day. Alt+click on a month folds or opens every month. What's opened
+// inside (VODs, clips, edits, folded days) stays as it was. The stamp at the top folds what it names.
+
+function foldsOf() {
+  return state.folds[state.list];
+}
+
+function isFolded(kind, key) {
+  const f = foldsOf();
+  if (kind === "day") return f.days.has(key);
+  return f.allMonths ? !f.months.has(key) : f.months.has(key);
+}
+
+function toggleFold(kind, key, { keepInView = false } = {}) {
+  const f = foldsOf();
+  const set = kind === "day" ? f.days : f.months;
+  if (set.has(key)) set.delete(key);
+  else set.add(key);
+  render();
+  if (keepInView) revealFold(key);
+}
+
+// Alt+click: every month folded, or every month open when they all were
+function toggleAllMonths() {
+  const f = foldsOf();
+  const months = (railLines() ?? []).filter((line) => line.month);
+  const allFolded = months.length > 0 && months.every((line) => line.folded);
+  f.allMonths = !allFolded;
+  f.months.clear();
+  render();
+}
+
+// After folding from the stamp: the folded line at the top, so the list doesn't jump somewhere else
+function revealFold(key) {
+  const lines = railLines() ?? [];
+  const index = lines.findIndex((line) => line.foldKey === key);
+  if (index < 0) return;
+  const list = $("side-list");
+  const y = lineY(index);
+  if (y < list.scrollTop) list.scrollTop = y;
+  updateStamp();
+}
+
+function lastMonth() {
+  return (railLines() ?? []).findLast((line) => line.month) ?? null;
+}
+
+function hiddenLabel(n) {
+  const noun = state.list === "vods" ? "VOD" : state.list === "clips" ? "clip" : "video";
+  return `${n.toLocaleString()} ${noun}${n === 1 ? "" : "s"} hidden`;
+}
+
+// A folded day: "2 clips hidden" and the day's number as a pill in the date column
+function foldRow(line) {
+  const open = () => toggleFold("day", line.foldKey);
+  const pill = el("button", { class: "lday datepill", type: "button", title: `Show ${dayTitle(line.day)}` }, line.day.number);
+  pill.addEventListener("pointerdown", (event) => event.stopPropagation());
+  pill.addEventListener("click", (event) => {
+    event.stopPropagation();
+    open();
+  });
+  const node = el("div", { class: "lrow lfold", role: "button", tabindex: "0", "aria-label": `${dayTitle(line.day)}, ${hiddenLabel(line.count)}. Show them`, title: `Show ${dayTitle(line.day)}`, "data-key": line.key },
+    el("span", { class: "lfold-sum" }, hiddenLabel(line.count)), pill);
+  node.addEventListener("click", open);
+  node.addEventListener("keydown", (event) => {
+    if (event.target === node && (event.key === "Enter" || event.key === " ")) {
+      event.preventDefault();
+      open();
+    }
+  });
+  return node;
 }
 
 const monthFormatters = new Map();
@@ -1643,12 +1751,22 @@ function segmentEditLines(segmentLine) {
 function otherLines(vodId, at, kids) {
   const lines = [];
   const common = { sub: true, kid: true, vodId, at, parent: null };
-  for (const marker of kids.segments ?? []) {
-    const segment = { markerId: marker.id, position: 0, label: marker.label, color: marker.color, startSeconds: marker.seconds, endSeconds: marker.endSeconds,
-      keptSeconds: marker.keptSeconds, vodId: marker.vodId, cuts: marker.cuts };
-    // Its "video" for loading and renaming: the VOD and the segment's maker
-    const line = { ...common, key: `kid:${vodId}:seg:${marker.id}`, type: "segment", item: segment, video: { vodId: marker.vodId, userId: marker.createdByUserId }, home: String(vodId), lone: true, segKey: "lseg" };
-    lines.push(line, ...segmentEditLines(line));
+  const segments = kids.segments ?? [];
+  // badrfly 2026-11-21: the segments sit in one "Segments" line (closed at first) instead of a long list under the VOD
+  if (segments.length) {
+    const groupKey = `kid:${vodId}:segs`;
+    const group = { ...common, key: groupKey, group: "segs", item: { id: vodId }, type: "segs", count: segments.length, lone: true };
+    lines.push(group);
+    if (isSubOpen("segs", group.item)) {
+      for (const marker of segments) {
+        const segment = { markerId: marker.id, position: 0, label: marker.label, color: marker.color, startSeconds: marker.seconds, endSeconds: marker.endSeconds,
+          keptSeconds: marker.keptSeconds, vodId: marker.vodId, cuts: marker.cuts };
+        // Its "video" for loading and renaming: the VOD and the segment's maker
+        const line = { ...common, key: `${groupKey}>segs:${vodId}>seg:${marker.id}`, type: "segment", item: segment, video: { vodId: marker.vodId, userId: marker.createdByUserId },
+          home: String(vodId), segKey: "lseg", parent: { item: group.item, type: "segs", key: groupKey } };
+        lines.push(line, ...segmentEditLines(line));
+      }
+    }
   }
   for (const edit of kids.other ?? []) lines.push({ ...common, key: `kid:${vodId}:edit:${edit.id}`, type: "edit", item: edit, lone: true });
   return lines;
@@ -1686,6 +1804,48 @@ function itemCaret(line) {
 function subOpenLine(line) {
   if (line.type === "edit") handlers.onOpenEdit?.(line.item.id);
   else handlers.onLoadSegment?.(line.item, line.video);
+}
+
+// The "Segments (n)" line under an opened VOD: opens to every segment on it
+function groupRow(line) {
+  const open = isSubOpen(line.type, line.item);
+  const caret = el("button", { class: `lcaret${open ? " open" : ""}`, type: "button", tabindex: "-1", "aria-label": open ? "Close" : "Show the segments", title: open ? "Close" : "Show the segments (→)" },
+    el("sl-icon", { library: "ph", name: "caret-right" }));
+  caret.addEventListener("pointerdown", (event) => event.stopPropagation());
+  caret.addEventListener("dblclick", (event) => event.stopPropagation());
+  const node = el("div", { class: "lrow item sub kid lone group", role: "listitem", tabindex: "0", "aria-label": `Segments, ${line.count}`, "aria-expanded": String(open), "data-key": line.key, title: open ? "Close" : "Every segment on this VOD" },
+    caret,
+    el("sl-icon", { library: "ph", name: "brackets-square", class: "lkind" }),
+    el("span", { class: "ltitle" }, "Segments"),
+    el("span", { class: "llen" }, String(line.count)));
+  const toggle = (want) => toggleSub(line.type, line.item, want);
+  caret.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggle();
+  });
+  node.addEventListener("click", () => select(line.key, { focus: false }));
+  node.addEventListener("dblclick", () => toggle());
+  node.addEventListener("mouseenter", () => setHovered(line.key));
+  node.addEventListener("focus", () => select(line.key, { focus: false }));
+  node.addEventListener("keydown", (event) => {
+    if (event.target !== node) return;
+    if (event.key === "Enter") toggle();
+    else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      moveSelection(event.key === "ArrowDown" ? 1 : -1);
+    } else if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+      event.preventDefault();
+      if (event.key === "ArrowLeft" && !isSubOpen(line.type, line.item)) {
+        // Back to its VOD
+        select(`vod:${line.vodId}`, { focus: false });
+        focusRow(`vod:${line.vodId}`);
+        return;
+      }
+      toggle(event.key === "ArrowRight");
+      focusRow(line.key);
+    }
+  });
+  return node;
 }
 
 // A segment or edit under its clip or video
@@ -1776,11 +1936,15 @@ export async function revealLoaded() {
     const kids = state.kids.get(vodId);
     if (loaded.entryId) parent = kids?.clips?.find((c) => c.id === Number(loaded.entryId)) && { type: "clip", item: kids.clips.find((c) => c.id === Number(loaded.entryId)) };
     else if (loaded.videoId) parent = kids?.videos?.find((v) => v.id === Number(loaded.videoId)) && { type: "video", item: kids.videos.find((v) => v.id === Number(loaded.videoId)) };
+    else if (loaded.segmentId) state.subOpen.add(subKeyOf("segs", { id: vodId }));
     else if (loaded.editId) {
       // An edit of a segment: the segment's line under the VOD, opened
       const editId = Number(loaded.editId);
       const segmentId = [...state.segEdits].find(([, edits]) => edits.some((e) => e.id === editId))?.[0] ?? null;
-      if (segmentId) state.subOpen.add(subKeyOf("lseg", { id: segmentId }));
+      if (segmentId) {
+        state.subOpen.add(subKeyOf("segs", { id: vodId }));
+        state.subOpen.add(subKeyOf("lseg", { id: segmentId }));
+      }
     }
   } else if (loaded.entryId && state.clips.some((c) => c.id === Number(loaded.entryId))) {
     list = "clips";
@@ -1850,19 +2014,31 @@ function lineAtY(y) {
 
 // A month's line: across the whole width, its name in the date column
 function monthRow(line, index) {
-  const label = el("button", { class: "lmonth-label", type: "button", title: `${monthTitle(line)} · open the calendar` }, line.month);
+  const label = el("button", { class: `lmonth-label${line.folded ? " datepill" : ""}`, type: "button", "aria-expanded": String(!line.folded),
+    title: line.folded ? `Show ${monthTitle(line)} (Alt+click: every month)` : `Hide ${monthTitle(line)} (Alt+click: every month)` }, line.month);
   label.addEventListener("pointerdown", (event) => event.stopPropagation());
-  label.addEventListener("click", (event) => openCalendarAt(event.currentTarget, line.at));
-  return el("div", { class: `lmonth${index === 0 ? " first" : ""}`, role: "presentation", "data-line": String(index) }, label);
+  label.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (event.altKey) toggleAllMonths();
+    else toggleFold("month", line.foldKey);
+  });
+  const node = el("div", { class: `lmonth${index === 0 ? " first" : ""}${line.folded ? " folded" : ""}`, role: "presentation", "data-line": String(index) },
+    line.folded ? el("span", { class: "lfold-sum" }, hiddenLabel(line.count) + (line === lastMonth() && listHasMore() ? " so far" : "")) : null, label);
+  // The whole folded line opens it
+  if (line.folded) node.addEventListener("click", (event) => (event.altKey ? toggleAllMonths() : toggleFold("month", line.foldKey)));
+  return node;
 }
 
 // The day's number in front of its first item
+// On CLIPS and VIDEOS a click folds the day; on VODs it's only the number (a day is usually one stream)
 function dayNumber(line) {
-  const node = el("button", { class: "lday", type: "button", tabindex: "-1", title: `${dayTitle(line.day)} · open the calendar` }, line.day.number);
+  if (state.list === "vods") return el("span", { class: "lday static", title: dayTitle(line.day) }, line.day.number);
+  const node = el("button", { class: "lday", type: "button", tabindex: "-1", title: `Hide ${dayTitle(line.day)}` }, line.day.number);
   node.addEventListener("pointerdown", (event) => event.stopPropagation());
   node.addEventListener("click", (event) => {
     event.stopPropagation();
-    openCalendarAt(event.currentTarget, line.at);
+    const p = line.at;
+    toggleFold("day", p ? `${p.year}-${p.month}-${p.day}` : "none");
   });
   node.addEventListener("dblclick", (event) => event.stopPropagation());
   return node;
@@ -1908,11 +2084,13 @@ function updateStamp() {
   stamp.hidden = false;
   stamp.style.transform = `translateY(${offset}px)`;
   stamp.style.right = `${list.offsetWidth - list.clientWidth}px`;
-  stamp.title = `${dayTitle(lines[first].day)} · open the calendar`;
+  const p = lines[first].at;
+  stamp._fold = state.list === "vods" ? { kind: "month", key: lines[month]?.foldKey } : { kind: "day", key: p ? `${p.year}-${p.month}-${p.day}` : "none" };
+  stamp.title = state.list === "vods" ? `Hide ${monthTitle(lines[month])}` : `Hide ${dayTitle(lines[first].day)}`;
   stamp.replaceChildren(el("span", { class: "stamp-month" }, lines[month]?.month ?? ""), el("span", { class: "stamp-day" }, lines[first].day.number));
 }
 
-// ---------- the calendar (badrfly 2026-11-21: the button right of the view switch; month names, day numbers and the stamp open it too) ----------
+// ---------- the calendar (badrfly 2026-11-21: only the button right of the view switch opens it; the date column folds instead) ----------
 // Each day shows how many of the list's items it has (clips and videos: counted by the server for the filters on, without the day ones;
 // VODs: the ones loaded). Click a day = go there in the list (older pages load as needed); Shift+click two days = show only those days.
 
@@ -1925,10 +2103,6 @@ function topMonth() {
   let index = lineAtY($("side-list").scrollTop + 1);
   while (index > 0 && !lines[index].month) index--;
   return lines[index]?.at ?? null;
-}
-
-function stampDay() {
-  return topMonth();
 }
 
 function openCalendarAt(anchor, at = null) {
@@ -2060,6 +2234,15 @@ async function jumpToDay(day) {
   // Not grouped by date, or a day filter that leaves the day out: show only that day instead
   if (!sortedByDate() || (bounds && (f.last24h || (f.range ? day < f.range.from || day > f.range.to : f.day !== day)))) return setDay(day);
   const order = state.sorts[state.list].order;
+  // A folded month or day opens to show it
+  const [y, m, d] = day.split("-").map(Number);
+  const folds = foldsOf();
+  if (isFolded("month", `${y}-${m}`)) {
+    if (folds.allMonths) folds.months.add(`${y}-${m}`);
+    else folds.months.delete(`${y}-${m}`);
+  }
+  folds.days.delete(`${y}-${m}-${d}`);
+  render();
   for (let tries = 0; tries < 40; tries++) {
     const lines = railLines() ?? [];
     const index = lines.findIndex((line) => line.first && !line.kid && dayOf(line) === day);
@@ -2107,7 +2290,7 @@ function renderRows(lines) {
   // Where each line starts: rows are ROW_H, the lines between days SEP_H, months MONTH_H
   const ys = new Array(lines.length + 1);
   ys[0] = 0;
-  lines.forEach((line, i) => { ys[i + 1] = ys[i] + (line.month ? MONTH_H : line.head ? SEP_H : ROW_H); });
+  lines.forEach((line, i) => { ys[i + 1] = ys[i] + (line.month ? (line.folded ? ROW_H : MONTH_H) : line.head ? SEP_H : ROW_H); });
   rowsModel.ys = ys;
   let inner = list.querySelector(":scope > .vlist");
   if (!inner) {
@@ -2142,7 +2325,7 @@ function drawWindow() {
     let entry = nodes.get(line.key);
     if (!entry) {
       entry = { item: line.item, sig: lineSig(line, i === 0),
-        node: line.month ? monthRow(line, i) : line.head ? dayRow() : line.note ? kidNote(line) : line.sub ? subRow(line)
+        node: line.month ? monthRow(line, i) : line.head ? dayRow() : line.note ? kidNote(line) : line.fold ? foldRow(line) : line.group ? groupRow(line) : line.sub ? subRow(line)
           : state.view === "details" && !line.kid ? detailsRow(line) : listRow(line) };
       nodes.set(line.key, entry);
     }
@@ -2174,8 +2357,10 @@ function dayRow() {
 
 // What a line shows that can change: a row drawn with an older one is made again
 function lineSig(line, top) {
-  if (line.month) return `${line.month}|${line.count}|${top}`;
+  if (line.month) return `${line.month}|${line.count}|${top}|${line.folded}|${listHasMore()}`;
+  if (line.fold) return `${line.count}`;
   if (line.head || line.note) return line.note ?? "";
+  if (line.group) return `${line.count}|${isSubOpen(line.type, line.item)}`;
   if (line.sub) {
     const loaded = p2Loaded();
     const t = line.item;
@@ -2318,8 +2503,12 @@ function moveSelection(step) {
   if (index < 0 || index >= lines.length) return;
   const list = $("side-list");
   const y = rowsModel.ys[index];
-  if (y < list.scrollTop + SEP_H) list.scrollTop = y - (lines[index - 1]?.month ? MONTH_H : SEP_H);
-  else if (y + ROW_H > list.scrollTop + list.clientHeight) list.scrollTop = y + ROW_H - list.clientHeight;
+  // Scrolled to a line's start, so the rows stay whole (see snapScroll)
+  if (y < list.scrollTop + SEP_H) list.scrollTop = isMark(lines[index - 1] ?? {}) ? rowsModel.ys[index - 1] : y;
+  else if (y + ROW_H > list.scrollTop + list.clientHeight) {
+    const want = y + ROW_H - list.clientHeight;
+    list.scrollTop = rowsModel.ys.find((start) => start >= want - 0.5) ?? want;
+  }
   drawWindow();
   select(lines[index].key);
 }
@@ -2337,17 +2526,54 @@ function setHovered(key) {
 
 // The rows view's card at the bottom: the row under the mouse, else the selected one
 let peekKey = null;
+
+// Rows and Details: the list is a whole number of rows high (the rest is left blank above the card), so the bottom row isn't cut in half
+function fitListHeight() {
+  const list = $("side-list");
+  const wrap = $("side-listwrap");
+  if (state.view === "cards") {
+    list.style.height = "";
+    list.style.flex = "";
+    return;
+  }
+  const head = $("side-dhead");
+  const room = wrap.clientHeight - (head.hidden ? 0 : head.offsetHeight);
+  const height = Math.max(ROW_H, Math.floor(room / ROW_H) * ROW_H);
+  if (list.style.height === `${height}px`) return;
+  list.style.flex = "none";
+  list.style.height = `${height}px`;
+}
+
+function snapScroll() {
+  if (state.view === "cards" || !rowsModel) return;
+  const list = $("side-list");
+  const top = list.scrollTop;
+  const max = list.scrollHeight - list.clientHeight;
+  if (top <= 0 || top >= max - 1) return;
+  const i = lineAt(top);
+  const ys = rowsModel.ys;
+  const target = top - ys[i] < ys[i + 1] - top ? ys[i] : ys[i + 1];
+  if (Math.abs(target - top) > 0.5) list.scrollTo({ top: Math.min(target, max), behavior: "smooth" });
+}
 function renderPeek() {
   const peek = $("side-peek");
   // Rows view: the row under the mouse, else the selected one. Cards view: only a row of an opened VOD under the mouse
   const lines = itemLines().filter((l) => state.view !== "cards" || l.kid || l.sub);
   const found = lines.find((l) => l.key === state.hovered) ?? (state.view !== "cards" ? lines.find((l) => l.key === state.selected[state.list]) : null);
   // A segment or edit line shows the card of its clip or video
-  const line = found?.sub ? found.parent : found;
-  peek.hidden = !line;
-  if (!line) {
+  const line = found?.group ? null : found?.sub ? (found.parent?.type === "segs" ? null : found.parent) : found;
+  // badrfly 2026-11-21: the card's place is always kept, the same size, so the list above never changes height (a hint while empty)
+  if (state.view === "cards") peek.hidden = !line;
+  else peek.hidden = false;
+  if (!line && state.view === "cards") {
     peekKey = null;
     peek.replaceChildren();
+    return;
+  }
+  if (!line) {
+    if (peekKey === "" && peek.firstChild) return;
+    peekKey = "";
+    peek.replaceChildren(el("div", { class: "peek-empty faint" }, "Point at a row to see its card here"));
     return;
   }
   if (peekKey === line.key && peek.firstChild?._item === line.item && peek.firstChild?._sig === rowSig(line.item, line.type)) return;
@@ -2372,6 +2598,7 @@ function setView(view) {
   list.scrollLeft = 0;
   rowsModel = null;
   renderDetailsHead();
+  fitListHeight();
   render();
 }
 
