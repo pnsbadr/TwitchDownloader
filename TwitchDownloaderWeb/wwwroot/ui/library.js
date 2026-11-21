@@ -2448,9 +2448,13 @@ function drawWindow() {
   }
   // Keep the focused row in the page even when it scrolled out of view (keyboard focus isn't lost)
   // A row drawn anew (its item changed) takes the focus over from its old node
+  // A row whose line is gone (badrfly 2026-11-21: a folded day's "n clips hidden" line after opening the day again, still focused from the
+  // click on its date) is never kept: it would sit over the line now in its place. The focus goes to the row now at that place.
   const focused = document.activeElement?.closest?.(".lrow");
-  const replacement = focused && !wanted.includes(focused) && focused.dataset.key ? wanted.find((n) => n.dataset.key === focused.dataset.key) : null;
-  if (focused && inner.contains(focused) && !wanted.includes(focused) && !replacement) wanted.push(focused);
+  const live = focused && [...nodes.values()].some((entry) => entry.node === focused);
+  let replacement = focused && !wanted.includes(focused) && focused.dataset.key ? wanted.find((n) => n.dataset.key === focused.dataset.key) : null;
+  if (focused && inner.contains(focused) && !live && !replacement) replacement = wanted.find((n) => n.style.top === focused.style.top && n.tabIndex === 0) ?? null;
+  if (focused && inner.contains(focused) && live && !wanted.includes(focused) && !replacement) wanted.push(focused);
   // Only rows that come or go are moved (rows are placed by top, so order doesn't matter): taking a focused row out and back loses its focus
   const keep = new Set(wanted);
   for (const child of [...inner.children]) if (!keep.has(child)) child.remove();
