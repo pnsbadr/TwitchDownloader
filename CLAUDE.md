@@ -746,7 +746,7 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   `ProjectEndpoints.SegmentOf`); an opened VOD ends with **every segment on it** (`kids.segments`, from `/api/markers`; badrfly 2026-11-21:
   a vertical edit mustn't be found only through a video) inside one **Segments (n)** line (closed at first, `segs:{vodId}`), each opening to its edits (`lseg:` keys; inside a video `seg:`), then the edits
   left (a VOD range, or a deleted clip/video/segment: `kids.other`). Double-click / Enter loads a segment
-  or opens an edit; right-click = `editMenu` / `segmentMenu` from `ui/p2-tree.js`; the loaded line is marked (`player2Changed`). An opened
+  or opens an edit; edit and segment lines drag like cards (an edit as `kind: "project"`: onto the export list or Player 2's screen); right-click = `editMenu` / `segmentMenu` from `ui/p2-tree.js`; the loaded line is marked (`player2Changed`). An opened
   VOD reads its edits once (`/api/projects?vodId=`) and fills its rows' lists; rows on the CLIPS/VIDEOS tabs read theirs when opened
   (`entryId=` / `videoId=`); `refreshEdits()` re-reads after edits change. Player 2's header menu only has the loaded item's actions plus
   **Show in the library** (`revealLoaded`: its VOD opened to the line, else its clip/video tab). The tree isn't drawn any more.

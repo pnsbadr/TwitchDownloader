@@ -24,7 +24,7 @@ import { clipColor, CLIP_COLOR, MARKER_COLORS, STREAM_COLORS } from "./colors.js
 import { askText, confirmAction } from "./dialogs.js";
 import { openMenu } from "./menu.js";
 import { calendarView, openPopover } from "./calendar.js";
-import { editMenu, segmentMenu } from "./p2-tree.js";
+import { editMenu, segmentMenu, segmentData } from "./p2-tree.js";
 
 const POLL_MS = 3000;
 const NEAR_BOTTOM_PX = 300;
@@ -1959,6 +1959,13 @@ function groupRow(line) {
   return node;
 }
 
+// A segment line's drag data: the segment with its VOD's title, date and thumbnail where they're known (the export list shows them)
+function segmentDragData(segment, video) {
+  const data = segmentData(segment, video);
+  const vod = knownVod(data.vodId);
+  return { ...data, vodTitle: vod?.title, vodDate: vod?.createdAtUtc, thumbnailUrl: vod?.thumbnailUrl };
+}
+
 // A segment or edit under its clip or video
 function subRow(line) {
   const loaded = p2Loaded();
@@ -1992,6 +1999,11 @@ function subRow(line) {
     el("span", { class: "ltitle" }, title),
     el("span", { class: "llen" }, detail));
   const menu = () => (line.type === "edit" ? editMenu(thing) : segmentMenu(thing, line.video));
+  // Edits drag onto the export list (and Player 2's screen, which opens them); segments wherever a segment goes
+  const drag = line.type === "edit"
+    ? { kind: "project", label: title, data: thing }
+    : !thing.removed && thing.endSeconds != null && { kind: "segment", label: title, data: segmentDragData(thing, line.video) };
+  if (drag) draggable(node, () => drag, { ghost: () => cloneGhost(node, trimGhost) });
   node.addEventListener("click", (event) => clickSelect(line.key, event));
   node.addEventListener("dblclick", () => subOpenLine(line));
   node.addEventListener("mouseenter", () => setHovered(line.key));
