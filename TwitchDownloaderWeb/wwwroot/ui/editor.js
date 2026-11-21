@@ -6,7 +6,7 @@ import { registerIconLibrary } from "https://cdn.jsdelivr.net/npm/@shoelace-styl
 import { setUpStart, openStart, startIsOpen } from "./start.js";
 import { $, el, api, me, can, loadMe, startLiveEvents, sessionHandlers, TEAM_PAGE_PERMISSIONS, wireIconButtons, loadSetting, saveSetting, toast, formatDuration, formatDate } from "./core.js";
 import { dropTarget, watchDrags, shadePath } from "./drag.js";
-import { setUpLibrary, refreshEdits, player2Changed, revealLoaded, noteOpened, myMarks, toggleStar, showList, refreshClips, refreshVideos, refreshLibraryFilters, knownVod, knownVodTitle, pickChannel, teamChannels, adjacentVod, focusLibrarySearch } from "./library.js";
+import { setUpLibrary, refreshEdits, player2Changed, revealLoaded, noteOpened, myMarks, toggleStar, showList, refreshClips, refreshVideos, refreshLibraryFilters, knownVod, knownVodTitle, pickChannel, teamChannels, adjacentVod, focusLibrarySearch, libraryHidden, setLibraryHidden } from "./library.js";
 import { setUpLinkTray, renderLinkTray, savedLinking, addSegmentsTo, vodDay, vodInfo } from "./link-tray.js";
 import { setUpTree, forgetTree, segmentData } from "./p2-tree.js";
 import { MARKER_COLORS } from "./colors.js";
@@ -2111,6 +2111,13 @@ function setUpKeys() {
     if (keybindFor("player", event) === "shortcutsHelp") {
       event.preventDefault();
       showShortcuts();
+      return;
+    }
+    // Ctrl+B: hide / show the library (both screens)
+    if (keybindFor("player", event) === "toggleLibrary") {
+      if (rowFocus) return;
+      event.preventDefault();
+      setLibraryHidden(!libraryHidden());
       return;
     }
     // Ctrl+K or / : the library's search box (both screens have the left panel)

@@ -122,6 +122,7 @@ export function setUpLibrary(options) {
     if (fold) toggleFold(fold.kind, fold.key, { keepInView: true });
   });
   $("side-calendar").addEventListener("click", (event) => openCalendarAt(event.currentTarget));
+  setUpHiding();
   new ResizeObserver(() => {
     if (state.view === "cards") return;
     scheduleWindow();
@@ -231,6 +232,7 @@ export function knownVodTitle(vodId) {
 
 // Clips / videos of one VOD (card menus, Player 2's tree)
 export function showVodWork(vodId, list = "clips") {
+  setLibraryHidden(false);
   state.who.vodId = String(vodId);
   if (handlers.onPickList) handlers.onPickList(list);
   else showList(list);
@@ -308,6 +310,7 @@ function channelPicture(channel, className) {
 }
 
 function renderChannelBar() {
+  renderRailChannels();
   const bar = $("side-channels");
   bar.hidden = state.channels.length === 0;
   bar.classList.toggle("single", !several() && !state.picking);
@@ -344,6 +347,9 @@ export function teamChannels() {
 
 export function pickChannel({ onPick, onCancel }) {
   cancelChannelPick();
+  // The channel bar is in the library: a hidden one opens for the pick and hides again after
+  const rehide = libraryHidden();
+  if (rehide) setLibraryHidden(false, { save: false });
   const shade = el("div", { class: "focus-shade pick-shade", title: "Click to cancel (Esc)" });
   shade.addEventListener("pointerdown", (event) => {
     event.preventDefault();
@@ -366,6 +372,7 @@ export function pickChannel({ onPick, onCancel }) {
   state.picking = {
     onPick, onCancel,
     stop: () => {
+      if (rehide) setLibraryHidden(true, { save: false });
       shade.remove();
       document.removeEventListener("keydown", onKey, true);
       window.removeEventListener("resize", cut);
@@ -1951,6 +1958,7 @@ function subRow(line) {
 export async function revealLoaded() {
   const loaded = p2Loaded();
   if (!loaded?.vodId) return;
+  setLibraryHidden(false);
   const vodId = String(loaded.vodId);
   const vod = mergedVods().find((v) => String(v.vodId) === vodId);
   let list = "vods";
@@ -3048,6 +3056,7 @@ function searchInput() {
 }
 
 export function focusLibrarySearch() {
+  setLibraryHidden(false);
   const input = searchInput();
   input.focus();
   input.select();
@@ -3858,4 +3867,60 @@ function toggleMine() {
   renderStatusBar();
   renderChips();
   reloadWho();
+}
+
+// ---------- hiding the library (badrfly 2026-11-21: like Twitch's followed channels) ----------
+//
+// The arrow in the tabs row (or Ctrl+B) hides the left panel; the screens take its room and a thin rail keeps a way back plus the
+// channel pictures (they filter like the channel bar). The panel isn't redrawn or emptied: it keeps its size off to the side, out of
+// sight, so its tab, scroll position, opened VODs, folds, filters and selection are exactly as they were when it comes back.
+
+const HIDDEN_KEY = "clipco.library.hidden";
+
+function setUpHiding() {
+  $("side-collapse").addEventListener("click", () => setLibraryHidden(true));
+  $("side-expand").addEventListener("click", () => setLibraryHidden(false));
+  setLibraryHidden(loadSetting(HIDDEN_KEY, false) === true, { save: false });
+}
+
+export function libraryHidden() {
+  return document.body.classList.contains("library-hidden");
+}
+
+export function setLibraryHidden(hidden, { save = true } = {}) {
+  if (save) saveSetting(HIDDEN_KEY, hidden);
+  if (hidden === libraryHidden()) return;
+  const side = $("side");
+  if (hidden) {
+    // Keep the panel's size while it's out of sight, so nothing inside it resizes, re-lays out or loses its scroll
+    const r = side.getBoundingClientRect();
+    side.style.setProperty("--side-hidden-w", `${r.width}px`);
+    if (side.contains(document.activeElement)) document.activeElement.blur();
+    closeCalendar();
+  }
+  document.body.classList.toggle("library-hidden", hidden);
+  side.inert = hidden;
+  $("side-rail").hidden = !hidden;
+  renderRailChannels();
+  // The screens changed width: players and timelines listen to window resizes
+  window.dispatchEvent(new Event("resize"));
+}
+
+function renderRailChannels() {
+  const rail = $("rail-channels");
+  if (!rail || !libraryHidden()) return;
+  rail.replaceChildren(...state.channels.map((channel) => {
+    const on = state.picked.has(channel.login);
+    const lit = !several() || !state.picked.size || on;
+    const live = channelIsLive(channel.login);
+    const name = channel.displayName || channel.login;
+    const button = el("button", {
+      type: "button",
+      class: `chan${live ? " live" : ""}${lit ? "" : " dim"}${several() && on ? " on" : ""}`,
+      "aria-label": `${name}${live ? " (live)" : ""}`,
+      "aria-pressed": several() ? String(on) : null,
+      onclick: () => toggleChannel(channel.login),
+    }, channelPicture(channel, "chan-picture"));
+    return withTooltip(button, `${name}${live ? " · live" : ""}${several() ? (on ? " · click to hide" : " · click to show") : ""}`, null, "right");
+  }));
 }
