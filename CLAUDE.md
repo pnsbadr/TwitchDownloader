@@ -741,13 +741,12 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
 - **Large libraries** (badrfly 2026-11-20, thread "Redesign the library for large teams"; design: artifact 9MdAVyAcfJWnanjTVNNRdt, built in
   5 PRs: 1 paging + rows, 2 search box with chips, 3 VOD cards open to their clips/videos, 4 team statuses (owner + a role permission) and
   tags, 5 stars / Recent / Mine and Player 2's picker): CLIPS and VIDEOS load 100 at a time (`paged=true`, next page near the bottom; clips
-  still downloading are re-read one by one, not the whole list). Every list shows as **rows** by default (28 px lines with a **thin line between days**, badrfly 2026-11-20: no day headings, the
-  date is the line's tooltip and on the month bar; only the rows in view are drawn, `ROW_H` / `SEP_H` in library.js = `.lrow` / `.lrow.lsep`
-  in editor.css). The **month bar** on the list's right edge (`#side-scrub`, `renderScrub` / `setUpScrub` in library.js; both views): at rest
-  this year's months, older years as 'YY, the month at the top of the list lit with that day's number under it; under the mouse the month
-  opens into its days (a year into its months), the others slide down, a day shows "Tue, Oct 27 · 3 clips", click or drag jumps; "…" loads
-  older pages. Marks stack from the top at their own height and a month opens only under a pointer that moved since the last one opened
-  (badrfly 2026-11-20: stretched marks left gaps and flickered open and shut). The **card** of the row under the mouse, else the selected one, is at the bottom (`#side-peek`). ↑/↓ move the selection.
+  still downloading are re-read one by one, not the whole list). Every list shows as **rows** by default (28 px lines; only the rows in view are drawn, `ROW_H` / `SEP_H` / `MONTH_H` in
+  library.js = `.lrow` / `.lrow.lsep` / `.lmonth` in editor.css). **Date column** (badrfly 2026-11-21, his sketch; replaced the month bar): a
+  thin line between items, a slightly thicker line between days, a month's line across the whole width with its name in the date column on
+  the right, and each day's number in that column in front of its first row or card (both views; `linesFor` / `renderRail` in library.js).
+  While a day's first item is above the top, `#side-stamp` keeps its month and day at the top of the column (pushed up by the next day);
+  a click on a month, a day or the stamp opens the loaded months to jump to, plus "Load older". The **card** of the row under the mouse, else the selected one, is at the bottom (`#side-peek`). ↑/↓ move the selection.
   The cards view is the button next to the count, remembered per member in `localStorage` `clipco.library.view.{userId}`.
   **VODs open to their work** (step 3, `toggleVod` / `loadKids` in library.js): a VOD with clips or videos gets an arrow (rows; cards: a
   caret button and a menu item); opened (click, → / ←), its videos then clips, in VOD order, are slim indented rows under it (kind icon in

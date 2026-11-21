@@ -1303,12 +1303,70 @@ body:not(.linking) .link-chips { display: none; }
 .lrow.item:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--accent); }
 .lrow.item.sel { background: var(--bg-3); box-shadow: inset 0 0 0 1px var(--accent); }
 .lrow-note { justify-content: center; }
-/* The line between days (badrfly 2026-11-20: the date is on the month bar and in the tooltip) */
-.lrow.lsep { height: 9px; padding: 0 var(--space-2); }
-.lsep i, .side-sep i { flex: 1; height: 1px; background: var(--line); }
-.lrow.lsep.first i, .side-sep.first i { background: none; }
-.side-sep { display: flex; align-items: center; height: 9px; padding: 0 var(--space-2); }
-.side-sep.first { height: 0; }
+/* Months, days and items (badrfly 2026-11-21, his sketch): a thin line between items, a slightly thicker one between days, a month's
+   line across the whole width with its name in the date column, each day's number in front of its first item. */
+.lrow.item:not(.first):not(.kid)::before {
+  content: "";
+  position: absolute;
+  left: var(--space-2);
+  right: 0;
+  top: -1px;
+  height: 1px;
+  background: var(--line);
+  pointer-events: none;
+}
+.lrow.lsep { height: 9px; padding: 0; }
+.lsep i, .side-sep i { flex: 1; height: 2px; border-radius: 1px; background: var(--line-strong); }
+.side-sep { display: flex; align-items: center; height: 9px; flex: none; }
+.side-sep.thin i { height: 1px; background: var(--line); }
+.lmonth { position: absolute; left: 0; right: 0; height: 22px; }
+.lmonth::before { content: ""; position: absolute; left: 0; right: 0; top: 3px; height: 2px; background: var(--text-faint); opacity: 0.55; }
+.lmonth.first::before { display: none; }
+.lmonth-label, .lday {
+  position: absolute;
+  border: 0;
+  background: none;
+  padding: 0 2px;
+  border-radius: var(--radius-xs);
+  font: 600 10px/1 var(--font-ui);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.lmonth-label { right: 4px; top: 8px; color: var(--text); text-transform: uppercase; letter-spacing: 0.04em; }
+.lday { right: -36px; width: 30px; top: 50%; transform: translateY(-50%); font-size: 12px; color: var(--text-dim); }
+.lmonth-label:hover, .lday:hover { color: var(--text); background: var(--bg-3); }
+.lrow.item.sel .lday { color: var(--text); }
+/* The stamp at the top of the date column: the month and day while that day's first item is above the top */
+.side-stamp {
+  position: absolute;
+  top: 0;
+  width: 40px;
+  height: 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 2px;
+  padding: 0 6px 0 0;
+  border: 0;
+  background: var(--bg-1);
+  box-shadow: 0 1px 0 var(--line);
+  cursor: pointer;
+  z-index: 3;
+}
+.side-stamp[hidden] { display: none; }
+.stamp-month { font: 600 8.5px/1 var(--font-ui); color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.04em; }
+.stamp-day { font: 600 12px/1 var(--font-ui); color: var(--text); font-variant-numeric: tabular-nums; }
+.side-stamp:hover .stamp-day, .side-stamp:hover .stamp-month { color: var(--accent-strong); }
+/* The date column: rows and cards leave it free */
+.side-list.rows.with-rail .lrow { right: 40px; }
+.side-list:not(.rows).with-rail { padding-right: 40px; gap: 0; }
+.side-list:not(.rows).with-rail > .card { position: relative; }
+.side-list:not(.rows).with-rail > .card .lday { top: 14px; transform: none; }
+.side-list:not(.rows) > .lmonth { position: relative; flex: none; margin: 0 -40px 0 calc(-1 * var(--space-2)); }
+.side-list:not(.rows).with-rail > .lrow { margin: 1px 0; }
 .ldot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
 .ldot.vod { background: var(--line-strong); }
 .lchan { width: 16px; height: 16px; border-radius: 50%; flex: none; background: var(--bg-4) center / cover; }
@@ -1376,72 +1434,7 @@ body:not(.linking) .link-chips { display: none; }
 }
 .side-peek .card { background: var(--bg-2); }
 
-/* The month bar on the list's right edge (badrfly 2026-11-20): months of this year, then years; the one at the top of the list is lit
-   with that day under it. Under the mouse a month opens into its days and the others slide down. */
 .side-listwrap { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
-.side-scrub {
-  position: absolute;
-  top: var(--space-2);
-  bottom: var(--space-2);
-  right: 2px;
-  width: 30px;
-  display: flex;
-  flex-direction: column;
-  z-index: 3;
-  cursor: pointer;
-  user-select: none;
-  touch-action: none;
-}
-.side-scrub:hover, .side-scrub.dragging { background: var(--bg-2); border-radius: var(--radius-small); }
-/* Marks stack from the top at their own height (badrfly 2026-11-20: stretched marks left big gaps and moved under the mouse, so months flickered open and shut) */
-.scrub-month { flex: none; display: flex; flex-direction: column; align-items: flex-end; overflow: hidden; }
-.scrub-month.open { flex: 0 1 auto; min-height: 0; }
-.scrub-month.more { flex: none; }
-.scrub-mark {
-  flex: none;
-  font: 600 10px/1 var(--font-ui);
-  color: var(--text-faint);
-  padding: 2px 4px;
-  border-radius: var(--radius-xs);
-  font-variant-numeric: tabular-nums;
-}
-.side-scrub:hover .scrub-mark, .side-scrub.dragging .scrub-mark { color: var(--text-dim); }
-.scrub-mark.on, .side-scrub:hover .scrub-mark.on { color: var(--text); background: var(--accent); }
-.scrub-days { display: flex; flex-direction: column; align-items: flex-end; min-height: 0; padding: 2px 0 6px; }
-.scrub-day {
-  flex: 0 1 15px;
-  min-height: 9px;
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  padding-right: 3px;
-  font: 500 9.5px/1 var(--font-ui);
-  color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
-}
-.scrub-day i { width: 5px; height: 1px; background: var(--text-faint); }
-.scrub-day.at { flex: none; height: 15px; color: var(--text); font-weight: 700; }
-.scrub-day.at i, .scrub-day.on i { width: 8px; background: var(--accent); }
-.scrub-day.on { color: var(--text); font-weight: 700; }
-.scrub-day.hover { color: var(--text); }
-.scrub-day.hover i { width: 8px; background: var(--text); }
-.scrub-tip {
-  position: absolute;
-  right: calc(100% + 6px);
-  transform: translateY(-50%);
-  padding: 3px 7px;
-  border-radius: var(--radius-small);
-  background: var(--bg-3);
-  border: 1px solid var(--line-strong);
-  box-shadow: 0 4px 12px rgb(0 0 0 / 0.45);
-  font: 600 11px/1.3 var(--font-ui);
-  color: var(--text);
-  white-space: nowrap;
-  pointer-events: none;
-}
-.side-list.with-scrub { padding-right: 34px; }
-.side-list.rows.with-scrub { padding-right: 0; }
-.side-list.rows.with-scrub .lrow { right: 34px; }
 
 /* The library's search box (badrfly 2026-11-20): always in sight over the lists; shortcuts become chips under it */
 .side-search { position: relative; padding: var(--space-2) var(--space-2) 0; }
