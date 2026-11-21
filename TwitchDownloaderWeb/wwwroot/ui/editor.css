@@ -151,6 +151,39 @@ button.team-pill:hover { background: var(--bg-4); }
 .side-tab:hover { color: var(--text); background: var(--bg-3); }
 .side-tab[aria-selected="true"] { color: var(--text); background: transparent; box-shadow: inset 0 -3px var(--accent); }
 
+/* Hiding the library (badrfly 2026-11-21, like Twitch's followed channels): the panel keeps its size out of sight (so its scroll and
+   everything opened in it stay as they were), the screens take its room, a thin rail keeps the way back and the channel pictures */
+.side-collapse { flex: none; align-self: center; margin-left: var(--space-1); font-size: var(--icon-size); color: var(--text-dim); }
+.side-rail {
+  flex: none;
+  width: 48px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  background: var(--bg-1);
+  border-right: 1px solid var(--line);
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.side-rail[hidden] { display: none; }
+.side-rail > sl-tooltip > sl-icon-button, .side-rail > sl-icon-button { font-size: var(--icon-size); color: var(--text-dim); }
+.rail-chans { display: flex; flex-direction: column; align-items: center; gap: 10px; padding-top: var(--space-1); }
+body.library-hidden .workspace { position: relative; }
+body.library-hidden #side {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--side-hidden-w) !important;
+  visibility: hidden;
+  pointer-events: none;
+}
+body.library-hidden .workspace > .gutter { display: none; }
+body.library-hidden .views { width: auto !important; flex: 1 1 auto; }
+body.row-focus .side-rail { display: none; }
+
 .side-tools {
   display: flex;
   align-items: center;
@@ -595,19 +628,9 @@ button.team-pill:hover { background: var(--bg-4); }
 
 /* ---------- export screen (step 8, ui/export.js) ---------- */
 
-.view-export:not([hidden]) {
-  display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(300px, 2fr);
-  grid-template-rows: minmax(220px, 44%) minmax(0, 1fr);
-  grid-template-areas: "preview settings" "list history";
-  padding: 8px;
-  gap: 8px;
-  min-height: 0;
-}
-.export-player { grid-area: preview; }
-.export-settings { grid-area: settings; }
-.export-list-panel { grid-area: list; }
-.export-history { grid-area: history; }
+.view-export:not([hidden]) { display: flex; padding: 8px; min-height: 0; }
+.export-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.export-col > .export-panel, .export-col > .export-player { min-height: 0; }
 
 .export-panel {
   display: flex;

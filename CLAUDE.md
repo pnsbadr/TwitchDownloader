@@ -622,6 +622,7 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   newest VOD (if under 2 days old) is checked with `/api/vods/info` (`isLive` → LIVE badge). VOD cards show only Twitch's info plus the
   Save audio icon (same rule as the old page) or the audio status icon. CLIPS = the team's library entries (`GET /api/entries`, polled while
   downloading): title, length, VOD date, creator; old Twitch clips get a "Twitch" tag and reference-only entries "Long". VIDEOS = `GET /api/videos` (rename / delete by `canEdit`/`canDelete`).
+  **Hiding the library** (badrfly 2026-11-21, like Twitch's followed channels): the arrow at the end of the tabs row or Ctrl+B (`toggleLibrary`) hides the panel (`setLibraryHidden` in library.js, body class `library-hidden`, remembered in `clipco.library.hidden`); the screens take its room and a 48 px rail (`#side-rail`) has the way back and the channel pictures (they filter like the bar). The panel is never emptied or redrawn: it stays at its width out of sight (absolute, `visibility: hidden`, `inert`), so its tab, scroll, opened VODs, folds, filters and selection are as they were. The search keys, "Show in the library" and "Show this VOD's clips" bring it back; "Sync with" opens it for the pick only.
   No filter button since 2026-11-21 (see **Library header** below). Double-click/Enter loads a card in its
   player; right-click (or the Menu key) opens Load / Export / Rename / Delete (by permission; `ui/dialogs.js` `askText`/`confirmAction`).
 - **Player 1** (`ui/media.js`, step 3): `MediaPlayer` wraps the old page's app player (hls.js, `HlsBackend`) and Twitch embed fallback
@@ -832,7 +833,7 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   original" (the parts of the clip/segment that no piece copied from it keeps). Drawn darker on Player 1 (tip: "Cut out … · left out of
   files") and their edges are snap points. Player 1 skips them while a selected segment or clip plays on its own; a clip dropped into a
   project leaves them out of its pieces.
-- **Export screen** (step 8, `ui/export.js`, EXPORT tab): same left panel; a view-only preview player (plays the selected item's kept parts
+- **Export screen** (step 8, `ui/export.js`, EXPORT tab): same left panel; two columns (preview over the drop list, settings over your exports) resizable with Split.js like the editor (`setUpLayout`, `clipco.layout.export.cols` / `.left` / `.right`, badrfly 2026-11-21); a view-only preview player (plays the selected item's kept parts
   in order, skipping cut-out parts; a video part by part), settings for the selected item (file name, quality from `/api/vods/info`, clip
   Horizontal/Vertical checkboxes: vertical is one of the clip's **vertical edits** (`GET /api/projects?entryId=&vertical=true`; badrfly
   2026-11-17), the member's own newest by default, a teammate's with `DownloadTeamVerticals`, or an older clip render; grayed out with none.

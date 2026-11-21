@@ -81,12 +81,19 @@
 
     <div class="workspace" id="workspace" hidden>
       <!-- Left panel: the same lists on the Editor and Export screens -->
+      <!-- The hidden library's thin rail: show it again, and the channel pictures (they filter like the channel bar) -->
+      <nav class="side-rail" id="side-rail" aria-label="Library (hidden)" data-tip-placement="right" hidden>
+        <sl-icon-button id="side-expand" name="arrow-line-right" label="Show the library" data-keybind="toggleLibrary"></sl-icon-button>
+        <div class="rail-chans" id="rail-channels" role="group" aria-label="Channels"></div>
+      </nav>
       <aside class="side" id="side" aria-label="Library">
         <div class="side-tabs" role="tablist" aria-label="Lists">
           <button type="button" role="tab" class="side-tab display" data-list="vods" aria-selected="true">VODs</button>
           <button type="button" role="tab" class="side-tab display" data-list="videos" aria-selected="false">Videos</button>
           <button type="button" role="tab" class="side-tab display" data-list="clips" aria-selected="false">Clips</button>
-                  </div>
+          <!-- Hide the library like Twitch's followed channels (badrfly 2026-11-21): the screens take its room, everything in it stays as it was -->
+          <sl-icon-button class="side-collapse" id="side-collapse" name="arrow-line-left" label="Hide the library" data-keybind="toggleLibrary"></sl-icon-button>
+        </div>
         <!-- The search box (badrfly 2026-11-20): words search titles and labels; by: vod: @channel, a day and >1m become chips -->
         <div class="side-search" id="side-search">
           <div class="search-box">
@@ -284,7 +291,8 @@
         </section>
 
         <section class="view view-export" id="view-export" aria-label="Export" hidden>
-          <!-- ui/export.js: preview player and the selected item's settings on top, the drop list and your exports below -->
+          <!-- ui/export.js: left column = preview over the drop list, right = the selected item's settings over your exports; resizable with Split.js like the editor (setUpLayout) -->
+          <div class="export-col" id="export-col-left">
           <section class="player export-player" id="export-player" aria-label="Preview">
             <header class="player-head">
               <span class="player-name display">Preview</span>
@@ -311,13 +319,6 @@
             </div>
           </section>
 
-          <section class="export-panel export-settings" id="export-settings" aria-label="Item settings">
-            <header class="export-panel-head"><span class="display">Settings</span></header>
-            <div class="export-settings-body" id="export-settings-body">
-              <p class="faint export-empty-note">Select an item on the list to set its file name, quality and format.</p>
-            </div>
-          </section>
-
           <section class="export-panel export-list-panel" id="export-list-panel" aria-label="Export list">
             <header class="export-panel-head">
               <span class="display">Export list</span>
@@ -332,10 +333,20 @@
             </footer>
           </section>
 
+          </div>
+          <div class="export-col" id="export-col-right">
+          <section class="export-panel export-settings" id="export-settings" aria-label="Item settings">
+            <header class="export-panel-head"><span class="display">Settings</span></header>
+            <div class="export-settings-body" id="export-settings-body">
+              <p class="faint export-empty-note">Select an item on the list to set its file name, quality and format.</p>
+            </div>
+          </section>
+
           <section class="export-panel export-history" id="export-history" aria-label="Your exports">
             <header class="export-panel-head"><span class="display">Your exports</span></header>
             <div class="export-batches" id="export-batches"></div>
           </section>
+          </div>
         </section>
       </main>
     </div>
