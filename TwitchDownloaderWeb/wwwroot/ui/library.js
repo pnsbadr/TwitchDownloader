@@ -1037,6 +1037,7 @@ function setSort(list, key, order) {
   state.sorts[list] = { key, order };
   saveSetting(sortsKey(), state.sorts);
   renderDetailsHead();
+  renderStatusBar();
   if (list === "clips" && (state.clipsLoaded || state.list === "clips")) loadClips();
   else if (list === "videos" && (state.videosLoaded || state.list === "videos")) loadVideos();
   if (state.list === list) {
@@ -1532,10 +1533,20 @@ function kidLines(vod, at) {
     lines.push(line);
     if (isSubOpen(line.type, line.item)) lines.push(...subLines(line));
   };
-  for (const video of kids.videos) push({ key: `kid:${id}:video:${video.id}`, item: video, type: "video", kid: true, vodId: id, at });
-  if (kids.videosTotal > kids.videos.length) lines.push(note("videos", `All ${kids.videosTotal} videos`, () => showVodWork(id, "videos")));
-  for (const clip of kids.clips) push({ key: `kid:${id}:clip:${clip.id}`, item: clip, type: "clip", kid: true, vodId: id, at });
-  if (kids.clipsTotal > kids.clips.length) lines.push(note("clips", `All ${kids.clipsTotal} clips`, () => showVodWork(id, "clips")));
+  // badrfly 2026-11-21: its videos sit under one "Videos" line and its clips under one "Clips" line (open at first), like "Segments"
+  const group = (kind, count) => {
+    const line = { key: `kid:${id}:${kind}`, group: kind, item: { id }, type: kind, count, sub: true, kid: true, lone: true, vodId: id, at, parent: null };
+    lines.push(line);
+    return isSubOpen(kind, line.item);
+  };
+  if (kids.videos.length && group("vids", kids.videosTotal)) {
+    for (const video of kids.videos) push({ key: `kid:${id}:video:${video.id}`, item: video, type: "video", kid: true, ing: true, vodId: id, at });
+    if (kids.videosTotal > kids.videos.length) lines.push({ ...note("videos", `All ${kids.videosTotal} videos`, () => showVodWork(id, "videos")), ing: true });
+  }
+  if (kids.clips.length && group("clipsg", kids.clipsTotal)) {
+    for (const clip of kids.clips) push({ key: `kid:${id}:clip:${clip.id}`, item: clip, type: "clip", kid: true, ing: true, vodId: id, at });
+    if (kids.clipsTotal > kids.clips.length) lines.push({ ...note("clips", `All ${kids.clipsTotal} clips`, () => showVodWork(id, "clips")), ing: true });
+  }
   lines.push(...otherLines(id, at, kids));
   if (!lines.length) return [note("none", "Nothing here any more.")];
   return lines;
@@ -1650,7 +1661,7 @@ function vodCaret(vod) {
 
 // A line under an opened VOD that isn't an item: loading, "All 120 clips", a problem
 function kidNote(line) {
-  const node = el(line.run ? "button" : "div", { class: `lrow${line.kid ? " kid" : ""}${line.sub ? " sub" : ""} lrow-kidnote${line.run ? " link" : ""}`, ...(line.run ? { type: "button" } : {}) }, line.note);
+  const node = el(line.run ? "button" : "div", { class: `lrow${line.kid ? " kid" : ""}${line.ing ? " ing" : ""}${line.sub ? " sub" : ""} lrow-kidnote${line.run ? " link" : ""}`, ...(line.run ? { type: "button" } : {}) }, line.note);
   if (line.run) node.addEventListener("click", line.run);
   return node;
 }
@@ -1665,22 +1676,28 @@ function subKeyOf(type, item) {
   return `${type}:${item.id}`;
 }
 
+// The Videos and Clips lines under an opened VOD start open: for them state.subOpen holds the closed ones
+const OPEN_AT_FIRST = new Set(["vids", "clipsg"]);
+
 function isSubOpen(type, item) {
-  return state.subOpen.has(subKeyOf(type, item));
+  const has = state.subOpen.has(subKeyOf(type, item));
+  return OPEN_AT_FIRST.has(type) ? !has : has;
 }
 
 function toggleSub(type, item, open = !isSubOpen(type, item)) {
   const key = subKeyOf(type, item);
-  if (open === state.subOpen.has(key)) return;
+  if (open === isSubOpen(type, item)) return;
+  if (open === !OPEN_AT_FIRST.has(type)) state.subOpen.add(key);
+  else state.subOpen.delete(key);
   if (open) {
-    state.subOpen.add(key);
     if ((type === "clip" || type === "video") && !state.subs.has(key)) loadSub(type, item);
   } else {
-    state.subOpen.delete(key);
-    // A selected line inside it goes back to its row
+    // A selected line inside it goes back to its row (a VOD's Videos / Clips line: its own line)
     const selected = state.selected[state.list] ?? "";
     const cut = selected.indexOf(`>${key}>`);
     if (cut >= 0) state.selected[state.list] = selected.slice(0, cut);
+    const inside = type === "vids" ? `kid:${item.id}:video:` : type === "clipsg" ? `kid:${item.id}:clip:` : null;
+    if (inside && selected.startsWith(inside)) state.selected[state.list] = `kid:${item.id}:${type}`;
   }
   render();
 }
@@ -1739,7 +1756,7 @@ function p2Loaded() {
 function subLines(parent) {
   const { item, type } = parent;
   const base = `${parent.key}>${subKeyOf(type, item)}>`;
-  const common = { sub: true, kid: parent.kid, vodId: parent.vodId, at: parent.at, parent: { item, type, key: parent.key } };
+  const common = { sub: true, kid: parent.kid, ing: parent.ing, vodId: parent.vodId, at: parent.at, parent: { item, type, key: parent.key } };
   const lines = [];
   if (type === "video") {
     const home = String(parent.vodId ?? item.vodId);
@@ -1841,16 +1858,23 @@ function subOpenLine(line) {
 }
 
 // The "Segments (n)" line under an opened VOD: opens to every segment on it
+const GROUPS = {
+  segs: { name: "Segments", icon: "brackets-square", tip: "Every segment on this VOD" },
+  vids: { name: "Videos", icon: "film-strip", tip: "This VOD's videos" },
+  clipsg: { name: "Clips", icon: "scissors", tip: "This VOD's clips" },
+};
+
 function groupRow(line) {
   const open = isSubOpen(line.type, line.item);
-  const caret = el("button", { class: `lcaret${open ? " open" : ""}`, type: "button", tabindex: "-1", "aria-label": open ? "Close" : "Show the segments", title: open ? "Close" : "Show the segments (→)" },
+  const g = GROUPS[line.group] ?? GROUPS.segs;
+  const caret = el("button", { class: `lcaret${open ? " open" : ""}`, type: "button", tabindex: "-1", "aria-label": open ? "Close" : `Show the ${g.name.toLowerCase()}`, title: open ? "Close" : `Show the ${g.name.toLowerCase()} (→)` },
     el("sl-icon", { library: "ph", name: "caret-right" }));
   caret.addEventListener("pointerdown", (event) => event.stopPropagation());
   caret.addEventListener("dblclick", (event) => event.stopPropagation());
-  const node = el("div", { class: "lrow item sub kid lone group", role: "listitem", tabindex: "0", "aria-label": `Segments, ${line.count}`, "aria-expanded": String(open), "data-key": line.key, title: open ? "Close" : "Every segment on this VOD" },
+  const node = el("div", { class: "lrow item sub kid lone group", role: "listitem", tabindex: "0", "aria-label": `${g.name}, ${line.count}`, "aria-expanded": String(open), "data-key": line.key, title: open ? "Close" : g.tip },
     caret,
-    el("sl-icon", { library: "ph", name: "brackets-square", class: "lkind" }),
-    el("span", { class: "ltitle" }, "Segments"),
+    el("sl-icon", { library: "ph", name: g.icon, class: "lkind" }),
+    el("span", { class: "ltitle" }, g.name),
     el("span", { class: "llen" }, String(line.count)));
   const toggle = (want) => toggleSub(line.type, line.item, want);
   caret.addEventListener("click", (event) => {
@@ -1909,7 +1933,7 @@ function subRow(line) {
     current = Number(loaded?.segmentId) === thing.markerId && !loaded?.editId;
   }
   const segEdits = line.type === "segment" ? segmentEdits(thing.markerId) : [];
-  const node = el("div", { class: `lrow item sub${line.kid ? " kid" : ""}${line.deep ? " deep" : ""}${line.lone ? " lone" : ""}${current ? " current" : ""}`, role: "listitem", tabindex: "0", "aria-label": title, "data-key": line.key, title: current ? `Loaded in Player 2 · ${tip}` : tip },
+  const node = el("div", { class: `lrow item sub${line.kid ? " kid" : ""}${line.ing ? " ing" : ""}${line.deep ? " deep" : ""}${line.lone ? " lone" : ""}${current ? " current" : ""}`, role: "listitem", tabindex: "0", "aria-label": title, "data-key": line.key, title: current ? `Loaded in Player 2 · ${tip}` : tip },
     segEdits.length ? segmentCaret(thing.markerId, line.segKey ?? "seg") : null,
     el("sl-icon", { library: "ph", name: icon, class: "lkind" }),
     el("span", { class: "ltitle" }, title),
@@ -1969,6 +1993,8 @@ export async function revealLoaded() {
       await loadKids(vodId);
     }
     const kids = state.kids.get(vodId);
+    state.subOpen.delete(subKeyOf("vids", { id: vodId }));
+    state.subOpen.delete(subKeyOf("clipsg", { id: vodId }));
     if (loaded.entryId) parent = kids?.clips?.find((c) => c.id === Number(loaded.entryId)) && { type: "clip", item: kids.clips.find((c) => c.id === Number(loaded.entryId)) };
     else if (loaded.videoId) parent = kids?.videos?.find((v) => v.id === Number(loaded.videoId)) && { type: "video", item: kids.videos.find((v) => v.id === Number(loaded.videoId)) };
     else if (loaded.segmentId) state.subOpen.add(subKeyOf("segs", { id: vodId }));
@@ -2458,7 +2484,7 @@ function rowSig(item, type = listType()) {
 function listRow(line) {
   const spec = specFor(line.item, line.type);
   const r = spec.row;
-  const node = el("div", { class: `lrow item${line.kid ? " kid" : ""}${line.first ? " first" : ""}`, role: "listitem", tabindex: "0", "aria-label": spec.title, "data-key": line.key },
+  const node = el("div", { class: `lrow item${line.kid ? " kid" : ""}${line.ing ? " ing" : ""}${line.first ? " first" : ""}`, role: "listitem", tabindex: "0", "aria-label": spec.title, "data-key": line.key },
     line.type === "vod" ? vodCaret(line.item) : itemCaret(line),
     // Under an opened VOD: the kind's icon in the item's color instead of the dot
     line.highlight ? el("sl-icon", { library: "ph", name: "sparkle", class: "lkind highlight", title: "Highlight" })
@@ -2643,6 +2669,7 @@ function setView(view) {
   list.scrollLeft = 0;
   rowsModel = null;
   renderDetailsHead();
+  renderStatusBar();
   fitListHeight();
   render();
 }
@@ -3587,6 +3614,7 @@ function renderStatusBar() {
   // The team owner picks which tabs each status shows on (badrfly 2026-11-21); on VODs one finds the streams with such clips or videos
   const statuses = statusesOn(state.list);
   bar.replaceChildren(
+    sortChip(),
     ...quickChips(),
     statuses.length ? el("span", { class: "sbar-gap", "aria-hidden": "true" }) : "",
     ...statuses.map((s) => chip(String(s.id), s.name, statusColor(s), statusCount(s), s.hideFromLists ? "Hidden from lists unless picked" : "")),
@@ -3603,6 +3631,19 @@ function renderStatusBar() {
     event.preventDefault();
     bar.scrollLeft += event.deltaY;
   };
+}
+
+// Rows and cards follow the Details view's sort, and only a date sort has the date column (months and days that fold): when another sort is
+// on, a chip says so and puts the date sort back (badrfly 2026-11-21 missed the date column after sorting a column in Details)
+function sortChip() {
+  if (state.view === "details" || sortedByDate()) return "";
+  const sort = state.sorts[state.list];
+  const column = Object.values(COLUMNS).find((c) => c.sort === sort.key);
+  const name = column?.label ?? sort.key;
+  const node = el("button", { type: "button", class: "sbar-chip on sort-chip", title: `Sorted by ${name}, so there's no date column. Click to sort by date again (newest first)` },
+    el("sl-icon", { library: "ph", name: sort.order === "asc" ? "sort-ascending" : "sort-descending" }), `By ${name.toLowerCase()}`, el("sl-icon", { library: "ph", name: "x" }));
+  node.addEventListener("click", () => setSort(state.list, state.list === "vods" ? "streamDate" : "dateAdded", "desc"));
+  return node;
 }
 
 function setStatusFilter(value) {

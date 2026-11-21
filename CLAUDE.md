@@ -763,7 +763,7 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   doesn't load more by itself: a "Load older" line does. The calendar's jump opens a folded month/day. The **card** of the row under the mouse, else the selected one, is at the bottom (`#side-peek`), always the same height and kept (with a hint) while empty in rows/Details, so the list never resizes; the list is a whole number of rows high (`fitListHeight`) and scrolling stops on a line's start (`snapScroll`, on `scrollend`). `#side-listwrap` clips the date stamp so it never covers the buttons above. ↑/↓ move the selection.
   The cards view is the button next to the count, remembered per member in `localStorage` `clipco.library.view.{userId}`.
   **VODs open to their work** (step 3, `toggleVod` / `loadKids` in library.js): a VOD with clips or videos gets an arrow (rows; cards: a
-  caret button and a menu item); opened (click, → / ←), its videos then clips, in VOD order, are slim indented rows under it (kind icon in
+  caret button and a menu item); opened (click, → / ←), its videos then clips, in VOD order, are slim indented rows under it, inside a **Videos (n)** and a **Clips (n)** line (badrfly 2026-11-21, like Segments; `vids` / `clipsg` groups, open at first: `OPEN_AT_FIRST`, `state.subOpen` holds the closed ones; rows inside carry `ing`) (kind icon in
   the item's color; drag, double-click, menu and the peek card work as on their own tabs), up to 50 of each (`/api/videos?vodIds=` /
   `/api/entries?vodId=`, paged), then "All n clips" filters CLIPS by the VOD. Opened VODs re-read theirs when clips or videos change.
 - **Library search box** (badrfly 2026-11-20, step 2 of Large libraries; "the search box" in `ui/library.js`): always in sight over the three
@@ -789,7 +789,7 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   `sourceStartUtc` within 10 min of a broadcast's start, else the broadcast streamed last before the highlight); uploads aren't shown.
   **Details view**: rows with columns (clips/videos: Name, Length, Made by, Edited by, Added, Stream date; VODs: Name, Length, Work,
   Stream date). A heading click sorts (`state.sorts` per list, `clipco.library.sort.{userId}`; **rows and cards use the same sort**, and
-  are grouped by month/day only when sorted by a date; clips/videos sort on the server, VODs sort the loaded ones); drag a heading's edge to
+  are grouped by month/day only when sorted by a date, so another sort puts a "By …" chip first in the chips row that sorts by date again (`sortChip`); clips/videos sort on the server, VODs sort the loaded ones); drag a heading's edge to
   resize, double-click it to reset; right-click the headings to show/hide columns (`clipco.library.columns.{userId}`); Made by / Edited by
   have a funnel button opening a member checklist (`openMemberFilter`, a toggle); Edited by sorts too (`sort=editedBy`: the first editor's name, items with no edit last). **Resizing works like a Windows folder** (badrfly 2026-11-21): every column has its own px width, dragging an edge changes only that column and moves the ones after it; the name column fills the panel until a column is first resized. Length reads left to right. The calendar button stays lit while the calendar is open. **No horizontal scrollbar** (badrfly): the wheel over the headings scrolls the columns
   sideways (the list is `overflow-x: hidden` and scrolled by script; a sideways touchpad swipe over the rows works too).
