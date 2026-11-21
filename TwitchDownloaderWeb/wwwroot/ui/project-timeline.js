@@ -204,13 +204,62 @@ export class ProjectTimeline {
     this.hooks.onChange?.();
   }
 
+  // this.anchor = the piece Shift+click picks from (the one clicked last without Shift)
   select(ids, { add = false } = {}) {
     if (!add) this.selected.clear();
     for (const id of ids) this.selected.add(id);
     const first = this.pieceById(ids[0]);
     if (first) this.trackSel = first.trackId;
+    if (!add || first) this.anchor = first?.id ?? null;
     this.renderHeads();
     this.changed();
+  }
+
+  // Ctrl+click (roadmap 1a, badrfly 2026-11-21: like any desktop app): add the piece to the selection or take it out
+  togglePick(piece) {
+    if (this.selected.has(piece.id)) this.selected.delete(piece.id);
+    else {
+      this.selected.add(piece.id);
+      this.anchor = piece.id;
+    }
+    this.trackSel = piece.trackId;
+    this.renderHeads();
+    this.changed();
+  }
+
+  // Shift+click: every piece between the anchor and this one: rows from the anchor's to this one's (hidden rows too, they're drawn),
+  // pieces overlapping the time from the earlier start to the later end. add (Ctrl+Shift) keeps what was selected.
+  pickRange(piece, { add = false } = {}) {
+    const anchor = this.pieceById(this.anchor);
+    if (!anchor) {
+      this.select([piece.id]);
+      return;
+    }
+    const a = this.trackIndex(anchor.trackId);
+    const b = this.trackIndex(piece.trackId);
+    const [r1, r2] = [Math.min(a, b), Math.max(a, b)];
+    const t1 = Math.min(anchor.at, piece.at);
+    const t2 = Math.max(pieceEnd(anchor), pieceEnd(piece));
+    if (!add) this.selected.clear();
+    for (const p of this.content.pieces) {
+      const row = this.trackIndex(p.trackId);
+      if (row >= r1 && row <= r2 && p.at < t2 - 0.001 && pieceEnd(p) > t1 + 0.001) this.selected.add(p.id);
+    }
+    this.selected.add(piece.id);
+    this.trackSel = piece.trackId;
+    this.renderHeads();
+    this.changed();
+  }
+
+  // Ctrl+A: every piece of the edit
+  selectAll() {
+    const pieces = this.content?.pieces ?? [];
+    if (!pieces.length) return false;
+    for (const p of pieces) this.selected.add(p.id);
+    if (!this.pieceById(this.anchor)) this.anchor = pieces[0].id;
+    this.renderHeads();
+    this.changed();
+    return true;
   }
 
   // ---------- rows ----------
@@ -753,11 +802,19 @@ export class ProjectTimeline {
     if (hit?.track) this.trackSel = hit.track.id;
     if (hit?.piece) {
       const piece = hit.piece;
-      if (event.shiftKey && !hit.edge) {
-        if (this.selected.has(piece.id)) this.selected.delete(piece.id);
-        else this.selected.add(piece.id);
-        this.renderHeads();
-        this.changed();
+      const ctrl = event.ctrlKey || event.metaKey;
+      const picked = event.shiftKey && !hit.edge && !this.selected.has(piece.id);
+      if (ctrl && !event.shiftKey && !hit.edge) {
+        // Ctrl+click: add it or take it out; taken out, nothing is dragged
+        const had = this.selected.has(piece.id);
+        this.togglePick(piece);
+        if (had) {
+          this.track.releasePointerCapture?.(event.pointerId);
+          return;
+        }
+      } else if (event.shiftKey && !hit.edge && !this.selected.has(piece.id)) {
+        // Shift+click: the pieces between the anchor and this one (Shift+drag of what's selected still keeps the time)
+        this.pickRange(piece, { add: ctrl });
       } else if (!this.selected.has(piece.id) || hit.edge) {
         this.select([piece.id]);
       }
@@ -767,12 +824,12 @@ export class ProjectTimeline {
       if (slip) vodLength(piece.vodId);
       this.press = {
         kind: slip ? "slip" : hit.edge ? "edge" : "move", piece, edge: hit.edge, startX: event.clientX, startY: event.clientY, t0: t,
-        row0: this.rowAt(p.y), moved: false, locked, clickSeek: t, rect: p.rect,
+        row0: this.rowAt(p.y), moved: false, locked, clickSeek: t, rect: p.rect, ctrl, picked,
       };
       this.renderHeads();
       return;
     }
-    this.press = { kind: "empty", startX: event.clientX, startY: event.clientY, x0: p.x, y0: p.y, t0: t, moved: false, add: event.shiftKey, rect: p.rect };
+    this.press = { kind: "empty", startX: event.clientX, startY: event.clientY, x0: p.x, y0: p.y, t0: t, moved: false, add: event.shiftKey || event.ctrlKey || event.metaKey, rect: p.rect };
     this.renderHeads();
   }
 
@@ -1027,7 +1084,10 @@ export class ProjectTimeline {
       if (press.kind === "empty") {
         if (!press.add) this.select([]);
         this.hooks.onSeek(Math.max(0, press.t0));
-      } else if (press.kind === "move" && !event.shiftKey) {
+      } else if (press.kind === "move" && event.shiftKey && !press.picked) {
+        // Shift+click on a piece that was already selected: the range from the anchor to it
+        this.pickRange(press.piece, { add: event.ctrlKey || event.metaKey });
+      } else if (press.kind === "move" && !event.shiftKey && !press.ctrl) {
         // a click on a piece: select just it and move the playhead there
         this.select([press.piece.id]);
         this.hooks.onSeek(press.clickSeek);

@@ -65,7 +65,11 @@ const state = {
   videosMore: false,
   // "rows" (slim lines), "cards" or "details" (columns like a file browser, badrfly 2026-11-21)
   view: "rows",
-  selected: { vods: "", clips: "", videos: "" }, // key of the selected row per list (rows view)
+  selected: { vods: "", clips: "", videos: "" }, // key of the selected row per list (rows view): the one clicked last
+  // Multi-selection (roadmap 1a, badrfly 2026-11-21: like any desktop app): every selected line's key per list, and the line Shift+click
+  // picks from. They count only while they hold the selected line (code that moves `selected` by itself leaves just that one)
+  picks: { vods: new Set(), clips: new Set(), videos: new Set() },
+  anchor: { vods: "", clips: "", videos: "" },
   hovered: "",
   // VODs: what the team made on each (vodId → GET /api/vods/work row) and the "only with work" switch
   work: new Map(),
@@ -131,9 +135,21 @@ export function setUpLibrary(options) {
   new ResizeObserver(() => fitListHeight()).observe($("side-listwrap"));
   // Scrolling stops on a line's start, so the top row is never cut in half (rows and Details)
   $("side-list").addEventListener("scrollend", () => snapScroll());
+  // A press with the mouse: the row's click decides the selection (Ctrl / Shift), not the focus it gets on the way
+  $("side-list").addEventListener("pointerdown", (event) => {
+    pointerPress = { ctrl: event.ctrlKey || event.metaKey, shift: event.shiftKey };
+  }, true);
+  for (const type of ["pointerup", "pointercancel"]) window.addEventListener(type, () => { pointerPress = null; }, true);
   // Tab / Shift+Tab walk the list's lines (opened VODs, groups and edits included) and wrap around, instead of leaving for the rest of
   // the app (badrfly 2026-11-21; rowTab in keybinds.js)
   $("side-list").addEventListener("keydown", (event) => {
+    // Ctrl+A on a row: every line the list shows (rowSelectAll in keybinds.js)
+    if (keybindFor("library", event) === "rowSelectAll" && event.target.closest?.("[data-key]")) {
+      event.preventDefault();
+      event.stopPropagation();
+      selectAllLines();
+      return;
+    }
     if (event.key !== "Tab" || event.ctrlKey || event.altKey || event.metaKey) return;
     event.preventDefault();
     tabThrough(event.shiftKey ? -1 : 1);
@@ -928,7 +944,7 @@ function render() {
         : line.group ? groupRow(line)
         : line.sub ? subRow(line)
         : line.kid ? listRow(line)
-        : card(specFor(line.item, line.type));
+        : selectableCard(line);
       if (line.first && !line.kid) node.append(dayNumber(line));
       node.dataset.line = String(index);
       nodes.push(node);
@@ -1918,16 +1934,16 @@ function groupRow(line) {
     event.stopPropagation();
     toggle();
   });
-  node.addEventListener("click", () => select(line.key, { focus: false }));
+  node.addEventListener("click", (event) => clickSelect(line.key, event));
   node.addEventListener("dblclick", () => toggle());
   node.addEventListener("mouseenter", () => setHovered(line.key));
-  node.addEventListener("focus", () => select(line.key, { focus: false }));
+  node.addEventListener("focus", () => focusSelect(line.key));
   node.addEventListener("keydown", (event) => {
     if (event.target !== node) return;
     if (event.key === "Enter") toggle();
     else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
-      moveSelection(event.key === "ArrowDown" ? 1 : -1);
+      moveSelection(event.key === "ArrowDown" ? 1 : -1, { extend: event.shiftKey });
     } else if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
       event.preventDefault();
       if (event.key === "ArrowLeft" && !isSubOpen(line.type, line.item)) {
@@ -1976,10 +1992,10 @@ function subRow(line) {
     el("span", { class: "ltitle" }, title),
     el("span", { class: "llen" }, detail));
   const menu = () => (line.type === "edit" ? editMenu(thing) : segmentMenu(thing, line.video));
-  node.addEventListener("click", () => select(line.key, { focus: false }));
+  node.addEventListener("click", (event) => clickSelect(line.key, event));
   node.addEventListener("dblclick", () => subOpenLine(line));
   node.addEventListener("mouseenter", () => setHovered(line.key));
-  node.addEventListener("focus", () => select(line.key, { focus: false }));
+  node.addEventListener("focus", () => focusSelect(line.key));
   node.addEventListener("contextmenu", (event) => {
     event.preventDefault();
     openMenu(event.clientX, event.clientY, menu());
@@ -1989,7 +2005,7 @@ function subRow(line) {
     if (event.key === "Enter") subOpenLine(line);
     else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
-      moveSelection(event.key === "ArrowDown" ? 1 : -1);
+      moveSelection(event.key === "ArrowDown" ? 1 : -1, { extend: event.shiftKey });
     } else if (event.key === "ArrowRight" && segEdits.length) {
       event.preventDefault();
       toggleSub(line.segKey ?? "seg", { id: thing.markerId }, true);
@@ -2438,7 +2454,7 @@ function drawWindow() {
       nodes.set(line.key, entry);
     }
     entry.node.style.top = `${rowsModel.ys[i]}px`;
-    entry.node.classList.toggle("sel", !isMark(line) && !line.note && state.selected[state.list] === line.key);
+    entry.node.classList.toggle("sel", !isMark(line) && !line.note && isPicked(line.key));
     wanted.push(entry.node);
   }
   if (listLoadingMore()) {
@@ -2544,14 +2560,14 @@ function listRow(line) {
 // Selecting, hovering and the keys of an item's row (rows and Details views)
 function wireRow(node, line, spec) {
   wireItem(node, spec);
-  node.addEventListener("click", () => select(line.key, { focus: false }));
+  node.addEventListener("click", (event) => clickSelect(line.key, event));
   node.addEventListener("mouseenter", () => setHovered(line.key));
-  node.addEventListener("focus", () => select(line.key, { focus: false }));
+  node.addEventListener("focus", () => focusSelect(line.key));
   node.addEventListener("keydown", (event) => {
     if (event.target !== node) return;
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
-      moveSelection(event.key === "ArrowDown" ? 1 : -1);
+      moveSelection(event.key === "ArrowDown" ? 1 : -1, { extend: event.shiftKey });
     }
     // * stars or unstars the row's item (keybinds.js rowStar)
     if (keybindFor("library", event) === "rowStar") {
@@ -2600,16 +2616,123 @@ function itemLines() {
   return (rowsModel?.lines ?? state.cardLines ?? []).filter((line) => !isMark(line) && !line.note);
 }
 
-function select(key, { focus = true } = {}) {
-  if (state.selected[state.list] === key) return;
-  state.selected[state.list] = key;
-  for (const node of $("side-list").querySelectorAll(".lrow.item")) node.classList.toggle("sel", node.dataset.key === key);
+// keep: the multi-selection stays as it is (key must be in it); else key becomes the only selected line and the anchor
+function select(key, { focus = true, keep = false } = {}) {
+  const list = state.list;
+  const single = !keep && state.picks[list].size === 1 && state.picks[list].has(key);
+  if (state.selected[list] === key && (keep || single)) return;
+  state.selected[list] = key;
+  if (!keep) {
+    state.picks[list] = new Set([key]);
+    state.anchor[list] = key;
+  }
+  markPicked();
   renderPeek();
   if (focus) focusRow(key);
 }
 
+// ---------- multi-selection (roadmap 1a): Ctrl+click adds or takes out a line, Shift+click picks every line between ----------
+
+let pointerPress = null; // { ctrl, shift } while the mouse is down on the list
+
+function isPicked(key) {
+  const sel = state.selected[state.list];
+  if (key === sel) return true;
+  const picks = state.picks[state.list];
+  return picks.has(sel) && picks.has(key);
+}
+
+function markPicked() {
+  for (const node of $("side-list").querySelectorAll(".lrow.item, .card[data-key]")) node.classList.toggle("sel", isPicked(node.dataset.key));
+}
+
+// Lines a selection can hold: items, segments and edits (not group lines, folds or "All n clips")
+function pickableLines() {
+  return itemLines().filter((line) => line.key && !line.group && !line.fold && !line.run);
+}
+
+// The selected lines, in list order (for what acts on several at once later: delete, status, export…)
+export function pickedLines() {
+  return itemLines().filter((line) => line.key && isPicked(line.key));
+}
+
+function focusSelect(key) {
+  // Focus coming back to the selected line (Shift+↑↓ moves the focus there) leaves the selection as it is
+  if (key === state.selected[state.list]) return;
+  // Ctrl / Shift with the mouse: the click handles it. A press on one of several selected lines keeps them (it may be dragged)
+  if (pointerPress && (pointerPress.ctrl || pointerPress.shift)) return;
+  if (pointerPress && state.picks[state.list].size > 1 && isPicked(key)) {
+    select(key, { focus: false, keep: true });
+    return;
+  }
+  select(key, { focus: false });
+}
+
+function clickSelect(key, event) {
+  const ctrl = event.ctrlKey || event.metaKey;
+  if (event.shiftKey) {
+    pickRange(key, { add: ctrl });
+    return;
+  }
+  if (ctrl) {
+    togglePick(key);
+    return;
+  }
+  select(key, { focus: false });
+}
+
+function togglePick(key) {
+  const list = state.list;
+  const picks = state.picks[list].has(state.selected[list]) ? state.picks[list] : new Set([state.selected[list]].filter(Boolean));
+  if (picks.has(key) && picks.size > 1) {
+    picks.delete(key);
+    if (state.selected[list] === key) state.selected[list] = [...picks].at(-1);
+    if (state.anchor[list] === key) state.anchor[list] = state.selected[list];
+  } else if (!picks.has(key)) {
+    picks.add(key);
+    state.selected[list] = key;
+    state.anchor[list] = key;
+  }
+  state.picks[list] = picks;
+  markPicked();
+  renderPeek();
+}
+
+// Shift+click / Shift+↑↓: the lines from the anchor to key (add = Ctrl+Shift: kept with what was selected)
+function pickRange(key, { add = false } = {}) {
+  const list = state.list;
+  const lines = pickableLines();
+  const anchor = state.anchor[list] || state.selected[list];
+  const a = lines.findIndex((line) => line.key === anchor);
+  const b = lines.findIndex((line) => line.key === key);
+  if (a < 0 || b < 0) {
+    select(key, { focus: false });
+    return;
+  }
+  const picks = add && state.picks[list].has(state.selected[list]) ? new Set(state.picks[list]) : new Set();
+  for (let i = Math.min(a, b); i <= Math.max(a, b); i++) picks.add(lines[i].key);
+  state.picks[list] = picks;
+  state.anchor[list] = anchor;
+  state.selected[list] = key;
+  markPicked();
+  renderPeek();
+}
+
+function selectAllLines() {
+  const list = state.list;
+  const lines = pickableLines();
+  if (!lines.length) return;
+  const keys = new Set(lines.map((line) => line.key));
+  if (!keys.has(state.selected[list])) state.selected[list] = lines[0].key;
+  state.picks[list] = keys;
+  if (!keys.has(state.anchor[list])) state.anchor[list] = state.selected[list];
+  markPicked();
+  renderPeek();
+}
+
 // wrap (Tab / Shift+Tab, badrfly 2026-11-21): past the last line goes to the first, before the first to the last
-function moveSelection(step, { wrap = false } = {}) {
+// extend (Shift+↑↓): the selection grows or shrinks from the anchor to the new line
+function moveSelection(step, { wrap = false, extend = false } = {}) {
   const lines = rowsModel?.lines ?? [];
   const skip = (i) => i >= 0 && i < lines.length && (isMark(lines[i]) || lines[i].note);
   let index = lines.findIndex((line) => line.key === state.selected[state.list]);
@@ -2628,6 +2751,13 @@ function moveSelection(step, { wrap = false } = {}) {
     list.scrollTop = rowsModel.ys.find((start) => start >= want - 0.5) ?? want;
   }
   drawWindow();
+  if (extend && !lines[index].group && !lines[index].fold && !lines[index].run) {
+    const list = state.list;
+    if (!state.picks[list].has(state.selected[list])) state.anchor[list] = state.selected[list];
+    pickRange(lines[index].key);
+    focusRow(lines[index].key);
+    return;
+  }
   select(lines[index].key);
 }
 
@@ -2753,6 +2883,19 @@ function card(spec) {
       ...meta.filter(Boolean).map((line) => (line instanceof Node ? line : el("div", { class: "card-meta" }, line))),
       el("div", { class: "card-actions" }, spec.star ? starButton(...spec.star) : null, ...actions)));
   wireItem(node, spec);
+  return node;
+}
+
+// A card in the cards view: selectable like a row (click, Ctrl+click, Shift+click)
+function selectableCard(line) {
+  const node = card(specFor(line.item, line.type));
+  node.dataset.key = line.key;
+  node.classList.toggle("sel", isPicked(line.key));
+  node.addEventListener("click", (event) => {
+    if (event.target.closest("button, sl-icon-button, a")) return;
+    clickSelect(line.key, event);
+  });
+  node.addEventListener("focus", () => focusSelect(line.key));
   return node;
 }
 

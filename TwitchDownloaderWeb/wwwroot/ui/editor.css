@@ -221,6 +221,7 @@ body.row-focus .side-rail { display: none; }
 }
 .card:hover { background: var(--bg-3); border-color: var(--line-strong); }
 .card:focus-visible { border-color: var(--accent); outline: none; }
+.card.sel { background: var(--bg-3); border-color: var(--accent); }
 .card-thumb {
   width: 112px;
   aspect-ratio: 16 / 9;

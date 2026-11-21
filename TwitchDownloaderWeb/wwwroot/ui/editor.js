@@ -2175,6 +2175,7 @@ function setUpKeys() {
       deleteSelected: () => on && (p2 ? t.deleteSelected(false) : t.deleteSelected()),
       rippleDelete: () => p2 && on && t.deleteSelected(true),
       copyPieces: () => p2 && on && t.copySelected(),
+      selectAll: () => on && t.selectAll?.(),
       pastePieces: () => p2 && on && t.paste(),
       addRow: () => p2 && on && t.addTrack(),
       slideBack: () => on && (p2 ? t.slideSelected(-SLIDE_STEP) : t.slideSynced(-SLIDE_STEP)),
