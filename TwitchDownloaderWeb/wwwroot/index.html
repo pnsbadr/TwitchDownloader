@@ -284,7 +284,8 @@
         </section>
 
         <section class="view view-export" id="view-export" aria-label="Export" hidden>
-          <!-- ui/export.js: preview player and the selected item's settings on top, the drop list and your exports below -->
+          <!-- ui/export.js: left column = preview over the drop list, right = the selected item's settings over your exports; resizable with Split.js like the editor (setUpLayout) -->
+          <div class="export-col" id="export-col-left">
           <section class="player export-player" id="export-player" aria-label="Preview">
             <header class="player-head">
               <span class="player-name display">Preview</span>
@@ -311,13 +312,6 @@
             </div>
           </section>
 
-          <section class="export-panel export-settings" id="export-settings" aria-label="Item settings">
-            <header class="export-panel-head"><span class="display">Settings</span></header>
-            <div class="export-settings-body" id="export-settings-body">
-              <p class="faint export-empty-note">Select an item on the list to set its file name, quality and format.</p>
-            </div>
-          </section>
-
           <section class="export-panel export-list-panel" id="export-list-panel" aria-label="Export list">
             <header class="export-panel-head">
               <span class="display">Export list</span>
@@ -332,10 +326,20 @@
             </footer>
           </section>
 
+          </div>
+          <div class="export-col" id="export-col-right">
+          <section class="export-panel export-settings" id="export-settings" aria-label="Item settings">
+            <header class="export-panel-head"><span class="display">Settings</span></header>
+            <div class="export-settings-body" id="export-settings-body">
+              <p class="faint export-empty-note">Select an item on the list to set its file name, quality and format.</p>
+            </div>
+          </section>
+
           <section class="export-panel export-history" id="export-history" aria-label="Your exports">
             <header class="export-panel-head"><span class="display">Your exports</span></header>
             <div class="export-batches" id="export-batches"></div>
           </section>
+          </div>
         </section>
       </main>
     </div>

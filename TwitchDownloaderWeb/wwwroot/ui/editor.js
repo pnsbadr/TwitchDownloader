@@ -184,6 +184,10 @@ function setUpLayout() {
   split([$("side"), document.querySelector(".views")], "clipco.layout.side", { sizes: [19, 81], minSize: [240, 760] });
   split([$("players"), $("lower")], "clipco.layout.players", { sizes: [58, 42], minSize: [220, 220], direction: "vertical" });
   split([$("player1"), $("player2")], "clipco.layout.p1p2", { sizes: [50, 50], minSize: [320, 320] });
+  // Export screen: two columns, each split top/bottom (badrfly 2026-11-21: "resizable like on editor").
+  split([$("export-col-left"), $("export-col-right")], "clipco.layout.export.cols", { sizes: [60, 40], minSize: [360, 300] });
+  split([$("export-player"), $("export-list-panel")], "clipco.layout.export.left", { sizes: [50, 50], minSize: [200, 160], direction: "vertical" });
+  split([$("export-settings"), $("export-history")], "clipco.layout.export.right", { sizes: [50, 50], minSize: [160, 120], direction: "vertical" });
 }
 
 // ---------- left panel (ui/library.js) ----------

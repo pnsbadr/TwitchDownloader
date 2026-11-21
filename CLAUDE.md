@@ -832,7 +832,7 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   original" (the parts of the clip/segment that no piece copied from it keeps). Drawn darker on Player 1 (tip: "Cut out … · left out of
   files") and their edges are snap points. Player 1 skips them while a selected segment or clip plays on its own; a clip dropped into a
   project leaves them out of its pieces.
-- **Export screen** (step 8, `ui/export.js`, EXPORT tab): same left panel; a view-only preview player (plays the selected item's kept parts
+- **Export screen** (step 8, `ui/export.js`, EXPORT tab): same left panel; two columns (preview over the drop list, settings over your exports) resizable with Split.js like the editor (`setUpLayout`, `clipco.layout.export.cols` / `.left` / `.right`, badrfly 2026-11-21); a view-only preview player (plays the selected item's kept parts
   in order, skipping cut-out parts; a video part by part), settings for the selected item (file name, quality from `/api/vods/info`, clip
   Horizontal/Vertical checkboxes: vertical is one of the clip's **vertical edits** (`GET /api/projects?entryId=&vertical=true`; badrfly
   2026-11-17), the member's own newest by default, a teammate's with `DownloadTeamVerticals`, or an older clip render; grayed out with none.
