@@ -84,6 +84,7 @@ const KEYBINDS = [
   { id: "searchClose", scope: "search", keys: ["Escape"], description: "Close the suggestions, then clear the box, then leave it" },
   { id: "searchChipBack", scope: "search", keys: ["Backspace"], description: "In an empty box: take off the last chip" },
   { id: "rowMove", scope: "library", keys: ["ArrowUp", "ArrowDown"], description: "Rows view of the left panel: select the row above / below (its card shows at the bottom of the panel)" },
+  { id: "rowStar", scope: "library", keys: ["*"], description: "A row's VOD, clip or video: star it or take the star off (only for you; the ★ chip shows your stars)" },
   { id: "rowStatus", scope: "library", keys: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"], description: "A clip's or video's row: give it the team's status of that number (in the Team page's order); 0 takes it off" },
   { id: "cardMenu", scope: "library", keys: ["ContextMenu", "Shift+F10", "Right click"], description: "The card's menu: load, export, rename, delete" },
   { id: "cardDrag", scope: "library", keys: ["Drag"], description: "Drop a card on a player, a timeline row or the export list" },

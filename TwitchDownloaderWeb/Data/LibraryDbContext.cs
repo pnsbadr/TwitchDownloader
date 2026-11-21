@@ -55,6 +55,7 @@ namespace TwitchDownloaderWeb.Data
         public DbSet<TeamTag> TeamTags => Set<TeamTag>();
         public DbSet<EntryTag> EntryTags => Set<EntryTag>();
         public DbSet<VideoTag> VideoTags => Set<VideoTag>();
+        public DbSet<MemberMark> MemberMarks => Set<MemberMark>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -263,6 +264,16 @@ namespace TwitchDownloaderWeb.Data
                 entity.HasOne<Video>().WithMany().HasForeignKey(x => x.VideoId).OnDelete(DeleteBehavior.Cascade);
                 entity.HasOne(x => x.Tag).WithMany().HasForeignKey(x => x.TagId).OnDelete(DeleteBehavior.Cascade);
                 entity.HasQueryFilter(x => !ScopedToTeam || x.Tag!.TeamId == ScopeTeamId);
+            });
+
+            // A member's own stars and recently opened items (badrfly 2026-11-20)
+            modelBuilder.Entity<MemberMark>(entity =>
+            {
+                entity.Property(x => x.Kind).HasConversion<string>().HasMaxLength(8);
+                entity.HasIndex(x => new { x.TeamId, x.UserId, x.Kind, x.ItemId }).IsUnique();
+                entity.HasOne<Team>().WithMany().HasForeignKey(x => x.TeamId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasQueryFilter(x => !ScopedToTeam || x.TeamId == ScopeTeamId);
             });
 
             modelBuilder.Entity<VodSyncOffset>(entity =>
