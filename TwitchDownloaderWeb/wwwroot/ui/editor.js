@@ -1605,16 +1605,8 @@ function screenshot(which) {
     }
     const vodTitle = knownVodTitle(point.vodId) || (Number(p1Vod?.vodId) === Number(point.vodId) ? p1Vod.title : "");
     if (projectVerticalOpen()) {
-      if (player2.kind === "twitch") {
-        toast("The 9:16 view needs the app player for a picture (this VOD plays in Twitch's player). Switch players in the gear menu.", "error");
-        return;
-      }
-      const canvas = verticalFrameCanvas();
-      if (!canvas) {
-        toast("The picture isn't loaded yet. Try again in a moment.", "error");
-        return;
-      }
-      saveScreenshot({ player: player2, vodId: point.vodId, seconds: point.seconds, title: `${store.project?.title || vodTitle || "Vertical"} (vertical)`, canvas });
+      saveScreenshot({ player: player2, vodId: point.vodId, seconds: point.seconds, title: `${store.project?.title || vodTitle || "Vertical"} (vertical)`,
+        compose: verticalFrameCanvas });
       return;
     }
     saveScreenshot({ player: player2, vodId: point.vodId, seconds: player2.vodId === point.vodId ? player2.position() ?? point.seconds : point.seconds, title: vodTitle || store.project?.title });

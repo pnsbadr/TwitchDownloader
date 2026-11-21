@@ -1,11 +1,12 @@
 // The players' screenshot button (badrfly 2026-11-21): the frame on screen, saved straight to the computer as a PNG named after
-// the VOD and the moment ("Title 1-02-03.45.png").
+// the VOD and the moment ("Title 1-02-03.45.png"), always in the VOD's best quality whatever the player shows (badrfly 2026-11-21).
 //
-// The app player's <video> is fed by hls.js through Media Source Extensions, so its picture is the page's own and can be drawn on
-// a canvas at full size, whether the segments come straight from Twitch's CDN or through the server. Twitch's player (the fallback)
-// is an iframe whose picture a page can't read, so then (or if the browser refuses the canvas) the server takes the frame from the
-// VOD itself with ffmpeg (GET /api/vods/{id}/frame?t=): a few seconds, and the embed's time is an estimate, so it may be a frame or
-// two off. The 9:16 view saves what its preview shows, at full size (1080x1920).
+// When the app player is showing the best rendition, its <video> (hls.js through Media Source Extensions, so the picture is the
+// page's own, direct from the CDN or through the server alike) is drawn on a canvas at full size: instant and exactly the frame on
+// screen. Otherwise (a lower quality, Twitch's player, whose iframe a page can't read, or a canvas the browser won't let the page
+// read) the server takes the frame from the best rendition with ffmpeg (GET /api/vods/{id}/frame?t=): a few seconds; with Twitch's
+// player the time is an estimate, so it may be a frame or two off. The 9:16 view crops that best-quality frame with its boxes
+// (compose), at 1080x1920.
 
 import { toast, problemMessage } from "./core.js";
 
@@ -41,9 +42,17 @@ function download(blob, name) {
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
-// The <video>'s current frame at its own size, or null when there's no picture yet
+// The app player's <video> when the frame it shows is from the VOD's best rendition, else null (then the server takes it)
+export function bestQualityVideo(player) {
+  if (player?.kind !== "app") return null;
+  const video = player.backend?.video;
+  const levels = player.backend?.hls?.levels;
+  if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight || !levels?.length) return null;
+  const best = Math.max(...levels.map((level) => level.height || 0));
+  return best > 0 && video.videoHeight >= best ? video : null;
+}
+
 function videoCanvas(video) {
-  if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return null;
   const canvas = document.createElement("canvas");
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
@@ -65,11 +74,18 @@ async function serverFrame(vodId, seconds) {
   return response.blob();
 }
 
+// A picture made from source (a <video> or an image): the plain frame, or compose's (the 9:16 view's) crop of it
+function picture(source, compose) {
+  const canvas = compose ? compose(source) : videoCanvas(source);
+  if (!canvas) throw new Error("nothing plays at the playhead.");
+  return canvas;
+}
+
 let busy = false;
 
 // player: the MediaPlayer on screen; vodId + seconds: the VOD moment it shows; title: for the file name;
-// canvas: an already drawn picture to save instead (the 9:16 view)
-export async function saveScreenshot({ player, vodId, seconds, title, canvas = null }) {
+// compose(source): draws the 9:16 view's picture from a source frame (null in a gap)
+export async function saveScreenshot({ player, vodId, seconds, title, compose = null }) {
   if (busy) return;
   if (!vodId || seconds == null) {
     toast("Nothing is playing here to take a picture of.", "error");
@@ -79,35 +95,35 @@ export async function saveScreenshot({ player, vodId, seconds, title, canvas = n
   busy = true;
   try {
     let blob = null;
-    let tainted = false;
-    const picture = canvas ?? (player?.kind === "app" ? videoCanvas(player.backend?.video) : null);
-    if (picture) {
+    const video = bestQualityVideo(player);
+    if (video) {
       try {
-        blob = await canvasBlob(picture);
+        blob = await canvasBlob(picture(video, compose));
       } catch (error) {
         // A tainted canvas (a picture the browser won't let the page read): the server takes it instead
         if (error?.name !== "SecurityError") throw error;
-        tainted = true;
       }
     }
+    let fromServer = false;
     if (!blob) {
-      if (canvas) {
-        toast("This picture can't be saved from the 9:16 view (the browser won't let the page read it). Save it from Player 2 instead.", "error");
-        return;
-      }
-      const why = player?.kind === "twitch" ? "Twitch's player can't be captured by the page" : tainted ? "the browser won't let the page read this picture" : "the picture isn't loaded yet";
-      const wait = toast(`Taking the picture on the server (${why})…`);
+      const wait = toast("Taking the picture in the best quality…");
       try {
         blob = await serverFrame(vodId, seconds);
       } finally {
         wait.remove();
       }
-      download(blob, name);
-      toast(player?.kind === "twitch" ? `Saved ${name} (taken on the server: it may be a frame or two off what Twitch's player shows).` : `Saved ${name}.`);
-      return;
+      if (compose) {
+        const frame = await createImageBitmap(blob);
+        try {
+          blob = await canvasBlob(picture(frame, compose));
+        } finally {
+          frame.close();
+        }
+      }
+      fromServer = true;
     }
     download(blob, name);
-    toast(`Saved ${name}.`);
+    toast(fromServer && player?.kind === "twitch" ? `Saved ${name} (Twitch's player only tells the time roughly, so it may be a frame or two off).` : `Saved ${name}.`);
   } catch (error) {
     toast(`Couldn't take the picture: ${error.message}`, "error");
   } finally {
