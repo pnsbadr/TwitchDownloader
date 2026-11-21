@@ -42,6 +42,9 @@ namespace TwitchDownloaderWeb.Endpoints
         public int? TeamStatusId { get; init; }
 
         public IReadOnlyList<string> Tags { get; init; } = [];
+
+        /// <summary>The members who made edits of it (Player 2; teammates' vertical ones only for members who may see them). Filled by the lists.</summary>
+        public IReadOnlyList<string> EditedBy { get; init; } = [];
     }
 
     /// <summary>
@@ -75,6 +78,7 @@ namespace TwitchDownloaderWeb.Endpoints
         {
             var names = await TimelineEndpoints.UserNamesAsync(db, videos.Select(x => x.UserId), cancellationToken);
             var tags = await ItemStatuses.VideoTagNamesAsync(db, videos.Select(x => x.Id), cancellationToken);
+            var editors = await LibraryListing.EditorsAsync(db, team, videos.Select(x => x.Id).ToList(), videos: true, cancellationToken);
             return videos.Select(video =>
             {
                 var segments = video.Segments.Where(x => x.Marker is { EndSeconds: not null }).OrderBy(x => x.Position)
@@ -94,6 +98,7 @@ namespace TwitchDownloaderWeb.Endpoints
                     FrameUrl = CardThumbnailService.VideoUrl(video.Id, PlayedParts(video)),
                     TeamStatusId = video.TeamStatusId,
                     Tags = tags.GetValueOrDefault(video.Id) ?? [],
+                    EditedBy = editors.GetValueOrDefault(video.Id) ?? [],
                 };
             }).ToList();
         }
@@ -175,8 +180,12 @@ namespace TwitchDownloaderWeb.Endpoints
         /// <param name="from">Only videos made at or after this instant (ISO 8601 with an offset).</param>
         /// <param name="to">Only videos made before this instant.</param>
         /// <param name="mark">"starred" or "recent": the caller's own stars / recently opened videos.</param>
-        private static async Task<IResult> List(string? vodIds, int? userId, int? editedBy, string? channels, int? limit, string? search, bool? paged,
-            string? cursor, string? from, string? to, string? status, string? tag, string? mark, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
+        /// <param name="sort">"dateAdded" (made, default), "streamDate", "title", "length" or "madeBy" (the last three page by offset).</param>
+        /// <param name="dateField">What from / to / days look at: "dateAdded" (made, default) or "streamDate".</param>
+        /// <param name="days">A time zone (IANA ID): the page also says how many videos match on each day of it, ignoring from/to (the calendar).</param>
+        private static async Task<IResult> List(string? vodIds, string? userId, string? editedBy, string? channels, int? limit, string? search, bool? paged,
+            string? cursor, string? from, string? to, string? status, string? tag, string? mark, string? sort, string? order, string? dateField, string? days,
+            TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
         {
             var (statusId, noStatus, tagName, filterProblem) = StatusEndpoints.ParseFilters(status, tag);
             if (filterProblem is not null)
@@ -184,13 +193,48 @@ namespace TwitchDownloaderWeb.Endpoints
             var (marked, markProblem) = MarkEndpoints.Filter(db, mark, MarkKind.Video, team.UserId);
             if (markProblem is not null)
                 return markProblem;
+            var (makers, makersProblem) = LibraryListing.ParseMembers(userId, "userId");
+            if (makersProblem is not null)
+                return makersProblem;
+            var (editors, editorsProblem) = LibraryListing.ParseMembers(editedBy, "editedBy");
+            if (editorsProblem is not null)
+                return editorsProblem;
+            var (zone, zoneProblem) = LibraryListing.ParseZone(days);
+            if (zoneProblem is not null)
+                return zoneProblem;
             if (!EntryEndpoints.TryParseInstant(from, out var fromUtc))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["from"] = ["Use an ISO 8601 date-time with an offset, e.g. 2026-10-09T07:00:00Z."] });
             if (!EntryEndpoints.TryParseInstant(to, out var toUtc))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["to"] = ["Use an ISO 8601 date-time with an offset, e.g. 2026-10-10T07:00:00Z."] });
+            var sortKey = (sort ?? "").ToLowerInvariant() switch
+            {
+                "" or "dateadded" => "dateadded",
+                "streamdate" => "streamdate",
+                "title" => "title",
+                "length" => "length",
+                "madeby" => "madeby",
+                _ => null,
+            };
+            if (sortKey is null)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["sort"] = ["Sort must be dateAdded, streamDate, title, length or madeBy."] });
+            bool useStreamDate;
+            switch (dateField?.ToLowerInvariant())
+            {
+                case null or "" or "dateadded":
+                    useStreamDate = false;
+                    break;
+                case "streamdate":
+                    useStreamDate = true;
+                    break;
+                default:
+                    return Results.ValidationProblem(new Dictionary<string, string[]> { ["dateField"] = ["Date field must be streamDate or dateAdded."] });
+            }
+            var byDate = sortKey is "dateadded" or "streamdate";
+            var byStreamDate = sortKey == "streamdate";
 
             PageCursor? after = null;
-            if (!string.IsNullOrEmpty(cursor) && !PageCursor.TryParse(cursor, out after))
+            var offset = 0;
+            if (!string.IsNullOrEmpty(cursor) && !(byDate ? PageCursor.TryParse(cursor, out after) : LibraryListing.TryParseOffset(cursor, out offset)))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["cursor"] = ["Use the nextCursor of the page before."] });
 
             var (ids, problem) = TimelineEndpoints.ParseVodIds(vodIds);
@@ -203,17 +247,16 @@ namespace TwitchDownloaderWeb.Endpoints
                 query = query.Where(x => ids.Contains(x.VodId) || x.Segments.Any(s => ids.Contains(s.Marker!.VodId)));
             if (marked is not null)
                 query = query.Where(x => marked.Contains(x.Id));
-            if (userId is { } user)
-                query = query.Where(x => x.UserId == user);
+            if (makers is not null)
+                query = query.Where(x => makers.Contains(x.UserId));
             if (await ChannelEndpoints.ChannelNamesAsync(db, channels, cancellationToken) is { } channelNames)
                 query = query.Where(x => x.ChannelName != null && channelNames.Contains(x.ChannelName.ToLower()));
-            if (editedBy is { } editor)
+            if (editors is not null)
             {
                 // Who made which vertical edit is only told to members who may see teammates' (VerticalAccess); horizontal edits are everyone's
-                if (editor != team.UserId && !VerticalAccess.CanSeeTeam(team))
-                    query = query.Where(x => db.Projects.Any(p => p.VideoId == x.Id && p.UserId == editor && !p.Vertical));
-                else
-                    query = query.Where(x => db.Projects.Any(p => p.VideoId == x.Id && p.UserId == editor));
+                var canSee = VerticalAccess.CanSeeTeam(team);
+                var me = team.UserId;
+                query = query.Where(x => db.Projects.Any(p => p.VideoId == x.Id && editors.Contains(p.UserId) && (canSee || !p.Vertical || p.UserId == me)));
             }
 
             if (!string.IsNullOrWhiteSpace(search))
@@ -231,12 +274,23 @@ namespace TwitchDownloaderWeb.Endpoints
                 query = query.Where(x => x.TeamStatus == null || !x.TeamStatus.HideFromLists);
             if (tagName is not null)
                 query = query.Where(x => db.VideoTags.Any(t => t.VideoId == x.Id && t.Tag!.Name == tagName));
+
+            // The calendar: every matching video's day, before the from/to bounds narrow it
+            List<DayCount>? dayCounts = null;
+            if (zone is not null && paged == true)
+            {
+                var instants = useStreamDate
+                    ? await query.Select(x => x.StreamDateUtc).ToListAsync(cancellationToken)
+                    : await query.Select(x => x.CreatedAtUtc).ToListAsync(cancellationToken);
+                dayCounts = LibraryListing.CountDays(instants, zone);
+            }
             if (fromUtc is { } lower)
-                query = query.Where(x => x.CreatedAtUtc >= lower);
+                query = useStreamDate ? query.Where(x => x.StreamDateUtc >= lower) : query.Where(x => x.CreatedAtUtc >= lower);
             if (toUtc is { } upper)
-                query = query.Where(x => x.CreatedAtUtc < upper);
+                query = useStreamDate ? query.Where(x => x.StreamDateUtc < upper) : query.Where(x => x.CreatedAtUtc < upper);
 
             var take = Math.Clamp(limit ?? 200, 1, 1000);
+            var ascending = string.Equals(order, "asc", StringComparison.OrdinalIgnoreCase);
             if (paged != true)
             {
                 var all = await query.OrderByDescending(x => x.CreatedAtUtc).ThenByDescending(x => x.Id).Take(take).ToListAsync(cancellationToken);
@@ -248,16 +302,42 @@ namespace TwitchDownloaderWeb.Endpoints
             {
                 var at = a.AtUtc;
                 var id = a.Id;
-                query = query.Where(x => x.CreatedAtUtc < at || (x.CreatedAtUtc == at && x.Id < id));
+                query = (byStreamDate, ascending) switch
+                {
+                    (true, true) => query.Where(x => x.StreamDateUtc > at || (x.StreamDateUtc == at && x.Id > id)),
+                    (true, false) => query.Where(x => x.StreamDateUtc < at || (x.StreamDateUtc == at && x.Id < id)),
+                    (false, true) => query.Where(x => x.CreatedAtUtc > at || (x.CreatedAtUtc == at && x.Id > id)),
+                    (false, false) => query.Where(x => x.CreatedAtUtc < at || (x.CreatedAtUtc == at && x.Id < id)),
+                };
             }
-            var videos = await query.OrderByDescending(x => x.CreatedAtUtc).ThenByDescending(x => x.Id).Take(take + 1).ToListAsync(cancellationToken);
+            var users = db.Users;
+            // Length: the segments' whole ranges (the card's length also leaves out cut-out parts, which SQL can't see)
+            query = (sortKey, ascending) switch
+            {
+                ("streamdate", true) => query.OrderBy(x => x.StreamDateUtc).ThenBy(x => x.Id),
+                ("streamdate", false) => query.OrderByDescending(x => x.StreamDateUtc).ThenByDescending(x => x.Id),
+                ("title", true) => query.OrderBy(x => x.Title.ToLower()).ThenBy(x => x.Id),
+                ("title", false) => query.OrderByDescending(x => x.Title.ToLower()).ThenByDescending(x => x.Id),
+                ("length", true) => query.OrderBy(x => x.Segments.Sum(s => (s.Marker!.EndSeconds ?? s.Marker.Seconds) - s.Marker.Seconds)).ThenBy(x => x.Id),
+                ("length", false) => query.OrderByDescending(x => x.Segments.Sum(s => (s.Marker!.EndSeconds ?? s.Marker.Seconds) - s.Marker.Seconds)).ThenByDescending(x => x.Id),
+                ("madeby", true) => query.OrderBy(x => users.Where(u => u.Id == x.UserId).Select(u => u.Username.ToLower()).FirstOrDefault())
+                    .ThenByDescending(x => x.CreatedAtUtc).ThenByDescending(x => x.Id),
+                ("madeby", false) => query.OrderByDescending(x => users.Where(u => u.Id == x.UserId).Select(u => u.Username.ToLower()).FirstOrDefault())
+                    .ThenByDescending(x => x.CreatedAtUtc).ThenByDescending(x => x.Id),
+                (_, true) => query.OrderBy(x => x.CreatedAtUtc).ThenBy(x => x.Id),
+                _ => query.OrderByDescending(x => x.CreatedAtUtc).ThenByDescending(x => x.Id),
+            };
+            if (offset > 0)
+                query = query.Skip(offset);
+            var videos = await query.Take(take + 1).ToListAsync(cancellationToken);
             string? next = null;
             if (videos.Count > take)
             {
                 videos.RemoveAt(take);
-                next = new PageCursor(videos[^1].CreatedAtUtc, videos[^1].Id).ToString();
+                var last = videos[^1];
+                next = byDate ? new PageCursor(byStreamDate ? last.StreamDateUtc : last.CreatedAtUtc, last.Id).ToString() : LibraryListing.OffsetCursor(offset + take);
             }
-            return Results.Ok(new Page<VideoDto>(await ToDtosAsync(db, videos, team, cancellationToken), next, total));
+            return Results.Ok(new Page<VideoDto>(await ToDtosAsync(db, videos, team, cancellationToken), next, total, dayCounts));
         }
 
         private static async Task<IResult> Get(int id, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)
