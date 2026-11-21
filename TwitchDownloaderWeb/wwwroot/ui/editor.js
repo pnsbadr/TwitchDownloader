@@ -209,6 +209,7 @@ function p1BulkItems(items) {
       const video = await makeVideoFrom(items.map((it) => ({
         kind: it.kind, id: it.id, vodId: timeline.rowVod(it.row?.id), order: it.start, own: timeline.isOwn(it), title: it.title,
         color: it.kind === "clip" ? it.data.color ?? "violet" : it.color, twitch: it.kind === "clip" && it.data.kind !== "Vod",
+        copyRowId: it.kind === "segment" && !timeline.isOwn(it) ? timeline.targetRow("video", timeline.rowVod(it.row?.id))?.id ?? null : null,
       })), { shownOnVodId: timeline.vodId });
       if (!video) return;
       await timeline.load();
@@ -232,24 +233,31 @@ function p1BulkItems(items) {
 // teammates' clips and videos, and the export list
 function libraryBulkItems(lines) {
   const out = [];
-  const vodStart = (vodId) => Date.parse(knownVod(vodId)?.createdAtUtc ?? "") / 1000 || 0;
+  // Stream time orders the parts, across VODs too: a VOD not in the loaded list is looked up first
+  const vodStart = async (vodId, date) => {
+    const at = Date.parse(date ?? knownVod(vodId)?.createdAtUtc ?? "");
+    if (at) return at / 1000;
+    const info = await vodInfo(vodId);
+    return Date.parse(info?.streamDateUtc ?? info?.createdAt ?? "") / 1000 || 0;
+  };
   const clips = lines.filter((l) => l.type === "clip").map((l) => l.item);
   const videos = lines.filter((l) => l.type === "video").map((l) => l.item);
   const segments = lines.filter((l) => l.type === "segment" && !l.item.removed && l.item.endSeconds != null);
   const parts = [
     ...clips.filter((c) => c.kind !== "Clip").map((c) => ({
       kind: "clip", id: c.id, vodId: String(c.vodId), own: String(c.addedByUserId) === String(me?.id), title: c.title, color: c.color ?? "violet",
-      order: (Date.parse(c.streamDateUtc ?? "") / 1000 || vodStart(c.vodId)) + (c.startSeconds ?? 0), twitch: false,
+      at: [String(c.vodId), c.streamDateUtc, c.startSeconds ?? 0], twitch: false,
     })),
     ...segments.map((l) => {
       const vodId = String(l.item.vodId ?? l.video.vodId);
       return { kind: "segment", id: l.item.markerId, vodId, own: l.video.userId === me?.id, title: l.item.label, color: l.item.color,
-        order: vodStart(vodId) + l.item.startSeconds };
+        at: [vodId, null, l.item.startSeconds] };
     }),
   ];
   if (parts.length && can("AddEntries") && !me?.support) {
     const left = clips.length - parts.filter((p) => p.kind === "clip").length;
     out.push({ icon: "film-reel", label: `Make a video of ${parts.length} part${parts.length === 1 ? "" : "s"}…`, run: async () => {
+      for (const part of parts) part.order = (await vodStart(part.at[0], part.at[1])) + part.at[2];
       const all = [...parts, ...Array.from({ length: left }, () => ({ kind: "clip", twitch: true, order: 0 }))];
       const video = await makeVideoFrom(all, { shownOnVodId: null });
       if (!video) return;

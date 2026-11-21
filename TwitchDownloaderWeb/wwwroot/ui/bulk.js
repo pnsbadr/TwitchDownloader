@@ -5,7 +5,8 @@
 // server's copy-as-segment), after a question that can be cancelled; teammates' segments are copied onto the member's own row; moments
 // and Twitch clips are left out.
 //
-// items: [{ kind: "segment" | "moment" | "clip", id, vodId, order (sorts them: stream time), own, title, color, twitch }]
+// items: [{ kind: "segment" | "moment" | "clip", id, vodId, order (sorts them: stream time), own, title, color, twitch, copyRowId? }]
+// Parts may come from several VODs (a video may span streams): each keeps its own VOD, clips get a row per VOD.
 // shownOnVodId: Player 1's VOD. New rows for clips of another VOD are then synced rows shown on it, so they appear where they were picked.
 
 import { api, toast } from "./core.js";
@@ -76,7 +77,8 @@ export async function makeVideoFrom(items, { shownOnVodId = null } = {}) {
           await api("PUT", `/api/markers/${id}`, { seconds: marker.seconds, endSeconds: marker.endSeconds, label: marker.label, color, cuts: null });
         }
       } else if (!it.own) {
-        id = (await api("POST", `/api/markers/${it.id}/copy`, {})).id;
+        // onto the member's own row of the segment's VOD (on Player 1 the one shown there, for a synced row's segment)
+        id = (await api("POST", `/api/markers/${it.id}/copy`, it.copyRowId != null ? { rowId: it.copyRowId } : {})).id;
       }
       markerIds.push(id);
       firstVod ??= it.vodId;
