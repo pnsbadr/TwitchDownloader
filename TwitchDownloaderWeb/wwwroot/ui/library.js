@@ -2767,10 +2767,7 @@ function vodSpec(vod) {
     actions.push(withTooltip(icon, vod.rescuePaused ? "Audio saving paused" : RESCUE_TEXT[vod.rescueStatus]));
   }
   actions.push(exportButton({ kind: "vod", data: vod }));
-  if (hasKids(vod)) {
-    const open = state.open.has(String(vod.vodId));
-    actions.push(iconButton({ icon: open ? "caret-up" : "caret-down", label: open ? "Hide its videos and clips" : "Show its videos and clips", onClick: () => toggleVod(vod) }));
-  }
+  // No open/close button on the card (badrfly 2026-11-21: it was cut off); its menu and → / ← open and close it
   const item = { ...vod, kind: "vod" };
   const work = state.work.get(String(vod.vodId));
   const channel = channelByLogin(vod.channel);
