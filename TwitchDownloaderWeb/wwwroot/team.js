@@ -349,6 +349,8 @@ const SET_WHEN = [
   ["ByHand", "By hand only"], ["NewItem", "When it's made"], ["EditMade", "When a Player 2 edit is made"],
   ["VerticalEditMade", "When a vertical edit is made"], ["Exported", "When it's exported"],
 ];
+// The library tabs a status can show on (TeamStatus.Tabs)
+const STATUS_TABS = [["vods", "VODs"], ["videos", "Videos"], ["clips", "Clips"]];
 let statusData = null;
 let draggedStatus = null;
 
@@ -406,9 +408,20 @@ function statusRow(status) {
   when.addEventListener("change", () => statusCall("PUT", `/api/team/statuses/${status.id}`, { setWhen: when.value }));
   const hide = el("input", { type: "checkbox", ...(status.hideFromLists ? { checked: "" } : {}) });
   hide.addEventListener("change", () => statusCall("PUT", `/api/team/statuses/${status.id}`, { hideFromLists: hide.checked }));
+  // Which library tabs show it (badrfly 2026-11-21: the team owner decides)
+  const tabs = el("span", { class: "status-tabs", role: "group", "aria-label": "Shown on these library tabs" },
+    ...STATUS_TABS.map(([value, label]) => {
+      const on = (status.tabs ?? []).includes(value);
+      const box = el("input", { type: "checkbox", ...(on ? { checked: "" } : {}) });
+      box.addEventListener("change", () => {
+        const next = STATUS_TABS.map(([v]) => v).filter((v) => (v === value ? box.checked : (status.tabs ?? []).includes(v)));
+        statusCall("PUT", `/api/team/statuses/${status.id}`, { tabs: next });
+      });
+      return el("label", { class: "status-hide", title: `Show it as a chip on the library's ${label} tab${value === "vods" ? " (the VODs that have such clips or videos)" : ""}` }, box, label);
+    }));
   const remove = el("button", { type: "button", class: "link small danger", title: "Delete this status", onclick: () => askDeleteStatus(status, row) }, "Delete");
   row.append(grip, swatch, name, when,
-    el("label", { class: "status-hide", title: "Leave its clips and videos out of the library's lists unless this status is picked" }, hide, "Hide from lists"),
+    el("label", { class: "status-hide", title: "Leave its clips and videos out of the library's lists unless this status is picked" }, hide, "Hide from lists"), tabs,
     el("span", { class: "muted small-text status-count" }, `${count} item${count === 1 ? "" : "s"}`), remove, palette);
 
   // Drag to reorder (the inputs keep their own text selection)

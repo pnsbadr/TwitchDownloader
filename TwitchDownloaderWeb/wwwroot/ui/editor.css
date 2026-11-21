@@ -1642,6 +1642,8 @@ body:not(.linking) .link-chips { display: none; }
 .side-views sl-icon-button::part(base) { padding: 4px; font-size: 16px; border-radius: var(--radius-xs); }
 .side-views sl-icon-button.on::part(base) { color: var(--text); background: var(--bg-4); }
 #side-calendar { font-size: 17px; }
+#side-calendar::part(base) { padding: 4px; border-radius: var(--radius-xs); }
+#side-calendar.on::part(base) { color: var(--text); background: var(--bg-4); box-shadow: 0 0 0 2px var(--bg-2); }
 
 /* The × at the end of the chip row: stays in sight while the row scrolls */
 .sbar-clear {
@@ -1775,6 +1777,7 @@ body:not(.linking) .link-chips { display: none; }
 }
 .dhead-filter:hover { color: var(--text); background: var(--bg-3); }
 .dhead-filter.on { color: var(--accent-strong); }
+.dhead-filter.open { color: var(--text); background: var(--bg-4); }
 .dhead-filter sl-icon { font-size: 11px; }
 .dhead-grip { position: absolute; right: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 1; }
 .dhead-grip:hover { background: linear-gradient(90deg, transparent 3px, var(--accent) 3px, var(--accent) 5px, transparent 5px); }

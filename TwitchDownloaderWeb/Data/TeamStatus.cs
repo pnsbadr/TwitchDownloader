@@ -41,6 +41,12 @@ namespace TwitchDownloaderWeb.Data
         /// <summary>Items with it are left out of the CLIPS and VIDEOS lists unless that status is picked (e.g. Posted).</summary>
         public bool HideFromLists { get; set; }
 
+        /// <summary>
+        /// Which of the library's tabs show it as a chip (badrfly 2026-11-21: the team owner picks): <see cref="StatusTabs"/> flags, all by
+        /// default. Clips and videos only offer the statuses of their own tab in their menu; an item keeps a status even when it's taken off.
+        /// </summary>
+        public StatusTabs Tabs { get; set; } = StatusTabs.All;
+
         public DateTime CreatedAtUtc { get; set; }
 
         public static readonly IReadOnlyList<(string Name, string Color, StatusTrigger SetWhen)> Defaults =
@@ -50,6 +56,17 @@ namespace TwitchDownloaderWeb.Data
             ("Ready", "violet", StatusTrigger.Exported),
             ("Posted", "lime", StatusTrigger.ByHand),
         ];
+    }
+
+    /// <summary>The library tabs a status shows on (<see cref="TeamStatus.Tabs"/>). Stored as a bit mask: never renumber.</summary>
+    [Flags]
+    public enum StatusTabs
+    {
+        None = 0,
+        Vods = 1,
+        Videos = 2,
+        Clips = 4,
+        All = Vods | Videos | Clips,
     }
 
     /// <summary>A team's tag (lower case, no '#'), made the first time a member puts it on a clip or video.</summary>

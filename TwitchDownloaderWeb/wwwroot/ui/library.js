@@ -937,9 +937,9 @@ function render() {
 
 const COLUMNS = {
   name: { label: "Name", width: 180, min: 120, sort: "title", firstOrder: "asc" },
-  length: { label: "Length", width: 64, min: 48, sort: "length", firstOrder: "desc", align: "end" },
+  length: { label: "Length", width: 64, min: 48, sort: "length", firstOrder: "desc" },
   madeBy: { label: "Made by", width: 96, min: 64, sort: "madeBy", firstOrder: "asc", filter: "made" },
-  editedBy: { label: "Edited by", width: 110, min: 64, filter: "edited" },
+  editedBy: { label: "Edited by", width: 110, min: 64, sort: "editedBy", firstOrder: "asc", filter: "edited" },
   added: { label: "Added", width: 104, min: 64, sort: "dateAdded", firstOrder: "desc" },
   streamDate: { label: "Stream date", width: 90, min: 64, sort: "streamDate", firstOrder: "desc" },
   work: { label: "Work", width: 110, min: 56, sort: "work", firstOrder: "desc" },
@@ -994,13 +994,22 @@ function columnWidth(list, id) {
   return Math.max(COLUMNS[id].min, prefsOf(list).widths[id] ?? COLUMNS[id].width);
 }
 
-// The columns' widths as a grid template (the name column takes what's left when the panel is wider) and their total
+// The columns' widths as a grid template and their total. Every column keeps its own width, like a Windows folder's Details view (badrfly
+// 2026-11-21): dragging an edge changes only that column and moves the ones after it. Until it's resized, the name column takes what the
+// others leave of the panel.
 function columnLayout(list = state.list) {
   const ids = shownColumns(list);
-  const widths = ids.map((id) => columnWidth(list, id));
+  const widths = ids.map((id) => (id === "name" ? nameWidth(list, ids) : columnWidth(list, id)));
   const total = widths.reduce((a, b) => a + b, 0) + 16; // + the row's padding
-  const template = ids.map((id, i) => (id === "name" ? `minmax(${widths[i]}px, 1fr)` : `${widths[i]}px`)).join(" ");
+  const template = widths.map((w) => `${w}px`).join(" ");
   return { ids, template, total };
+}
+
+function nameWidth(list, ids = shownColumns(list)) {
+  const saved = prefsOf(list).widths.name;
+  if (saved != null) return Math.max(COLUMNS.name.min, saved);
+  const room = ($("side-list")?.clientWidth || 0) - 16 - ids.filter((id) => id !== "name").reduce((sum, id) => sum + columnWidth(list, id), 0);
+  return Math.max(COLUMNS.name.width, room);
 }
 
 function applyColumnLayout() {
@@ -1053,14 +1062,17 @@ function renderDetailsHead() {
     const column = COLUMNS[id];
     const sorted = column.sort && sort.key === column.sort;
     const ids = column.filter ? state.who[column.filter] : [];
-    const label = el("button", { type: "button", class: "dhead-label", title: column.sort ? `Sort by ${column.label.toLowerCase()}` : column.filter ? `Filter by ${column.label.toLowerCase()}` : "" },
+    const label = el("button", { type: "button", class: "dhead-label", title: `Sort by ${column.label.toLowerCase()}` },
       column.label,
       sorted ? el("sl-icon", { library: "ph", name: sort.order === "asc" ? "caret-up" : "caret-down", class: "dhead-arrow" }) : null);
-    label.addEventListener("click", (event) => (column.sort ? sortBy(column) : openMemberFilter(event.currentTarget, column.filter)));
+    label.addEventListener("click", () => sortBy(column));
     const cell = el("div", { class: `dhead-cell${sorted ? " sorted" : ""}${column.align === "end" ? " end" : ""}`, "data-col": id }, label);
     if (column.filter && list !== "vods") {
-      const filter = el("button", { type: "button", class: `dhead-filter${ids.length ? " on" : ""}`, "aria-label": `Filter by ${column.label.toLowerCase()}`, title: `Filter by ${column.label.toLowerCase()}` },
-        el("sl-icon", { library: "ph", name: "caret-down" }), ids.length ? el("span", { class: "dhead-n" }, String(ids.length)) : null);
+      // A funnel, not an arrow (badrfly 2026-11-21: an arrow read like the sort arrow); filled while members are ticked
+      const open = memberPop?.field === column.filter;
+      const filter = el("button", { type: "button", class: `dhead-filter${ids.length ? " on" : ""}${open ? " open" : ""}`, "data-filter": column.filter,
+        "aria-label": `Filter by ${column.label.toLowerCase()}`, "aria-expanded": String(open), title: `Filter by ${column.label.toLowerCase()}` },
+        el("sl-icon", { library: "ph", name: ids.length ? "funnel-fill" : "funnel" }), ids.length ? el("span", { class: "dhead-n" }, String(ids.length)) : null);
       filter.addEventListener("click", (event) => openMemberFilter(event.currentTarget, column.filter));
       cell.append(filter);
     }
@@ -1085,7 +1097,10 @@ function resizeColumn(event, id) {
   const grip = event.currentTarget;
   grip.setPointerCapture(event.pointerId);
   const startX = event.clientX;
-  const startWidth = columnWidth(list, id);
+  // The name column stops filling the panel once any column is resized, so only the dragged one changes
+  const prefs = prefsOf(list);
+  prefs.widths.name ??= nameWidth(list);
+  const startWidth = id === "name" ? prefs.widths.name : columnWidth(list, id);
   document.body.classList.add("col-resizing");
   const move = (e) => {
     prefsOf(list).widths[id] = Math.max(COLUMNS[id].min, Math.round(startWidth + e.clientX - startX));
@@ -1134,11 +1149,23 @@ function openColumnMenu(event) {
 // The ▾ of Made by / Edited by: a checklist of the team's members (more than one can be ticked)
 let memberPop = null;
 async function openMemberFilter(anchor, field) {
-  if (memberPop?.anchor === anchor) return memberPop.popover.close();
+  // A toggle: the headings are drawn again while it's open, so its button is found by the filter it opens, not by the element
+  if (memberPop?.field === field) return memberPop.popover.close();
   memberPop?.popover.close();
   const pop = { anchor, field };
   memberPop = pop;
-  pop.popover = openPopover(anchor, el("div"), { className: "member-pop", onClose: () => { if (memberPop === pop) memberPop = null; } });
+  const mark = () => document.querySelectorAll(".dhead-filter").forEach((b) => {
+    const open = memberPop?.field === b.dataset.filter;
+    b.classList.toggle("open", open);
+    b.setAttribute("aria-expanded", String(open));
+  });
+  pop.popover = openPopover(anchor, el("div"), {
+    className: "member-pop",
+    // A press on its own button closes it there (the click), not here and open again
+    keepOpenOn: (target) => Boolean(target.closest?.(`.dhead-filter[data-filter="${field}"]`)),
+    onClose: () => { if (memberPop === pop) memberPop = null; mark(); },
+  });
+  mark();
   const draw = () => {
     if (memberPop !== pop) return;
     const ticked = new Set(state.who[field]);
@@ -1199,7 +1226,7 @@ function detailsRow(line) {
           ...(r.tags ?? []).filter(Boolean),
           starButton(type, item));
       case "length":
-        return el("span", { class: "dcell end num" }, r.length ?? "");
+        return el("span", { class: "dcell num" }, r.length ?? "");
       case "madeBy":
         return text(type === "clip" ? item.addedBy : item.createdBy);
       case "editedBy":
@@ -2116,7 +2143,17 @@ function openCalendarAt(anchor, at = null) {
   const start = at?.year ? at : topMonth() ?? { year, month };
   const cal = { anchor, year: start.year, month: start.month, counts: new Map(), loading: true, pending: "", list: state.list };
   calendar = cal;
-  cal.popover = openPopover(anchor, el("div"), { className: "cal-pop", onClose: () => { if (calendar === cal) calendar = null; } });
+  // The button stays lit while it's open, like the pressed view button next to it (badrfly 2026-11-21)
+  const button = $("side-calendar");
+  button.classList.add("on");
+  button.setAttribute("aria-expanded", "true");
+  cal.popover = openPopover(anchor, el("div"), { className: "cal-pop", onClose: () => {
+    if (calendar === cal) calendar = null;
+    if (!calendar) {
+      button.classList.remove("on");
+      button.setAttribute("aria-expanded", "false");
+    }
+  } });
   drawCalendar();
   loadCalendarCounts();
 }
@@ -2450,7 +2487,7 @@ function wireRow(node, line, spec) {
     }
     // 1–9 give the row's clip or video the team's status of that number, 0 takes it off (keybinds.js rowStatus)
     if (keybindFor("library", event) === "rowStatus" && (line.type === "clip" || line.type === "video") && state.canSetStatus) {
-      const status = event.key === "0" ? null : state.statuses[Number(event.key) - 1];
+      const status = event.key === "0" ? null : statusesOn(line.type === "clip" ? "clips" : "videos")[Number(event.key) - 1];
       if (event.key === "0" || status) {
         event.preventDefault();
         setItemStatus(line.type, line.item, status?.id ?? null);
@@ -3506,6 +3543,11 @@ function statusCount(status) {
   return status.clips + status.videos;
 }
 
+// The team's statuses shown on a library tab ("vods", "videos", "clips"; TeamStatus.Tabs, the team owner's pick)
+function statusesOn(list) {
+  return state.statuses.filter((s) => !s.tabs || s.tabs.includes(list));
+}
+
 function renderStatusBar() {
   const bar = $("status-bar");
   if (!bar) return;
@@ -3519,13 +3561,13 @@ function renderStatusBar() {
     return node;
   };
   const none = state.noStatus ? (state.list === "clips" ? state.noStatus.clips : state.list === "videos" ? state.noStatus.videos : state.noStatus.clips + state.noStatus.videos) : 0;
-  // VODs have no status of their own (a status picked still shows the VODs with such clips or videos, and its chip under the box)
-  const statuses = state.list === "vods" ? [] : state.statuses;
+  // The team owner picks which tabs each status shows on (badrfly 2026-11-21); on VODs one finds the streams with such clips or videos
+  const statuses = statusesOn(state.list);
   bar.replaceChildren(
     ...quickChips(),
     statuses.length ? el("span", { class: "sbar-gap", "aria-hidden": "true" }) : "",
     ...statuses.map((s) => chip(String(s.id), s.name, statusColor(s), statusCount(s), s.hideFromLists ? "Hidden from lists unless picked" : "")),
-    none && state.list !== "vods" ? chip("none", "No status", null, none, "") : "",
+    none && statuses.length ? chip("none", "No status", null, none, "") : "",
     clearButton());
   clearButton().hidden = !anyFilterOn();
   // Fades out on the right while more chips are hidden there
@@ -3589,10 +3631,11 @@ function statusQuery(query) {
 
 // The statuses and Tags… at the end of a clip's or video's menu
 function statusMenu(kind, item) {
-  if (!state.canSetStatus || !state.statuses.length) return [];
+  const statuses = statusesOn(kind === "clip" ? "clips" : "videos");
+  if (!state.canSetStatus || (!statuses.length && !item.teamStatusId)) return [];
   return [
     { divider: true },
-    ...state.statuses.map((s, i) => ({
+    ...statuses.map((s, i) => ({
       label: s.name, swatch: statusColor(s), checked: item.teamStatusId === s.id, hint: i < 9 ? String(i + 1) : "",
       run: () => setItemStatus(kind, item, s.id),
     })),
