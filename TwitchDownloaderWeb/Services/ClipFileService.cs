@@ -33,13 +33,13 @@ namespace TwitchDownloaderWeb.Services
     public sealed class ClipFileService
     {
         private readonly ClipInfoService _clips;
-        private readonly VodInfoService _vodInfo;
+        private readonly IVodDetailsSource _vodInfo;
         private readonly AudioRestoreService _restore;
         private readonly ExactTrimService _exactTrim;
         private readonly IConfiguration _configuration;
         private readonly IOptions<DownloadSettings> _settings;
 
-        public ClipFileService(ClipInfoService clips, VodInfoService vodInfo, AudioRestoreService restore, ExactTrimService exactTrim,
+        public ClipFileService(ClipInfoService clips, IVodDetailsSource vodInfo, AudioRestoreService restore, ExactTrimService exactTrim,
             IConfiguration configuration, IOptions<DownloadSettings> settings)
         {
             _clips = clips;

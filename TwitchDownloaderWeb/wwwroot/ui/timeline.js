@@ -291,7 +291,8 @@ export class Timeline {
 
   rowTitle(row) {
     const name = row.name || (row.kind === "Clip" || row.kind === "clip" ? "Clips" : "Segments");
-    const sameKind = this.rows.filter((r) => r.userId === row.userId && r.kind === row.kind);
+    // Numbered only among the member's unnamed rows of that kind (a synced row carries its channel's name)
+    const sameKind = this.rows.filter((r) => r.userId === row.userId && r.kind === row.kind && !r.name && !r.shownOnVodId);
     const number = row.name || sameKind.length < 2 ? "" : ` ${sameKind.indexOf(row) + 1}`;
     return `${name}${number}`;
   }
