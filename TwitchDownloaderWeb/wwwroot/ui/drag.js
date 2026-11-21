@@ -60,11 +60,13 @@ export function draggable(element, getItem, { ghost } = {}) {
   });
 }
 
-function cloneGhost(element) {
+// A copy of the element under the pointer while it's dragged; trim(copy) may take parts out of it first
+export function cloneGhost(element, trim = null) {
   const rect = element.getBoundingClientRect();
   const ghost = element.cloneNode(true);
   ghost.removeAttribute("id");
   ghost.style.width = `${Math.min(rect.width, 320)}px`;
+  trim?.(ghost);
   // A row of a virtual list sits where the list placed it (position: absolute; top: its place in the list), so the copy would float that
   // far from the pointer (badrfly 2026-11-21: the lower the row, the farther away): the copy goes back into the ghost's own flow
   ghost.style.position = "static";
@@ -72,7 +74,7 @@ function cloneGhost(element) {
   ghost.style.transform = "none";
   // The Details view's columns come from its list (a CSS variable): keep them, at most the ghost's width
   const columns = getComputedStyle(element).gridTemplateColumns;
-  if (columns && columns !== "none") ghost.style.gridTemplateColumns = columns;
+  if (columns && columns !== "none" && !ghost.style.gridTemplateColumns) ghost.style.gridTemplateColumns = columns;
   ghost.style.overflow = "hidden";
   return ghost;
 }

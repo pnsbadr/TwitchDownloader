@@ -18,7 +18,7 @@
 // shortcuts (by:, vod:, @channel, a day, >1m) into chips under it (see "the search box" below).
 
 import { $, el, api, me, can, liveChannels, formatDate, formatDuration, loadSetting, saveSetting, toast, iconButton, withTooltip, twitchThumb, thumbStyle } from "./core.js";
-import { draggable, shadePath } from "./drag.js";
+import { cloneGhost, draggable, shadePath } from "./drag.js";
 import { dayRange, todayIn, viewerTimeZone, zonedParts } from "./dates.js";
 import { clipColor, CLIP_COLOR, MARKER_COLORS, STREAM_COLORS } from "./colors.js";
 import { askText, confirmAction } from "./dialogs.js";
@@ -2662,10 +2662,24 @@ function card(spec) {
   return node;
 }
 
+// The dragged copy of a row or card shows the item only (badrfly 2026-11-21): not the day number in the date column, and in the Details
+// view only the name and length (the columns after them stay behind)
+function trimGhost(copy) {
+  copy.querySelectorAll(".lday, .lmonth-label").forEach((n) => n.remove());
+  if (!copy.classList.contains("drow")) return;
+  const cells = [...copy.children];
+  const keep = cells.filter((c) => c.classList.contains("dname") || c.classList.contains("num"));
+  for (const c of cells) if (!keep.includes(c)) c.remove();
+  copy.style.gridTemplateColumns = "minmax(0, auto) auto";
+  copy.style.width = "max-content";
+  copy.style.maxWidth = "320px";
+  copy.dataset.trimmed = "1";
+}
+
 // Drag, double-click / Enter to load, right-click / Menu key for the menu: the same on cards and rows
 function wireItem(node, { kind, title, dragData, menu }) {
   const item = { kind, label: title, data: dragData };
-  draggable(node, () => item);
+  draggable(node, () => item, { ghost: () => cloneGhost(node, trimGhost) });
   node.addEventListener("dblclick", () => handlers.onLoad(item));
   node.addEventListener("keydown", (event) => {
     if (event.target !== node) return;
