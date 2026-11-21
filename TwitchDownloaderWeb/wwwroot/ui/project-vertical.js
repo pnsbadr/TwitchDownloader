@@ -635,14 +635,15 @@ function draw() {
   vx.frame = requestAnimationFrame(draw);
 }
 
-// The 9:16 picture at the playhead at full size (1080x1920), for the screenshot button: null in a gap, before the first frame or
-// with Twitch's player (its picture can't be read)
-export function verticalFrameCanvas() {
-  if (!vx.open) return null;
-  const video = videoElement();
+// The 9:16 picture at the playhead at full size (1080x1920), for the screenshot button, cut from source (the frame in the best
+// quality: the player's <video> when it plays that, else the server's picture of the moment). Null in a gap.
+export function verticalFrameCanvas(source) {
+  if (!vx.open || !source) return null;
   const playing = stretchAt(flatten(store().content ?? { tracks: [], pieces: [] }), vx.hooks.playback.time());
   const live = vx.live;
-  if (!playing?.piece || !video || video.readyState < 2 || !video.videoWidth || !live) return null;
+  const vw = source.videoWidth ?? source.width;
+  const vh = source.videoHeight ?? source.height;
+  if (!playing?.piece || !vw || !vh || !live) return null;
   const canvas = document.createElement("canvas");
   canvas.width = OUT_W;
   canvas.height = OUT_H;
@@ -650,9 +651,7 @@ export function verticalFrameCanvas() {
   ctx.imageSmoothingQuality = "high";
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, OUT_W, OUT_H);
-  const vw = video.videoWidth;
-  const vh = video.videoHeight;
-  const put = (box, dy, dh) => ctx.drawImage(video, box.x * vw, box.y * vh, box.w * vw, box.h * vh, 0, dy, OUT_W, dh);
+  const put = (box, dy, dh) => ctx.drawImage(source, box.x * vw, box.y * vh, box.w * vw, box.h * vh, 0, dy, OUT_W, dh);
   if (live.mode === "single") put(live.boxes.single, 0, OUT_H);
   else {
     const topH = Math.round(OUT_H * live.ratio);
