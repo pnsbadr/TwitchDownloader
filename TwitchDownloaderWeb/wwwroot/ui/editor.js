@@ -6,7 +6,7 @@ import { registerIconLibrary } from "https://cdn.jsdelivr.net/npm/@shoelace-styl
 import { setUpStart, openStart, startIsOpen } from "./start.js";
 import { $, el, api, me, can, loadMe, startLiveEvents, sessionHandlers, TEAM_PAGE_PERMISSIONS, wireIconButtons, loadSetting, saveSetting, toast, formatDuration, formatDate } from "./core.js";
 import { dropTarget, watchDrags, shadePath } from "./drag.js";
-import { setUpLibrary, refreshEdits, player2Changed, revealLoaded, noteOpened, myMarks, toggleStar, showList, refreshClips, refreshVideos, refreshLibraryFilters, knownVod, knownVodTitle, pickChannel, teamChannels, adjacentVod, focusLibrarySearch, libraryHidden, setLibraryHidden } from "./library.js";
+import { setUpLibrary, refreshEdits, player2Changed, revealLoaded, noteOpened, myMarks, toggleStar, showList, refreshClips, refreshVideos, refreshLibraryFilters, knownVod, knownVodTitle, pickChannel, teamChannels, adjacentVod, focusLibrarySearch, libraryHidden, setLibraryHidden, statusItemsFor } from "./library.js";
 import { setUpLinkTray, renderLinkTray, savedLinking, addSegmentsTo, vodDay, vodInfo } from "./link-tray.js";
 import { setUpTree, forgetTree, segmentData } from "./p2-tree.js";
 import { MARKER_COLORS } from "./colors.js";
@@ -20,6 +20,7 @@ import { ProjectTimeline, forgetLiveVodLengths } from "./project-timeline.js";
 import { ProjectPlayback } from "./project-playback.js";
 import { setUpExport, addToExport, exportShown, pausePreview } from "./export.js";
 import { showShortcuts } from "./shortcuts.js";
+import { makeVideoFrom } from "./bulk.js";
 import { openSyncView } from "./sync-view.js";
 import { SyncedPip } from "./p1-pip.js";
 import { setUpProjectVertical, openProjectVertical, closeProjectVertical, projectVerticalOpen, refreshProjectVertical, handleProjectVerticalKey, pauseProjectVertical } from "./project-vertical.js";
@@ -198,14 +199,117 @@ function openExport(item) {
   addToExport(item);
 }
 
+// Player 1's selection menu (roadmap 1c / 1d, badrfly 2026-11-21): a video of the selection in time order (clips copied as segments
+// first, see ui/bulk.js) and the export list
+function p1BulkItems(items) {
+  const out = [];
+  const usable = items.filter((it) => it.kind === "segment" || (it.kind === "clip" && it.data.kind === "Vod"));
+  if (usable.length && can("AddEntries") && !me?.support) {
+    out.push({ icon: "film-reel", label: `Make a video of ${usable.length} part${usable.length === 1 ? "" : "s"}…`, run: async () => {
+      const video = await makeVideoFrom(items.map((it) => ({
+        kind: it.kind, id: it.id, vodId: timeline.rowVod(it.row?.id), order: it.start, own: timeline.isOwn(it), title: it.title,
+        color: it.kind === "clip" ? it.data.color ?? "violet" : it.color, twitch: it.kind === "clip" && it.data.kind !== "Vod",
+        copyRowId: it.kind === "segment" && !timeline.isOwn(it) ? timeline.targetRow("video", timeline.rowVod(it.row?.id))?.id ?? null : null,
+      })), { shownOnVodId: timeline.vodId });
+      if (!video) return;
+      await timeline.load();
+      timeline.edited?.();
+      refreshVideos();
+      refreshClips();
+    } });
+  }
+  // Segments and clips of this VOD (a synced row's items are another VOD's: added from their own VOD)
+  const exportable = usable.filter((it) => !timeline.syncedRow(it.row?.id));
+  if (exportable.length && can("GenerateFiles")) {
+    out.push({ icon: "download-simple", label: `Add ${exportable.length} to the export list`, run: () => {
+      for (const item of exportable) exportFromTimeline(item, { quiet: true });
+      toast(`Added ${exportable.length} item${exportable.length === 1 ? "" : "s"} to the export list.`);
+    } });
+  }
+  return out;
+}
+
+// The library's selection menu (roadmap 1c / 1d): a video of the selected clips and segments in stream time order, copies of
+// teammates' clips and videos, and the export list
+function libraryBulkItems(lines) {
+  const out = [];
+  // Stream time orders the parts, across VODs too: a VOD not in the loaded list is looked up first
+  const vodStart = async (vodId, date) => {
+    const at = Date.parse(date ?? knownVod(vodId)?.createdAtUtc ?? "");
+    if (at) return at / 1000;
+    const info = await vodInfo(vodId);
+    return Date.parse(info?.streamDateUtc ?? info?.createdAt ?? "") / 1000 || 0;
+  };
+  const clips = lines.filter((l) => l.type === "clip").map((l) => l.item);
+  const videos = lines.filter((l) => l.type === "video").map((l) => l.item);
+  const segments = lines.filter((l) => l.type === "segment" && !l.item.removed && l.item.endSeconds != null);
+  const parts = [
+    ...clips.filter((c) => c.kind !== "Clip").map((c) => ({
+      kind: "clip", id: c.id, vodId: String(c.vodId), own: String(c.addedByUserId) === String(me?.id), title: c.title, color: c.color ?? "violet",
+      at: [String(c.vodId), c.streamDateUtc, c.startSeconds ?? 0], twitch: false,
+    })),
+    ...segments.map((l) => {
+      const vodId = String(l.item.vodId ?? l.video.vodId);
+      return { kind: "segment", id: l.item.markerId, vodId, own: l.video.userId === me?.id, title: l.item.label, color: l.item.color,
+        at: [vodId, null, l.item.startSeconds] };
+    }),
+  ];
+  if (parts.length && can("AddEntries") && !me?.support) {
+    const left = clips.length - parts.filter((p) => p.kind === "clip").length;
+    out.push({ icon: "film-reel", label: `Make a video of ${parts.length} part${parts.length === 1 ? "" : "s"}…`, run: async () => {
+      for (const part of parts) part.order = (await vodStart(part.at[0], part.at[1])) + part.at[2];
+      const all = [...parts, ...Array.from({ length: left }, () => ({ kind: "clip", twitch: true, order: 0 }))];
+      const video = await makeVideoFrom(all, { shownOnVodId: null });
+      if (!video) return;
+      refreshVideos();
+      refreshClips();
+      if (timeline?.vodId) timeline.load();
+    } });
+  }
+  const theirClips = clips.filter((c) => c.kind !== "Clip" && String(c.addedByUserId) !== String(me?.id));
+  const theirVideos = videos.filter((v) => v.userId !== me?.id);
+  const copies = theirClips.length + theirVideos.length;
+  if (copies && can("AddEntries") && !me?.support) {
+    out.push({ icon: "copy", label: `Copy ${copies === 1 ? "1 teammate's item" : `${copies} teammates' items`} to my rows`, run: async () => {
+      let failed = 0;
+      let firstError = "";
+      for (const [url, id] of [...theirClips.map((c) => ["/api/entries", c.id]), ...theirVideos.map((v) => ["/api/videos", v.id])]) {
+        try {
+          await api("POST", `${url}/${id}/copy`, {});
+        } catch (error) {
+          failed++;
+          firstError ||= error.message;
+        }
+      }
+      toast(failed ? `Copied ${copies - failed} of ${copies}: ${firstError}` : `Copied ${copies} item${copies === 1 ? "" : "s"} to your rows.`, failed ? "error" : "");
+      if (theirClips.length) refreshClips();
+      if (theirVideos.length) refreshVideos();
+      if (timeline?.vodId) timeline.load();
+    } });
+  }
+  const exportable = clips.filter((c) => c.kind !== "Clip").length + videos.length + segments.length;
+  if (exportable && can("GenerateFiles")) {
+    out.push({ icon: "download-simple", label: `Add ${exportable} to the export list`, run: () => {
+      for (const c of clips.filter((c) => c.kind !== "Clip")) addToExport({ kind: "clip", data: c });
+      for (const v of videos) addToExport({ kind: "video", data: v });
+      for (const l of segments) {
+        const vod = knownVod(l.item.vodId ?? l.video.vodId);
+        addToExport({ kind: "segment", data: { ...segmentData(l.item, l.video), vodTitle: vod?.title, vodDate: vod?.createdAtUtc, thumbnailUrl: vod?.thumbnailUrl } });
+      }
+      toast(`Added ${exportable} item${exportable === 1 ? "" : "s"} to the export list.`);
+    } });
+  }
+  return out;
+}
+
 // Player 1's right-click "Add to the export list" on a segment or clip (stays on the Editor screen)
-function exportFromTimeline(item) {
+function exportFromTimeline(item, { quiet = false } = {}) {
   const vod = p1Vod ?? {};
   if (item.kind === "segment") {
     addToExport({
       kind: "segment",
       data: { ...item.data, vodId: timeline.vodId, vodTitle: vod.title, vodDate: vod.createdAtUtc, thumbnailUrl: vod.thumbnailUrl },
-    }, { quiet: false });
+    }, { quiet });
     return;
   }
   const start = item.start;
@@ -217,7 +321,7 @@ function exportFromTimeline(item) {
       clipLengthSeconds: keptSeconds(start, end, item.cuts ?? []), streamDateUtc: vod.createdAtUtc, thumbnailUrl: vod.thumbnailUrl,
       isReferenceOnly: Boolean(item.reference),
     },
-  }, { quiet: false });
+  }, { quiet });
 }
 
 // ---------- players ----------
@@ -1139,6 +1243,10 @@ function setUpPlayer1() {
       $("p1-info").toggleAttribute("data-saving", Boolean(timeline?.pendingTrim));
     },
     onClipsChanged: refreshClips,
+    // Several selected clips (roadmap 1b): the team's statuses, set on all of them
+    bulkStatusItems: (entries) => statusItemsFor("clip", entries),
+    // ... a video of them, and the export list (roadmap 1c / 1d)
+    bulkMenuItems: (items) => p1BulkItems(items),
     onVideosChanged: refreshVideos,
     onExport: exportFromTimeline,
     // A new segment or clip goes into the edit open in Player 2 (at its playhead) when it's of the same VOD, without switching the tab
@@ -2610,7 +2718,7 @@ async function enterTeam() {
   $("workspace").hidden = false;
   setUpExport({ demo: DEMO, otherPlayers: () => [player1, player2], onPausePlayers: () => playback?.pause() });
   screenTabs = tabs(document.querySelector(".main-tabs"), "data-view", showScreen, "clipco.editor.screen");
-  setUpLibrary({ onLoad: load, onExport: openExport,
+  setUpLibrary({ onLoad: load, onExport: openExport, bulkMenuItems: libraryBulkItems,
     // Edits and segments under clips and videos (the old Player 2 picker)
     loaded: p2Loaded,
     onOpenEdit: (id) => openProject(id),

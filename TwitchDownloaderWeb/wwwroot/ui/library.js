@@ -1998,7 +1998,7 @@ function subRow(line) {
   node.addEventListener("focus", () => focusSelect(line.key));
   node.addEventListener("contextmenu", (event) => {
     event.preventDefault();
-    openMenu(event.clientX, event.clientY, menu());
+    openItemMenu(node, event.clientX, event.clientY, menu);
   });
   node.addEventListener("keydown", (event) => {
     if (event.target !== node) return;
@@ -2924,14 +2924,95 @@ function wireItem(node, { kind, title, dragData, menu }) {
     if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
       event.preventDefault();
       const rect = node.getBoundingClientRect();
-      openMenu(rect.left + 24, rect.top + 24, menu());
+      openItemMenu(node, rect.left + 24, rect.top + 24, menu);
     }
   });
   node.addEventListener("contextmenu", (event) => {
     event.preventDefault();
-    openMenu(event.clientX, event.clientY, menu());
+    openItemMenu(node, event.clientX, event.clientY, menu);
   });
   return node;
+}
+
+// The menu of one of several selected lines is the selection's (roadmap 1b); any other line's is its own
+function openItemMenu(node, x, y, menu) {
+  const key = node.dataset.key;
+  const lines = key && isPicked(key) ? pickedLines() : [];
+  openMenu(x, y, lines.length > 1 ? bulkMenu(lines, x, y) : menu());
+}
+
+// ---------- several selected lines (roadmap 1b, badrfly 2026-11-21): color, status and delete for all of them ----------
+
+function bulkMenu(lines, x, y) {
+  const clips = lines.filter((l) => l.type === "clip").map((l) => l.item);
+  const videos = lines.filter((l) => l.type === "video").map((l) => l.item);
+  const items = [{ icon: "selection", label: `${lines.length} selected`, run: () => {} }, { divider: true }];
+  const colorable = clips.filter((c) => c.kind !== "Clip" && canOnEntry(c, "EditOwnEntries", "EditAnyEntries"));
+  if (colorable.length) {
+    items.push({ icon: "palette", label: `Color of ${colorable.length === 1 ? "the clip" : `the ${colorable.length} clips`}…`, run: () => openMenu(x, y,
+      Object.entries(MARKER_COLORS).map(([name, value]) => ({
+        swatch: name === "violet" ? CLIP_COLOR : value, label: name[0].toUpperCase() + name.slice(1), run: () => colorClips(colorable, name),
+      }))) });
+  }
+  const clipStatuses = statusItemsFor("clip", clips);
+  if (clipStatuses.length) items.push({ icon: "flag", label: `Status of ${clips.length === 1 ? "the clip" : `the ${clips.length} clips`}…`, run: () => openMenu(x, y, clipStatuses) });
+  const videoStatuses = statusItemsFor("video", videos);
+  if (videoStatuses.length) items.push({ icon: "flag", label: `Status of ${videos.length === 1 ? "the video" : `the ${videos.length} videos`}…`, run: () => openMenu(x, y, videoStatuses) });
+  items.push(...(handlers.bulkMenuItems?.(lines) ?? []));
+  const deletable = [
+    ...clips.filter((c) => canOnEntry(c, "DeleteOwnEntries", "DeleteAnyEntries")).map((item) => ({ type: "clip", item })),
+    ...videos.filter((v) => v.canDelete).map((item) => ({ type: "video", item })),
+  ];
+  if (deletable.length) items.push({ divider: true }, { icon: "trash", label: `Delete ${deletable.length} item${deletable.length === 1 ? "" : "s"}`, danger: true, run: () => deleteMany(deletable, lines.length) });
+  if (items.length === 2) items.push({ icon: "info", label: "Nothing here works on all of them yet", run: () => {} });
+  return items;
+}
+
+async function colorClips(clips, color) {
+  let failed = 0;
+  let firstError = "";
+  for (const clip of clips) {
+    if ((clip.color ?? "violet") === color) continue;
+    try {
+      await api("PATCH", `/api/entries/${clip.id}`, { title: null, color });
+      clip.color = color === "violet" ? null : color;
+    } catch (error) {
+      failed++;
+      firstError ||= error.message;
+    }
+  }
+  if (failed) toast(`Couldn't change ${failed} of ${clips.length}: ${firstError}`, "error");
+  render();
+  renderPeekAgain();
+}
+
+// One confirm for all of them. Clips go with their files (no undo, as for one); videos leave their segments on the timeline.
+async function deleteMany(targets, selected) {
+  const clips = targets.filter((t) => t.type === "clip").length;
+  const videos = targets.length - clips;
+  const names = [clips && `${clips} clip${clips === 1 ? "" : "s"}`, videos && `${videos} video${videos === 1 ? "" : "s"}`].filter(Boolean).join(" and ");
+  const left = selected - targets.length;
+  const ok = await confirmAction({
+    heading: `Delete ${targets.length} item${targets.length === 1 ? "" : "s"}?`,
+    text: `${names} ${targets.length === 1 ? "is" : "are"} deleted for the whole team.${clips ? " Clips go with their files: this can't be undone." : ""}`
+      + `${videos ? " Videos' segments stay on the timeline." : ""}${left ? ` ${left} other selected line${left === 1 ? "" : "s"} stay${left === 1 ? "s" : ""}.` : ""}`,
+    confirm: "Delete",
+  });
+  if (!ok) return;
+  let failed = 0;
+  let firstError = "";
+  for (const { type, item } of targets) {
+    try {
+      await api("DELETE", `/api/${type === "clip" ? "entries" : "videos"}/${item.id}`);
+    } catch (error) {
+      failed++;
+      firstError ||= error.message;
+    }
+  }
+  const done = targets.length - failed;
+  toast(failed ? `Deleted ${done} of ${targets.length}. ${firstError}` : `Deleted ${done} item${done === 1 ? "" : "s"}.`, failed ? "error" : "");
+  if (clips) await loadClips();
+  if (videos) await loadVideos();
 }
 
 function exportButton(item) {
@@ -3905,6 +3986,44 @@ function statusMenu(kind, item) {
     item.teamStatusId && { label: "No status", icon: "x", hint: "0", run: () => setItemStatus(kind, item, null) },
     { label: "Tags…", icon: "tag", run: () => editTags(kind, item) },
   ].filter(Boolean);
+}
+
+// Several clips or videos at once (roadmap 1b): the statuses of their tab and No status, each setting it on all of them
+export function statusItemsFor(kind, items) {
+  const statuses = statusesOn(kind === "clip" ? "clips" : "videos");
+  if (!state.canSetStatus || !items.length || !statuses.length) return [];
+  return [
+    ...statuses.map((s, i) => ({
+      label: s.name, swatch: statusColor(s), checked: items.every((it) => it.teamStatusId === s.id), hint: i < 9 ? String(i + 1) : "",
+      run: () => setStatusMany(kind, items, s.id),
+    })),
+    { label: "No status", icon: "x", hint: "0", run: () => setStatusMany(kind, items, null) },
+  ];
+}
+
+export async function setStatusMany(kind, items, statusId) {
+  const todo = items.filter((it) => (it.teamStatusId ?? null) !== statusId);
+  let failed = 0;
+  let firstError = "";
+  for (const item of todo) {
+    try {
+      await api("PUT", `/api/${kind === "clip" ? "entries" : "videos"}/${item.id}/status`, { statusId });
+      item.teamStatusId = statusId;
+      // the same clip as it shows in the lists
+      const listed = (kind === "clip" ? state.clips : state.videos).find((x) => x.id === item.id);
+      if (listed) listed.teamStatusId = statusId;
+    } catch (error) {
+      failed++;
+      firstError ||= error.message;
+    }
+  }
+  const status = statusId ? statusById(statusId) : null;
+  const what = `${items.length} ${kind}${items.length === 1 ? "" : "s"}`;
+  if (failed) toast(`Couldn't change ${failed} of ${todo.length}: ${firstError}`, "error");
+  else toast(status ? `${what} ${items.length === 1 ? "is" : "are"} now ${status.name}.` : `Took the status off ${what}.`);
+  render();
+  renderPeekAgain();
+  scheduleStatuses();
 }
 
 export async function setItemStatus(kind, item, statusId) {
