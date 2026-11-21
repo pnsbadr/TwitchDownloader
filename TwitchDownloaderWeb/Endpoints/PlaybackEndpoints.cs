@@ -22,7 +22,34 @@ namespace TwitchDownloaderWeb.Endpoints
             app.MapGet("/api/vods/{vodId:long}/play/{variant:int}.m3u8", GetMedia).RequireTeam(TeamPermission.ViewLibrary).RequireChannelVod();
             app.MapGet("/api/vods/{vodId:long}/play/{variant:int}/{segment}", GetSegment).RequireTeam(TeamPermission.ViewLibrary).RequireChannelVod();
             app.MapGet("/api/vods/{vodId:long}/play/{variant:int}/clean/{key}.ts", GetCleanSegment).RequireTeam(TeamPermission.ViewLibrary).RequireChannelVod();
+            // The players' screenshot button when the page can't read the picture itself (Twitch's player): one full-size PNG frame
+            app.MapGet("/api/vods/{vodId:long}/frame", GetFrame).RequireTeam(TeamPermission.ViewLibrary).RequireChannelVod();
             return app;
+        }
+
+        private static async Task<IResult> GetFrame(long vodId, double? t, int? variant, CardThumbnailService frames, HttpContext context,
+            CancellationToken cancellationToken)
+        {
+            if (t is not { } seconds || !double.IsFinite(seconds) || seconds < 0 || seconds > 48 * 3600)
+                return Results.Problem(detail: "Give the time in the VOD (t, in seconds).", statusCode: StatusCodes.Status400BadRequest);
+            byte[]? png;
+            try
+            {
+                png = await frames.GrabFrameAsync(vodId, seconds, variant, cancellationToken);
+            }
+            catch (HttpRequestException)
+            {
+                return Results.Problem(detail: "Couldn't reach Twitch. Try again in a moment.", statusCode: StatusCodes.Status502BadGateway);
+            }
+            catch (InvalidOperationException)
+            {
+                // ffmpeg failed (logged by FfmpegRunner)
+                png = null;
+            }
+            if (png is null)
+                return Results.Problem(detail: "Couldn't take a picture of this moment (the VOD may be for subscribers only or gone).", statusCode: StatusCodes.Status404NotFound);
+            NoStore(context);
+            return Results.Bytes(png, "image/png");
         }
 
         private static bool UseProxy(string? segments) => string.Equals(segments, "proxy", StringComparison.OrdinalIgnoreCase);

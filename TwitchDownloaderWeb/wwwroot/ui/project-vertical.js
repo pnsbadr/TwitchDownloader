@@ -400,7 +400,8 @@ function build() {
   });
   const exit = iconButton({ icon: "device-mobile", label: "Back to Player 2 (horizontal)", keybind: "verticalToggle", onClick: () => vx.hooks.onExit?.() });
   exit.querySelector("sl-icon-button").toggleAttribute("data-active", true);
-  const bar = el("div", { class: "vx2-bar player-controls" }, play, time, el("span", { class: "vx2-bar-gap" }), pieceText, mute, volume, exit);
+  const shot = iconButton({ icon: "camera", label: "Save this frame as a picture (what the 9:16 preview shows)", keybind: "screenshot", onClick: () => vx.hooks.onScreenshot?.() });
+  const bar = el("div", { class: "vx2-bar player-controls" }, play, time, el("span", { class: "vx2-bar-gap" }), pieceText, shot, mute, volume, exit);
 
   const one = iconButton({ icon: "square", label: "One box", keybind: "verticalOneBox", onClick: () => setMode("single") });
   const two = iconButton({ icon: "rows", label: "Two boxes (top and bottom)", keybind: "verticalTwoBoxes", onClick: () => setMode("split") });
@@ -632,6 +633,33 @@ function draw() {
   renderInfo();
   renderBar();
   vx.frame = requestAnimationFrame(draw);
+}
+
+// The 9:16 picture at the playhead at full size (1080x1920), for the screenshot button: null in a gap, before the first frame or
+// with Twitch's player (its picture can't be read)
+export function verticalFrameCanvas() {
+  if (!vx.open) return null;
+  const video = videoElement();
+  const playing = stretchAt(flatten(store().content ?? { tracks: [], pieces: [] }), vx.hooks.playback.time());
+  const live = vx.live;
+  if (!playing?.piece || !video || video.readyState < 2 || !video.videoWidth || !live) return null;
+  const canvas = document.createElement("canvas");
+  canvas.width = OUT_W;
+  canvas.height = OUT_H;
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingQuality = "high";
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, OUT_W, OUT_H);
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  const put = (box, dy, dh) => ctx.drawImage(video, box.x * vw, box.y * vh, box.w * vw, box.h * vh, 0, dy, OUT_W, dh);
+  if (live.mode === "single") put(live.boxes.single, 0, OUT_H);
+  else {
+    const topH = Math.round(OUT_H * live.ratio);
+    put(live.boxes.top, 0, topH);
+    put(live.boxes.bottom, topH, OUT_H - topH);
+  }
+  return canvas;
 }
 
 function showNote(text) {

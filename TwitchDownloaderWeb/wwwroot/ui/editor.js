@@ -23,7 +23,8 @@ import { showShortcuts } from "./shortcuts.js";
 import { makeVideoFrom } from "./bulk.js";
 import { openSyncView } from "./sync-view.js";
 import { SyncedPip } from "./p1-pip.js";
-import { setUpProjectVertical, openProjectVertical, closeProjectVertical, projectVerticalOpen, refreshProjectVertical, handleProjectVerticalKey, pauseProjectVertical } from "./project-vertical.js";
+import { setUpProjectVertical, openProjectVertical, closeProjectVertical, projectVerticalOpen, refreshProjectVertical, handleProjectVerticalKey, pauseProjectVertical, verticalFrameCanvas } from "./project-vertical.js";
+import { saveScreenshot } from "./snapshot.js";
 
 // Phosphor icons, bold weight, as <sl-icon library="ph" name="…">
 registerIconLibrary("ph", {
@@ -934,7 +935,7 @@ function p2Seek(seconds) {
 
 // Play / pause / volume / fullscreen buttons of player n (1 or 2)
 function renderPlayerButtons(n, player, { ready = player.ready, playing = player.playing() } = {}) {
-  for (const id of ["play", "back", "fwd", "full"]) $(`p${n}-${id}`).disabled = !ready;
+  for (const id of ["play", "back", "fwd", "full", "shot"]) $(`p${n}-${id}`).disabled = !ready;
   const app = player.ready && player.kind === "app";
   $(`p${n}-mute`).disabled = !app;
   $(`p${n}-volume`).disabled = !app;
@@ -1205,6 +1206,7 @@ function wirePlayerButtons(n, which) {
   $(`p${n}-back`).addEventListener("click", () => skip(which, -10));
   $(`p${n}-fwd`).addEventListener("click", () => skip(which, 10));
   $(`p${n}-full`).addEventListener("click", () => player().fullscreen());
+  $(`p${n}-shot`).addEventListener("click", () => screenshot(which));
   $(`p${n}-mute`).addEventListener("click", () => {
     const volume = player().volume;
     if (!volume) return;
@@ -1396,6 +1398,7 @@ function setUpPlayer2() {
     timeline: () => timeline2,
     onExit: () => toggleVertical(false),
     onUndoChanged: () => renderTools(),
+    onScreenshot: () => screenshot("p2"),
   });
   $("p2-vertical").addEventListener("click", () => toggleVertical());
   $("p2-show").addEventListener("click", () => {
@@ -1588,6 +1591,39 @@ async function backFromSynced() {
 
 function p2CanCreate() {
   return Boolean(store?.open) && !DEMO && !me?.support && can("AddEntries");
+}
+
+// ---------- the screenshot button (badrfly 2026-11-21): the frame on screen, saved as a PNG (ui/snapshot.js) ----------
+
+function screenshot(which) {
+  if (which === "p2") {
+    if (!store?.open) return;
+    const point = p2VodPoint();
+    if (!point) {
+      toast("Nothing plays here (a gap is black in the video).", "error");
+      return;
+    }
+    const vodTitle = knownVodTitle(point.vodId) || (Number(p1Vod?.vodId) === Number(point.vodId) ? p1Vod.title : "");
+    if (projectVerticalOpen()) {
+      if (player2.kind === "twitch") {
+        toast("The 9:16 view needs the app player for a picture (this VOD plays in Twitch's player). Switch players in the gear menu.", "error");
+        return;
+      }
+      const canvas = verticalFrameCanvas();
+      if (!canvas) {
+        toast("The picture isn't loaded yet. Try again in a moment.", "error");
+        return;
+      }
+      saveScreenshot({ player: player2, vodId: point.vodId, seconds: point.seconds, title: `${store.project?.title || vodTitle || "Vertical"} (vertical)`, canvas });
+      return;
+    }
+    saveScreenshot({ player: player2, vodId: point.vodId, seconds: player2.vodId === point.vodId ? player2.position() ?? point.seconds : point.seconds, title: vodTitle || store.project?.title });
+    return;
+  }
+  if (!player1.ready) return;
+  const vodId = player1.vodId;
+  const title = Number(p1Vod?.vodId) === Number(vodId) ? p1Vod.title : knownVodTitle(vodId);
+  saveScreenshot({ player: player1, vodId, seconds: player1.position(), title });
 }
 
 // The VOD and VOD second under Player 2's playhead, or null in a gap
@@ -2265,6 +2301,7 @@ function setUpKeys() {
       frameBack: () => frame(-FRAME_SECONDS),
       frameFwd: () => frame(FRAME_SECONDS),
       fullscreen: () => (p2 ? store.open && player2.fullscreen() : ready && player.fullscreen()),
+      screenshot: () => ready && screenshot(activePlayer),
       zoomIn: () => on && t.zoomBy(0.5),
       zoomOut: () => on && t.zoomBy(2),
       fit: () => on && t.fit(),
@@ -2314,7 +2351,7 @@ function setUpKeys() {
 // screen, or the row going away ends it; the playhead stays where it stopped.
 
 let rowFocus = null;        // { which: "p1" | "p2", rowId }
-const FOCUS_KEYS = new Set(["playPause", "back10", "fwd10", "back5", "fwd5", "frameBack", "frameFwd", "fullscreen", "zoomIn", "zoomOut", "fit", "escape", "toggleWaves",
+const FOCUS_KEYS = new Set(["playPause", "back10", "fwd10", "back5", "fwd5", "frameBack", "frameFwd", "fullscreen", "screenshot", "zoomIn", "zoomOut", "fit", "escape", "toggleWaves",
   "toolPointer", "toolZoom", "toolHand", "marker"]);
 let focusShade = null;
 let focusFrame = 0;

@@ -37,6 +37,7 @@ const KEYBINDS = [
   { id: "segment", scope: "player", keys: ["S"], description: "Player 1: start a segment here, press again to end it. Player 2: split the piece under the playhead (the selected one if several)" },
   { id: "clip", scope: "player", keys: ["X"], description: "Clip tool on/off: drag across the timeline to mark a clip (up to 3 min), then name it and pick its color (Player 2: across a piece, the clip goes on that piece's VOD)" },
   { id: "fullscreen", scope: "player", keys: ["F"], description: "Fullscreen" },
+  { id: "screenshot", scope: "player", keys: ["P"], description: "Save the frame on screen as a PNG picture, straight to your Downloads (in the 9:16 view: what its preview shows, 1080x1920)" },
   { id: "zoomIn", scope: "player", keys: ["+", "="], description: "Zoom the timeline in" },
   { id: "zoomOut", scope: "player", keys: ["-"], description: "Zoom the timeline out" },
   { id: "fit", scope: "player", keys: ["0"], description: "Fit the timeline (the whole VOD, or everything in Player 2)" },

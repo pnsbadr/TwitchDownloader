@@ -124,6 +124,48 @@ namespace TwitchDownloaderWeb.Tests
             Assert.True(red.R > 150 && red.B < 80, $"expected red, got {red}");
         }
 
+        [Fact]
+        public async Task GrabsAFullSizeFrameForTheScreenshotButton()
+        {
+            SkipIfNoFfmpeg();
+            var ct = TestContext.Current.CancellationToken;
+
+            await Ff(ct, "-f", "lavfi", "-i", "color=red:s=640x360:r=30:d=5", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                "-output_ts_offset", "1000", "-f", "mpegts", "0.ts");
+            await Ff(ct, "-f", "lavfi", "-i", "color=blue:s=640x360:r=30:d=5", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                "-output_ts_offset", "1005", "-f", "mpegts", "1.ts");
+            var cdn = new FakeCdn(new Dictionary<string, byte[]>
+            {
+                ["/best/index-dvr.m3u8"] = "#EXTM3U\n#EXTINF:5.000,\n0.ts\n#EXTINF:5.000,\n1.ts\n#EXT-X-ENDLIST\n"u8.ToArray(),
+                ["/best/0.ts"] = await File.ReadAllBytesAsync(Path.Combine(_dir, "0.ts"), ct),
+                ["/best/1.ts"] = await File.ReadAllBytesAsync(Path.Combine(_dir, "1.ts"), ct),
+            });
+            var variants = new PlaybackVariants(PlaybackStatus.Ok, [
+                new PlaybackVariant("360p30", "https://cdn.test/best/index-dvr.m3u8", 2, [], 640, 360, 30),
+                new PlaybackVariant("160p30", "https://cdn.test/low/index-dvr.m3u8", 1, [], 284, 160, 30),
+            ]);
+            var cache = new MemoryCache(new MemoryCacheOptions());
+            var playback = new VodPlaybackService(new FakeSource(variants), cache, new FakeHttpClientFactory(cdn));
+            var storage = new LibraryStorage(Options.Create(new DownloadSettings { OutputFolder = Path.Combine(_dir, "downloads") }), new FakeEnvironment(_dir),
+                NullLogger<LibraryStorage>.Instance);
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Ffmpeg:Path"] = Ffmpeg }).Build();
+            var service = new CardThumbnailService(playback, storage, configuration, cache, NullLogger<CardThumbnailService>.Instance);
+
+            var png = await service.GrabFrameAsync(42, 7.2, null, ct);
+            Assert.NotNull(png);
+            Assert.Equal(new byte[] { 0x89, (byte)'P', (byte)'N', (byte)'G' }, png[..4]);
+            // Full size (PNG IHDR width/height, big-endian), from the best rendition
+            Assert.Equal(640, (png[16] << 24) | (png[17] << 16) | (png[18] << 8) | png[19]);
+            Assert.Equal(360, (png[20] << 24) | (png[21] << 16) | (png[22] << 8) | png[23]);
+            Assert.DoesNotContain(cdn.Requested, x => x.StartsWith("/low/"));
+            var file = Path.Combine(_dir, "frame.png");
+            await File.WriteAllBytesAsync(file, png, ct);
+            var (r, _, b) = await AverageColorAsync(file, ct);
+            Assert.True(b > 150 && r < 80, $"expected blue, got {r},{b}");
+            // Nothing kept on disk
+            Assert.False(Directory.Exists(Path.Combine(_dir, "downloads", CardThumbnailService.FolderName)));
+        }
+
         private async Task<(int R, int G, int B)> AverageColorAsync(string jpg, CancellationToken ct)
         {
             var psi = new ProcessStartInfo(Ffmpeg) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
