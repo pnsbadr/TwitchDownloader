@@ -1432,16 +1432,46 @@ function toggleFold(kind, key, { keepInView = false } = {}) {
   else set.add(key);
   render();
   if (keepInView) revealFold(key);
+  settleScroll();
 }
 
-// Alt+click: every month folded, or every month open when they all were
-function toggleAllMonths() {
+// Alt+click: every month folded, or every month open when they all were. The clicked month stays where it was on screen (badrfly
+// 2026-11-21: opening them all left the list scrolled to a spot halfway into a row, so the date stamp sat on that row's day number)
+function toggleAllMonths(key) {
   const f = foldsOf();
+  const before = monthOffset(key);
   const months = (railLines() ?? []).filter((line) => line.month);
   const allFolded = months.length > 0 && months.every((line) => line.folded);
   f.allMonths = !allFolded;
   f.months.clear();
   render();
+  const list = $("side-list");
+  const index = (railLines() ?? []).findIndex((line) => line.month && line.foldKey === key);
+  if (index >= 0 && before !== null) list.scrollTop = Math.max(0, lineY(index) - before);
+  settleScroll();
+}
+
+// How far the month's line is below the top of the list, or null
+function monthOffset(key) {
+  const index = (railLines() ?? []).findIndex((line) => line.month && line.foldKey === key);
+  return index < 0 ? null : lineY(index) - $("side-list").scrollTop;
+}
+
+// After the lines change under a fixed scroll position: to the start of the nearest line at once (snapScroll does it smoothly after
+// a scroll), then the stamp again
+function settleScroll() {
+  const list = $("side-list");
+  if (state.view !== "cards" && rowsModel) {
+    const max = list.scrollHeight - list.clientHeight;
+    const top = Math.min(list.scrollTop, Math.max(0, max));
+    const ys = rowsModel.ys;
+    const i = lineAt(top);
+    const next = ys[i + 1] ?? ys[i];
+    const target = top - ys[i] <= next - top ? ys[i] : next;
+    list.scrollTop = Math.max(0, Math.min(target, max));
+    drawWindow();
+  }
+  updateStamp();
 }
 
 // After folding from the stamp: the folded line at the top, so the list doesn't jump somewhere else
@@ -2087,13 +2117,13 @@ function monthRow(line, index) {
   label.addEventListener("pointerdown", (event) => event.stopPropagation());
   label.addEventListener("click", (event) => {
     event.stopPropagation();
-    if (event.altKey) toggleAllMonths();
+    if (event.altKey) toggleAllMonths(line.foldKey);
     else toggleFold("month", line.foldKey);
   });
   const node = el("div", { class: `lmonth${index === 0 ? " first" : ""}${line.folded ? " folded" : ""}`, role: "presentation", "data-line": String(index) },
     line.folded ? el("span", { class: "lfold-sum" }, hiddenLabel(line.count) + (line === lastMonth() && listHasMore() ? " so far" : "")) : null, label);
   // The whole folded line opens it
-  if (line.folded) node.addEventListener("click", (event) => (event.altKey ? toggleAllMonths() : toggleFold("month", line.foldKey)));
+  if (line.folded) node.addEventListener("click", (event) => (event.altKey ? toggleAllMonths(line.foldKey) : toggleFold("month", line.foldKey)));
   return node;
 }
 
