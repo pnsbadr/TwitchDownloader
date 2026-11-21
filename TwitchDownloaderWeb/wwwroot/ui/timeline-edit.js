@@ -26,6 +26,7 @@
 import { api, me, can, toast } from "./core.js";
 import { confirmAction, chooseEditTarget, chooseSegmentDelete } from "./dialogs.js";
 import { openMenu } from "./menu.js";
+import { MARKER_COLORS, clipColor } from "./colors.js";
 
 import { timelineCursor, rulerCursor } from "./timeline-input.js";
 import { formatClock } from "./media.js";
@@ -500,6 +501,33 @@ export const editing = {
     this.changed();
   },
 
+  // The items a drawn box touches (rows it crosses, times it spans), on top of what was selected before when adding
+  boxSelect(press, box, width) {
+    const t1 = this.xToTime(box.x1, width);
+    const t2 = this.xToTime(box.x2, width);
+    const pad = (3 / width) * this.span();
+    const r1 = Math.floor(box.y1 / this.rowHeight);
+    const r2 = Math.floor(box.y2 / this.rowHeight);
+    const picks = new Map(press.before);
+    let first = null;
+    for (let i = Math.max(0, r1); i <= Math.min(r2, this.rows.length - 1); i++) {
+      const row = this.rows[i];
+      if (this.stateOf(row).hidden) continue;
+      for (const it of this.itemsOf(row)) {
+        const end = it.end ?? it.start;
+        if (end >= t1 - pad && it.start <= t2 + pad) {
+          const ref = refOf(it);
+          picks.set(pickKey(ref), ref);
+          first ??= ref;
+        }
+      }
+    }
+    this.picks = picks;
+    const keep = this.selected && picks.has(pickKey(this.selected));
+    this.setPrimary(keep ? this.selected : first ?? [...picks.values()][0] ?? null);
+    if (!press.add) this.anchor = this.selected;
+  },
+
   // Ctrl+A: every item on the rows that show
   selectAll() {
     const picks = new Map();
@@ -650,6 +678,14 @@ export const editing = {
       this.updateCursor();
       return;
     }
+    // Empty space (roadmap 1b): dragging draws a box that selects what it touches (Ctrl / Shift: added to the selection);
+    // a click without dragging unselects and seeks, as before
+    if (!item && this.mode === "vod" && this.tool === "pointer") {
+      const add = ctrl || event.shiftKey;
+      this.press = { kind: "box", x0: x, y0: y, t, add, before: add ? new Map(this.picks) : new Map(), startX: event.clientX, startY: event.clientY, moved: false, rect };
+      canvas.setPointerCapture(event.pointerId);
+      return;
+    }
     // A press on one of several selected items keeps them (a click without dragging then selects only it, as in any app)
     const inGroup = item && this.picks.size > 1 && this.isSelected(item);
     if (inGroup) this.setPrimary({ type: item.kind === "clip" ? "clip" : "marker", id: item.id });
@@ -727,6 +763,16 @@ export const editing = {
       this.renderTip();
       return;
     }
+    if (press.kind === "box") {
+      if (!press.moved && Math.hypot(event.clientX - press.startX, event.clientY - press.startY) < 5) return;
+      press.moved = true;
+      const x = event.clientX - press.rect.left;
+      const y = event.clientY - press.rect.top;
+      this.marquee = { x1: Math.min(press.x0, x), y1: Math.min(press.y0, y), x2: Math.max(press.x0, x), y2: Math.max(press.y0, y) };
+      this.boxSelect(press, this.marquee, press.rect.width);
+      this.dirty = true;
+      return;
+    }
     if (press.kind === "scrub") {
       const t = this.xToTime(event.clientX - press.rect.left, press.rect.width);
       const extent = this.extent();
@@ -771,6 +817,16 @@ export const editing = {
     this.updateCursor();
     // A click (no drag) on one of several selected items: only it stays selected
     if (press?.kind === "item" && press.inGroup) this.select(press.item);
+    if (press?.kind === "box") {
+      this.marquee = null;
+      if (press.moved) {
+        this.changed();
+      } else {
+        if (!press.add) this.select(null);
+        const extent = this.extent();
+        this.seekTo(Math.max(extent.start, Math.min(press.t, extent.end)));
+      }
+    }
     if (press?.kind === "edge" && press.moved && this.preview) {
       const { start, end } = this.preview;
       this.commitRange(press.item, start, end);
@@ -804,6 +860,13 @@ export const editing = {
     if (canvas !== this.track) return;
     const item = this.itemAt(x, event.clientY - rect.top, rect.width);
     if (!item) return;
+    // the hover tip would sit over the menu
+    this.hover = null;
+    this.renderTip();
+    if (this.mode === "vod" && this.picks.size > 1 && this.isSelected(item)) {
+      this.openBulkMenu(event.clientX, event.clientY);
+      return;
+    }
     this.select(item);
     const entries = [];
     if (this.canEditItem(item)) {
@@ -1352,7 +1415,7 @@ export const editing = {
     const item = this.selectedItem();
     if (!item) return;
     if (this.picks.size > 1) {
-      toast("Deleting several items at once isn't here yet: select one to delete it.");
+      this.deleteMany();
       return;
     }
     if (!this.canDeleteItem(item)) {
@@ -1385,6 +1448,166 @@ export const editing = {
       return true;
     }
     return false;
+  },
+
+  // ---------- several selected items (roadmap 1b, badrfly 2026-11-21) ----------
+  // Right-click on one of them, or Delete: the whole selection at once. Marker changes are one undo step (`collecting` in remember);
+  // clips can't come back (deleting one deletes its files), as for one clip.
+
+  // Runs fn with every step it remembers gathered into one
+  async grouped(fn) {
+    const steps = [];
+    this.collecting = steps;
+    try {
+      await fn();
+    } finally {
+      this.collecting = null;
+    }
+    if (steps.length === 1) this.remember(steps[0]);
+    else if (steps.length) this.remember({ type: "group", steps });
+  },
+
+  openBulkMenu(x, y) {
+    const items = this.selectedItems();
+    const clips = items.filter((it) => it.kind === "clip");
+    const entries = [
+      { icon: "selection", label: `${items.length} selected`, run: () => {} },
+      { divider: true },
+    ];
+    if (items.some((it) => this.canEditItem(it) || this.canCopyItem(it))) {
+      entries.push({ icon: "palette", label: "Color…", run: () => openMenu(x, y, Object.entries(MARKER_COLORS).map(([name, value]) => ({
+        swatch: name === "violet" ? clipColor("violet") : value, label: name[0].toUpperCase() + name.slice(1), run: () => this.colorMany(name),
+      }))) });
+    }
+    const statuses = clips.length ? this.hooks.bulkStatusItems?.(clips.map((c) => c.data)) ?? [] : [];
+    if (statuses.length) entries.push({ icon: "flag", label: `Status of ${clips.length === 1 ? "the clip" : `the ${clips.length} clips`}…`, run: () => openMenu(x, y, statuses) });
+    entries.push(...(this.hooks.bulkMenuItems?.(items) ?? []));
+    if (items.some((it) => this.canDeleteItem(it))) {
+      entries.push({ divider: true }, { icon: "trash", label: `Delete ${items.length} items`, hint: "Del", danger: true, run: () => this.deleteMany(items) });
+    }
+    openMenu(x, y, entries);
+  },
+
+  // One confirm for the whole selection; segments and markers come back with one Ctrl+Z
+  async deleteMany(items = this.selectedItems()) {
+    const allowed = items.filter((it) => this.canDeleteItem(it));
+    if (!allowed.length) {
+      toast("You can't delete any of the selected items.");
+      return;
+    }
+    const count = (kind) => allowed.filter((it) => it.kind === kind).length;
+    const names = [[count("segment"), "segment"], [count("moment"), "marker"], [count("clip"), "clip"]]
+      .filter(([n]) => n).map(([n, word]) => `${n} ${word}${n === 1 ? "" : "s"}`);
+    const list = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0];
+    const clips = count("clip");
+    const kept = [count("segment") && "segments", count("moment") && "markers"].filter(Boolean).join(" and ");
+    const back = allowed.length > clips
+      ? clips ? ` Undo (Ctrl+Z) brings back the ${kept}; the clips and their files are gone for good.` : " Undo (Ctrl+Z) brings them all back."
+      : " This can't be undone: their files are deleted too.";
+    const left = items.length - allowed.length;
+    const ok = await confirmAction({
+      heading: `Delete ${allowed.length} item${allowed.length === 1 ? "" : "s"}?`,
+      text: `${list} ${allowed.length === 1 ? "is" : "are"} deleted for the whole team.${back}${left ? ` ${left} selected item${left === 1 ? "" : "s"} you can't delete stay${left === 1 ? "s" : ""}.` : ""}`,
+      confirm: "Delete",
+    });
+    if (!ok) return;
+    // Segments in videos: one question for all of them
+    let videos = "unlink";
+    const inVideos = allowed.filter((it) => it.kind === "segment" && it.videos?.length);
+    if (inVideos.length) {
+      const titles = [...new Set(inVideos.flatMap((it) => it.videos.map((v) => v.title)))];
+      const choice = await chooseSegmentDelete({ count: inVideos.length, titles });
+      if (!choice) return;
+      videos = choice;
+    }
+    let failed = 0;
+    let firstError = "";
+    await this.grouped(async () => {
+      for (const item of allowed) {
+        try {
+          if (item.kind === "clip") {
+            if (this.pendingTrim?.id === item.id) {
+              clearTimeout(this.pendingTrim.timer);
+              this.pendingTrim = null;
+            }
+            await api("DELETE", `/api/entries/${item.id}`);
+            continue;
+          }
+          const keep = videos === "keep" && Boolean(item.videos?.length);
+          await this.deleteMarker(item.id, keep ? "keep" : "unlink");
+          const ref = this.ref("marker", item.id);
+          if (!keep) this.forgetRef(ref);
+          this.remember({ type: "delete", ref, keep, data: { ...markerBody(item.data), rowId: item.data.rowId ?? undefined } });
+        } catch (error) {
+          failed++;
+          firstError ||= error.message;
+        }
+      }
+    });
+    this.select(null);
+    if (clips) this.hooks.onClipsChanged?.();
+    this.edited();
+    await this.load();
+    const done = allowed.length - failed;
+    toast(failed ? `Deleted ${done} of ${allowed.length}. ${firstError}` : `Deleted ${done} item${done === 1 ? "" : "s"}.`, failed ? "error" : "");
+  },
+
+  // Color for the whole selection. Teammates' items: one Edit originals / Make copies question for all of them
+  async colorMany(color, items = this.selectedItems()) {
+    const current = (it) => it.color ?? (it.kind === "clip" ? "violet" : "yellow");
+    const todo = items.filter((it) => current(it) !== color && (this.canEditItem(it) || this.canCopyItem(it)));
+    if (!todo.length) return;
+    const theirs = todo.filter((it) => !this.isOwn(it) && this.canCopyItem(it));
+    let copies = false;
+    if (theirs.some((it) => this.canEditItem(it))) {
+      const choice = await chooseEditTarget({ what: `${theirs.length === 1 ? "item" : `${theirs.length} items`}`, owner: null });
+      if (!choice) return;
+      copies = choice === "copy";
+    } else if (theirs.length) {
+      copies = true;
+    }
+    let failed = 0;
+    let firstError = "";
+    const picks = [];
+    const had = new Map(this.picks);
+    const primary = this.selected;
+    await this.grouped(async () => {
+      for (const item of todo) {
+        try {
+          let id = item.id;
+          if (copies && theirs.includes(item)) {
+            const copy = await this.copyItem(item, { quiet: true });
+            if (!copy) throw new Error("Couldn't copy it.");
+            id = copy.id;
+          }
+          picks.push({ type: item.kind === "clip" ? "clip" : "marker", id });
+          if (item.kind === "clip") {
+            await api("PATCH", `/api/entries/${id}`, { title: null, color });
+          } else {
+            const source = this.markers.find((m) => m.id === id) ?? item.data;
+            const before = markerBody(source);
+            const after = { ...before, color };
+            await this.putMarker(id, after);
+            this.remember({ type: "change", ref: this.ref("marker", id), before, after });
+          }
+        } catch (error) {
+          failed++;
+          firstError ||= error.message;
+        }
+      }
+    });
+    if (todo.some((it) => it.kind === "clip")) this.hooks.onClipsChanged?.();
+    this.edited();
+    await this.load();
+    // The ones changed stay selected (copies instead of their originals)
+    // (copyItem selects its copy: the selection is put back together here)
+    const next = new Map([...had, ...picks.map((ref) => [`${ref.type}:${ref.id}`, ref])]);
+    if (copies) for (const item of theirs) next.delete(`${item.kind === "clip" ? "clip" : "marker"}:${item.id}`);
+    this.picks = next;
+    this.setPrimary(primary && next.has(`${primary.type}:${primary.id}`) ? primary : [...next.values()][0] ?? null);
+    this.anchor = this.selected;
+    this.changed();
+    if (failed) toast(`Couldn't change ${failed} of ${todo.length}: ${firstError}`, "error");
   },
 
   // ---------- cut-out parts (Player 2's cut tool; SourceTimeline says what it cuts: cutTarget, cutOut, clickCutOut) ----------
@@ -1753,6 +1976,11 @@ export const editing = {
       step.before = { ...step.before, cuts: null };
       step.after = { ...step.after, cuts: null };
     }
+    // Several items changed at once (roadmap 1b): their steps become one, so one Ctrl+Z undoes them all
+    if (this.collecting) {
+      this.collecting.push(step);
+      return;
+    }
     history.undo.push(step);
     if (history.undo.length > HISTORY_LIMIT) history.undo.shift();
     history.redo = [];
@@ -1817,6 +2045,11 @@ export const editing = {
 
   async applyStep(step, reverse) {
     switch (step.type) {
+      case "group": {
+        // one undo for a whole selection: undone last first
+        for (const inner of reverse ? [...step.steps].reverse() : step.steps) await this.applyStep(inner, reverse);
+        break;
+      }
       case "add":
         if (reverse) {
           await this.deleteMarker(step.ref.id);

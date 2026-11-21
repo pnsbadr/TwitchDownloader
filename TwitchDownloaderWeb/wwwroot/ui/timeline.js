@@ -941,6 +941,7 @@ export class Timeline {
     this.drawStreamLinks(ctx, width);
     this.drawOverlay?.(ctx, width);
     this.drawPending(ctx, width, now);
+    if (this.marquee) this.drawMarquee(ctx);
     if (this.cutDrag) this.drawCutDrag(ctx, width);
     this.drawRazor?.(ctx, width);
     // The row a dragged item would land on
@@ -969,6 +970,17 @@ export class Timeline {
       ctx.restore();
     }
     this.drawPlayhead(ctx, width, height, now, false);
+  }
+
+  // The box being drawn to select items (roadmap 1b): like Player 2's
+  drawMarquee(ctx) {
+    const { x1, y1, x2, y2 } = this.marquee;
+    ctx.save();
+    ctx.fillStyle = "rgb(139 124 246 / 0.15)";
+    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#8b7cf6";
+    ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
+    ctx.strokeRect(x1 + 0.5, y1 + 0.5, x2 - x1, y2 - y1);
+    ctx.restore();
   }
 
   // White outline around the selected item, with grips on edges that can be dragged

@@ -649,6 +649,14 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   existing `ProjectTimeline.selected` Set + `anchor` (Shift+click no longer toggles; Shift+drag still keeps the time; marquee with Ctrl or
   Shift adds). Library: `state.picks` / `state.anchor` per list (keys of lines; they count only while they hold `state.selected`),
   `pickedLines()` exported for later bulk actions, Shift+↑↓ grows the selection, cards view selects too (`.card.sel`).
+  **Acting on several** (roadmap 1b, badrfly 2026-11-21): dragging on Player 1's empty space draws a box that selects what it touches
+  (`press.kind "box"`, `boxSelect`, `drawMarquee`; Ctrl/Shift adds; a click without dragging still unselects and seeks). Right-click on
+  one of several selected items (Player 1 `openBulkMenu`, library `openItemMenu` → `bulkMenu`) = the selection's menu: Color… (a second
+  menu of swatches), Status… (clips / videos; `statusItemsFor` / `setStatusMany` in library.js, Player 1 through the `bulkStatusItems`
+  hook), Delete N items, plus `hooks.bulkMenuItems` / `handlers.bulkMenuItems` for later actions. **Bulk delete = one confirm for the whole
+  selection** (`deleteMany`; segments in videos: one keep/unlink question); on Player 1 the marker steps go into one undo step
+  (`grouped()` gathers what `remember` gets into `{ type: "group", steps }`), so one Ctrl+Z brings them all back; clips are gone for good
+  (their files), as for one. Bulk color asks Edit originals / Make copies once for teammates' items.
 - **Timeline editing** (`ui/timeline-edit.js`, mixed into `Timeline`, steps 3b and 4): tools bar tools Pointer / Cut / Clip / Zoom / Hand (V/C/X/Z/H), snapping (N,
   `clipLibrary.snap`, 8 px; **new kinds of timeline items must add their times to `snapPoints()`**), undo/redo (last 10 per VOD, this tab:
   marker add/delete/change/split and clip re-trims; steps name items through refs shared per VOD (`ref` / `moveRef`), because undoing a

@@ -6,7 +6,7 @@ import { registerIconLibrary } from "https://cdn.jsdelivr.net/npm/@shoelace-styl
 import { setUpStart, openStart, startIsOpen } from "./start.js";
 import { $, el, api, me, can, loadMe, startLiveEvents, sessionHandlers, TEAM_PAGE_PERMISSIONS, wireIconButtons, loadSetting, saveSetting, toast, formatDuration, formatDate } from "./core.js";
 import { dropTarget, watchDrags, shadePath } from "./drag.js";
-import { setUpLibrary, refreshEdits, player2Changed, revealLoaded, noteOpened, myMarks, toggleStar, showList, refreshClips, refreshVideos, refreshLibraryFilters, knownVod, knownVodTitle, pickChannel, teamChannels, adjacentVod, focusLibrarySearch, libraryHidden, setLibraryHidden } from "./library.js";
+import { setUpLibrary, refreshEdits, player2Changed, revealLoaded, noteOpened, myMarks, toggleStar, showList, refreshClips, refreshVideos, refreshLibraryFilters, knownVod, knownVodTitle, pickChannel, teamChannels, adjacentVod, focusLibrarySearch, libraryHidden, setLibraryHidden, statusItemsFor } from "./library.js";
 import { setUpLinkTray, renderLinkTray, savedLinking, addSegmentsTo, vodDay, vodInfo } from "./link-tray.js";
 import { setUpTree, forgetTree, segmentData } from "./p2-tree.js";
 import { MARKER_COLORS } from "./colors.js";
@@ -1139,6 +1139,8 @@ function setUpPlayer1() {
       $("p1-info").toggleAttribute("data-saving", Boolean(timeline?.pendingTrim));
     },
     onClipsChanged: refreshClips,
+    // Several selected clips (roadmap 1b): the team's statuses, set on all of them
+    bulkStatusItems: (entries) => statusItemsFor("clip", entries),
     onVideosChanged: refreshVideos,
     onExport: exportFromTimeline,
     // A new segment or clip goes into the edit open in Player 2 (at its playhead) when it's of the same VOD, without switching the tab
