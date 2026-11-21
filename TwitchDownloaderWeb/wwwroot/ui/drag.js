@@ -110,6 +110,7 @@ export function startDrag(event, item, { sourceRect = null, ghost = null } = {})
   window.addEventListener("blur", cancel);
   for (const w of watchers) w.start?.(item);
   update();
+  active.frame = requestAnimationFrame(followLayout);
 }
 
 function defaultGhost(item) {
@@ -180,11 +181,28 @@ function update() {
   active.refused = Boolean(found && !found.ok);
   document.body.classList.toggle("drop-refused", active.refused);
 
+  cutHoles();
+}
+
+// The shade's holes follow the dragged item and the target where they are now. Layout can move under a still pointer (Player 2's
+// timeline peeks in, a list redraws, a panel resizes), so this also runs every frame while dragging (badrfly 2026-11-21: Player 2's
+// screen sometimes stayed dark while it took the drop): a hole cut from where the target was a moment ago missed it.
+function cutHoles() {
   const holes = [];
   const source = active.sourceRect?.();
-  if (source) holes.push(source);
-  if (target) holes.push(target.element.getBoundingClientRect());
-  active.shade.style.clipPath = shadePath(holes);
+  if (source && source.width > 0) holes.push(source);
+  if (active.target?.element.isConnected) holes.push(active.target.element.getBoundingClientRect());
+  const path = shadePath(holes);
+  if (path !== active.path) {
+    active.path = path;
+    active.shade.style.clipPath = path;
+  }
+}
+
+function followLayout() {
+  if (!active) return;
+  cutHoles();
+  active.frame = requestAnimationFrame(followLayout);
 }
 
 // The whole window minus each hole (even-odd fill). Row focus (editor.js) uses it for the same lights-off look.
@@ -226,6 +244,7 @@ function finish() {
   // The click that follows the pointerup would land on whatever is under the pointer
   window.addEventListener("click", swallowClick, { capture: true, once: true });
   setTimeout(() => window.removeEventListener("click", swallowClick, { capture: true }), 0);
+  cancelAnimationFrame(active.frame);
   active.target?.element.classList.remove("drop-hover");
   active.shade.remove();
   active.ghostBox.remove();
