@@ -1481,6 +1481,14 @@ export const editing = {
     }
     const statuses = clips.length ? this.hooks.bulkStatusItems?.(clips.map((c) => c.data)) ?? [] : [];
     if (statuses.length) entries.push({ icon: "flag", label: `Status of ${clips.length === 1 ? "the clip" : `the ${clips.length} clips`}…`, run: () => openMenu(x, y, statuses) });
+    const copyable = items.filter((it) => this.canCopyItem(it));
+    if (copyable.length) entries.push({ icon: "copy", label: `Copy ${copyable.length === 1 ? "1 teammate's item" : `${copyable.length} teammates' items`} to my rows`, run: () => this.copyMany(copyable) });
+    const rows = this.moveRowsFor(items);
+    if (rows.length) {
+      entries.push({ icon: "arrows-down-up", label: "Move to row…", run: () => openMenu(x, y, rows.map((row) => ({
+        icon: isClipKind(row.kind) ? "film-strip" : "brackets-square", label: this.rowTitle(row), run: () => this.moveMany(row, items),
+      }))) });
+    }
     entries.push(...(this.hooks.bulkMenuItems?.(items) ?? []));
     if (items.some((it) => this.canDeleteItem(it))) {
       entries.push({ divider: true }, { icon: "trash", label: `Delete ${items.length} items`, hint: "Del", danger: true, run: () => this.deleteMany(items) });
@@ -1550,6 +1558,94 @@ export const editing = {
     await this.load();
     const done = allowed.length - failed;
     toast(failed ? `Deleted ${done} of ${allowed.length}. ${firstError}` : `Deleted ${done} item${done === 1 ? "" : "s"}.`, failed ? "error" : "");
+  },
+
+  rowTitle(row) {
+    const name = row.name || (isClipKind(row.kind) ? "Clips" : "Segments");
+    const synced = this.syncedRow(row.id);
+    return synced ? `${name} (synced)` : name;
+  },
+
+  // An own item can move to another of its creator's rows of the same kind and VOD (the server's rule); a teammate's can't
+  canMoveToRow(item, row) {
+    if (!this.isOwn(item) || this.rowLocked(item) || this.stateOf(row).locked || item.row?.id === row.id) return false;
+    if (isClipKind(row.kind) !== (item.kind === "clip")) return false;
+    if (item.kind !== "clip" && !this.canEditItem(item)) return false;
+    return String(this.rowVod(row.id)) === String(this.rowVod(item.row?.id));
+  },
+
+  // The member's own rows at least one of the items can move to
+  moveRowsFor(items) {
+    if (me?.support) return [];
+    return this.rows.filter((row) => row.userId === me?.id && items.some((it) => this.canMoveToRow(it, row)));
+  },
+
+  // Move what can go onto the row; one Ctrl+Z moves them back. The rest stays where it is.
+  async moveMany(row, items = this.selectedItems()) {
+    const todo = items.filter((it) => this.canMoveToRow(it, row));
+    let failed = 0;
+    let firstError = "";
+    await this.grouped(async () => {
+      for (const item of todo) {
+        try {
+          if (item.kind === "clip") {
+            await api("PUT", `/api/entries/${item.id}/row`, { rowId: row.id });
+            this.remember({ type: "clipRow", ref: this.ref("clip", item.id), before: item.row.id, after: row.id });
+          } else {
+            const before = { ...markerBody(item.data), rowId: item.row.id };
+            const after = { ...markerBody(item.data), rowId: row.id };
+            await this.putMarker(item.id, after);
+            this.remember({ type: "change", ref: this.ref("marker", item.id), before, after });
+          }
+        } catch (error) {
+          failed++;
+          firstError ||= error.message;
+        }
+      }
+    });
+    this.activeRowId = row.id;
+    if (todo.some((it) => it.kind === "clip")) this.hooks.onClipsChanged?.();
+    this.edited();
+    await this.load();
+    this.changed();
+    const left = items.length - todo.length;
+    const done = todo.length - failed;
+    if (failed) toast(`Moved ${done} of ${todo.length}: ${firstError}`, "error");
+    else toast(`Moved ${done} item${done === 1 ? "" : "s"} to "${this.rowTitle(row)}".${left ? ` ${left} can't go on that row and stay${left === 1 ? "s" : ""} where ${left === 1 ? "it is" : "they are"}.` : ""}`);
+  },
+
+  // Teammates' items copied onto the member's own rows (each to the row of its VOD and kind it would go to alone); the copies are
+  // then the selection. Segments and markers come back off with one Ctrl+Z.
+  async copyMany(items = this.selectedItems().filter((it) => this.canCopyItem(it))) {
+    const picks = new Map();
+    let failed = 0;
+    let firstError = "";
+    await this.grouped(async () => {
+      for (const item of items) {
+        const row = this.targetRow(item.kind === "clip" ? "clip" : "video", this.rowVod(item.row?.id));
+        try {
+          const url = item.kind === "clip" ? `/api/entries/${item.id}/copy` : `/api/markers/${item.id}/copy`;
+          const copy = this.fromServer(await api("POST", url, row ? { rowId: row.id } : {}));
+          if (item.kind !== "clip") this.remember({ type: "add", ref: this.ref("marker", copy.id), data: { ...markerBody(copy), rowId: copy.rowId ?? undefined } });
+          const ref = { type: item.kind === "clip" ? "clip" : "marker", id: copy.id };
+          picks.set(`${ref.type}:${ref.id}`, ref);
+        } catch (error) {
+          failed++;
+          firstError ||= error.message;
+        }
+      }
+    });
+    if (items.some((it) => it.kind === "clip")) this.hooks.onClipsChanged?.();
+    this.edited();
+    await this.load();
+    if (picks.size) {
+      this.picks = picks;
+      this.setPrimary([...picks.values()][0]);
+      this.anchor = this.selected;
+    }
+    this.changed();
+    const done = items.length - failed;
+    toast(failed ? `Copied ${done} of ${items.length}: ${firstError}` : `Copied ${done} item${done === 1 ? "" : "s"} to your rows.`, failed ? "error" : "");
   },
 
   // Color for the whole selection. Teammates' items: one Edit originals / Make copies question for all of them

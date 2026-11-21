@@ -1998,7 +1998,7 @@ function subRow(line) {
   node.addEventListener("focus", () => focusSelect(line.key));
   node.addEventListener("contextmenu", (event) => {
     event.preventDefault();
-    openMenu(event.clientX, event.clientY, menu());
+    openItemMenu(node, event.clientX, event.clientY, menu);
   });
   node.addEventListener("keydown", (event) => {
     if (event.target !== node) return;
