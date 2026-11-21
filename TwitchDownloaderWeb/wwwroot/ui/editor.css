@@ -1464,6 +1464,9 @@ body:not(.linking) .link-chips { display: none; }
 
 /* overflow: the date stamp, pushed up by the next day, never shows over the buttons above the list */
 .side-listwrap { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; overflow: hidden; }
+/* Cards view (no card at the bottom): the list ends on a line with a gap under it, so cards scroll into an edge like at the top instead of
+   running off the bottom of the window (badrfly 2026-11-21) */
+.side-listwrap:has(+ .side-peek[hidden]) { border-bottom: 1px solid var(--line); margin-bottom: var(--space-2); }
 
 /* The library's search box (badrfly 2026-11-20): always in sight over the lists; shortcuts become chips under it */
 .side-search { position: relative; padding: var(--space-2) var(--space-2) 0; }
