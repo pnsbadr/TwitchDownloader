@@ -28,7 +28,7 @@ const POLL_MS = 3000;
 const NEAR_BOTTOM_PX = 300;
 const PAGE_SIZE = 100;
 const ROW_H = 30;        // one row in the rows view (the list is drawn from this, keep editor.css .lrow in step)
-const SEP_H = 9;         // the thin line between days (editor.css .lrow.lsep)
+const SEP_H = 9;         // the line between days (editor.css .lrow.lsep); months are MONTH_H
 const ROW_OVERSCAN = 12; // rows drawn above and below the visible part
 
 const state = {
@@ -94,14 +94,14 @@ export function setUpLibrary(options) {
   state.view = loadSetting(viewKey(), "rows") === "cards" ? "cards" : "rows";
   $("side-list").addEventListener("scroll", () => {
     if (state.view === "rows") scheduleWindow();
-    litScrub();
+    scheduleStamp();
     loadMoreIfNear();
   });
   // Moving from a row to its card at the bottom keeps that card (its buttons can be clicked)
   $("side-list").addEventListener("mouseleave", (event) => { if (!$("side-peek").contains(event.relatedTarget)) setHovered(""); });
   $("side-peek").addEventListener("mouseleave", (event) => { if (!$("side-list").contains(event.relatedTarget)) setHovered(""); });
   $("side-view").addEventListener("click", () => setView(state.view === "rows" ? "cards" : "rows"));
-  setUpScrub();
+  $("side-stamp").addEventListener("click", (event) => openJumpMenu(event.currentTarget));
   new ResizeObserver(() => { if (state.view === "rows") scheduleWindow(); }).observe($("side-list"));
   renderViewButton();
   setUpFilter();
@@ -785,7 +785,7 @@ function render() {
     rowsModel = null;
     state.cardLines = null;
     list.replaceChildren(el("p", { class: "side-empty" }, EMPTY[state.list]()));
-    renderScrub(null);
+    renderRail(null);
     renderPeek();
     return;
   }
@@ -796,21 +796,29 @@ function render() {
   } else {
     rowsModel = null;
     state.cardLines = lines;
-    const nodes = lines.map((line, index) => (line.head
-      ? el("div", { class: `side-sep${index ? "" : " first"}`, "data-line": String(index), title: sepTitle(line) }, el("i"))
-      : line.note ? kidNote(line)
-      : line.kid ? listRow(line)
-      : card(specFor(line.item, line.type))));
+    const nodes = [];
+    lines.forEach((line, index) => {
+      // A thin line between two items of one day (not under an opened VOD)
+      if (!isMark(line) && !line.note && !line.kid && !line.first) nodes.push(el("div", { class: "side-sep thin" }, el("i")));
+      const node = line.month ? monthRow(line, index)
+        : line.head ? el("div", { class: "side-sep day" }, el("i"))
+        : line.note ? kidNote(line)
+        : line.kid ? listRow(line)
+        : card(specFor(line.item, line.type));
+      if (line.first && !line.kid) node.append(dayNumber(line));
+      node.dataset.line = String(index);
+      nodes.push(node);
+    });
     if (listLoadingMore()) nodes.push(el("p", { class: "side-empty" }, "Loading more…"));
     list.replaceChildren(...nodes);
   }
-  renderScrub(lines);
+  renderRail(lines);
   renderPeek();
   // A short first page that doesn't fill the panel can't be scrolled to load the next one
   requestAnimationFrame(loadMoreIfNear);
 }
 
-// ---------- rows view: day headings, only the rows in view drawn ----------
+// ---------- rows view: months, days, only the rows in view drawn ----------
 
 const dayFormatters = new Map();
 
@@ -837,29 +845,74 @@ function dayLabel(ms, zone) {
   return formatter.format(new Date(ms));
 }
 
-// The list as lines: a thin line before each day (its date in the tooltip and on the month bar), then that day's items ({ key, item }; their card or row is made when drawn)
+// The list as lines (badrfly 2026-11-21, his sketch): a month line across the whole width with the month in the date column, a slightly
+// thicker line between days, a thin line between items, and each day's number in the date column in front of its first item.
+// Lines: { month, at, count } / { head: true } (between days) / { key, item, type, at, day, first } (day = { label, number, count })
 function linesFor(items) {
   const zone = viewerTimeZone();
+  const thisYear = zonedParts(Date.now(), zone).year;
+  const type = listType();
   const lines = [];
+  let monthKey = null;
   let dayKey = null;
-  let head = null;
+  let month = null;
+  let day = null;
   for (const item of items) {
     const at = itemDate(item);
     const ms = at ? new Date(at).getTime() : NaN;
     const p = Number.isNaN(ms) ? null : zonedParts(ms, zone);
-    const bucket = !p ? { key: "none", label: "No date" } : { key: `${p.year}-${p.month}-${p.day}`, label: dayLabel(ms, zone) };
-    if (bucket.key !== dayKey) {
-      dayKey = bucket.key;
-      // The same day can come back in a list that isn't sorted on this date: each heading still needs its own key
-      head = { head: bucket.label, key: `day:${bucket.key}:${lines.length}`, count: 0, at: p };
-      lines.push(head);
+    const mKey = p ? `${p.year}-${p.month}` : "none";
+    const dKey = p ? `${mKey}-${p.day}` : "none";
+    let first = false;
+    // The same month or day can come back in a list that isn't sorted on this date: each line still needs its own key
+    if (mKey !== monthKey) {
+      monthKey = mKey;
+      dayKey = null;
+      month = { month: monthName(p, thisYear), key: `month:${mKey}:${lines.length}`, at: p, count: 0 };
+      lines.push(month);
     }
-    head.count++;
-    const type = listType();
-    lines.push({ key: itemKey(item, type), item, type, at: p });
+    if (dKey !== dayKey) {
+      if (dayKey !== null) lines.push({ head: true, key: `day:${dKey}:${lines.length}` });
+      dayKey = dKey;
+      day = { label: p ? dayLabel(ms, zone) : "No date", number: p ? String(p.day) : "–", count: 0 };
+      first = true;
+    }
+    day.count++;
+    month.count++;
+    lines.push({ key: itemKey(item, type), item, type, at: p, day, first });
     if (type === "vod" && state.open.has(String(item.vodId))) lines.push(...kidLines(item, p));
   }
   return lines;
+}
+
+// A line that isn't an item or a note: a month or the line between days
+function isMark(line) {
+  return Boolean(line.month || line.head);
+}
+
+const monthFormatters = new Map();
+
+function monthFormatter(options) {
+  const key = JSON.stringify(options);
+  let formatter = monthFormatters.get(key);
+  if (!formatter) monthFormatters.set(key, formatter = new Intl.DateTimeFormat(undefined, { ...options, timeZone: "UTC" }));
+  return formatter;
+}
+
+// "Oct", or "Oct '25" for an earlier year
+function monthName(p, thisYear) {
+  if (!p) return "—";
+  const name = monthFormatter({ month: "short" }).format(new Date(Date.UTC(p.year, p.month - 1, 15)));
+  return p.year === thisYear ? name : `${name} '${String(p.year).slice(-2)}`;
+}
+
+function monthTitle(line) {
+  if (!line.at) return `No date · ${countLabel(line.count)}`;
+  return `${monthFormatter({ month: "long", year: "numeric" }).format(new Date(Date.UTC(line.at.year, line.at.month - 1, 15)))} · ${countLabel(line.count)}`;
+}
+
+function dayTitle(day) {
+  return `${day.label} · ${countLabel(day.count)}`;
 }
 
 // What the list shows: "vod", "clip" or "video" (a VOD's opened lines are clips and videos on the VODs list)
@@ -982,212 +1035,132 @@ function kidNote(line) {
   return node;
 }
 
-// ---------- the month bar on the list's right edge (badrfly 2026-11-20) ----------
-// At rest: one mark per month of this year that the loaded list reaches, then one per earlier year ('25); the mark of what's at the top of
-// the list is lit, with that day's number under it. Under the mouse a month opens into its days (a year into its months) and the other
-// marks slide down; a day shows its date and count, and a click or drag jumps there. Months not loaded yet aren't shown: "…" loads further.
+// ---------- the date column on the list's right edge (badrfly 2026-11-21, replaces the month bar) ----------
+// Each day's number sits in front of its first item and each month's name under its line, scrolling with the list. While a day's first
+// item is above the top, a stamp at the top of the column keeps its month and day (pushed up by the next day). A click on a month, a day
+// or the stamp opens the list of months to jump to.
 
-const scrubFormatters = new Map();
-let scrubMarks = [];  // [{ key, label, line, children: [{ label, line, count, tip }] }] in list order
-let scrubOpen = -1;   // the mark opened under the mouse
+const MONTH_H = 22;  // a month's line (editor.css .lmonth)
+const STAMP_H = 28;
 
-function scrubFormatter(options) {
-  const key = JSON.stringify(options);
-  let formatter = scrubFormatters.get(key);
-  if (!formatter) scrubFormatters.set(key, formatter = new Intl.DateTimeFormat(undefined, { ...options, timeZone: "UTC" }));
-  return formatter;
-}
-
-function scrubMarksFor(lines) {
-  const thisYear = zonedParts(Date.now(), viewerTimeZone()).year;
-  const short = scrubFormatter({ month: "short" });
-  const long = scrubFormatter({ month: "long", year: "numeric" });
-  const marks = [];
-  lines.forEach((line, index) => {
-    if (!line.head || !line.at) return;
-    const { year, month, day } = line.at;
-    const recent = year === thisYear;
-    const key = recent ? `${year}-${month}` : `${year}`;
-    let mark = marks[marks.length - 1];
-    if (mark?.key !== key) {
-      mark = { key, label: recent ? short.format(new Date(Date.UTC(year, month - 1, 15))) : `'${String(year).slice(-2)}`, line: index, children: [] };
-      marks.push(mark);
-    }
-    if (recent) {
-      mark.children.push({ label: String(day), line: index, count: line.count, tip: sepTitle(line) });
-      return;
-    }
-    // An earlier year opens into its months
-    const at = new Date(Date.UTC(year, month - 1, 15));
-    let child = mark.children[mark.children.length - 1];
-    if (child?.month !== month) mark.children.push(child = { month, label: short.format(at), line: index, count: 0 });
-    child.count += line.count;
-    child.tip = `${long.format(at)} · ${countLabel(child.count)}`;
-  });
-  return marks;
-}
-
-function renderScrub(lines) {
-  const scrub = $("side-scrub");
-  scrubMarks = lines ? scrubMarksFor(lines) : [];
-  const days = scrubMarks.reduce((n, mark) => n + mark.children.length, 0);
-  const show = scrubMarks.length > 0 && (days > 1 || listHasMore());
-  scrub.hidden = !show;
-  $("side-list").classList.toggle("with-scrub", show);
-  if (scrubOpen >= scrubMarks.length) scrubOpen = -1;
-  if (show) drawScrub();
-}
-
-function drawScrub() {
-  const scrub = $("side-scrub");
-  const nodes = scrubMarks.map((mark, i) => {
-    const block = el("div", { class: `scrub-month${i === scrubOpen ? " open" : ""}`, "data-index": String(i) },
-      el("span", { class: "scrub-mark" }, mark.label));
-    if (i === scrubOpen) {
-      block.append(el("div", { class: "scrub-days" }, ...mark.children.map((child) =>
-        el("span", { class: "scrub-day", "data-line": String(child.line), "data-tip": child.tip }, child.label, el("i")))));
-    } else block.append(el("span", { class: "scrub-day at", hidden: "" }));
-    return block;
-  });
-  if (listHasMore()) nodes.push(el("div", { class: "scrub-month more", title: "Load older" }, el("span", { class: "scrub-mark" }, "…")));
-  nodes.push(el("span", { class: "scrub-tip", hidden: "" }));
-  scrub.replaceChildren(...nodes);
-  litScrub();
+function railLines() {
+  return rowsModel?.lines ?? state.cardLines ?? null;
 }
 
 function listHasMore() {
   return state.list === "vods" ? moreVods() : state.list === "clips" ? Boolean(state.clipsCursor) : Boolean(state.videosCursor);
 }
 
-// The line at the top of the list (rows: by position; cards: the last day line above the top)
-function topLine() {
+// Where a line starts in the list (rows: from the model; cards: its node)
+function lineY(index) {
+  if (state.view === "rows") return rowsModel?.ys?.[index] ?? 0;
+  const node = $("side-list").querySelector(`:scope > [data-line="${index}"]`);
+  return node ? node.offsetTop - $("side-list").offsetTop : 0;
+}
+
+// The line at a y position (rows: binary search; cards: the last node starting above it)
+function lineAtY(y) {
+  if (state.view === "rows") return lineAt(y);
   const list = $("side-list");
-  if (state.view === "rows") return lineAt(list.scrollTop + 1);
   let index = 0;
-  for (const sep of list.querySelectorAll(":scope > .side-sep[data-line]")) {
-    if (sep.offsetTop - list.offsetTop > list.scrollTop + 4) break;
-    index = Number(sep.dataset.line);
+  for (const node of list.querySelectorAll(":scope > [data-line]")) {
+    if (node.offsetTop - list.offsetTop > y) break;
+    index = Number(node.dataset.line);
   }
   return index;
 }
 
-function litScrub() {
-  const scrub = $("side-scrub");
-  if (scrub.hidden || !scrubMarks.length) return;
-  const top = topLine();
-  let lit = 0;
-  scrubMarks.forEach((mark, i) => { if (mark.line <= top) lit = i; });
-  let child = null;
-  for (const c of scrubMarks[lit].children) if (c.line <= top) child = c;
-  for (const block of scrub.querySelectorAll(".scrub-month[data-index]")) {
-    const on = block.dataset.index === String(lit);
-    block.querySelector(".scrub-mark").classList.toggle("on", on);
-    const at = block.querySelector(".scrub-day.at");
-    if (at) {
-      at.hidden = !on || !child;
-      if (on && child) at.replaceChildren(child.label, el("i"));
-    }
-    for (const day of block.querySelectorAll(".scrub-days .scrub-day")) day.classList.toggle("on", Boolean(on && child) && day.dataset.line === String(child.line));
-  }
+// A month's line: across the whole width, its name in the date column
+function monthRow(line, index) {
+  const label = el("button", { class: "lmonth-label", type: "button", title: `${monthTitle(line)} · jump to a month` }, line.month);
+  label.addEventListener("pointerdown", (event) => event.stopPropagation());
+  label.addEventListener("click", (event) => openJumpMenu(event.currentTarget));
+  return el("div", { class: `lmonth${index === 0 ? " first" : ""}`, role: "presentation", "data-line": String(index) }, label);
 }
 
-function jumpToLine(line) {
+// The day's number in front of its first item
+function dayNumber(line) {
+  const node = el("button", { class: "lday", type: "button", tabindex: "-1", title: `${dayTitle(line.day)} · jump to a month` }, line.day.number);
+  node.addEventListener("pointerdown", (event) => event.stopPropagation());
+  node.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openJumpMenu(event.currentTarget);
+  });
+  node.addEventListener("dblclick", (event) => event.stopPropagation());
+  return node;
+}
+
+function renderRail(lines) {
   const list = $("side-list");
-  if (state.view === "rows") {
-    if (rowsModel?.ys) list.scrollTop = rowsModel.ys[line] ?? 0;
-  } else {
-    const sep = list.querySelector(`:scope > .side-sep[data-line="${line}"]`);
-    if (sep) list.scrollTop = sep.offsetTop - list.offsetTop;
-  }
-  litScrub();
+  const show = Boolean(lines?.length);
+  list.classList.toggle("with-rail", show);
+  const stamp = $("side-stamp");
+  if (!show) stamp.hidden = true;
+  else updateStamp();
 }
 
-function setUpScrub() {
-  const scrub = $("side-scrub");
-  // What's under the pointer: the mark whose block holds it, and in an open one the nearest day
-  const hit = (event) => {
-    const y = event.clientY;
-    const blocks = [...scrub.querySelectorAll(".scrub-month")];
-    if (!blocks.length) return null;
-    let block = blocks.find((b) => { const r = b.getBoundingClientRect(); return y >= r.top && y < r.bottom; });
-    // Past the marks: the month that's open stays open (dragging off the end keeps its last day)
-    if (!block) block = y < blocks[0].getBoundingClientRect().top ? blocks[0]
-      : scrub.querySelector(".scrub-month.open") ?? blocks[blocks.length - 1];
-    let day = null;
-    let best = Infinity;
-    for (const node of block.querySelectorAll(".scrub-days .scrub-day")) {
-      const r = node.getBoundingClientRect();
-      const d = Math.abs(y - (r.top + r.height / 2));
-      if (d < best) { best = d; day = node; }
-    }
-    // Over the month's own name, the month itself
-    const name = block.querySelector(".scrub-mark").getBoundingClientRect();
-    if (y < name.bottom + 2) day = null;
-    return { block, day };
-  };
-  const openAt = (event) => {
-    const found = hit(event);
-    const index = found?.block.dataset.index == null ? -1 : Number(found.block.dataset.index);
-    // Opening a month moves the others, and a mark that slid under the pointer by itself would open in turn and flicker back and
-    // forth. So a month opens only under the pointer, and after one opens the pointer has to move before another can
-    const r = found?.block.getBoundingClientRect();
-    const under = r && event.clientY >= r.top && event.clientY < r.bottom;
-    const moved = switchedAtY == null || Math.abs(event.clientY - switchedAtY) > 3;
-    if (index >= 0 && index !== scrubOpen && under && moved) {
-      switchedAtY = event.clientY;
-      scrubOpen = index;
-      drawScrub();
-    }
-    return hit(event);
-  };
-  const showTip = (day) => {
-    const tip = scrub.querySelector(".scrub-tip");
-    if (!tip) return;
-    for (const node of scrub.querySelectorAll(".scrub-day.hover")) node.classList.remove("hover");
-    tip.hidden = !day;
-    if (!day) return;
-    day.classList.add("hover");
-    const r = day.getBoundingClientRect();
-    tip.textContent = day.dataset.tip;
-    tip.style.top = `${r.top - scrub.getBoundingClientRect().top + r.height / 2}px`;
-  };
-  const go = (found) => {
-    if (!found) return;
-    if (found.block.classList.contains("more")) {
+let stampFrame = 0;
+function scheduleStamp() {
+  if (stampFrame) return;
+  stampFrame = requestAnimationFrame(() => {
+    stampFrame = 0;
+    updateStamp();
+  });
+}
+
+function updateStamp() {
+  const stamp = $("side-stamp");
+  const list = $("side-list");
+  const lines = railLines();
+  const hide = () => { stamp.hidden = true; };
+  if (!lines?.length) return hide();
+  const top = list.scrollTop;
+  const at = lineAtY(top + 1);
+  if (!lines[at] || isMark(lines[at])) return hide();
+  // The day of the line at the top: its first item
+  let first = at;
+  while (first > 0 && !(lines[first].first && !lines[first].kid)) first--;
+  if (!lines[first]?.first || lineY(first) >= top - 1) return hide();
+  let month = first;
+  while (month > 0 && !lines[month].month) month--;
+  // The next day or month pushes it up
+  let next = at + 1;
+  while (next < lines.length && !isMark(lines[next])) next++;
+  const offset = next < lines.length ? Math.min(0, lineY(next) - top - STAMP_H) : 0;
+  stamp.hidden = false;
+  stamp.style.transform = `translateY(${offset}px)`;
+  stamp.style.right = `${list.offsetWidth - list.clientWidth}px`;
+  stamp.title = `${dayTitle(lines[first].day)} · jump to a month`;
+  stamp.replaceChildren(el("span", { class: "stamp-month" }, lines[month]?.month ?? ""), el("span", { class: "stamp-day" }, lines[first].day.number));
+}
+
+// Every loaded month (the one at the top checked), then "Load older" while the list has more
+function openJumpMenu(anchor) {
+  const lines = railLines();
+  if (!lines) return;
+  const current = (() => {
+    let index = lineAtY($("side-list").scrollTop + 1);
+    while (index > 0 && !lines[index].month) index--;
+    return index;
+  })();
+  const items = [];
+  lines.forEach((line, index) => {
+    if (line.month) items.push({ icon: "calendar-blank", label: monthTitle(line), checked: index === current, run: () => jumpToLine(index) });
+  });
+  if (listHasMore()) {
+    items.push({ divider: true }, { icon: "clock-counter-clockwise", label: "Load older", run: () => {
       const list = $("side-list");
       list.scrollTop = list.scrollHeight;
       loadMoreIfNear();
-    } else if (found.day) jumpToLine(Number(found.day.dataset.line));
-    else jumpToLine(scrubMarks[Number(found.block.dataset.index)]?.line ?? 0);
-  };
-  let switchedAtY = null;
-  const close = () => {
-    switchedAtY = null;
-    if (scrubOpen < 0) return;
-    scrubOpen = -1;
-    drawScrub();
-  };
-  scrub.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    scrub.setPointerCapture(event.pointerId);
-    scrub.classList.add("dragging");
-    const found = openAt(event);
-    showTip(found?.day);
-    go(found);
-  });
-  scrub.addEventListener("pointermove", (event) => {
-    const found = openAt(event);
-    showTip(found?.day);
-    if (scrub.hasPointerCapture(event.pointerId)) go(found);
-  });
-  scrub.addEventListener("pointerup", (event) => {
-    scrub.classList.remove("dragging");
-    const r = scrub.getBoundingClientRect();
-    if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) close();
-  });
-  scrub.addEventListener("pointercancel", () => { scrub.classList.remove("dragging"); close(); });
-  scrub.addEventListener("pointerleave", () => { if (!scrub.classList.contains("dragging")) close(); });
+    } });
+  }
+  const r = anchor.getBoundingClientRect();
+  openMenu(r.left, r.bottom + 2, items);
+}
+
+function jumpToLine(index) {
+  $("side-list").scrollTop = lineY(index);
+  updateStamp();
 }
 
 function itemKey(item, type = listType()) {
@@ -1208,12 +1181,12 @@ function renderRows(lines) {
   // Rows of items that didn't change keep their node (focus and hover stay put)
   for (const line of lines) {
     const kept = old.get(line.key);
-    if (kept && kept.item === line.item && kept.count === line.count && (line.head || line.note || kept.sig === rowSig(line.item, line.type))) rowsModel.nodes.set(line.key, kept);
+    if (kept && kept.item === line.item && kept.sig === lineSig(line, line === lines[0])) rowsModel.nodes.set(line.key, kept);
   }
-  // Where each line starts: rows are ROW_H, the lines between days SEP_H
+  // Where each line starts: rows are ROW_H, the lines between days SEP_H, months MONTH_H
   const ys = new Array(lines.length + 1);
   ys[0] = 0;
-  lines.forEach((line, i) => { ys[i + 1] = ys[i] + (line.head ? SEP_H : ROW_H); });
+  lines.forEach((line, i) => { ys[i + 1] = ys[i] + (line.month ? MONTH_H : line.head ? SEP_H : ROW_H); });
   rowsModel.ys = ys;
   let inner = list.querySelector(":scope > .vlist");
   if (!inner) {
@@ -1247,12 +1220,12 @@ function drawWindow() {
     const line = lines[i];
     let entry = nodes.get(line.key);
     if (!entry) {
-      entry = { item: line.item, count: line.count, sig: line.head || line.note ? "" : rowSig(line.item, line.type),
-        node: line.head ? dayRow(line) : line.note ? kidNote(line) : listRow(line) };
+      entry = { item: line.item, sig: lineSig(line, i === 0),
+        node: line.month ? monthRow(line, i) : line.head ? dayRow() : line.note ? kidNote(line) : listRow(line) };
       nodes.set(line.key, entry);
     }
     entry.node.style.top = `${rowsModel.ys[i]}px`;
-    entry.node.classList.toggle("sel", !line.head && !line.note && state.selected[state.list] === line.key);
+    entry.node.classList.toggle("sel", !isMark(line) && !line.note && state.selected[state.list] === line.key);
     wanted.push(entry.node);
   }
   if (listLoadingMore()) {
@@ -1272,13 +1245,16 @@ function drawWindow() {
   replacement?.focus({ preventScroll: true });
 }
 
-// The line before a day's rows (badrfly 2026-11-20: a thin line instead of a heading; the date is on the month bar and in the tooltip)
-function dayRow(line) {
-  return el("div", { class: `lrow lsep${line === rowsModel?.lines[0] ? " first" : ""}`, role: "presentation", title: sepTitle(line) }, el("i"));
+// The slightly thicker line between days (the day's number is in the date column)
+function dayRow() {
+  return el("div", { class: "lrow lsep", role: "presentation" }, el("i"));
 }
 
-function sepTitle(line) {
-  return `${line.head} · ${countLabel(line.count)}`;
+// What a line shows that can change: a row drawn with an older one is made again
+function lineSig(line, top) {
+  if (line.month) return `${line.month}|${line.count}|${top}`;
+  if (line.head || line.note) return "";
+  return `${rowSig(line.item, line.type)}|${line.first}|${line.first ? `${line.day.number}|${line.day.count}|${line.day.label}` : ""}`;
 }
 
 function countLabel(n) {
@@ -1325,7 +1301,7 @@ function rowSig(item, type = listType()) {
 function listRow(line) {
   const spec = specFor(line.item, line.type);
   const r = spec.row;
-  const node = el("div", { class: `lrow item${line.kid ? " kid" : ""}`, role: "listitem", tabindex: "0", "aria-label": spec.title, "data-key": line.key },
+  const node = el("div", { class: `lrow item${line.kid ? " kid" : ""}${line.first ? " first" : ""}`, role: "listitem", tabindex: "0", "aria-label": spec.title, "data-key": line.key },
     line.type === "vod" ? vodCaret(line.item) : null,
     // Under an opened VOD: the kind's icon in the item's color instead of the dot
     line.kid ? el("sl-icon", { library: "ph", name: line.type === "video" ? "film-strip" : "scissors", class: "lkind", style: `color:${r.color ?? CLIP_COLOR}` })
@@ -1334,7 +1310,8 @@ function listRow(line) {
     ...(r.tags ?? []).filter(Boolean),
     starButton(line.type, line.item),
     el("span", { class: "llen" }, r.length ?? ""),
-    r.who ?? el("span", { class: "lwho empty" }));
+    r.who ?? el("span", { class: "lwho empty" }),
+    line.first && !line.kid && state.view === "rows" ? dayNumber(line) : null);
   wireItem(node, spec);
   node.addEventListener("click", () => select(line.key, { focus: false }));
   node.addEventListener("mouseenter", () => setHovered(line.key));
@@ -1383,7 +1360,7 @@ function listRow(line) {
 }
 
 function itemLines() {
-  return (rowsModel?.lines ?? state.cardLines ?? []).filter((line) => !line.head && !line.note);
+  return (rowsModel?.lines ?? state.cardLines ?? []).filter((line) => !isMark(line) && !line.note);
 }
 
 function select(key, { focus = true } = {}) {
@@ -1397,11 +1374,11 @@ function select(key, { focus = true } = {}) {
 function moveSelection(step) {
   const lines = rowsModel?.lines ?? [];
   let index = lines.findIndex((line) => line.key === state.selected[state.list]);
-  do index += step; while (index >= 0 && index < lines.length && (lines[index].head || lines[index].note));
+  do index += step; while (index >= 0 && index < lines.length && (isMark(lines[index]) || lines[index].note));
   if (index < 0 || index >= lines.length) return;
   const list = $("side-list");
   const y = rowsModel.ys[index];
-  if (y < list.scrollTop + SEP_H) list.scrollTop = y - SEP_H;
+  if (y < list.scrollTop + SEP_H) list.scrollTop = y - (lines[index - 1]?.month ? MONTH_H : SEP_H);
   else if (y + ROW_H > list.scrollTop + list.clientHeight) list.scrollTop = y + ROW_H - list.clientHeight;
   drawWindow();
   select(lines[index].key);
