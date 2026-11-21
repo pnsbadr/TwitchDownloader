@@ -24,6 +24,9 @@ namespace TwitchDownloaderWeb.Endpoints
         }
     }
 
-    /// <summary>One page of a long list: the rows, the cursor for the next page (null = last page) and how many match in all.</summary>
-    internal sealed record Page<T>(IReadOnlyList<T> Items, string? NextCursor, int Total);
+    /// <summary>
+    /// One page of a long list: the rows, the cursor for the next page (null = last page), how many match in all and, when asked
+    /// (?days=&lt;time zone&gt;), how many match on each day without the from/to bounds (the library's calendar).
+    /// </summary>
+    internal sealed record Page<T>(IReadOnlyList<T> Items, string? NextCursor, int Total, IReadOnlyList<DayCount>? Days = null);
 }

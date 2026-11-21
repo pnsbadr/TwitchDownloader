@@ -30,6 +30,12 @@ namespace TwitchDownloaderWeb.Endpoints
 
         /// <summary>A vertical (9:16) edit; false = a horizontal (Player 2) one.</summary>
         public bool Vertical { get; init; }
+
+        /// <summary>
+        /// The segment (marker ID) an edit of no clip or video was made from: every piece was copied from that one segment (badrfly 2026-11-21:
+        /// the library lists such edits under their segment). Null otherwise (a VOD range, several sources, a clip or video edit).
+        /// </summary>
+        public long? SegmentId { get; init; }
     }
 
     /// <summary>
@@ -82,7 +88,20 @@ namespace TwitchDownloaderWeb.Endpoints
                 CanCopy = CanCopy(team, x),
                 CanDownload = CanDownload(team, x),
                 Vertical = x.Vertical,
+                SegmentId = SegmentOf(x),
             }).ToList();
+        }
+
+        // Every piece copied from the same segment → that segment
+        public static long? SegmentOf(EditProject project)
+        {
+            if (project.EntryId is not null || project.VideoId is not null)
+                return null;
+            var pieces = ProjectContent.Read(project.Content).Pieces ?? [];
+            if (pieces.Count == 0 || pieces.Any(p => p.Source?.Kind != "segment"))
+                return null;
+            var id = pieces[0].Source!.Id;
+            return pieces.All(p => p.Source!.Id == id) ? id : null;
         }
 
         private static async Task<ProjectDto> ToDtoAsync(LibraryDbContext db, EditProject project, TeamContext team, CancellationToken cancellationToken) =>

@@ -88,6 +88,9 @@ const KEYBINDS = [
   { id: "rowStatus", scope: "library", keys: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"], description: "A clip's or video's row: give it the team's status of that number (in the Team page's order); 0 takes it off" },
   { id: "cardMenu", scope: "library", keys: ["ContextMenu", "Shift+F10", "Right click"], description: "The card's menu: load, export, rename, delete" },
   { id: "cardDrag", scope: "library", keys: ["Drag"], description: "Drop a card on a player, a timeline row or the export list" },
+  { id: "detailsWheel", scope: "library", keys: ["Wheel"], description: "Details view, over the column headings: scroll the columns left and right (there's no scrollbar sideways)" },
+  { id: "detailsSort", scope: "library", keys: ["Click"], description: "Details view: a column heading sorts the list by it (again = the other way); rows and cards use the same sort. Drag a heading's edge to resize it, right-click the headings to show or hide columns" },
+  { id: "calendarRange", scope: "library", keys: ["Shift+Click"], description: "Calendar (next to the view buttons): Shift+click two days to show only those days; a plain click goes to the day in the list" },
   { id: "exportRemove", scope: "library", keys: ["Delete"], description: "Take the focused row off the export list" },
   { id: "dragCancel", scope: "library", keys: ["Escape"], description: "Cancel a drag" },
 

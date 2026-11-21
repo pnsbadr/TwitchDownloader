@@ -6,9 +6,9 @@ import { registerIconLibrary } from "https://cdn.jsdelivr.net/npm/@shoelace-styl
 import { setUpStart, openStart, startIsOpen } from "./start.js";
 import { $, el, api, me, can, loadMe, startLiveEvents, sessionHandlers, TEAM_PAGE_PERMISSIONS, wireIconButtons, loadSetting, saveSetting, toast, formatDuration, formatDate } from "./core.js";
 import { dropTarget, watchDrags, shadePath } from "./drag.js";
-import { setUpLibrary, noteOpened, myMarks, toggleStar, showList, refreshClips, refreshVideos, refreshLibraryFilters, knownVod, knownVodTitle, pickChannel, teamChannels, adjacentVod, focusLibrarySearch } from "./library.js";
+import { setUpLibrary, refreshEdits, player2Changed, revealLoaded, noteOpened, myMarks, toggleStar, showList, refreshClips, refreshVideos, refreshLibraryFilters, knownVod, knownVodTitle, pickChannel, teamChannels, adjacentVod, focusLibrarySearch } from "./library.js";
 import { setUpLinkTray, renderLinkTray, savedLinking, addSegmentsTo, vodDay, vodInfo } from "./link-tray.js";
-import { setUpTree, openTree, forgetTree, render as renderTree } from "./p2-tree.js";
+import { setUpTree, forgetTree, segmentData } from "./p2-tree.js";
 import { MARKER_COLORS } from "./colors.js";
 import { MediaPlayer, formatClock, isChannelRefusal, channelRefusalText, checkVodAccess } from "./media.js";
 import { Timeline } from "./timeline.js";
@@ -791,10 +791,16 @@ function addToProject(item) {
   timeline2.addItemAtPlayhead(pieces);
 }
 
-// An edit was made from what was loaded (its first change): the tree and the library follow
+// Edits were made, renamed or deleted: the library's lines of them are read again
+function editsChanged(vodId) {
+  forgetTree(vodId);
+  refreshEdits();
+}
+
+// An edit was made from what was loaded (its first change): the library follows
 function onEditCreated(edit) {
   saveSetting(LAST_PROJECT_KEY, { edit: edit.id });
-  forgetTree(edit.vodId);
+  editsChanged(edit.vodId);
   refreshLibraryFilters();
   toast(`Saved as a new edit: "${edit.title}". Rename it from the menu above Player 2.`);
 }
@@ -878,7 +884,7 @@ function shortClock(seconds) {
   return `${formatDuration(Math.floor(hundredths / 100))}.${String(hundredths % 100).padStart(2, "0")}`;
 }
 
-// ---------- Player 2's picker: the VOD tree (ui/p2-tree.js) and what can be done with what's loaded ----------
+// ---------- Player 2's header: what's loaded and what can be done with it (badrfly 2026-11-21: picking moved into the library) ----------
 
 function renderProjectPicker() {
   const open = store.open;
@@ -894,10 +900,10 @@ function renderProjectPicker() {
     : `${project.title}${store.isDraft ? (store.canEdit ? " (the original: your first change saves a new edit of it)" : "") : ""}${project.createdBy && !store.canEdit ? ` by ${project.createdBy} (${project.canCopy === false ? "view only" : "view only: make your own copy to change it"})` : ""}`
     : "Pick a clip, video or segment, or one of their edits";
   if ($("p2-project-menu").open) renderProjectMenu();
+  player2Changed();
 }
 
 function renderProjectMenu() {
-  renderTree();
   const current = store.project;
   const item = (value, label, { icon = null, disabled = false } = {}) => el("sl-menu-item", { value, disabled },
     icon ? el("sl-icon", { slot: "prefix", library: "ph", name: icon }) : null, label);
@@ -909,7 +915,10 @@ function renderProjectMenu() {
     if (store.canEdit) entries.push(item("rename", store.isDraft ? "Save as a new edit…" : "Rename this edit", { icon: "pencil-simple" }));
     if (!store.isDraft) entries.push(item("copy", store.canEdit ? "Duplicate this edit" : "Make my own copy", { icon: "copy", disabled: !canMake || current.canCopy === false }));
     if (!store.isDraft && current.canDelete) entries.push(item("delete", "Delete this edit", { icon: "trash" }));
+    entries.push(item("reveal", "Show in the library", { icon: "list-magnifying-glass" }));
     entries.push(item("close", "Unload (nothing is deleted)", { icon: "eject" }));
+  } else {
+    entries.push(item("none", "Double-click a clip, video, segment or edit in the library to load it", { icon: "info", disabled: true }));
   }
   $("p2-project-items").hidden = !entries.length;
   $("p2-project-items").replaceChildren(...entries);
@@ -927,7 +936,7 @@ async function renameProject() {
   if (title == null || !title.trim()) return;
   try {
     await store.rename(title.trim());
-    forgetTree(store.vodId);
+    editsChanged(store.vodId);
   } catch (error) {
     toast(error.message, "error");
   }
@@ -937,7 +946,7 @@ async function copyEdit(id) {
   if (store.project?.id === id) await store.saveNow();
   try {
     const copy = await api("POST", `/api/projects/${id}/copy`, {});
-    forgetTree(copy.vodId);
+    editsChanged(copy.vodId);
     await openProject(copy.id);
     toast(`Made "${copy.title}".`);
   } catch (error) {
@@ -953,7 +962,7 @@ async function deleteEdit(edit) {
   } else {
     await api("DELETE", `/api/projects/${edit.id}`);
   }
-  forgetTree(edit.vodId);
+  editsChanged(edit.vodId);
   refreshLibraryFilters();
 }
 
@@ -1003,7 +1012,7 @@ async function exportEdit(edit) {
 
 function setUpProjectPicker() {
   setUpTree({
-    root: $("p2-tree"),
+    root: null,
     loaded: p2Loaded,
     player1VodId: () => timeline?.vodId ?? 0,
     knownVodTitle: (vodId) => (Number(p1Vod?.vodId) === Number(vodId) ? p1Vod.title : knownVodTitle(vodId)),
@@ -1019,10 +1028,11 @@ function setUpProjectPicker() {
     onCopyEdit: (edit) => copyEdit(edit.id),
     onExportEdit: exportEdit,
     onAddSegments: (video) => addSegmentsTo(video),
-    vodDay: (vodId) => vodDay(vodId, () => renderTree()),
+    vodDay: (vodId) => vodDay(vodId, () => refreshEdits()),
     marks: myMarks,
     toggleStar,
     onChanged: (kind) => {
+      if (kind === "edit") refreshEdits();
       if (kind === "clip") refreshClips();
       if (kind === "video" || kind === "segment") refreshVideos();
       refreshLibraryFilters();
@@ -1032,12 +1042,6 @@ function setUpProjectPicker() {
   $("p2-project-menu").addEventListener("sl-show", (event) => {
     if (event.target !== $("p2-project-menu")) return;
     renderProjectMenu();
-    openTree();
-  });
-  // The picker opens on its search box, so typing searches instead of reaching the editor's shortcuts (I, O, C…)
-  $("p2-project-menu").addEventListener("sl-after-show", (event) => {
-    if (event.target !== $("p2-project-menu")) return;
-    $("p2-project-menu").querySelector(".tree-search-input")?.focus({ preventScroll: true });
   });
   $("p2-project-items").addEventListener("sl-select", (event) => {
     const value = event.detail.item.value;
@@ -1046,6 +1050,7 @@ function setUpProjectPicker() {
     else if (value === "copy") copyEdit(store.project.id);
     else if (value === "delete") deleteProject();
     else if (value === "close") closeProject();
+    else if (value === "reveal") revealLoaded();
   });
 }
 
@@ -2593,7 +2598,12 @@ async function enterTeam() {
   $("workspace").hidden = false;
   setUpExport({ demo: DEMO, otherPlayers: () => [player1, player2], onPausePlayers: () => playback?.pause() });
   screenTabs = tabs(document.querySelector(".main-tabs"), "data-view", showScreen, "clipco.editor.screen");
-  setUpLibrary({ onLoad: load, onExport: openExport, onPickList: (list) => listTabs.pick(list), onAddSegments: (video) => addSegmentsTo(video), sample: DEMO ? demoSample() : null });
+  setUpLibrary({ onLoad: load, onExport: openExport,
+    // Edits and segments under clips and videos (the old Player 2 picker)
+    loaded: p2Loaded,
+    onOpenEdit: (id) => openProject(id),
+    onLoadSegment: (segment, video) => loadInPlayer2({ kind: "segment", data: segmentData(segment, video) }, { original: true }),
+    vodDay: (vodId) => vodDay(vodId, () => refreshEdits()), onPickList: (list) => listTabs.pick(list), onAddSegments: (video) => addSegmentsTo(video), sample: DEMO ? demoSample() : null });
   if (DEMO) wireDemoTools();
   listTabs = tabs(document.querySelector(".side-tabs"), "data-list", showList, "clipco.editor.list");
   setUpPlayers();

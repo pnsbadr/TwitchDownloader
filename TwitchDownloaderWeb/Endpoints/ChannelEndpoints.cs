@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 using TwitchDownloaderWeb.Data;
 using TwitchDownloaderWeb.Services;
 using TwitchDownloaderWeb.Services.AudioRescue;
+using TwitchDownloaderWeb.Services.Playback;
 
 using TwitchDownloaderWeb.Services.Accounts;
 
@@ -24,7 +25,11 @@ namespace TwitchDownloaderWeb.Endpoints
     public sealed record ChannelCardDto(string Login, string? ProfileImageUrl, bool? Live, DateTime? LiveSinceUtc);
 
     public sealed record ChannelVodDto(long VodId, string Title, int LengthSeconds, string Length, DateTime CreatedAtUtc, string? ThumbnailUrl,
-        int ViewCount, string? Game, bool UnmuteWindowOpen, string? RescueStatus, bool RescuePaused, int? RescueMutedCount, int? RescueUnrecoverableCount);
+        int ViewCount, string? Game, bool UnmuteWindowOpen, string? RescueStatus, bool RescuePaused, int? RescueMutedCount, int? RescueUnrecoverableCount)
+    {
+        /// <summary>A highlight's broadcast's start (its createdAt), when it can be told (<see cref="Services.Playback.HighlightSources"/>).</summary>
+        public DateTime? SourceStartUtc { get; init; }
+    }
 
     public sealed record ChannelVodPageDto(string Login, string Type, IEnumerable<ChannelVodDto> Items, string? NextCursor, int TotalCount);
 
@@ -82,7 +87,8 @@ namespace TwitchDownloaderWeb.Endpoints
         /// <param name="type">"archive" (past broadcasts, default), "highlight", "upload" or "all".</param>
         /// <param name="cursor">nextCursor from the previous page.</param>
         private static async Task<IResult> ListChannelVods(string login, string? type, string? cursor, int? limit, IChannelVodSource channelService,
-            LibraryDbContext db, TeamChannelAccess access, IOptions<AudioRescueSettings> rescueSettings, CancellationToken cancellationToken)
+            LibraryDbContext db, TeamChannelAccess access, IOptions<AudioRescueSettings> rescueSettings, HighlightSources highlights,
+            CancellationToken cancellationToken)
         {
             if (ChannelService.NormalizeLogin(login) is not { } normalizedLogin)
                 return InvalidLogin("login");
@@ -115,6 +121,15 @@ namespace TwitchDownloaderWeb.Endpoints
             var enabled = rescueSettings.Value.Enabled;
             var watched = enabled ? (await AudioRescueService.AutoWatchedLogins(db).Distinct().ToListAsync(cancellationToken)).ToHashSet() : [];
 
+            // Highlights: the broadcast each was cut from (badrfly 2026-11-21: the library shows them under it)
+            var sources = new Dictionary<long, DateTime?>();
+            if (vodType == VodType.Highlight)
+            {
+                var found = await Task.WhenAll(page.Items.Select(async x => (x.VodId, Start: await highlights.GetSourceStartAsync(x.VodId, cancellationToken))));
+                foreach (var (id, start) in found)
+                    sources[id] = start;
+            }
+
             var items = page.Items.Select(x =>
             {
                 var rescue = rescues.GetValueOrDefault(x.VodId);
@@ -122,7 +137,8 @@ namespace TwitchDownloaderWeb.Endpoints
                     x.CreatedAtUtc, x.ThumbnailUrl, x.ViewCount, x.Game, x.UnmuteWindowOpen, rescue?.Status.ToString(),
                     rescue is { ManuallyRequested: false, Status: AudioRescueStatus.Grabbing or AudioRescueStatus.WaitingToPrune }
                     && !(rescue.ChannelLogin is not null && watched.Contains(rescue.ChannelLogin)),
-                    rescue?.MutedCount, rescue?.UnrecoverableCount);
+                    rescue?.MutedCount, rescue?.UnrecoverableCount)
+                { SourceStartUtc = sources.GetValueOrDefault(x.VodId) };
             });
 
             return Results.Ok(new ChannelVodPageDto(normalizedLogin, vodType.ToString().ToLowerInvariant(), items, page.NextCursor, page.TotalCount));

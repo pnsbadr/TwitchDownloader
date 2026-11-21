@@ -1,4 +1,7 @@
 // Player 2's picker (badrfly 2026-11-17, "the VOD is the project"): a tree of what the team made on each VOD.
+// Since badrfly 2026-11-21 the tree isn't drawn any more: the library's rows open to the same lines (ui/library.js "edits and segments
+// under clips and videos"), and Player 2's header menu only has what can be done with what's loaded. The library uses the menus and
+// renames here (editMenu, segmentMenu, segmentData); the drawing code stays for now.
 //
 //   VOD
 //     Videos › video › its segments (and the video's edits)
@@ -465,13 +468,31 @@ function parentVod(parent) {
 }
 
 // home = the VOD this line is under: a segment of another stream says which
-function segmentRow(segment, video, loaded, home) {
-  const vodId = String(segment.vodId ?? video.vodId);
-  const canRename = !me?.support && !segment.removed && (can("EditAnyEntries") || (can("AddEntries") && video.userId === me?.id));
-  const data = {
-    id: segment.markerId, vodId, seconds: segment.startSeconds, endSeconds: segment.endSeconds,
+// What Player 2 loads for a video's segment
+export function segmentData(segment, video) {
+  return {
+    id: segment.markerId, vodId: String(segment.vodId ?? video.vodId), seconds: segment.startSeconds, endSeconds: segment.endSeconds,
     label: segment.label, color: segment.color, cuts: [...(segment.cuts ?? [])],
   };
+}
+
+function canRenameSegment(segment, video) {
+  return !me?.support && !segment.removed && (can("EditAnyEntries") || (can("AddEntries") && video.userId === me?.id));
+}
+
+// The right-click menu of a video's segment (the library's line under the video)
+export function segmentMenu(segment, video) {
+  const load = () => hooks.onLoadItem({ kind: "segment", data: segmentData(segment, video) });
+  return [
+    { label: "Load in Player 2", icon: "film-strip", run: load },
+    canRenameSegment(segment, video) && { label: "Rename", icon: "pencil-simple", run: () => renameSegment(segment, video) },
+  ].filter(Boolean);
+}
+
+function segmentRow(segment, video, loaded, home) {
+  const vodId = String(segment.vodId ?? video.vodId);
+  const canRename = canRenameSegment(segment, video);
+  const data = segmentData(segment, video);
   const other = vodId !== home ? (hooks.vodDay(vodId) ?? "other stream") : null;
   const load = () => {
     hooks.onLoadItem({ kind: "segment", data });
@@ -531,7 +552,6 @@ function editRow(edit, depth, loaded) {
   };
   const others = (edit.vodIds ?? []).length > 1 ? ` · uses ${edit.vodIds.length} VODs` : "";
   const who = edit.userId === me?.id ? "you" : edit.createdBy ?? "teammate";
-  const canMake = can("AddEntries") && !me?.support;
   return row({
     // Vertical (9:16) edits open in the vertical editor, horizontal ones in Player 2 (badrfly 2026-11-17)
     depth, icon: edit.vertical ? "device-mobile" : "monitor", label: edit.title || "Untitled edit", current: Number(loaded?.editId) === edit.id,
@@ -539,15 +559,21 @@ function editRow(edit, depth, loaded) {
     title: `${edit.vertical ? "Vertical (9:16) edit" : "Horizontal edit"}: ${edit.title || "Untitled edit"} · by ${who}${others}${edit.canEdit ? "" : edit.canCopy === false ? " (view only)" : " (view only: make your own copy to change it)"}`,
     onClick: open,
     actions: edit.canEdit ? [iconButton({ icon: "pencil-simple", label: "Rename", onClick: () => renameEdit(edit) })] : [],
-    menu: () => [
-      { label: edit.vertical ? "Open in the vertical editor" : "Load in Player 2", icon: edit.vertical ? "device-mobile" : "film-strip", run: open },
-      edit.canEdit && { label: "Rename", icon: "pencil-simple", run: () => renameEdit(edit) },
-      // A teammate's vertical edit is copied and exported only with the role permissions for that (canCopy / canDownload)
-      canMake && edit.canCopy !== false && { label: edit.canEdit ? "Duplicate" : "Make my own copy", icon: "copy", run: () => hooks.onCopyEdit(edit) },
-      edit.canDownload !== false && { label: "Add to the export list", icon: "download-simple", run: () => hooks.onExportEdit(edit) },
-      edit.canDelete && { label: "Delete this edit", icon: "trash", danger: true, run: () => deleteEdit(edit) },
-    ].filter(Boolean),
+    menu: () => editMenu(edit),
   });
+}
+
+// The right-click menu of an edit (the tree's line, the library's line under its clip or video)
+export function editMenu(edit) {
+  const canMake = can("AddEntries") && !me?.support;
+  return [
+    { label: edit.vertical ? "Open in the vertical editor" : "Load in Player 2", icon: edit.vertical ? "device-mobile" : "film-strip", run: () => hooks.onOpenEdit(edit.id) },
+    edit.canEdit && { label: "Rename", icon: "pencil-simple", run: () => renameEdit(edit) },
+    // A teammate's vertical edit is copied and exported only with the role permissions for that (canCopy / canDownload)
+    canMake && edit.canCopy !== false && { label: edit.canEdit ? "Duplicate" : "Make my own copy", icon: "copy", run: () => hooks.onCopyEdit(edit) },
+    edit.canDownload !== false && { label: "Add to the export list", icon: "download-simple", run: () => hooks.onExportEdit(edit) },
+    edit.canDelete && { label: "Delete this edit", icon: "trash", danger: true, run: () => deleteEdit(edit) },
+  ].filter(Boolean);
 }
 
 // ---------- renaming ----------
@@ -558,7 +584,7 @@ async function ask(heading, value) {
 }
 
 async function afterChange(vodId, kind) {
-  await loadVod(vodId);
+  if (hooks.root) await loadVod(vodId);
   hooks.onChanged(kind);
 }
 
