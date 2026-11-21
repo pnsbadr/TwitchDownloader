@@ -120,6 +120,9 @@ export function setUpLibrary(options) {
     scheduleWindow();
     if (state.view === "details") applyColumnLayout();
   }).observe($("side-list"));
+  new ResizeObserver(() => fitListHeight()).observe($("side-listwrap"));
+  // Scrolling stops on a line's start, so the top row is never cut in half (rows and Details)
+  $("side-list").addEventListener("scrollend", () => snapScroll());
   setUpDetails();
   renderViewButton();
   setUpFilter();
@@ -894,6 +897,7 @@ function render() {
       const node = line.month ? monthRow(line, index)
         : line.head ? el("div", { class: "side-sep day" }, el("i"))
         : line.note ? kidNote(line)
+        : line.group ? groupRow(line)
         : line.sub ? subRow(line)
         : line.kid ? listRow(line)
         : card(specFor(line.item, line.type));
@@ -1027,6 +1031,7 @@ function renderDetailsHead() {
   head.hidden = !show;
   $("side-list").classList.toggle("details", show);
   applyColumnLayout();
+  fitListHeight();
   if (!show) return;
   const list = state.list;
   const sort = state.sorts[list];
@@ -1643,12 +1648,22 @@ function segmentEditLines(segmentLine) {
 function otherLines(vodId, at, kids) {
   const lines = [];
   const common = { sub: true, kid: true, vodId, at, parent: null };
-  for (const marker of kids.segments ?? []) {
-    const segment = { markerId: marker.id, position: 0, label: marker.label, color: marker.color, startSeconds: marker.seconds, endSeconds: marker.endSeconds,
-      keptSeconds: marker.keptSeconds, vodId: marker.vodId, cuts: marker.cuts };
-    // Its "video" for loading and renaming: the VOD and the segment's maker
-    const line = { ...common, key: `kid:${vodId}:seg:${marker.id}`, type: "segment", item: segment, video: { vodId: marker.vodId, userId: marker.createdByUserId }, home: String(vodId), lone: true, segKey: "lseg" };
-    lines.push(line, ...segmentEditLines(line));
+  const segments = kids.segments ?? [];
+  // badrfly 2026-11-21: the segments sit in one "Segments" line (closed at first) instead of a long list under the VOD
+  if (segments.length) {
+    const groupKey = `kid:${vodId}:segs`;
+    const group = { ...common, key: groupKey, group: "segs", item: { id: vodId }, type: "segs", count: segments.length, lone: true };
+    lines.push(group);
+    if (isSubOpen("segs", group.item)) {
+      for (const marker of segments) {
+        const segment = { markerId: marker.id, position: 0, label: marker.label, color: marker.color, startSeconds: marker.seconds, endSeconds: marker.endSeconds,
+          keptSeconds: marker.keptSeconds, vodId: marker.vodId, cuts: marker.cuts };
+        // Its "video" for loading and renaming: the VOD and the segment's maker
+        const line = { ...common, key: `${groupKey}>segs:${vodId}>seg:${marker.id}`, type: "segment", item: segment, video: { vodId: marker.vodId, userId: marker.createdByUserId },
+          home: String(vodId), segKey: "lseg", parent: { item: group.item, type: "segs", key: groupKey } };
+        lines.push(line, ...segmentEditLines(line));
+      }
+    }
   }
   for (const edit of kids.other ?? []) lines.push({ ...common, key: `kid:${vodId}:edit:${edit.id}`, type: "edit", item: edit, lone: true });
   return lines;
@@ -1686,6 +1701,48 @@ function itemCaret(line) {
 function subOpenLine(line) {
   if (line.type === "edit") handlers.onOpenEdit?.(line.item.id);
   else handlers.onLoadSegment?.(line.item, line.video);
+}
+
+// The "Segments (n)" line under an opened VOD: opens to every segment on it
+function groupRow(line) {
+  const open = isSubOpen(line.type, line.item);
+  const caret = el("button", { class: `lcaret${open ? " open" : ""}`, type: "button", tabindex: "-1", "aria-label": open ? "Close" : "Show the segments", title: open ? "Close" : "Show the segments (→)" },
+    el("sl-icon", { library: "ph", name: "caret-right" }));
+  caret.addEventListener("pointerdown", (event) => event.stopPropagation());
+  caret.addEventListener("dblclick", (event) => event.stopPropagation());
+  const node = el("div", { class: "lrow item sub kid lone group", role: "listitem", tabindex: "0", "aria-label": `Segments, ${line.count}`, "aria-expanded": String(open), "data-key": line.key, title: open ? "Close" : "Every segment on this VOD" },
+    caret,
+    el("sl-icon", { library: "ph", name: "brackets-square", class: "lkind" }),
+    el("span", { class: "ltitle" }, "Segments"),
+    el("span", { class: "llen" }, String(line.count)));
+  const toggle = (want) => toggleSub(line.type, line.item, want);
+  caret.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggle();
+  });
+  node.addEventListener("click", () => select(line.key, { focus: false }));
+  node.addEventListener("dblclick", () => toggle());
+  node.addEventListener("mouseenter", () => setHovered(line.key));
+  node.addEventListener("focus", () => select(line.key, { focus: false }));
+  node.addEventListener("keydown", (event) => {
+    if (event.target !== node) return;
+    if (event.key === "Enter") toggle();
+    else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      moveSelection(event.key === "ArrowDown" ? 1 : -1);
+    } else if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+      event.preventDefault();
+      if (event.key === "ArrowLeft" && !isSubOpen(line.type, line.item)) {
+        // Back to its VOD
+        select(`vod:${line.vodId}`, { focus: false });
+        focusRow(`vod:${line.vodId}`);
+        return;
+      }
+      toggle(event.key === "ArrowRight");
+      focusRow(line.key);
+    }
+  });
+  return node;
 }
 
 // A segment or edit under its clip or video
@@ -1776,11 +1833,15 @@ export async function revealLoaded() {
     const kids = state.kids.get(vodId);
     if (loaded.entryId) parent = kids?.clips?.find((c) => c.id === Number(loaded.entryId)) && { type: "clip", item: kids.clips.find((c) => c.id === Number(loaded.entryId)) };
     else if (loaded.videoId) parent = kids?.videos?.find((v) => v.id === Number(loaded.videoId)) && { type: "video", item: kids.videos.find((v) => v.id === Number(loaded.videoId)) };
+    else if (loaded.segmentId) state.subOpen.add(subKeyOf("segs", { id: vodId }));
     else if (loaded.editId) {
       // An edit of a segment: the segment's line under the VOD, opened
       const editId = Number(loaded.editId);
       const segmentId = [...state.segEdits].find(([, edits]) => edits.some((e) => e.id === editId))?.[0] ?? null;
-      if (segmentId) state.subOpen.add(subKeyOf("lseg", { id: segmentId }));
+      if (segmentId) {
+        state.subOpen.add(subKeyOf("segs", { id: vodId }));
+        state.subOpen.add(subKeyOf("lseg", { id: segmentId }));
+      }
     }
   } else if (loaded.entryId && state.clips.some((c) => c.id === Number(loaded.entryId))) {
     list = "clips";
@@ -2142,7 +2203,7 @@ function drawWindow() {
     let entry = nodes.get(line.key);
     if (!entry) {
       entry = { item: line.item, sig: lineSig(line, i === 0),
-        node: line.month ? monthRow(line, i) : line.head ? dayRow() : line.note ? kidNote(line) : line.sub ? subRow(line)
+        node: line.month ? monthRow(line, i) : line.head ? dayRow() : line.note ? kidNote(line) : line.group ? groupRow(line) : line.sub ? subRow(line)
           : state.view === "details" && !line.kid ? detailsRow(line) : listRow(line) };
       nodes.set(line.key, entry);
     }
@@ -2176,6 +2237,7 @@ function dayRow() {
 function lineSig(line, top) {
   if (line.month) return `${line.month}|${line.count}|${top}`;
   if (line.head || line.note) return line.note ?? "";
+  if (line.group) return `${line.count}|${isSubOpen(line.type, line.item)}`;
   if (line.sub) {
     const loaded = p2Loaded();
     const t = line.item;
@@ -2318,8 +2380,12 @@ function moveSelection(step) {
   if (index < 0 || index >= lines.length) return;
   const list = $("side-list");
   const y = rowsModel.ys[index];
-  if (y < list.scrollTop + SEP_H) list.scrollTop = y - (lines[index - 1]?.month ? MONTH_H : SEP_H);
-  else if (y + ROW_H > list.scrollTop + list.clientHeight) list.scrollTop = y + ROW_H - list.clientHeight;
+  // Scrolled to a line's start, so the rows stay whole (see snapScroll)
+  if (y < list.scrollTop + SEP_H) list.scrollTop = isMark(lines[index - 1] ?? {}) ? rowsModel.ys[index - 1] : y;
+  else if (y + ROW_H > list.scrollTop + list.clientHeight) {
+    const want = y + ROW_H - list.clientHeight;
+    list.scrollTop = rowsModel.ys.find((start) => start >= want - 0.5) ?? want;
+  }
   drawWindow();
   select(lines[index].key);
 }
@@ -2337,17 +2403,54 @@ function setHovered(key) {
 
 // The rows view's card at the bottom: the row under the mouse, else the selected one
 let peekKey = null;
+
+// Rows and Details: the list is a whole number of rows high (the rest is left blank above the card), so the bottom row isn't cut in half
+function fitListHeight() {
+  const list = $("side-list");
+  const wrap = $("side-listwrap");
+  if (state.view === "cards") {
+    list.style.height = "";
+    list.style.flex = "";
+    return;
+  }
+  const head = $("side-dhead");
+  const room = wrap.clientHeight - (head.hidden ? 0 : head.offsetHeight);
+  const height = Math.max(ROW_H, Math.floor(room / ROW_H) * ROW_H);
+  if (list.style.height === `${height}px`) return;
+  list.style.flex = "none";
+  list.style.height = `${height}px`;
+}
+
+function snapScroll() {
+  if (state.view === "cards" || !rowsModel) return;
+  const list = $("side-list");
+  const top = list.scrollTop;
+  const max = list.scrollHeight - list.clientHeight;
+  if (top <= 0 || top >= max - 1) return;
+  const i = lineAt(top);
+  const ys = rowsModel.ys;
+  const target = top - ys[i] < ys[i + 1] - top ? ys[i] : ys[i + 1];
+  if (Math.abs(target - top) > 0.5) list.scrollTo({ top: Math.min(target, max), behavior: "smooth" });
+}
 function renderPeek() {
   const peek = $("side-peek");
   // Rows view: the row under the mouse, else the selected one. Cards view: only a row of an opened VOD under the mouse
   const lines = itemLines().filter((l) => state.view !== "cards" || l.kid || l.sub);
   const found = lines.find((l) => l.key === state.hovered) ?? (state.view !== "cards" ? lines.find((l) => l.key === state.selected[state.list]) : null);
   // A segment or edit line shows the card of its clip or video
-  const line = found?.sub ? found.parent : found;
-  peek.hidden = !line;
-  if (!line) {
+  const line = found?.group ? null : found?.sub ? (found.parent?.type === "segs" ? null : found.parent) : found;
+  // badrfly 2026-11-21: the card's place is always kept, the same size, so the list above never changes height (a hint while empty)
+  if (state.view === "cards") peek.hidden = !line;
+  else peek.hidden = false;
+  if (!line && state.view === "cards") {
     peekKey = null;
     peek.replaceChildren();
+    return;
+  }
+  if (!line) {
+    if (peekKey === "" && peek.firstChild) return;
+    peekKey = "";
+    peek.replaceChildren(el("div", { class: "peek-empty faint" }, "Point at a row to see its card here"));
     return;
   }
   if (peekKey === line.key && peek.firstChild?._item === line.item && peek.firstChild?._sig === rowSig(line.item, line.type)) return;
@@ -2372,6 +2475,7 @@ function setView(view) {
   list.scrollLeft = 0;
   rowsModel = null;
   renderDetailsHead();
+  fitListHeight();
   render();
 }
 
