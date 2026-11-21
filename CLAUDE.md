@@ -717,8 +717,9 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
 - **Picking for Player 2 is in the library** (badrfly 2026-11-21, replaces the VOD tree below): clip and video rows (on their own tabs and
   under an opened VOD) have an arrow (→ / ←) that opens them to their **edits** (a video first to its **segments**, each opening to the
   edits made from it). An edit of no clip or video names its segment when every piece came from one (`segmentId` on project DTOs,
-  `ProjectEndpoints.SegmentOf`); an opened VOD ends with its segments that have edits but aren't in a video listed there (`kids.segments`, from
-  `/api/markers`), then the edits left (a VOD range, or a deleted clip/video/segment: `kids.other`). Double-click / Enter loads a segment
+  `ProjectEndpoints.SegmentOf`); an opened VOD ends with **every segment on it** (`kids.segments`, from `/api/markers`; badrfly 2026-11-21:
+  a vertical edit mustn't be found only through a video), each opening to its edits (`lseg:` keys; inside a video `seg:`), then the edits
+  left (a VOD range, or a deleted clip/video/segment: `kids.other`). Double-click / Enter loads a segment
   or opens an edit; right-click = `editMenu` / `segmentMenu` from `ui/p2-tree.js`; the loaded line is marked (`player2Changed`). An opened
   VOD reads its edits once (`/api/projects?vodId=`) and fills its rows' lists; rows on the CLIPS/VIDEOS tabs read theirs when opened
   (`entryId=` / `videoId=`); `refreshEdits()` re-reads after edits change. Player 2's header menu only has the loaded item's actions plus
