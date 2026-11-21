@@ -207,11 +207,8 @@
                     <span class="edit-pick-state" id="p2-project-state"></span>
                     <sl-icon library="ph" name="caret-down" class="edit-pick-caret"></sl-icon>
                   </button>
-                  <div class="tree-panel">
-                    <div class="p2-tree" id="p2-tree" role="tree" aria-label="VODs, their videos and clips, and edits"></div>
-                    <p class="tree-hint faint">Double-click a clip or video to load it. Your first change saves a new edit of it.</p>
-                    <sl-menu id="p2-project-items" class="edit-menu" hidden></sl-menu>
-                  </div>
+                  <!-- What can be done with what's loaded (clips, videos, segments and their edits are picked in the library) -->
+                  <sl-menu id="p2-project-items" class="edit-menu"></sl-menu>
                 </sl-dropdown>
                 <span class="player-info p2-info" id="p2-info"></span>
                 <span class="focus-badge" id="p2-focus" hidden></span>
@@ -224,7 +221,7 @@
                 <div class="drop-hint" id="p2-hint">
                   <sl-icon library="ph" name="film-strip"></sl-icon>
                   <p>Drag a clip, video or segment here</p>
-                  <p class="faint">or pick one from the menu above. Drop more from the same VOD on its timeline to combine them.</p>
+                  <p class="faint">or double-click one in the library. Drop more from the same VOD on its timeline to combine them.</p>
                 </div>
               </div>
               <div class="player-controls" data-tip-placement="top">

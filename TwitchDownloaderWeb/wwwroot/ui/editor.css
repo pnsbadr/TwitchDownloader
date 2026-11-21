@@ -1305,7 +1305,7 @@ body:not(.linking) .link-chips { display: none; }
 .lrow-note { justify-content: center; }
 /* Months, days and items (badrfly 2026-11-21, his sketch): a thin line between items, a slightly thicker one between days, a month's
    line across the whole width with its name in the date column, each day's number in front of its first item. */
-.lrow.item:not(.first):not(.kid)::before {
+.lrow.item:not(.first):not(.kid):not(.sub)::before {
   content: "";
   position: absolute;
   left: var(--space-2);
@@ -1424,6 +1424,18 @@ body:not(.linking) .link-chips { display: none; }
 .lrow-kidnote { color: var(--text-faint); font-size: var(--font-size-small); border: 0; background: none; text-align: left; font-family: inherit; }
 .lrow-kidnote.link { color: var(--accent-strong); cursor: pointer; }
 .lrow-kidnote.link:hover { text-decoration: underline; }
+/* Edits and segments under a clip or video (badrfly 2026-11-21: Player 2's picker moved into the library); one step further in under a VOD */
+.lrow.sub { padding-left: calc(var(--space-2) + 22px); }
+.lrow.sub.kid { padding-left: calc(var(--space-2) + 42px); }
+.lrow.sub::before { content: ""; position: absolute; left: calc(var(--space-2) + 6px); top: 0; bottom: 0; width: 1px; background: var(--line); }
+.lrow.sub.kid::before { left: calc(var(--space-2) + 26px); }
+.lrow.sub .lkind { color: var(--text-dim); }
+.lrow.sub .ltitle { color: var(--text-dim); }
+.lrow.sub:hover .ltitle, .lrow.sub.sel .ltitle, .lrow.sub.current .ltitle { color: var(--text); }
+.lrow.sub.current .lkind { color: var(--accent-strong); }
+.lrow.sub.current .ltitle { font-weight: 700; }
+.lrow-group { cursor: pointer; color: var(--text-dim); }
+.lrow-group:hover { background: var(--bg-3); color: var(--text); }
 /* In the cards view an opened VOD's rows follow its card */
 .side-list:not(.rows) > .lrow { position: relative; left: auto; right: auto; flex: none; }
 .side-peek {
