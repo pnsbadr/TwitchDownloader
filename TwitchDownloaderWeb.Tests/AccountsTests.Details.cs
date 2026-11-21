@@ -74,6 +74,11 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal(banana, line.GetProperty("id").GetInt32());
             Assert.Equal(["dt1member"], line.GetProperty("editedBy").EnumerateArray().Select(x => x.GetString()!).ToArray());
 
+            // Sorted by who edited: clips with an edit first (by the editor's name), then the rest newest first, either way
+            await PostJsonAsync(owner, "/api/projects", new { entryId = date, content = TwoTracks(Piece("a", "t1", 0, 703, 10, 20)) }, HttpStatusCode.Created);
+            Assert.Equal([banana, date, apple, cherry], await AllPages("/api/entries?paged=true&limit=3&sort=editedBy&order=asc"));
+            Assert.Equal([date, banana, apple, cherry], await AllPages("/api/entries?paged=true&limit=3&sort=editedBy&order=desc"));
+
             // Days in the viewer's time zone, without the day picked (Los Angeles: cherry's 23:30 UTC is still Nov 2, banana's 10:00 is Nov 3 02:00)
             var counted = await GetJsonAsync(owner, "/api/entries?paged=true&limit=1&days=America/Los_Angeles&from=2026-11-03T08:00:00Z&to=2026-11-04T08:00:00Z");
             Assert.Equal(2, counted.GetProperty("total").GetInt32());

@@ -6,7 +6,9 @@ namespace TwitchDownloaderWeb.Endpoints
 {
     /// <param name="SetWhen">ByHand, NewItem, EditMade, VerticalEditMade or Exported.</param>
     /// <param name="Clips">The team's clips with this status now (hidden ones included).</param>
-    public sealed record TeamStatusDto(int Id, string Name, string Color, int Position, string SetWhen, bool HideFromLists, int Clips, int Videos);
+    /// <param name="Tabs">The library tabs it shows on: "vods", "videos", "clips".</param>
+    public sealed record TeamStatusDto(int Id, string Name, string Color, int Position, string SetWhen, bool HideFromLists, IReadOnlyList<string> Tabs,
+        int Clips, int Videos);
 
     public sealed record TeamTagDto(int Id, string Name, int Clips, int Videos);
 
@@ -15,7 +17,8 @@ namespace TwitchDownloaderWeb.Endpoints
     public sealed record TeamStatusesDto(IReadOnlyList<TeamStatusDto> Statuses, IReadOnlyList<TeamTagDto> Tags, int NoStatusClips, int NoStatusVideos,
         bool CanManage, bool CanSet);
 
-    public sealed record SaveStatusRequest(string? Name, string? Color, string? SetWhen, bool? HideFromLists);
+    /// <param name="Tabs">The library tabs it shows on ("vods", "videos", "clips"); null keeps them, [] shows it on none.</param>
+    public sealed record SaveStatusRequest(string? Name, string? Color, string? SetWhen, bool? HideFromLists, List<string>? Tabs = null);
 
     public sealed record OrderStatusesRequest(List<int>? Ids);
 
@@ -69,7 +72,7 @@ namespace TwitchDownloaderWeb.Endpoints
                 .Select(x => new TeamTagDto(x.Id, x.Name, db.EntryTags.Count(t => t.TagId == x.Id), db.VideoTags.Count(t => t.TagId == x.Id)))
                 .ToListAsync(cancellationToken);
             return new TeamStatusesDto(
-                statuses.Select((x, i) => new TeamStatusDto(x.Id, x.Name, x.Color, i, x.SetWhen.ToString(), x.HideFromLists,
+                statuses.Select((x, i) => new TeamStatusDto(x.Id, x.Name, x.Color, i, x.SetWhen.ToString(), x.HideFromLists, TabNames(x.Tabs),
                     clipCounts.GetValueOrDefault(x.Id), videoCounts.GetValueOrDefault(x.Id))).ToList(),
                 tags, clipCounts.GetValueOrDefault(0), videoCounts.GetValueOrDefault(0),
                 team.Can(TeamPermission.ManageStatuses) && !team.IsSupport, team.Can(TeamPermission.AddEntries) && !team.IsSupport);
@@ -107,7 +110,37 @@ namespace TwitchDownloaderWeb.Endpoints
             }
             if (request.HideFromLists is { } hide)
                 status.HideFromLists = hide;
+            if (request.Tabs is { } tabs)
+            {
+                var flags = StatusTabs.None;
+                foreach (var tab in tabs)
+                {
+                    var flag = (tab ?? "").Trim().ToLowerInvariant() switch
+                    {
+                        "vods" => StatusTabs.Vods,
+                        "videos" => StatusTabs.Videos,
+                        "clips" => StatusTabs.Clips,
+                        _ => (StatusTabs?)null,
+                    };
+                    if (flag is null)
+                        return Problem("tabs", "Use vods, videos or clips.");
+                    flags |= flag.Value;
+                }
+                status.Tabs = flags;
+            }
             return null;
+        }
+
+        private static IReadOnlyList<string> TabNames(StatusTabs tabs)
+        {
+            var names = new List<string>(3);
+            if (tabs.HasFlag(StatusTabs.Vods))
+                names.Add("vods");
+            if (tabs.HasFlag(StatusTabs.Videos))
+                names.Add("videos");
+            if (tabs.HasFlag(StatusTabs.Clips))
+                names.Add("clips");
+            return names;
         }
 
         private static async Task<IResult> Create(SaveStatusRequest request, TeamContext team, LibraryDbContext db, CancellationToken cancellationToken)

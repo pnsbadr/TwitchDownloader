@@ -57,6 +57,17 @@ namespace TwitchDownloaderWeb.Tests
             Assert.Equal([other], Ids(await GetJsonAsync(owner, "/api/entries?paged=true")));
             Assert.Equal([clip], Ids(await GetJsonAsync(owner, $"/api/entries?paged=true&status={posted}")));
 
+            // The owner picks the tabs a status shows on (all at first)
+            Assert.Equal(["vods", "videos", "clips"], (await GetJsonAsync(owner, "/api/team/statuses")).GetProperty("statuses")[0].GetProperty("tabs")
+                .EnumerateArray().Select(x => x.GetString()!).ToArray());
+            var tabbed = await owner.PutAsJsonAsync($"/api/team/statuses/{posted}", new { tabs = new[] { "videos" } }, ct);
+            Assert.Equal(HttpStatusCode.OK, tabbed.StatusCode);
+            var postedNow = (await tabbed.Content.ReadFromJsonAsync<JsonElement>(ct)).GetProperty("statuses").EnumerateArray()
+                .First(x => x.GetProperty("id").GetInt32() == posted);
+            Assert.Equal(["videos"], postedNow.GetProperty("tabs").EnumerateArray().Select(x => x.GetString()!).ToArray());
+            Assert.True(postedNow.GetProperty("hideFromLists").GetBoolean());
+            Assert.Equal(HttpStatusCode.BadRequest, (await owner.PutAsJsonAsync($"/api/team/statuses/{posted}", new { tabs = new[] { "nope" } }, ct)).StatusCode);
+
             // Owner's own steps: a new one, one trigger per status, order, names unique
             var added = await owner.PostAsJsonAsync("/api/team/statuses", new { name = "Needs vertical", color = "orange", setWhen = "EditMade" }, ct);
             Assert.Equal(HttpStatusCode.OK, added.StatusCode);

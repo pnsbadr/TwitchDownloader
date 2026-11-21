@@ -1299,6 +1299,9 @@ namespace TwitchDownloaderWeb.Data.Migrations
                         .HasMaxLength(24)
                         .HasColumnType("TEXT");
 
+                    b.Property<int>("Tabs")
+                        .HasColumnType("INTEGER");
+
                     b.Property<int>("TeamId")
                         .HasColumnType("INTEGER");
 

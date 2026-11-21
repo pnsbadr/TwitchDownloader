@@ -393,10 +393,11 @@ namespace TwitchDownloaderWeb.Endpoints
                 "title" => "title",
                 "length" => "length",
                 "madeby" => "madeby",
+                "editedby" => "editedby",
                 _ => null,
             };
             if (sortKey is null)
-                return Results.ValidationProblem(new Dictionary<string, string[]> { ["sort"] = ["Sort must be dateAdded, streamDate, title, length or madeBy."] });
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["sort"] = ["Sort must be dateAdded, streamDate, title, length, madeBy or editedBy."] });
             var byDate = sortKey is "dateadded" or "streamdate";
 
             var (statusId, noStatus, tagName, filterProblem) = StatusEndpoints.ParseFilters(status, tag);
@@ -510,6 +511,9 @@ namespace TwitchDownloaderWeb.Endpoints
                 };
             }
             var users = db.Users;
+            // Edited by (the Details view): the first member who made an edit of it, as the column lists them; items with none come last
+            var seeVerticals = VerticalAccess.CanSeeTeam(team);
+            var caller = team.UserId;
             query = (sortKey, ascending) switch
             {
                 ("streamdate", true) => query.OrderBy(x => x.StreamDateUtc).ThenBy(x => x.Id),
@@ -521,6 +525,14 @@ namespace TwitchDownloaderWeb.Endpoints
                 ("madeby", true) => query.OrderBy(x => users.Where(u => u.Id.ToString() == x.AddedByUserId).Select(u => u.Username.ToLower()).FirstOrDefault())
                     .ThenByDescending(x => x.AddedAtUtc).ThenByDescending(x => x.Id),
                 ("madeby", false) => query.OrderByDescending(x => users.Where(u => u.Id.ToString() == x.AddedByUserId).Select(u => u.Username.ToLower()).FirstOrDefault())
+                    .ThenByDescending(x => x.AddedAtUtc).ThenByDescending(x => x.Id),
+                ("editedby", true) => query.OrderBy(x => !db.Projects.Any(p => p.EntryId == x.Id && (seeVerticals || !p.Vertical || p.UserId == caller)))
+                    .ThenBy(x => db.Projects.Where(p => p.EntryId == x.Id && (seeVerticals || !p.Vertical || p.UserId == caller)).OrderBy(p => p.CreatedAtUtc)
+                    .Select(p => users.Where(u => u.Id == p.UserId).Select(u => u.Username.ToLower()).FirstOrDefault()).FirstOrDefault())
+                    .ThenByDescending(x => x.AddedAtUtc).ThenByDescending(x => x.Id),
+                ("editedby", false) => query.OrderBy(x => !db.Projects.Any(p => p.EntryId == x.Id && (seeVerticals || !p.Vertical || p.UserId == caller)))
+                    .ThenByDescending(x => db.Projects.Where(p => p.EntryId == x.Id && (seeVerticals || !p.Vertical || p.UserId == caller)).OrderBy(p => p.CreatedAtUtc)
+                    .Select(p => users.Where(u => u.Id == p.UserId).Select(u => u.Username.ToLower()).FirstOrDefault()).FirstOrDefault())
                     .ThenByDescending(x => x.AddedAtUtc).ThenByDescending(x => x.Id),
                 (_, true) => query.OrderBy(x => x.AddedAtUtc).ThenBy(x => x.Id),
                 _ => query.OrderByDescending(x => x.AddedAtUtc).ThenByDescending(x => x.Id),
