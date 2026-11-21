@@ -314,6 +314,7 @@ table.activity tbody tr:hover { background: var(--bg-2); }
 .status-name { flex: 1 1 140px; min-width: 0; min-height: var(--control-h); }
 .status-hide { display: inline-flex; flex-direction: row; align-items: center; gap: var(--space-1); margin: 0; font-size: 13px; color: var(--text-dim); white-space: nowrap; }
 .status-hide input { width: auto; min-height: 0; margin: 0; }
+.status-tabs { display: inline-flex; align-items: center; gap: var(--space-2); padding-left: var(--space-2); border-left: 1px solid var(--line); }
 #statuses-panel h3 { margin-top: var(--space-5); }
 .status-count { min-width: 56px; text-align: right; }
 .status-palette, .status-delete { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-1) 0 var(--space-1) 26px; }

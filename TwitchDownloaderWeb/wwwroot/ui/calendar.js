@@ -94,7 +94,7 @@ export function calendarView(o) {
 }
 
 // A small pop-up under an element: closes on Esc or a click outside it (not on the element itself, which usually toggles it)
-export function openPopover(anchor, node, { onClose, className = "" } = {}) {
+export function openPopover(anchor, node, { onClose, className = "", keepOpenOn = null } = {}) {
   const pop = el("div", { class: `lpop ${className}` }, node);
   document.body.append(pop);
   // The anchor may be drawn again while the pop-up is open (the list's headings are): it stays where the anchor was
@@ -118,7 +118,7 @@ export function openPopover(anchor, node, { onClose, className = "" } = {}) {
     onClose?.();
   };
   const outside = (event) => {
-    if (pop.contains(event.target) || (anchor.isConnected && anchor.contains(event.target))) return;
+    if (pop.contains(event.target) || (anchor.isConnected && anchor.contains(event.target)) || keepOpenOn?.(event.target)) return;
     close();
   };
   const key = (event) => {
