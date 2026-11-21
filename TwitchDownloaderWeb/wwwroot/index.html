@@ -104,50 +104,17 @@
         <div class="side-tools" data-tip-placement="bottom">
           <div class="chan-bar" id="side-channels" role="group" aria-label="Channels" hidden></div>
           <span class="side-count faint" id="side-count"></span>
-          <sl-tooltip content="Show as cards" hoist><sl-icon-button library="ph" name="cards" label="Show as cards" id="side-view"></sl-icon-button></sl-tooltip>
-          <sl-dropdown id="filter-menu" placement="bottom-end" distance="4" hoist stay-open-on-select>
-            <sl-icon-button slot="trigger" library="ph" name="funnel-simple" label="Sort and filter" id="side-filter"></sl-icon-button>
-            <div class="filter-panel" id="filter-panel">
-              <div class="filter-row" id="filter-type-row">
-                <sl-radio-group id="filter-type" size="small" label="Show" value="archive">
-                  <sl-radio-button value="archive">Broadcasts</sl-radio-button>
-                  <sl-radio-button value="highlight">Highlights</sl-radio-button>
-                  <sl-radio-button value="upload">Uploads</sl-radio-button>
-                </sl-radio-group>
-              </div>
-              <div class="filter-row" id="filter-work-row">
-                <sl-switch id="filter-work" size="small">Only VODs with work on them</sl-switch>
-              </div>
-              <div class="filter-row filter-who" id="filter-vod-row">
-                <sl-select id="filter-vod" size="small" label="VOD" hoist clearable placeholder="Any VOD"></sl-select>
-              </div>
-              <div class="filter-row filter-who" id="filter-member-row">
-                <sl-select id="filter-member" size="small" label="Member" hoist clearable placeholder="Anyone"></sl-select>
-                <sl-radio-group id="filter-member-mode" size="small" value="made" aria-label="Made or edited">
-                  <sl-radio-button value="made">Made by</sl-radio-button>
-                  <sl-radio-button value="edited">Edited by</sl-radio-button>
-                </sl-radio-group>
-              </div>
-              <div class="filter-row" id="filter-sort-row">
-                <sl-select id="filter-sort" size="small" label="Sort by" hoist value="dateAdded">
-                  <sl-option value="dateAdded">Date added</sl-option>
-                  <sl-option value="streamDate">Stream date</sl-option>
-                </sl-select>
-                <sl-tooltip content="Newest first" hoist><sl-icon-button id="filter-order" library="ph" name="sort-descending" label="Newest first"></sl-icon-button></sl-tooltip>
-              </div>
-              <div class="filter-row filter-dates" id="filter-date-row">
-                <sl-switch id="filter-24h" size="small">Last 24 hours</sl-switch>
-                <div class="filter-day">
-                  <sl-input id="filter-day" type="date" size="small" label="Day" clearable></sl-input>
-                  <sl-button id="filter-today" size="small">Today</sl-button>
-                </div>
-                <p class="faint filter-note">Dates use the sort field and your time zone.</p>
-              </div>
-              <sl-button id="filter-clear" size="small" variant="text">Clear filters</sl-button>
-            </div>
-          </sl-dropdown>
+          <!-- Rows / Cards / Details (badrfly 2026-11-21), then the calendar: no filter button (quick chips, the calendar, the search box and the Details headings) -->
+          <div class="side-views" id="side-views" role="group" aria-label="Show as">
+            <sl-tooltip content="Show as rows" hoist><sl-icon-button library="ph" name="rows" label="Show as rows" data-view="rows"></sl-icon-button></sl-tooltip>
+            <sl-tooltip content="Show as cards" hoist><sl-icon-button library="ph" name="cards" label="Show as cards" data-view="cards"></sl-icon-button></sl-tooltip>
+            <sl-tooltip content="Show details (columns)" hoist><sl-icon-button library="ph" name="table" label="Show details" data-view="details"></sl-icon-button></sl-tooltip>
+          </div>
+          <sl-tooltip content="Calendar" hoist><sl-icon-button library="ph" name="calendar-blank" label="Calendar" id="side-calendar"></sl-icon-button></sl-tooltip>
         </div>
-        <div class="side-listwrap">
+        <div class="side-listwrap" id="side-listwrap">
+          <!-- Details view: the column headings (the mouse wheel over them scrolls the columns sideways) -->
+          <div class="side-dhead" id="side-dhead" hidden></div>
           <div class="side-list" id="side-list" role="list"></div>
           <!-- The month and day of the top of the list, while its own number is scrolled away: click to jump to a month -->
           <button class="side-stamp" id="side-stamp" type="button" hidden></button>
