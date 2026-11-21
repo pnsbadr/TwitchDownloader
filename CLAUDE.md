@@ -639,6 +639,16 @@ step next to the old page, which step 10 removed; the editor is now `index.html`
   (`timelineCursor` / `rulerCursor`: arrow, grab over a draggable item/piece, ew-resize on edges, the Premiere-like razor (red-crossed
   where it can't cut), zoom-in, grab/grabbing hand, col-resize on the ruler) and the wheel (`timelineWheel`: wheel scrolls, Ctrl+wheel
   zooms around the mouse, Shift+wheel scrolls rows; middle drag pans) from it. Change them there, never in one timeline.
+- **Selecting several** (badrfly 2026-11-21, roadmap 1a: "the same way it works on pretty much every computer app"): on both timelines and
+  the library, Ctrl+click adds or takes out one item, Shift+click picks everything from the anchor (the item clicked last without Shift) to
+  the clicked one, Ctrl+Shift+click adds that range, Ctrl+A selects all; a plain click on one of several selected keeps them for a drag and
+  selects only it when let go. Timelines: the range = the rows from the anchor's to the clicked one's, items overlapping the earlier start
+  to the later end. Player 1: `Timeline.picks` (Map of `"clip:5"` / `"marker:7"`), `selected` = the item clicked last (edges, I / O, play,
+  title editor work on it; assigning `selected` makes it the only one), `anchor`, `selectedItems()` (time order), edges/grips only with one
+  selected; Delete with several says it isn't there yet (bulk actions = roadmap 1b–1d, build on `selectedItems()`). Player 2: the
+  existing `ProjectTimeline.selected` Set + `anchor` (Shift+click no longer toggles; Shift+drag still keeps the time; marquee with Ctrl or
+  Shift adds). Library: `state.picks` / `state.anchor` per list (keys of lines; they count only while they hold `state.selected`),
+  `pickedLines()` exported for later bulk actions, Shift+↑↓ grows the selection, cards view selects too (`.card.sel`).
 - **Timeline editing** (`ui/timeline-edit.js`, mixed into `Timeline`, steps 3b and 4): tools bar tools Pointer / Cut / Clip / Zoom / Hand (V/C/X/Z/H), snapping (N,
   `clipLibrary.snap`, 8 px; **new kinds of timeline items must add their times to `snapPoints()`**), undo/redo (last 10 per VOD, this tab:
   marker add/delete/change/split and clip re-trims; steps name items through refs shared per VOD (`ref` / `moveRef`), because undoing a

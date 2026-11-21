@@ -100,6 +100,10 @@ function loadSnap() {
   }
 }
 
+// A selected item's key in Timeline.picks
+const refOf = (item) => ({ type: item.kind === "clip" ? "clip" : "marker", id: item.id });
+const pickKey = (ref) => `${ref.type}:${ref.id}`;
+
 export const editing = {
   initEditing(hooks) {
     // hooks: openItemEditor(options), closeItemEditor(), onChange() (tools, selection, undo state), onClipsChanged(),
@@ -109,7 +113,24 @@ export const editing = {
     this.tool = "pointer";
     this.snap = loadSnap();
     this.snapAt = null;
-    this.selected = null;     // { type: "marker" | "clip", id }
+    // Selection (roadmap 1a, badrfly 2026-11-21: like any desktop app): this.selected = the item clicked last { type: "marker" | "clip",
+    // id } (what edges, I / O, play and the title editor work on); this.picks = every selected item by key ("clip:5", "marker:7"),
+    // Ctrl+click adds / takes out one, Shift+click picks every item between this.anchor and the clicked one (rows between them, times
+    // from the earlier start to the later end). Setting this.selected (as everything else does) makes it the only one.
+    let primary = null;
+    this.picks = new Map();
+    this.anchor = null;
+    Object.defineProperty(this, "selected", {
+      configurable: true,
+      get: () => primary,
+      set: (value) => {
+        primary = value ? { type: value.type, id: value.id } : null;
+        this.picks = new Map(primary ? [[pickKey(primary), primary]] : []);
+        this.anchor = primary;
+      },
+    });
+    this.setPrimary = (value) => { primary = value; };
+    this.selected = null;
     this.marking = null;      // { kind: "segment", start } between the two presses of S
     this.clipDrag = null;     // clip tool: { kind: "clip", start, end, color } while a clip is dragged across the timeline
     this.draft = null;        // { kind, start, end, color, rowId } while the title editor names a new item
@@ -415,7 +436,92 @@ export const editing = {
   // ---------- selection ----------
 
   isSelected(item) {
+    return this.picks.has(pickKey(refOf(item)));
+  },
+
+  // The item clicked last (the one edges, I / O and play work on)
+  isPrimary(item) {
     return Boolean(this.selected && this.selected.id === item.id && (this.selected.type === "clip") === (item.kind === "clip"));
+  },
+
+  // Every selected item still on the timeline, in time order (rows top to bottom where they start together)
+  selectedItems() {
+    const found = [];
+    this.rows.forEach((row, index) => {
+      for (const item of this.itemsOf(row)) if (this.isSelected(item)) found.push({ item, index });
+    });
+    return found.sort((a, b) => a.item.start - b.item.start || a.index - b.index).map((x) => x.item);
+  },
+
+  // Ctrl+click: add the item to the selection, or take it out (the item clicked last becomes the anchor for Shift+click)
+  togglePick(item) {
+    const ref = refOf(item);
+    const key = pickKey(ref);
+    if (this.picks.has(key)) {
+      this.picks.delete(key);
+      if (this.isPrimary(item)) {
+        const next = [...this.picks.values()].at(-1) ?? null;
+        this.setPrimary(next);
+        if (this.anchor && pickKey(this.anchor) === key) this.anchor = next;
+      }
+    } else {
+      this.picks.set(key, ref);
+      this.setPrimary(ref);
+      this.anchor = ref;
+    }
+    this.changed();
+  },
+
+  // Shift+click: every item between the anchor and this one (add = Ctrl+Shift: keep what was selected too). Rows from the anchor's to
+  // the clicked one's (hidden rows left out), items overlapping the time from the earlier start to the later end.
+  pickRange(item, { add = false } = {}) {
+    const anchor = this.anchor && this.findItem(this.anchor);
+    if (!anchor) {
+      this.select(item);
+      return;
+    }
+    const a = this.rows.indexOf(anchor.row);
+    const b = this.rows.indexOf(item.row);
+    const [r1, r2] = [Math.min(a, b), Math.max(a, b)];
+    const t1 = Math.min(anchor.start, item.start);
+    const t2 = Math.max(anchor.end ?? anchor.start, item.end ?? item.start);
+    const picks = add ? new Map(this.picks) : new Map();
+    for (let i = r1; i <= r2; i++) {
+      const row = this.rows[i];
+      if (!row || this.stateOf(row).hidden) continue;
+      for (const it of this.itemsOf(row)) {
+        const end = it.end ?? it.start;
+        if (end >= t1 - 0.001 && it.start <= t2 + 0.001) picks.set(pickKey(refOf(it)), refOf(it));
+      }
+    }
+    picks.set(pickKey(refOf(item)), refOf(item));
+    this.picks = picks;
+    this.setPrimary(refOf(item));
+    this.changed();
+  },
+
+  // Ctrl+A: every item on the rows that show
+  selectAll() {
+    const picks = new Map();
+    for (const row of this.rows) {
+      if (this.stateOf(row).hidden) continue;
+      for (const it of this.itemsOf(row)) picks.set(pickKey(refOf(it)), refOf(it));
+    }
+    if (!picks.size) return false;
+    const primary = this.selected && picks.has(pickKey(this.selected)) ? this.selected : [...picks.values()][0];
+    this.picks = picks;
+    this.setPrimary(primary);
+    this.anchor = primary;
+    this.changed();
+    return true;
+  },
+
+  findItem(ref) {
+    for (const row of this.rows) {
+      const found = this.itemsOf(row).find((it) => it.id === ref.id && (ref.type === "clip") === (it.kind === "clip"));
+      if (found) return found;
+    }
+    return null;
   },
 
   select(item) {
@@ -433,12 +539,7 @@ export const editing = {
   },
 
   selectedItem() {
-    if (!this.selected) return null;
-    for (const row of this.rows) {
-      const found = this.itemsOf(row).find((item) => this.isSelected(item));
-      if (found) return found;
-    }
-    return null;
+    return this.selected ? this.findItem(this.selected) : null;
   },
 
   // The selected segment's or clip's range, for Play / Last 3 s
@@ -535,19 +636,29 @@ export const editing = {
     }
 
     const selected = this.selectedItem();
-    const edge = selected && this.canMoveEdges(selected) ? this.edgeAt(selected, x, y, rect.width) : null;
+    const ctrl = event.ctrlKey || event.metaKey;
+    // Ctrl+click adds an item to the selection or takes it out; Shift+click picks everything between (no seek, no drag)
+    if (item && this.mode === "vod" && (ctrl || event.shiftKey)) {
+      if (event.shiftKey) this.pickRange(item, { add: ctrl });
+      else this.togglePick(item);
+      return;
+    }
+    const edge = selected && this.picks.size === 1 && this.canMoveEdges(selected) ? this.edgeAt(selected, x, y, rect.width) : null;
     if (edge) {
       this.press = { kind: "edge", item: selected, edge, startX: event.clientX, moved: false, rect };
       canvas.setPointerCapture(event.pointerId);
       this.updateCursor();
       return;
     }
-    this.select(item);
+    // A press on one of several selected items keeps them (a click without dragging then selects only it, as in any app)
+    const inGroup = item && this.picks.size > 1 && this.isSelected(item);
+    if (inGroup) this.setPrimary({ type: item.kind === "clip" ? "clip" : "marker", id: item.id });
+    else if (item || !(ctrl || event.shiftKey)) this.select(item);
     // Player 1: a click on an item goes to its start; Player 2 (one item) goes where it's clicked
     this.seekTo(item && this.mode === "vod" ? item.start : t);
     // Dragging the item's body takes it somewhere else (onto Player 2, ...)
     if (item && this.mode === "vod") {
-      this.press = { kind: "item", item, startX: event.clientX, startY: event.clientY, canvas, pointerId: event.pointerId };
+      this.press = { kind: "item", item, inGroup, startX: event.clientX, startY: event.clientY, canvas, pointerId: event.pointerId };
       canvas.setPointerCapture(event.pointerId);
     }
   },
@@ -658,6 +769,8 @@ export const editing = {
     this.edgeTip = null;
     if (hadTip) this.renderTip();
     this.updateCursor();
+    // A click (no drag) on one of several selected items: only it stays selected
+    if (press?.kind === "item" && press.inGroup) this.select(press.item);
     if (press?.kind === "edge" && press.moved && this.preview) {
       const { start, end } = this.preview;
       this.commitRange(press.item, start, end);
@@ -1238,6 +1351,10 @@ export const editing = {
     }
     const item = this.selectedItem();
     if (!item) return;
+    if (this.picks.size > 1) {
+      toast("Deleting several items at once isn't here yet: select one to delete it.");
+      return;
+    }
     if (!this.canDeleteItem(item)) {
       toast(`You can't delete this ${this.whatIs(item)}.`);
       return;

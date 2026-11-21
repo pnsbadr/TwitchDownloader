@@ -575,7 +575,7 @@ export class Timeline {
     const pad = (4 / width) * this.span();
     const items = this.itemsOf(row);
     // the selected item first, then moments (thin), then ranges, topmost (last drawn) first
-    const selected = items.find((item) => this.isSelected(item));
+    const selected = items.find((item) => this.isPrimary(item));
     if (selected && (selected.end == null ? Math.abs(selected.start - t) <= pad * 1.5 : t >= selected.start - pad && t <= selected.end + pad)) return selected;
     for (const item of [...items].reverse()) {
       if (item.end == null && Math.abs(item.start - t) <= pad * 1.5) return item;
@@ -929,12 +929,12 @@ export class Timeline {
       this.drawSyncWaves(ctx, row, y, width);
       ctx.globalAlpha = anySolo && !state.solo ? 0.25 : state.locked ? 0.7 : 1;
       const items = this.itemsOf(row);
-      // the selected item on top
-      const selected = items.find((item) => this.isSelected(item));
-      for (const item of items) if (item !== selected) this.drawItem(ctx, item, y, width);
-      if (selected) {
-        this.drawItem(ctx, selected, y, width);
-        this.drawSelection(ctx, selected, y, width);
+      // the selected items on top (the one clicked last above the rest)
+      const selected = items.filter((item) => this.isSelected(item)).sort((a, b) => this.isPrimary(a) - this.isPrimary(b));
+      for (const item of items) if (!selected.includes(item)) this.drawItem(ctx, item, y, width);
+      for (const item of selected) {
+        this.drawItem(ctx, item, y, width);
+        this.drawSelection(ctx, item, y, width);
       }
       ctx.globalAlpha = 1;
     });
@@ -985,7 +985,8 @@ export class Timeline {
     const x2 = this.timeToX(item.end, width);
     roundRect(ctx, x1 - 2, y + 5, Math.max(2, x2 - x1) + 4, ROW_HEIGHT - 10, 4);
     ctx.stroke();
-    if (this.canMoveEdges(item)) {
+    // grips only when it's the one selected item (edges drag one item at a time)
+    if (this.picks.size === 1 && this.canMoveEdges(item)) {
       ctx.fillStyle = "#fff";
       for (const x of [x1, x2]) {
         if (x < -4 || x > width + 4) continue;
