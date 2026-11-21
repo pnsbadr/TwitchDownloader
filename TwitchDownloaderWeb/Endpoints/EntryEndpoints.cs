@@ -197,7 +197,7 @@ namespace TwitchDownloaderWeb.Endpoints
             return app;
         }
 
-        private static async Task<IResult> GetVodInfo(string? vod, VodInfoService vodInfo, TeamContext team, TeamChannelAccess access,
+        private static async Task<IResult> GetVodInfo(string? vod, IVodDetailsSource vodDetails, IVodQualitySource vodQualities, TeamContext team, TeamChannelAccess access,
             IOptions<DownloadSettings> settings, CancellationToken cancellationToken)
         {
             if (VodInfoService.ParseVodId(vod) is not { } vodId)
@@ -207,8 +207,8 @@ namespace TwitchDownloaderWeb.Endpoints
                 return refused;
 
             // Two separate Twitch lookups (video info; access token + master playlist): ask both at once
-            var qualitiesTask = vodInfo.GetQualitiesAsync(vodId);
-            var details = await vodInfo.GetVodAsync(vodId);
+            var qualitiesTask = vodQualities.GetQualitiesAsync(vodId);
+            var details = await vodDetails.GetVodAsync(vodId);
             if (details is null)
             {
                 Forget(qualitiesTask);
@@ -227,7 +227,7 @@ namespace TwitchDownloaderWeb.Endpoints
         /// A clip or reference cut of a VOD from one of the team's channels (the player's clip tool). Twitch clip links are no longer
         /// accepted (badrfly, 2026-11-15); clip entries added before stay in the library.
         /// </summary>
-        private static async Task<IResult> AddEntry(AddEntryRequest request, LibraryDbContext db, VodInfoService vodInfo, TeamContext team,
+        private static async Task<IResult> AddEntry(AddEntryRequest request, LibraryDbContext db, IVodDetailsSource vodDetails, IVodQualitySource vodQualities, TeamContext team,
             TeamChannelAccess access, DownloadQueue queue, IOptions<DownloadSettings> settings, CancellationToken cancellationToken)
         {
             if (VodInfoService.ParseVodId(request.VodId) is not { } vodId)
@@ -267,8 +267,8 @@ namespace TwitchDownloaderWeb.Endpoints
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["title"] = [$"Title cannot be longer than {MaxTitleLength} characters."] });
 
             // Both Twitch lookups at once (the clip tool waits on this request)
-            var qualitiesTask = vodInfo.GetQualitiesAsync(vodId);
-            var vod = await vodInfo.GetVodAsync(vodId);
+            var qualitiesTask = vodQualities.GetQualitiesAsync(vodId);
+            var vod = await vodDetails.GetVodAsync(vodId);
             if (vod is null)
             {
                 Forget(qualitiesTask);

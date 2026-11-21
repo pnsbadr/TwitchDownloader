@@ -209,11 +209,15 @@ namespace TwitchDownloaderWeb.Endpoints
             return row;
         }
 
+        /// <summary>No VOD is longer than Twitch's 48 h stream limit: anything past it is a bad request, never a saved line-up.</summary>
+        private const double MaxVodSeconds = 48 * 3600;
+
         /// <summary>A member lined the two up by hand (a slide in Player 2): later syncs between them use it.</summary>
         private static async Task<IResult> SavePair(long vodId, long otherVodId, VodSyncPairRequest request, TeamContext team, LibraryDbContext db,
             IVodDetailsSource vods, TeamChannelAccess access, CancellationToken cancellationToken)
         {
-            if (request.At is not { } at || request.OtherAt is not { } otherAt || !double.IsFinite(at) || !double.IsFinite(otherAt) || at < 0 || otherAt < 0)
+            if (request.At is not { } at || request.OtherAt is not { } otherAt || !double.IsFinite(at) || !double.IsFinite(otherAt) || at < 0 || otherAt < 0
+                || at > MaxVodSeconds || otherAt > MaxVodSeconds)
                 return Invalid("at", "Give the moment's time in both VODs.");
             var (a, b, problem) = await PairAsync(vodId, otherVodId, team, vods, access, cancellationToken);
             if (problem is not null)
@@ -232,7 +236,8 @@ namespace TwitchDownloaderWeb.Endpoints
         private static async Task<IResult> MatchAudio(long vodId, long otherVodId, VodSyncPairRequest request, TeamContext team, LibraryDbContext db,
             IVodDetailsSource vods, TeamChannelAccess access, IVodLoudness loudness, CancellationToken cancellationToken)
         {
-            if (request.At is not { } at || request.OtherAt is not { } otherAt || !double.IsFinite(at) || !double.IsFinite(otherAt) || at < 0 || otherAt < 0)
+            if (request.At is not { } at || request.OtherAt is not { } otherAt || !double.IsFinite(at) || !double.IsFinite(otherAt) || at < 0 || otherAt < 0
+                || at > MaxVodSeconds || otherAt > MaxVodSeconds)
                 return Invalid("at", "Give the moment's time in both VODs.");
             var seconds = Math.Clamp(request.Seconds ?? 45, 10, 90);
             var (a, b, problem) = await PairAsync(vodId, otherVodId, team, vods, access, cancellationToken);

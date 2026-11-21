@@ -16,6 +16,7 @@ import { MediaPlayer, formatClock } from "./media.js";
 import { timeBox } from "./timebox.js";
 import { keptParts, keptSeconds, normalizeCuts } from "./cuts.js";
 import { confirmAction } from "./dialogs.js";
+import { refreshLibraryFilters } from "./library.js";
 
 const LIST_KEY = "clipco.export.list";
 const POLL_MS = 2000;
@@ -973,6 +974,7 @@ async function runExport() {
   try {
     const batch = await api("POST", "/api/exports", { items: list.map(requestOf) });
     if (single) autoDownload.add(batch.id);
+    refreshLibraryFilters(); // exporting can move an item's status on (the team's "Exported" status)
     toast(single ? "Exporting… the file downloads when it's ready." : `Queued ${batch.itemsTotal} file${batch.itemsTotal === 1 ? "" : "s"}. They show up under Your exports.`);
     list = [];
     selectedKey = null;
