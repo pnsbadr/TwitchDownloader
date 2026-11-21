@@ -285,6 +285,55 @@ namespace TwitchDownloaderWeb.Services
 
         private static string? SegmentName(string path) => HlsPlaylists.SegmentNameRegex.IsMatch(path) ? path : null;
 
+        // --- full-size frames for the players' screenshot button (badrfly 2026-11-21) ---
+
+        /// <summary>
+        /// One frame of the VOD at full size as a PNG, from one segment of the best rendition (or <paramref name="variant"/> when it
+        /// exists): the screenshot button's way when the page can't read the picture itself (Twitch's player). Nothing is kept on disk.
+        /// Null when the VOD or the segment can't be read.
+        /// </summary>
+        public async Task<byte[]?> GrabFrameAsync(long vodId, double vodSeconds, int? variant, CancellationToken cancellationToken)
+        {
+            var variants = await playback.GetVariantsAsync(vodId, cancellationToken);
+            if (variants.Status != PlaybackStatus.Ok || variants.Variants.Count == 0)
+                return null;
+            // Variants are best first; the page passes the one it plays, if any
+            var index = variant is { } v && v >= 0 && v < variants.Variants.Count ? v : 0;
+
+            if (!await _gate.WaitAsync(QueueTimeout, cancellationToken))
+                return null;
+            var work = storage.CreateWorkFolder("frame");
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(MakeTimeout);
+                var playlist = await playback.GetRawMediaPlaylistAsync(vodId, index, timeout.Token);
+                if (playlist is null || FindSegment(playlist, vodSeconds) is not { } found)
+                    return null;
+
+                var input = Path.Combine(work, Path.GetExtension(found.Name) is ".ts" ? "segment.ts" : "segment.mp4");
+                await using (var stream = File.Create(input))
+                {
+                    if (found.InitName is { } init && !await CopySegmentAsync(vodId, index, init, stream, timeout.Token))
+                        return null;
+                    if (!await CopySegmentAsync(vodId, index, found.Name, stream, timeout.Token))
+                        return null;
+                }
+
+                var output = Path.Combine(work, "frame.png");
+                var ffmpeg = configuration["Ffmpeg:Path"] is { Length: > 0 } configured ? configured : "ffmpeg";
+                var at = found.Seconds.ToString("0.###", CultureInfo.InvariantCulture);
+                await FfmpegRunner.RunAsync(ffmpeg, ["-hide_banner", "-y", "-i", input, "-ss", at, "-frames:v", "1", "-an", "-f", "image2", "-c:v", "png", output],
+                    work, logger, timeout.Token);
+                return File.Exists(output) ? await File.ReadAllBytesAsync(output, cancellationToken) : null;
+            }
+            finally
+            {
+                _gate.Release();
+                try { Directory.Delete(work, true); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            }
+        }
+
         /// <param name="seekOnInput">True for a whole file (fast seek); false for one HLS segment, whose timestamps don't start at 0:
         /// the output seek decodes from the segment's start (a keyframe) and counts from there.</param>
         public static Task ExtractFrameAsync(string ffmpeg, string input, double seconds, bool seekOnInput, string output, ILogger logger,
