@@ -131,6 +131,13 @@ export function setUpLibrary(options) {
   new ResizeObserver(() => fitListHeight()).observe($("side-listwrap"));
   // Scrolling stops on a line's start, so the top row is never cut in half (rows and Details)
   $("side-list").addEventListener("scrollend", () => snapScroll());
+  // Tab / Shift+Tab walk the list's lines (opened VODs, groups and edits included) and wrap around, instead of leaving for the rest of
+  // the app (badrfly 2026-11-21; rowTab in keybinds.js)
+  $("side-list").addEventListener("keydown", (event) => {
+    if (event.key !== "Tab" || event.ctrlKey || event.altKey || event.metaKey) return;
+    event.preventDefault();
+    tabThrough(event.shiftKey ? -1 : 1);
+  });
   setUpDetails();
   renderViewButton();
   setUpFilter();
@@ -2567,10 +2574,16 @@ function select(key, { focus = true } = {}) {
   if (focus) focusRow(key);
 }
 
-function moveSelection(step) {
+// wrap (Tab / Shift+Tab, badrfly 2026-11-21): past the last line goes to the first, before the first to the last
+function moveSelection(step, { wrap = false } = {}) {
   const lines = rowsModel?.lines ?? [];
+  const skip = (i) => i >= 0 && i < lines.length && (isMark(lines[i]) || lines[i].note);
   let index = lines.findIndex((line) => line.key === state.selected[state.list]);
-  do index += step; while (index >= 0 && index < lines.length && (isMark(lines[index]) || lines[index].note));
+  do index += step; while (skip(index));
+  if ((index < 0 || index >= lines.length) && wrap) {
+    index = step > 0 ? 0 : lines.length - 1;
+    while (skip(index)) index += step;
+  }
   if (index < 0 || index >= lines.length) return;
   const list = $("side-list");
   const y = rowsModel.ys[index];
@@ -2582,6 +2595,18 @@ function moveSelection(step) {
   }
   drawWindow();
   select(lines[index].key);
+}
+
+function tabThrough(step) {
+  if (rowsModel) { moveSelection(step, { wrap: true }); focusRow(state.selected[state.list]); return; }
+  // Cards: every card and line on the page is drawn, so walk the focusable ones
+  const list = $("side-list");
+  const nodes = [...list.querySelectorAll(":scope > [data-line][tabindex='0']")];
+  if (!nodes.length) return;
+  const at = nodes.findIndex((node) => node.contains(document.activeElement));
+  const next = nodes[at < 0 ? (step > 0 ? 0 : nodes.length - 1) : (at + step + nodes.length) % nodes.length];
+  next.focus({ preventScroll: true });
+  next.scrollIntoView({ block: "nearest" });
 }
 
 function focusRow(key) {
